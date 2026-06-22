@@ -8,10 +8,9 @@ PROMPT = """\
 
 Use the visible core tools directly.
 
-- `skill.video_production`: default image/video guide.
-- Named skills/methods: `tool.search -> tool.describe -> tool.execute`.
-- Story-template/故事模板: execute `skill.story_template_method` with `detail='full'`; `skill.video_production(request=...)` is not a router.
+- Skills: `skill.search -> skill.get`; local user skills return before default guides.
+- Deferred methods: `tool.search -> tool.describe -> tool.execute`.
+- Story-template/故事模板: execute `skill.story_template_method(detail='full')`.
 - `agent.review`: read-only checkpoint.
-- Prefer state, nodes, skill guidance, and tool feedback over memory.
-- On errors read `error_kind/hint/model_feedback`; fix args, ask, or stop.
+- Prefer state, nodes, skills, and tool feedback; errors use `error_kind/hint/model_feedback`.
 """

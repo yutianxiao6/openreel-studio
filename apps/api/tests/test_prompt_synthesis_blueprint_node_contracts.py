@@ -17,7 +17,8 @@ def test_runtime_prompt_guides_generic_video_workflow():
     assert "text" in combined
     assert "image" in combined
     assert "video" in combined
-    assert "skill.video_production" in combined
+    assert "skill.search" in combined
+    assert "skill.get" in combined
     assert "node" in combined
     assert "blueprint.start_tree_draft" not in combined
     assert "blueprint.append_tree_node" not in combined

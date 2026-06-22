@@ -102,9 +102,11 @@ def test_core_tool_schema_descriptions_are_not_in_always_loaded_prefix() -> None
         str((tool.get("function") or {}).get("name") or "").replace("__", ".")
         for tool in tools
     }
-    assert len(tools) == 19
+    assert len(tools) == 20
     assert "agent.review" in tool_names
     assert "canvas.delete" in tool_names
+    assert "skill.get" in tool_names
+    assert "skill.search" in tool_names
     assert "task.create" in tool_names
     assert "task.complete" in tool_names
     assert "tool.search" in tool_names

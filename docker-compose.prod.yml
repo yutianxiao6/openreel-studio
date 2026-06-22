@@ -10,10 +10,12 @@ services:
       DRAMA_PROMPT_DUMP_FULL: "true"
       DRAMA_PROMPT_DUMP_DIR: /workspace/data/prompt_dumps
       DRAMA_VIDEO_POLL_TIMEOUT_SECONDS: "1200"
+      OPENREEL_SKILLS_DIR: /workspace/skills
     volumes:
       - ./data:/workspace/data
       - ./storage:/workspace/storage
       - ./config:/workspace/config
+      - ./skills:/workspace/skills
     restart: unless-stopped
 
   web:

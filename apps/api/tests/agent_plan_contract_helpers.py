@@ -176,7 +176,7 @@ from app.services.media_provider import _openai_images_endpoint
 
 plan_rule = SimpleNamespace(PROMPT=(
     "# Complex Work\n\n"
-    "Read `skill.video_production` for video workflows. Use `text` / `image` / `video` nodes as creative state, "
+    "Read video workflow skills with `skill.search -> skill.get`. Use `text` / `image` / `video` nodes as creative state, "
     "and use tasks only as a progress ledger. Write dependencies into node fields and verify outputs before completion."
 ))
 def _normalize_and_validate_plan(*_: Any, **__: Any) -> tuple[None, dict[str, Any]]:

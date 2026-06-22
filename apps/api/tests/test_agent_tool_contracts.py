@@ -114,7 +114,9 @@ def test_generate_plan_keeps_node_first_core_surface() -> None:
     assert "agent.planner_make_plan" not in visible
     assert "node.create" in visible
     assert "node.run" in visible
-    assert "skill.video_production" in visible
+    assert "skill.search" in visible
+    assert "skill.get" in visible
+    assert "skill.video_production" not in visible
     assert "canvas.connect_nodes" not in visible
     assert "plan.propose" not in visible
     assert "tool.search" in visible
@@ -171,7 +173,8 @@ def test_agent_tool_surface_matches_node_first_contract() -> None:
         "node.update",
         "project.get_state",
         "project.reset",
-        "skill.video_production",
+        "skill.get",
+        "skill.search",
         "task.complete",
         "task.create",
         "task.list",
@@ -181,13 +184,15 @@ def test_agent_tool_surface_matches_node_first_contract() -> None:
         "tool.search",
         "vision.view_image",
     }
-    assert len(visible) == 19
+    assert len(visible) == 20
 
     assert registry.tool_exposure("agent.review") == "core"
     assert registry.tool_exposure("node.create") == "core"
     assert registry.tool_exposure("canvas.delete") == "core"
     assert registry.tool_exposure("project.reset") == "core"
-    assert registry.tool_exposure("skill.video_production") == "core"
+    assert registry.tool_exposure("skill.get") == "core"
+    assert registry.tool_exposure("skill.search") == "core"
+    assert registry.tool_exposure("skill.video_production") == "deferred"
     assert registry.tool_exposure("task.create") == "core"
     assert registry.tool_exposure("task.list") == "core"
     assert registry.tool_exposure("task.update") == "core"

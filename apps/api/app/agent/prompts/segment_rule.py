@@ -11,5 +11,5 @@ PROMPT = """\
 - Durations above 15s can be split around 15s unless the user asks otherwise; each segment gets story source, main scene, storyboard/keyframe plan, and video target.
 - Multi-episode work writes each episode story first, then applies segment logic inside that episode.
 - Storyboard grids, first/last frames, references, and story-template boards are `image` node methods, not backend modes.
-- Put segment references in `fields.references`; read `skill.video_production` for finer defaults.
+- Put segment references in `fields.references`; read active/default skill for finer defaults.
 """

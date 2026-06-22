@@ -51,3 +51,23 @@ async def test_markdown_skills_can_use_explicit_skills_dir(tmp_path, monkeypatch
     loaded = await skill_tools.skill_get_skill("bright_prompt")
     assert loaded["ok"] is True
     assert "画面明亮" in loaded["content"]
+
+
+@pytest.mark.asyncio
+async def test_markdown_skill_search_matches_body_and_prioritizes_user_skills(tmp_path, monkeypatch) -> None:
+    skills_root = tmp_path / "skills"
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+
+    prompt_dir = skills_root / "prompts"
+    prompt_dir.mkdir(parents=True)
+    (prompt_dir / "storyboard_video_prompt.md").write_text(
+        "把分镜图和剧情改写成图生视频提示词，重点写动作、镜头、节奏和衔接。\n",
+        encoding="utf-8",
+    )
+
+    found = await skill_tools.skill_search(query="图生视频 衔接")
+
+    assert found["total"] >= 1
+    assert found["skills"][0]["name"] == "storyboard_video_prompt"
+    assert found["skills"][0]["scope"] == "user"
+    assert found["skills"][0]["priority"] == 0

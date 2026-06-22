@@ -308,10 +308,48 @@ def _parse_frontmatter(raw: str) -> dict[str, str]:
     return result
 
 
+def _markdown_skill_summary(raw: str) -> str:
+    if raw.startswith("---"):
+        match = re.match(r"^---\s*\n.*?\n---\s*\n?", raw, re.DOTALL)
+        if match:
+            raw = raw[match.end():]
+    text = re.sub(r"\s+", " ", raw).strip()
+    return text[:240]
+
+
 def _build_unified_index() -> list[dict[str, Any]]:
     """Scan both skill sources and return a unified list."""
     from app.mcp_tools.registry import parse_skill_md
     results: list[dict[str, Any]] = []
+
+    # User markdown skills are local policy/knowledge and take precedence over
+    # built-in default skills with the same search terms or name.
+    md_skills_root = _md_skills_root()
+    if md_skills_root.exists():
+        for category in ("workflows", "prompts"):
+            cat_dir = md_skills_root / category
+            if not cat_dir.is_dir():
+                continue
+            for fpath in sorted(cat_dir.glob("*.md")):
+                name = fpath.stem
+                raw = ""
+                try:
+                    raw = fpath.read_text(encoding="utf-8")
+                    fm = _parse_frontmatter(raw)
+                except Exception:
+                    fm = {}
+                results.append({
+                    "name": name,
+                    "category": fm.get("category", category),
+                    "description": fm.get("description", ""),
+                    "applies_to": fm.get("applies_to", "all"),
+                    "source": "markdown",
+                    "scope": "user",
+                    "priority": 0,
+                    "path": str(fpath),
+                    "content": raw,
+                    "summary": _markdown_skill_summary(raw),
+                })
 
     # Python-package skills (apps/api/app/skills/<name>/SKILL.md)
     if _SKILLS_ROOT.exists():
@@ -328,30 +366,10 @@ def _build_unified_index() -> list[dict[str, Any]]:
                 "description": meta.get("description", ""),
                 "applies_to": meta.get("applies_to", "all"),
                 "source": "python_package",
+                "scope": "builtin",
+                "priority": 10,
+                "summary": meta.get("when_to_use", ""),
             })
-
-    # Markdown skills (skills/workflows/ + skills/prompts/)
-    md_skills_root = _md_skills_root()
-    if md_skills_root.exists():
-        for category in ("workflows", "prompts"):
-            cat_dir = md_skills_root / category
-            if not cat_dir.is_dir():
-                continue
-            for fpath in sorted(cat_dir.glob("*.md")):
-                name = fpath.stem
-                try:
-                    raw = fpath.read_text(encoding="utf-8")
-                    fm = _parse_frontmatter(raw)
-                except Exception:
-                    fm = {}
-                results.append({
-                    "name": name,
-                    "category": fm.get("category", category),
-                    "description": fm.get("description", ""),
-                    "applies_to": fm.get("applies_to", "all"),
-                    "source": "markdown",
-                    "path": str(fpath),
-                })
 
     return results
 
@@ -374,7 +392,14 @@ async def skill_search(
     results = []
     for skill in index:
         match = match_text(
-            search_blob(skill.get("name"), skill.get("category"), skill.get("description"), skill.get("applies_to")),
+            search_blob(
+                skill.get("name"),
+                skill.get("category"),
+                skill.get("description"),
+                skill.get("applies_to"),
+                skill.get("summary"),
+                skill.get("content"),
+            ),
             query=query,
             regex=regex,
             pattern=pattern,
@@ -387,7 +412,14 @@ async def skill_search(
             "category": skill["category"],
             "description": skill["description"],
             "applies_to": skill["applies_to"],
+            "scope": skill.get("scope", ""),
+            "source": skill.get("source", ""),
+            "priority": skill.get("priority", 100),
         }
+        if skill.get("summary"):
+            item["summary"] = skill["summary"]
+        if skill.get("scope") == "user":
+            item["usage"] = "本地用户 skill，优先于内置默认指南；调用 skill.get 读取全文。"
         if query or regex or pattern:
             item["match"] = {
                 key: value
@@ -395,6 +427,7 @@ async def skill_search(
                 if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
             }
         results.append(item)
+    results.sort(key=lambda item: (int(item.get("priority", 100)), str(item.get("name", ""))))
     return {"ok": True, "skills": results, "total": len(results)}
 
 

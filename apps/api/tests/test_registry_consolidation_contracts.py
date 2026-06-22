@@ -1345,6 +1345,10 @@ async def test_generic_skill_management_tools_are_unregistered_but_concrete_skil
     assert not set(UNREGISTERED_GENERIC_SKILL_TOOL_NAMES) & listed_names
     for name in UNREGISTERED_GENERIC_SKILL_TOOL_NAMES:
         assert registry.get(name) is None, name
+    assert "skill.search" in visible
+    assert "skill.get" in visible
+    assert registry.tool_exposure("skill.search") == "core"
+    assert registry.tool_exposure("skill.get") == "core"
     assert registry.get("skill.project_mentor") is not None
 
     described = await tool_meta_tools.tool_describe(list(UNREGISTERED_GENERIC_SKILL_TOOL_NAMES))

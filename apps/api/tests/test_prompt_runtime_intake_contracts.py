@@ -226,11 +226,11 @@ def test_working_loop_stays_domain_neutral_like_codex_core_prompt() -> None:
     assert "Latest user" in working_loop.PROMPT
     assert "canvas state" in working_loop.PROMPT
     assert "interaction.request_input" in working_loop.PROMPT
-    assert "Use tools for state changes" in working_loop.PROMPT
+    assert "Tools mutate state" in working_loop.PROMPT
     assert "model_feedback" in working_loop.PROMPT
-    assert "known / unknown / questions" in working_loop.PROMPT
-    assert "Prompt-writing rules come from the active skill" in working_loop.PROMPT
-    assert "Before tool calls, write one natural progress sentence" in working_loop.PROMPT
+    assert "known facts" in working_loop.PROMPT
+    assert "Prompt rules come from active skill" in working_loop.PROMPT
+    assert "Before tools, write one natural progress sentence" in working_loop.PROMPT
     assert "blueprint.start_tree_draft" not in working_loop.PROMPT
     assert "finalize_tree_draft" not in working_loop.PROMPT
     assert "agent.review" not in working_loop.PROMPT
@@ -238,9 +238,9 @@ def test_working_loop_stays_domain_neutral_like_codex_core_prompt() -> None:
 
 def test_state_prompt_sections_are_runtime_principles_not_manuals() -> None:
     sections = {
-        "repair_rule": (repair_rule.PROMPT, ("node.get", "node.list", "skill.video_production")),
+        "repair_rule": (repair_rule.PROMPT, ("node.get", "node.list", "skill.search")),
         "rerun_rule": (rerun_rule.PROMPT, ("node_id", "node.update", "node.run")),
-        "plan_rule": (plan_rule.PROMPT, ("skill.video_production", "text", "video", "node")),
+        "plan_rule": (plan_rule.PROMPT, ("skill", "text", "video", "node")),
     }
 
     for name, (text, markers) in sections.items():
@@ -260,10 +260,10 @@ def test_failure_repair_rule_is_not_auto_injected_from_canvas_state() -> None:
 def test_video_workflow_prompt_sections_are_runtime_principles_not_manuals() -> None:
     sections = {
         "clarify": (clarify.PROMPT, ("interaction.request_input", "active skill", "known", "unknown")),
-        "video_duration": (video_duration.PROMPT, ("segment", "15", "skill.video_production")),
-        "segment_rule": (segment_rule.PROMPT, ("segment", "15", "skill.video_production")),
-        "video_types": (video_types.PROMPT, ("interaction.request_input", "skill.video_production")),
-        "flow_paths": (flow_paths.PROMPT, ("skill.video_production", "image", "video")),
+        "video_duration": (video_duration.PROMPT, ("segment", "15", "active/default skill")),
+        "segment_rule": (segment_rule.PROMPT, ("segment", "15", "active/default skill")),
+        "video_types": (video_types.PROMPT, ("interaction.request_input", "active/default skill")),
+        "flow_paths": (flow_paths.PROMPT, ("skill.search", "image", "video")),
     }
 
     for name, (text, markers) in sections.items():
@@ -283,7 +283,7 @@ def test_low_frequency_prompt_sections_are_runtime_principles_not_manuals() -> N
         "assets_rule": (assets_rule.PROMPT, ("资产面板", "assets.list_project", "REST API", "不要自动保存")),
         "attachment_rule": (attachment_rule.PROMPT, ("runtime state", "fields.references", "source_image")),
         "single_image_rule": (single_image_rule.PROMPT, ("fields.references", "node.create", "node.run")),
-        "node_contract": (node_contract.PROMPT, ("skill.video_production", "node.create", "dependency_missing")),
+        "node_contract": (node_contract.PROMPT, ("skill.search", "node.create", "dependency_missing")),
         "introspect_rule": (introspect_rule.PROMPT, ("system", "tool.describe")),
         "collab_modes": (collab_modes.PROMPT, ("collab", "subagent", "只读")),
     }
@@ -912,7 +912,8 @@ def test_video_prompts_tell_model_to_read_workflow_when_process_is_underspecifie
         tool_loader.PROMPT,
     ])
 
-    assert "skill.video_production" in prompt_text
+    assert "skill.search" in prompt_text
+    assert "skill.get" in prompt_text
     assert "blueprint_tree_guide" not in prompt_text
     assert "finalize_tree_draft" not in prompt_text
     assert "agent.review" not in working_loop.PROMPT
@@ -925,8 +926,7 @@ def test_story_template_prompt_routes_to_deferred_skill_not_video_request() -> N
 
     assert "skill.story_template_method" in prompt_text
     assert "detail='full'" in prompt_text
-    assert "skill.video_production(request=...)" in prompt_text
-    assert "is not a router" in prompt_text
+    assert "skill.video_production(request=...)" not in prompt_text
 
 def test_always_tool_loader_stays_generic_and_omits_template_contracts() -> None:
     result = assemble_split_result(PromptContext(
