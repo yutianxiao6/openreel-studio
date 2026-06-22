@@ -20,14 +20,17 @@ async def test_workspace_file_tools_cover_read_search_write_patch_delete(monkeyp
 
     found = await file_tools.workspace_search(query="AgentOrchestrator", glob="*.py")
     assert found["ok"] is True
-    assert found["matches"] == [
-        {
-            "path": "apps/api/example.py",
-            "match_type": "content",
-            "line_number": 1,
-            "preview": "class AgentOrchestrator:",
-        }
-    ]
+    assert len(found["matches"]) == 1
+    assert found["matches"][0]["path"] == "apps/api/example.py"
+    assert found["matches"][0]["match_type"] == "content"
+    assert found["matches"][0]["line_number"] == 1
+    assert found["matches"][0]["preview"] == "class AgentOrchestrator:"
+    assert found["matches"][0]["match"]["mode"] == "query"
+
+    regex_found = await file_tools.workspace_search(regex=r"Agent.*chestrator", glob="*.py")
+    assert regex_found["ok"] is True
+    assert regex_found["matches"][0]["path"] == "apps/api/example.py"
+    assert regex_found["matches"][0]["match"]["matched_patterns"] == [r"Agent.*chestrator"]
 
     read = await file_tools.workspace_read(path="apps/api/example.py", offset=1, limit=1)
     assert read["ok"] is True

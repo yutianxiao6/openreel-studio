@@ -22,6 +22,7 @@ from app.config import settings
 from app.db.models import Asset, WorkflowNode
 from app.db.session import session_scope
 from app.mcp_tools import canvas_tools
+from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
 from app.services import media_generation, media_history
 from sqlmodel import select
 
@@ -2014,17 +2015,48 @@ async def node_get(
     node_id: str = "",
     project_id: str = "",
     node_ids: list[str] | str | None = None,
+    query: str | None = None,
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
+    limit: int | None = NODE_LIST_DEFAULT_LIMIT,
 ) -> dict:
     ids = _normalize_node_id_list(node_id, node_ids)
+    if not ids and (query or regex or pattern):
+        return await _node_get_by_query(
+            project_id=project_id,
+            query=query,
+            regex=regex,
+            pattern=pattern,
+            case_sensitive=case_sensitive,
+            limit=limit,
+        )
     if not ids:
         return {
             "ok": False,
-            "error": "node_id or node_ids is required",
+            "error": "node_id/node_ids or query/regex is required",
             "error_kind": "missing_node_id",
-            "hint": "先用 node.list 获取真实节点 id；需要多个详情时一次传 node_ids。",
+            "hint": "先用 node.list(query=... 或 regex=...) 获取候选真实节点 id；需要多个详情时一次传 node_ids。",
         }
     if node_ids is None and len(ids) == 1:
-        return await _node_get_one(ids[0], project_id=project_id)
+        result = await _node_get_one(ids[0], project_id=project_id)
+        if (
+            isinstance(result, dict)
+            and result.get("error_kind") == "node_not_found"
+            and project_id
+        ):
+            candidates = await _node_query_candidates(
+                project_id=project_id,
+                query=ids[0],
+                regex=None,
+                pattern=None,
+                case_sensitive=case_sensitive,
+                limit=8,
+            )
+            if candidates.get("nodes"):
+                result["candidates"] = candidates.get("nodes")
+                result["hint"] = "未找到精确 node_id。下面是模糊候选；请选候选 id 后重新调用 node.get/node.run。"
+        return result
 
     nodes: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -2044,7 +2076,7 @@ async def node_get(
             "requested": len(ids),
             "returned": 0,
             "errors": errors,
-            "hint": "node_ids 必须来自 node.list 返回的真实 id。",
+            "hint": "node_ids 必须来自 node.list 返回的真实 id；如果只记得标题或描述，用 node.get(query=...) 或 node.list(regex=...) 先找候选。",
         }
     return {
         "ok": True,
@@ -2054,6 +2086,119 @@ async def node_get(
         "returned": len(nodes),
         "nodes": nodes,
         "errors": errors,
+    }
+
+
+async def _node_query_candidates(
+    *,
+    project_id: str,
+    query: str | None,
+    regex: str | list[str] | None,
+    pattern: str | list[str] | None,
+    case_sensitive: bool,
+    limit: int | None,
+) -> dict[str, Any]:
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
+    if not project_id:
+        return {
+            "ok": False,
+            "error": "project_id is required for query lookup",
+            "error_kind": "missing_project_id",
+        }
+    nodes = await canvas_tools.list_nodes(project_id)
+    matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for node in nodes:
+        match = match_text(
+            _node_search_blob(node),
+            query=query,
+            regex=regex,
+            pattern=pattern,
+            case_sensitive=case_sensitive,
+        )
+        if match.get("matched"):
+            matches.append((node, match))
+
+    parsed_limit = _parse_node_list_limit(limit)
+    limit_int: int | None = None
+    if parsed_limit > 0:
+        limit_int = min(parsed_limit, NODE_LIST_MAX_LIMIT)
+
+    total = len(matches)
+    limited = matches[:limit_int] if limit_int is not None else matches
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "mode": "query",
+        "total": total,
+        "returned": len(limited),
+        "truncated": len(limited) < total,
+        "nodes": [
+            _node_list_index_item(node, match_hint=True, match_info=match)
+            for node, match in limited
+        ],
+        "filters": {
+            "query": query,
+            "regex": regex,
+            "pattern": pattern,
+            "case_sensitive": case_sensitive,
+            "limit": limit_int,
+            "unlimited": limit_int is None,
+        },
+    }
+
+
+async def _node_get_by_query(
+    *,
+    project_id: str,
+    query: str | None,
+    regex: str | list[str] | None,
+    pattern: str | list[str] | None,
+    case_sensitive: bool,
+    limit: int | None,
+) -> dict[str, Any]:
+    candidates = await _node_query_candidates(
+        project_id=project_id,
+        query=query,
+        regex=regex,
+        pattern=pattern,
+        case_sensitive=case_sensitive,
+        limit=limit,
+    )
+    if not candidates.get("ok"):
+        return candidates
+    ids = [str(item.get("id") or item.get("node_id") or "") for item in candidates.get("nodes") or []]
+    ids = [item_id for item_id in ids if item_id]
+    if not ids:
+        return {
+            "ok": False,
+            "error": "No nodes matched query",
+            "error_kind": "node_not_found",
+            "project_id": project_id,
+            "filters": candidates.get("filters") or {},
+            "hint": "换更明确的 query，或传 regex 列出候选节点。",
+        }
+    nodes: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for item_id in ids:
+        result = await _node_get_one(item_id, project_id=project_id)
+        if isinstance(result, dict) and (result.get("error") or result.get("ok") is False):
+            errors.append(result)
+        elif isinstance(result, dict):
+            nodes.append(result)
+    return {
+        "ok": bool(nodes),
+        "status": "partial" if errors else "ok",
+        "mode": "query",
+        "project_id": project_id,
+        "total": candidates.get("total", len(nodes)),
+        "returned": len(nodes),
+        "truncated": bool(candidates.get("truncated")),
+        "nodes": nodes,
+        "candidate_index": candidates.get("nodes") or [],
+        "errors": errors,
+        "filters": candidates.get("filters") or {},
     }
 
 
@@ -2490,21 +2635,24 @@ async def node_delete(node_id: str, cascade: bool = True) -> dict:
 
 
 def _node_search_blob(node: dict[str, Any]) -> str:
-    parts: list[str] = []
-    for key in ("id", "title", "type", "status", "prompt", "error_message"):
-        if node.get(key):
-            parts.append(str(node.get(key)))
-    for key in ("input", "output"):
-        value = node.get(key)
-        if value:
-            try:
-                parts.append(json.dumps(value, ensure_ascii=False, default=str))
-            except TypeError:
-                parts.append(str(value))
-    return "\n".join(parts).lower()
+    return search_blob(
+        node.get("id"),
+        node.get("title"),
+        node.get("type"),
+        node.get("status"),
+        node.get("prompt"),
+        node.get("error_message"),
+        node.get("input"),
+        node.get("output"),
+    )
 
 
-def _node_list_index_item(node: dict[str, Any], *, match_hint: bool = False) -> dict[str, Any]:
+def _node_list_index_item(
+    node: dict[str, Any],
+    *,
+    match_hint: bool = False,
+    match_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     prompt_text = str(node.get("prompt") or "")
     item: dict[str, Any] = {
         "id": node.get("id"),
@@ -2530,9 +2678,26 @@ def _node_list_index_item(node: dict[str, Any], *, match_hint: bool = False) -> 
             item[key] = value
     if prompt_text:
         item["prompt_chars"] = len(prompt_text)
+    if match_info:
+        item["match"] = {
+            key: value
+            for key, value in match_info.items()
+            if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
+        }
     if match_hint:
         item["match_hint"] = "这是 query 匹配到的候选节点；后续 node.get/node.run 必须使用 id 字段。"
     return item
+
+
+def _parse_node_list_limit(limit: int | str | None) -> int:
+    try:
+        if limit in (0, "0"):
+            return 0
+        if limit in (None, ""):
+            return NODE_LIST_DEFAULT_LIMIT
+        return int(limit)
+    except (TypeError, ValueError):
+        return NODE_LIST_DEFAULT_LIMIT
 
 
 async def node_list(
@@ -2541,13 +2706,19 @@ async def node_list(
     status: str | None = None,
     surface: str | None = None,
     query: str | None = None,
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
     limit: int | None = NODE_LIST_DEFAULT_LIMIT,
 ) -> dict[str, Any]:
     """列出项目节点索引；默认截断，可用 limit=0 明确读取全部。
 
-    query 用于用户说“那张图/某标题/某描述”时先找候选节点，不能把
-    query 文本当 node_id 直接传给 node.get/node.run。
+    query/regex 用于用户说“那张图/某标题/某描述”时先找候选节点，不能把
+    查询文本当 node_id 直接传给 node.get/node.run。
     """
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
     nodes = await canvas_tools.list_nodes(project_id)
     if type:
         nodes = [n for n in nodes if n.get("type") == type]
@@ -2555,26 +2726,40 @@ async def node_list(
         nodes = [n for n in nodes if n.get("status") == status]
     if surface:
         nodes = [n for n in nodes if _node_surface(n) == surface]
-    if query:
-        needle = str(query).strip().lower()
-        if needle:
-            nodes = [n for n in nodes if needle in _node_search_blob(n)]
+    match_by_id: dict[str, dict[str, Any]] = {}
+    if query or regex or pattern:
+        filtered: list[dict[str, Any]] = []
+        for node in nodes:
+            match = match_text(
+                _node_search_blob(node),
+                query=query,
+                regex=regex,
+                pattern=pattern,
+                case_sensitive=case_sensitive,
+            )
+            if not match.get("matched"):
+                continue
+            filtered.append(node)
+            node_key = str(node.get("id") or "")
+            if node_key:
+                match_by_id[node_key] = match
+        nodes = filtered
     limit_int: int | None = None
-    try:
-        if limit in (0, "0"):
-            parsed_limit = 0
-        elif limit in (None, ""):
-            parsed_limit = NODE_LIST_DEFAULT_LIMIT
-        else:
-            parsed_limit = int(limit)
-    except (TypeError, ValueError):
-        parsed_limit = NODE_LIST_DEFAULT_LIMIT
+    parsed_limit = _parse_node_list_limit(limit)
     if parsed_limit > 0:
         limit_int = min(parsed_limit, NODE_LIST_MAX_LIMIT)
     total = len(nodes)
     if limit_int is not None:
         nodes = nodes[:limit_int]
-    index_nodes = [_node_list_index_item(node, match_hint=bool(query)) for node in nodes]
+    has_query = bool(query or regex or pattern)
+    index_nodes = [
+        _node_list_index_item(
+            node,
+            match_hint=has_query,
+            match_info=match_by_id.get(str(node.get("id") or "")),
+        )
+        for node in nodes
+    ]
     return {
         "ok": True,
         "project_id": project_id,
@@ -2592,6 +2777,9 @@ async def node_list(
             "status": status,
             "surface": surface,
             "query": query,
+            "regex": regex,
+            "pattern": pattern,
+            "case_sensitive": case_sensitive,
             "limit": limit_int,
             "unlimited": limit_int is None,
         },

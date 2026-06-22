@@ -17,6 +17,7 @@ from typing import Any
 
 from app.agent.tool_errors import normalize_tool_result
 from app.agent.permission_policy import ToolPermissionContext, decide_tool_permission
+from app.mcp_tools.query_match import invalid_regex_response, match_text
 from app.mcp_tools.registry import _schema_from_handler, registry, ToolSpec
 
 
@@ -359,6 +360,9 @@ async def tool_describe(names: list[str] | str) -> dict[str, Any]:
 async def tool_search(
     query: str = "",
     category: str | None = None,
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
     limit: int = 8,
 ) -> dict[str, Any]:
     """Search deferred Tier 2 tools by name, category, hints, tags, or description.
@@ -367,7 +371,11 @@ async def tool_search(
       - select:project.create,system.models exact deferred tool lookup
       - discover:视频制作 skill              richer result with schema summary/example
       - normal keywords                    ranked lightweight result
+      - regex/pattern                      match tool name/category/hints/schema text
     """
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
     raw_query = (query or "").strip()
     q = raw_query.lower()
     limit = max(1, min(int(limit or 8), 25))
@@ -389,6 +397,8 @@ async def tool_search(
         return {
             "query": query,
             "category": category,
+            "regex": regex,
+            "pattern": pattern,
             "mode": "select",
             "total": len(tools),
             "tools": tools[:limit],
@@ -410,8 +420,16 @@ async def tool_search(
         if category and cat != category:
             continue
         haystack = _tool_search_text(spec, cat)
+        search_match = match_text(
+            haystack,
+            query="",
+            regex=regex,
+            pattern=pattern,
+            case_sensitive=case_sensitive,
+        )
+        regex_matched = bool((regex or pattern) and search_match.get("matched"))
         if not q:
-            score = 1
+            score = 90 if regex_matched else 1
         elif q == spec.name.lower() or q == spec.name.replace(".", "__").lower():
             score = 150
         elif q in spec.name.lower():
@@ -436,14 +454,25 @@ async def tool_search(
                     matched_category_word = True
             if len(words) > 1 and matched_words < 2 and not matched_category_word and not strong_name_match:
                 score = 0
+        if regex_matched:
+            score = max(score, 90)
         if score <= 0:
             continue
-        matches.append((score, _tool_search_item(spec, category=cat, detail=detail)))
+        item = _tool_search_item(spec, category=cat, detail=detail)
+        if regex_matched:
+            item["match"] = {
+                key: value
+                for key, value in search_match.items()
+                if key in {"mode", "matched_patterns"} and value not in (None, "", [], {})
+            }
+        matches.append((score, item))
 
     matches.sort(key=lambda item: (-item[0], item[1]["name"]))
     return {
         "query": query,
         "category": category,
+        "regex": regex,
+        "pattern": pattern,
         "mode": "discover" if detail else "keyword",
         "total": len(matches),
         "tools": [item for _, item in matches[:limit]],

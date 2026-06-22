@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
 from app.mcp_tools.registry import register
 
 logger = logging.getLogger(__name__)
@@ -349,22 +350,43 @@ def _build_unified_index() -> list[dict[str, Any]]:
 
 @register(
     "skill.search",
-    description="搜索可用的制作流程或提示词模板。传关键词，返回名称+描述列表。选中后 skill.get 读全文。",
+    description="搜索可用的制作流程或提示词模板。传关键词或 regex，返回名称+描述列表。选中后 skill.get 读全文。",
     tags=["skill", "read"],
 )
-async def skill_search(query: str = "") -> dict[str, Any]:
+async def skill_search(
+    query: str = "",
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
+) -> dict[str, Any]:
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
     index = _build_unified_index()
-    q = (query or "").lower()
-    results = [
-        {"name": s["name"], "category": s["category"], "description": s["description"], "applies_to": s["applies_to"]}
-        for s in index
-        if not q or q in s["name"].lower() or q in s["description"].lower()
-    ]
-    if not results and not q:
-        results = [
-            {"name": s["name"], "category": s["category"], "description": s["description"], "applies_to": s["applies_to"]}
-            for s in index
-        ]
+    results = []
+    for skill in index:
+        match = match_text(
+            search_blob(skill.get("name"), skill.get("category"), skill.get("description"), skill.get("applies_to")),
+            query=query,
+            regex=regex,
+            pattern=pattern,
+            case_sensitive=case_sensitive,
+        )
+        if not match.get("matched"):
+            continue
+        item = {
+            "name": skill["name"],
+            "category": skill["category"],
+            "description": skill["description"],
+            "applies_to": skill["applies_to"],
+        }
+        if query or regex or pattern:
+            item["match"] = {
+                key: value
+                for key, value in match.items()
+                if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
+            }
+        results.append(item)
     return {"ok": True, "skills": results, "total": len(results)}
 
 

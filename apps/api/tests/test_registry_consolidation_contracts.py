@@ -24,6 +24,16 @@ async def test_tool_search_supports_exact_select_for_deferred_tools() -> None:
     assert result["tools"][0]["input_schema_summary"]["type"] == "object"
     assert "example" in result["tools"][0]
 
+
+@pytest.mark.asyncio
+async def test_tool_search_supports_regex_patterns() -> None:
+    result = await tool_meta_tools.tool_search(regex=r"workspace_(read|write)", category="file", limit=8)
+    names = {item["name"] for item in result["tools"]}
+
+    assert {"file.workspace_read", "file.workspace_write"} <= names
+    assert any(item.get("match", {}).get("matched_patterns") == [r"workspace_(read|write)"] for item in result["tools"])
+
+
 @pytest.mark.asyncio
 async def test_tool_search_select_does_not_return_core_tools() -> None:
     result = await tool_meta_tools.tool_search(query="select:node.create")

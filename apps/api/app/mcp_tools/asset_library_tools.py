@@ -34,6 +34,7 @@ from typing import Any
 from app.config import settings
 from app.db.models import Asset, Project, WorkflowNode
 from app.db.session import session_scope
+from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
 from sqlmodel import select
 
 
@@ -303,7 +304,14 @@ async def assets_list_project(
     project_id: str,
     episode: int | None = None,
     kind: str | None = None,
+    query: str = "",
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
 ) -> dict[str, Any]:
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
     state = await _get_state(project_id)
     lib = state.get("asset_library") or {}
     root = lib.get("project_root")
@@ -340,6 +348,25 @@ async def assets_list_project(
                 for f in sorted(scan_dir.iterdir()):
                     if f.is_file():
                         items.append({"episode": ep_label, "kind": k, "path": str(f), "size": f.stat().st_size})
+    if query or regex or pattern:
+        filtered: list[dict[str, Any]] = []
+        for item in items:
+            match = match_text(
+                search_blob(item),
+                query=query,
+                regex=regex,
+                pattern=pattern,
+                case_sensitive=case_sensitive,
+            )
+            if match.get("matched"):
+                next_item = dict(item)
+                next_item["match"] = {
+                    key: value
+                    for key, value in match.items()
+                    if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
+                }
+                filtered.append(next_item)
+        items = filtered
     return {"items": items, "project_dir": str(proj_dir), "count": len(items)}
 
 
@@ -347,7 +374,14 @@ async def assets_list_shared(
     project_id: str,
     kind: str | None = None,
     category: str | None = None,
+    query: str = "",
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
 ) -> dict[str, Any]:
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
     state = await _get_state(project_id)
     lib = state.get("asset_library") or {}
     root = lib.get("shared_root")
@@ -371,6 +405,25 @@ async def assets_list_shared(
             for f in sorted(cd.iterdir()):
                 if f.is_file():
                     items.append({"kind": cur_kind, "category": cd.name, "path": str(f), "size": f.stat().st_size})
+    if query or regex or pattern:
+        filtered: list[dict[str, Any]] = []
+        for item in items:
+            match = match_text(
+                search_blob(item),
+                query=query,
+                regex=regex,
+                pattern=pattern,
+                case_sensitive=case_sensitive,
+            )
+            if match.get("matched"):
+                next_item = dict(item)
+                next_item["match"] = {
+                    key: value
+                    for key, value in match.items()
+                    if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
+                }
+                filtered.append(next_item)
+        items = filtered
     return {"items": items, "shared_root": str(base), "count": len(items)}
 
 

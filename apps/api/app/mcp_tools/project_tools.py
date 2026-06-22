@@ -10,15 +10,24 @@ from app.db.models import Project, Version
 from app.db.session import session_scope
 from app.agent.blueprint_tree import summarize_blueprint_for_state
 from app.mcp_tools import canvas_tools
+from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
 from app.services.project_service import DEFAULT_EPISODE_COUNT, ProjectService
 from app.services.version_service import VersionService
 
 
-async def project_list() -> list[dict]:
+async def project_list(
+    query: str = "",
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
+) -> list[dict] | dict:
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
     async with session_scope() as session:
         svc = ProjectService(session)
         items = await svc.list_projects()
-        return [
+        projects = [
             {
                 "id": p.id,
                 "title": p.title,
@@ -29,6 +38,19 @@ async def project_list() -> list[dict]:
             }
             for p in items
         ]
+        if query or regex or pattern:
+            projects = [
+                project
+                for project in projects
+                if match_text(
+                    search_blob(project),
+                    query=query,
+                    regex=regex,
+                    pattern=pattern,
+                    case_sensitive=case_sensitive,
+                ).get("matched")
+            ]
+        return projects
 
 
 async def project_create(

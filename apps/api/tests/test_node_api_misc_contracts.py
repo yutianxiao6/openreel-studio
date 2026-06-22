@@ -197,6 +197,53 @@ async def test_node_list_defaults_to_twenty_index_items_and_limit_zero_returns_a
 
 
 @pytest.mark.asyncio
+async def test_node_list_and_get_support_fuzzy_query_and_regex(monkeypatch):
+    nodes = [
+        {
+            "id": "image-1",
+            "project_id": "proj-1",
+            "type": "image",
+            "title": "红衣角色分镜",
+            "status": "completed",
+            "prompt": "雨夜里红衣女孩回头的电影分镜图",
+            "input": {"purpose": "storyboard"},
+        },
+        {
+            "id": "video-1",
+            "project_id": "proj-1",
+            "type": "video",
+            "title": "最终视频",
+            "status": "idle",
+            "prompt": "城市街道镜头",
+        },
+    ]
+    by_id = {node["id"]: node for node in nodes}
+
+    async def fake_list_nodes(project_id: str):
+        assert project_id == "proj-1"
+        return list(nodes)
+
+    async def fake_get_node(node_id: str):
+        return by_id.get(node_id) or {"error": "Node not found"}
+
+    monkeypatch.setattr(node_universal.canvas_tools, "list_nodes", fake_list_nodes)
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+
+    fuzzy = await node_universal.node_list(project_id="proj-1", query="红衣 分镜")
+    regex = await node_universal.node_list(project_id="proj-1", regex=r"红衣.*分镜|storyboard")
+    detail = await node_universal.node_get(project_id="proj-1", query="红衣 分镜")
+
+    assert [node["id"] for node in fuzzy["nodes"]] == ["image-1"]
+    assert fuzzy["nodes"][0]["match"]["mode"] == "query"
+    assert fuzzy["nodes"][0]["match_hint"]
+    assert [node["id"] for node in regex["nodes"]] == ["image-1"]
+    assert regex["nodes"][0]["match"]["matched_patterns"] == [r"红衣.*分镜|storyboard"]
+    assert detail["ok"] is True
+    assert detail["mode"] == "query"
+    assert [node["id"] for node in detail["nodes"]] == ["image-1"]
+
+
+@pytest.mark.asyncio
 async def test_node_create_accepts_small_batch_and_resolves_prior_client_refs(monkeypatch):
     created_records: list[dict] = []
     edges: list[dict] = []

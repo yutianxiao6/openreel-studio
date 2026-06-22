@@ -1243,7 +1243,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
       ))
     R("tool.search", tool_meta_tools.tool_search, tags=["tool", "meta", "read"],
       description=(
-        "搜索 deferred/Tier2 工具，用于按需发现指南、模板、系统和低频能力。"
+        "搜索 deferred/Tier2 工具，用于按需发现指南、模板、系统和低频能力；支持关键词和 regex。"
         "只返回可见按需工具，不替模型做业务判断。"
       ),
       schema={
@@ -1251,6 +1251,21 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
           "properties": {
               "query": {"type": "string", "description": "关键词，或 select:name,name / discover:能力描述"},
               "category": {"type": "string", "description": "可选分类，如 guide/delete/template/system"},
+              "regex": {
+                  "oneOf": [
+                      {"type": "string"},
+                      {"type": "array", "items": {"type": "string"}},
+                  ],
+                  "description": "可选正则或正则列表，匹配工具名/描述/tags/schema/hints。",
+              },
+              "pattern": {
+                  "oneOf": [
+                      {"type": "string"},
+                      {"type": "array", "items": {"type": "string"}},
+                  ],
+                  "description": "regex 的别名；用于传一个或多个正则。",
+              },
+              "case_sensitive": {"type": "boolean", "description": "regex/query 是否大小写敏感，默认 false"},
               "limit": {"type": "integer"},
           },
       })
@@ -1443,8 +1458,8 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
       })
     R("node.get", node_universal.node_get, tags=["node", "read"],
       description=(
-          "按 node_id 或 node_ids 精确读取节点完整信息(input / output / prompt / status / surface / links)。"
-          "需要多个节点详情时一次传 node_ids。"
+          "读取节点完整信息(input / output / prompt / status / surface / links)。"
+          "已知真实 id 时传 node_id/node_ids；只记得标题/描述/错误时传 query 或 regex 先取候选详情。"
       ),
       schema={
           "type": "object",
@@ -1456,6 +1471,23 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
                   "items": {"type": "string"},
                   "description": "多个节点 id；需要多个详情时优先一次传入",
               },
+              "query": {"type": "string", "description": "模糊查询标题、prompt、状态、错误、input/output 等文本"},
+              "regex": {
+                  "oneOf": [
+                      {"type": "string"},
+                      {"type": "array", "items": {"type": "string"}},
+                  ],
+                  "description": "可选正则或正则列表，用于查候选节点详情。",
+              },
+              "pattern": {
+                  "oneOf": [
+                      {"type": "string"},
+                      {"type": "array", "items": {"type": "string"}},
+                  ],
+                  "description": "regex 的别名。",
+              },
+              "case_sensitive": {"type": "boolean"},
+              "limit": {"type": "integer", "description": "query/regex 查询最多读取多少个详情；默认 20，0 为全部。"},
           },
       })
     R("node.update", node_universal.node_update, tags=["node", "write"],
@@ -1503,7 +1535,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
     R("node.list", node_universal.node_list, tags=["node", "read"],
       description=(
           "列出项目画布节点索引，默认返回 20 个节点的 id/title/status/prompt_preview。"
-          "需要更多索引时传 limit；limit=0 返回全部匹配节点；详情用 node.get(node_ids=[...]) 批量读取。"
+          "支持 query/regex 模糊找候选；需要更多索引时传 limit；limit=0 返回全部匹配节点；详情用 node.get(node_ids=[...]) 批量读取。"
       ),
       schema={
           "type": "object",
@@ -1512,7 +1544,22 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
               "type": {"type": "string", "enum": ["text", "image", "video", "audio"]},
               "status": {"type": "string"},
               "surface": {"type": "string", "enum": ["project_panel", "draft_canvas"]},
-              "query": {"type": "string"},
+              "query": {"type": "string", "description": "模糊查询标题、prompt、状态、错误、input/output 等文本"},
+              "regex": {
+                  "oneOf": [
+                      {"type": "string"},
+                      {"type": "array", "items": {"type": "string"}},
+                  ],
+                  "description": "可选正则或正则列表。",
+              },
+              "pattern": {
+                  "oneOf": [
+                      {"type": "string"},
+                      {"type": "array", "items": {"type": "string"}},
+                  ],
+                  "description": "regex 的别名。",
+              },
+              "case_sensitive": {"type": "boolean"},
               "limit": {
                   "type": "integer",
                   "description": "默认 20；可传更大值，最大 800；传 0 返回全部匹配节点索引。",
@@ -1716,11 +1763,27 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
           "type": "object",
           "properties": {
               "path": {"type": "string", "description": "workspace 相对路径；空字符串表示项目根目录"},
+              "query": {"type": "string", "description": "可选模糊过滤文件/目录条目元信息"},
+              "regex": {
+                  "oneOf": [
+                      {"type": "string"},
+                      {"type": "array", "items": {"type": "string"}},
+                  ],
+                  "description": "可选正则或正则列表，过滤文件/目录条目元信息。",
+              },
+              "pattern": {
+                  "oneOf": [
+                      {"type": "string"},
+                      {"type": "array", "items": {"type": "string"}},
+                  ],
+                  "description": "regex 的别名。",
+              },
+              "case_sensitive": {"type": "boolean", "description": "是否大小写敏感，默认 false"},
               "recursive": {"type": "boolean", "description": "是否递归列出子目录"},
               "max_entries": {"type": "integer", "description": "最多返回条目数，默认 200，上限 2000"},
           },
       },
-      description="列出当前 workspace 内的文件和目录，不执行 shell 命令。",
+      description="列出当前 workspace 内的文件和目录，支持 query/regex 过滤，不执行 shell 命令。",
       usage_hints=["tool.execute(name='file.workspace_list', input={'path': 'apps/api', 'recursive': False})"])
     R("file.workspace_search", file_tools.workspace_search, tags=["file", "read"],
       schema={
@@ -1729,13 +1792,28 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
               "query": {"type": "string", "description": "要搜索的文件名或文本内容；空字符串只按 glob 返回文件"},
               "path": {"type": "string", "description": "workspace 相对起点；空字符串表示项目根目录"},
               "glob": {"type": "string", "description": "文件路径 glob，例如 '*.py' 或 'apps/api/**/*.py'"},
+              "regex": {
+                  "oneOf": [
+                      {"type": "string"},
+                      {"type": "array", "items": {"type": "string"}},
+                  ],
+                  "description": "可选正则或正则列表，匹配文件路径或文本行。",
+              },
+              "pattern": {
+                  "oneOf": [
+                      {"type": "string"},
+                      {"type": "array", "items": {"type": "string"}},
+                  ],
+                  "description": "regex 的别名。",
+              },
+              "case_sensitive": {"type": "boolean", "description": "是否大小写敏感，默认 false"},
               "recursive": {"type": "boolean", "description": "是否递归搜索"},
               "include_content": {"type": "boolean", "description": "是否搜索文本内容"},
               "max_results": {"type": "integer", "description": "最多返回匹配数，默认 50，上限 500"},
               "max_file_bytes": {"type": "integer", "description": "单文件内容搜索字节上限，默认 200000"},
           },
       },
-      description="在当前 workspace 内按文件名或文本内容搜索，不执行 shell 命令。",
+      description="在当前 workspace 内按文件名或文本内容搜索，支持 query/regex，不执行 shell 命令。",
       usage_hints=["tool.execute(name='file.workspace_search', input={'query': 'AgentOrchestrator', 'glob': '*.py'})"])
     R("file.workspace_read", file_tools.workspace_read, tags=["file", "read"],
       schema={

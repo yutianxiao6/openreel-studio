@@ -633,7 +633,11 @@ def test_node_read_tools_support_index_then_batch_detail_contract() -> None:
     assert get_props["node_ids"]["type"] == "array"
     assert get_props["node_ids"]["items"]["type"] == "string"
     assert "node_ids" in (get_spec.description or "")
+    assert "query" in get_props
+    assert "regex" in get_props
     assert list_props["limit"]["type"] == "integer"
+    assert "query" in list_props
+    assert "regex" in list_props
     assert "默认返回 20" in (list_spec.description or "")
     assert "limit=0" in (list_spec.description or "")
 

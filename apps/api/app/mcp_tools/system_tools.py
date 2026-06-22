@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.config import settings
+from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
 from app.mcp_tools.registry import register, registry
 
 
@@ -67,14 +68,34 @@ async def system_status() -> dict[str, Any]:
     }
 
 
-@register("system.models", description="List all task types and their current model assignments", tags=["system", "read"])
-async def system_models() -> dict[str, Any]:
+@register("system.models", description="List task types and model assignments; supports optional query/regex filtering", tags=["system", "read"])
+async def system_models(
+    query: str = "",
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
+) -> dict[str, Any]:
     """Focused view: which model is used for each task type."""
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
     from app.services.llm_service import _TASK_DEFAULTS, _default_model_for
 
     models = {}
     for task_type in _TASK_DEFAULTS:
         models[task_type] = _default_model_for(task_type)
+    if query or regex or pattern:
+        models = {
+            task_type: model
+            for task_type, model in models.items()
+            if match_text(
+                search_blob(task_type, model),
+                query=query,
+                regex=regex,
+                pattern=pattern,
+                case_sensitive=case_sensitive,
+            ).get("matched")
+        }
 
     return {
         "task_models": models,

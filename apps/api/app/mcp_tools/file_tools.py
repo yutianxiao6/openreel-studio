@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
 
 
 def _root() -> Path:
@@ -121,10 +122,17 @@ def _iter_workspace_files(base: Path, *, recursive: bool, max_files: int) -> lis
 
 async def workspace_list(
     path: str = "",
+    query: str = "",
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
     recursive: bool = False,
     max_entries: int = 200,
 ) -> dict:
     """List files under the repository workspace."""
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
     try:
         base = _workspace_safe_path(path, allow_root=True)
     except ValueError as exc:
@@ -133,6 +141,7 @@ async def workspace_list(
         return {"ok": False, "error": "Path not found", "error_kind": "file_not_found", "path": path}
     max_entries = max(1, min(int(max_entries or 200), 2000))
     entries: list[dict[str, Any]] = []
+    truncated = False
     if recursive:
         for root, dir_names, file_names in os.walk(base):
             dir_names[:] = [name for name in dir_names if name not in _WORKSPACE_SEARCH_SKIP_DIRS]
@@ -141,15 +150,31 @@ async def workspace_list(
                 item = current / name
                 entries.append(_entry_payload(item))
                 if len(entries) >= max_entries:
-                    return {"ok": True, "root": str(_workspace_root()), "path": _workspace_rel(base), "entries": entries, "truncated": True}
+                    truncated = True
+                    break
+            if truncated:
+                break
     elif base.is_dir():
         for entry in sorted(base.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
             entries.append(_entry_payload(entry))
             if len(entries) >= max_entries:
-                return {"ok": True, "root": str(_workspace_root()), "path": _workspace_rel(base), "entries": entries, "truncated": True}
+                truncated = True
+                break
     else:
         entries.append(_entry_payload(base))
-    return {"ok": True, "root": str(_workspace_root()), "path": _workspace_rel(base), "entries": entries, "truncated": False}
+    if query or regex or pattern:
+        entries = [
+            entry
+            for entry in entries
+            if match_text(
+                search_blob(entry),
+                query=query,
+                regex=regex,
+                pattern=pattern,
+                case_sensitive=case_sensitive,
+            ).get("matched")
+        ]
+    return {"ok": True, "root": str(_workspace_root()), "path": _workspace_rel(base), "entries": entries, "truncated": truncated}
 
 
 async def workspace_read(
@@ -218,37 +243,72 @@ async def workspace_search(
     query: str = "",
     path: str = "",
     glob: str = "*",
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
     recursive: bool = True,
     include_content: bool = True,
     max_results: int = 50,
     max_file_bytes: int = 200_000,
 ) -> dict:
     """Search workspace file names and optional text content without shell execution."""
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
     try:
         base = _workspace_safe_path(path, allow_root=True)
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "error_kind": "workspace_path_denied"}
     query_text = str(query or "")
-    query_lower = query_text.lower()
     max_results = max(1, min(int(max_results or 50), 500))
     max_file_bytes = max(1, min(int(max_file_bytes or 200_000), 2_000_000))
     matches: list[dict[str, Any]] = []
     files = _iter_workspace_files(base, recursive=bool(recursive), max_files=5000)
+    should_search_content = include_content and bool(query_text or regex or pattern)
     for file_path in files:
         rel = _workspace_rel(file_path)
         if glob and not fnmatch.fnmatch(rel, glob) and not fnmatch.fnmatch(file_path.name, glob):
             continue
-        if query_lower and query_lower in rel.lower():
-            matches.append({"path": rel, "match_type": "path", "line_number": None, "preview": rel})
-        if include_content and query_text and file_path.stat().st_size <= max_file_bytes:
+        path_match = match_text(
+            rel,
+            query=query_text,
+            regex=regex,
+            pattern=pattern,
+            case_sensitive=case_sensitive,
+        )
+        if path_match.get("matched"):
+            matches.append({
+                "path": rel,
+                "match_type": "path",
+                "line_number": None,
+                "preview": rel,
+                "match": {
+                    key: value
+                    for key, value in path_match.items()
+                    if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
+                },
+            })
+        if should_search_content and file_path.stat().st_size <= max_file_bytes:
             content = file_path.read_text(encoding="utf-8", errors="replace")
             for line_number, line in enumerate(content.splitlines(), start=1):
-                if query_lower in line.lower():
+                line_match = match_text(
+                    line,
+                    query=query_text,
+                    regex=regex,
+                    pattern=pattern,
+                    case_sensitive=case_sensitive,
+                )
+                if line_match.get("matched"):
                     matches.append({
                         "path": rel,
                         "match_type": "content",
                         "line_number": line_number,
                         "preview": line.strip()[:240],
+                        "match": {
+                            key: value
+                            for key, value in line_match.items()
+                            if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
+                        },
                     })
                     break
         if len(matches) >= max_results:
@@ -257,6 +317,9 @@ async def workspace_search(
         "ok": True,
         "root": str(_workspace_root()),
         "query": query,
+        "regex": regex,
+        "pattern": pattern,
+        "case_sensitive": case_sensitive,
         "path": _workspace_rel(base),
         "glob": glob,
         "matches": matches,
@@ -420,7 +483,17 @@ def read_image_base64_data_url(project_id: str, base64_rel_path: str) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
-async def list_dir(project_id: str = "", rel_path: str = "") -> list[dict]:
+async def list_dir(
+    project_id: str = "",
+    rel_path: str = "",
+    query: str = "",
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
+) -> list[dict] | dict:
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
     if project_id:
         target = _safe_path(project_id, rel_path)
         base = _project_dir(project_id)
@@ -445,6 +518,18 @@ async def list_dir(project_id: str = "", rel_path: str = "") -> list[dict]:
                 "size": entry.stat().st_size if entry.is_file() else None,
             }
         )
+    if query or regex or pattern:
+        items = [
+            item
+            for item in items
+            if match_text(
+                search_blob(item),
+                query=query,
+                regex=regex,
+                pattern=pattern,
+                case_sensitive=case_sensitive,
+            ).get("matched")
+        ]
     return items
 
 

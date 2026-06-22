@@ -64,6 +64,24 @@ def test_task_list_exposes_failed_task_recovery_summary(tmp_path: Path, monkeypa
     assert result["suggested_next"] == "read_failed_task_and_repair_or_report"
 
 
+def test_task_list_supports_fuzzy_query_and_regex(tmp_path: Path, monkeypatch) -> None:
+    local_graph = TaskGraph(tmp_path / "tasks")
+    monkeypatch.setattr(task_tools, "task_graph", local_graph)
+    local_graph.create(subject="render red character storyboard", tool="node.run", project_id="project-1")
+    local_graph.create(subject="write outline", tool="node.create", project_id="project-1")
+
+    import asyncio
+    fuzzy = asyncio.run(task_tools.task_list(project_id="project-1", query="red storyboard"))
+    regex = asyncio.run(task_tools.task_list(project_id="project-1", regex=r"node\.create|outline"))
+
+    assert fuzzy["total"] == 1
+    assert fuzzy["tasks"][0]["subject"] == "render red character storyboard"
+    assert fuzzy["tasks"][0]["match"]["mode"] == "query"
+    assert regex["total"] == 1
+    assert regex["tasks"][0]["subject"] == "write outline"
+    assert regex["tasks"][0]["match"]["matched_patterns"] == [r"node\.create|outline"]
+
+
 def test_task_create_can_create_sequential_checklist_in_one_call(tmp_path: Path, monkeypatch) -> None:
     local_graph = TaskGraph(tmp_path / "tasks")
     monkeypatch.setattr(task_tools, "task_graph", local_graph)

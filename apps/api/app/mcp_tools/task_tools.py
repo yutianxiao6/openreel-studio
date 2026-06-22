@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.agent.task_graph import task_graph
+from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
 from app.mcp_tools.registry import register
 
 
@@ -105,12 +106,54 @@ async def task_create(
     "task.list",
     description=(
         "读取当前任务图、状态统计、失败任务和可继续执行的任务。"
-        "用于执行前检查是否已有同类任务，或在失败/残留任务影响判断时读取列表。"
+        "用于执行前检查是否已有同类任务，或在失败/残留任务影响判断时读取列表；支持 query/regex 找候选任务。"
     ),
     tags=["task", "read"],
 )
-async def task_list(project_id: str = "") -> dict[str, Any]:
+async def task_list(
+    project_id: str = "",
+    status: str = "",
+    query: str = "",
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
+    limit: int = 0,
+) -> dict[str, Any]:
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
     tasks = task_graph.list_all(project_id or None)
+    total_unfiltered = len(tasks)
+    if status:
+        tasks = [t for t in tasks if t.status == status]
+    if query or regex or pattern:
+        filtered = []
+        for task in tasks:
+            match = match_text(
+                search_blob(task.to_dict()),
+                query=query,
+                regex=regex,
+                pattern=pattern,
+                case_sensitive=case_sensitive,
+            )
+            if match.get("matched"):
+                task_dict = task.to_dict()
+                task_dict["match"] = {
+                    key: value
+                    for key, value in match.items()
+                    if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
+                }
+                filtered.append((task, task_dict))
+        task_dict_by_id = {task.id: task_dict for task, task_dict in filtered}
+        tasks = [task for task, _ in filtered]
+    else:
+        task_dict_by_id = {}
+    try:
+        parsed_limit = int(limit or 0)
+    except (TypeError, ValueError):
+        parsed_limit = 0
+    if parsed_limit > 0:
+        tasks = tasks[: min(parsed_limit, 200)]
     ready = [t for t in tasks if t.status == "pending" and not t.is_blocked]
     blocked = [t for t in tasks if t.status == "pending" and t.is_blocked]
     failed_tasks = [
@@ -131,8 +174,9 @@ async def task_list(project_id: str = "") -> dict[str, Any]:
         if t.status == "failed"
     ]
     return {
-        "tasks": [t.to_dict() for t in tasks],
+        "tasks": [task_dict_by_id.get(t.id) or t.to_dict() for t in tasks],
         "total": len(tasks),
+        "total_unfiltered": total_unfiltered,
         "pending": sum(1 for t in tasks if t.status == "pending"),
         "ready": len(ready),
         "blocked": len(blocked),
@@ -146,6 +190,15 @@ async def task_list(project_id: str = "") -> dict[str, Any]:
             if failed_tasks
             else ("claim_ready_task" if ready else "model_decides")
         ),
+        "filters": {
+            "project_id": project_id,
+            "status": status,
+            "query": query,
+            "regex": regex,
+            "pattern": pattern,
+            "case_sensitive": case_sensitive,
+            "limit": parsed_limit,
+        },
     }
 
 
