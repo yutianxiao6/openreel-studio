@@ -20,6 +20,7 @@ Suggested existing tool call:
 
 | Model | API format | Path | Source images | Resolutions |
 | --- | --- | --- | --- | --- |
+| `grok-video-3` | `t8_grok_video_3` | text-to-video or image-to-video | 0-7 images | `480p`, `720p`, `1080p` |
 | `grok-1.5-video-15s` | `grok_1_5` | image-to-video only | exactly 1 image | `480p`, `720p` |
 | `grok-imagine-video-1.5` | `xai_video` | official xAI image-to-video | exactly 1 image | `480p`, `720p` |
 | `doubao-seedance-2-0-260128` | `volcengine_ark` | text-to-video or image-to-video | 0 or more images | `480p`, `720p`, `1080p` |
@@ -45,6 +46,11 @@ For `grok-1.5-video-15s` and `grok-imagine-video-1.5`, keep exactly one source
 image reference on the video node. If multiple images are needed for planning,
 first choose or create a single final source image, then reference only that
 image from the video node.
+
+For `grok-video-3`, use 0-7 source images. If several images are referenced,
+write the prompt so each referenced image has a clear role; when the user or
+provider convention needs explicit image mentions, use `@img1` through `@img7`.
+Duration is 6-30 seconds. Durations above 15 seconds only support `720p`.
 
 ## Repair Rules
 

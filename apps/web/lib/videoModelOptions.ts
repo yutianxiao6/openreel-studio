@@ -10,6 +10,12 @@ export type VideoResolutionValue = (typeof VIDEO_RESOLUTION_OPTIONS)[number]["va
 
 export const VIDEO_MODEL_OPTIONS = [
   {
+    label: "T8 Grok Video 3",
+    modelName: "grok-video-3",
+    apiFormat: "t8_grok_video_3",
+    supportedResolutions: ["480p", "720p", "1080p"],
+  },
+  {
     label: "Grok 1.5 Video 15s",
     modelName: "grok-1.5-video-15s",
     apiFormat: "grok_1_5",

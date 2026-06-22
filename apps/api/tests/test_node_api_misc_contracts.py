@@ -497,6 +497,19 @@ def test_media_provider_schema_accepts_grok_1_5_video_format():
     assert entry.api_format == "grok_1_5"
 
 
+def test_media_provider_schema_accepts_t8_grok_video_3_format():
+    entry = MediaProviderEntry(
+        kind="video",
+        name="t8-grok-video-3",
+        base_url="https://relay.example",
+        api_key="relay-key",
+        model_name="grok-video-3",
+        api_format="t8_grok_video_3",
+    )
+
+    assert entry.api_format == "t8_grok_video_3"
+
+
 def test_media_provider_schema_accepts_suno_compatible_audio_format():
     entry = MediaProviderEntry(
         kind="audio",
@@ -1585,6 +1598,221 @@ async def test_xai_video_poll_done_downloads_video(monkeypatch):
     assert result["remote_url"] == "https://example.com/video.mp4"
     assert result["thumbnail_url"] == "https://example.com/thumb.jpg"
     assert result["usage"] == {"cost_in_usd_ticks": 500000000}
+
+
+def test_t8_grok_video_3_adapter_capabilities_are_structured():
+    provider = SimpleNamespace(
+        api_format="t8_grok_video_3",
+        model_name="grok-video-3",
+    )
+
+    adapter = media_provider._video_provider_adapter(provider)
+    assert adapter is not None
+    capabilities = media_provider._video_adapter_capabilities(adapter)
+
+    assert adapter.name == "t8_grok_video_3"
+    assert capabilities["source_images_min"] == 0
+    assert capabilities["source_images_max"] == 7
+    assert capabilities["field_types"]["duration"] == "integer"
+    assert capabilities["field_types"]["images"] == "url_list"
+    assert capabilities["supported_resolutions"] == ["480p", "720p", "1080p"]
+
+
+@pytest.mark.asyncio
+async def test_t8_grok_video_3_payload_uses_structured_spec():
+    provider = SimpleNamespace(
+        name="t8-grok-video-3",
+        model_name="grok-video-3",
+        params_json=json.dumps({"resolution": "1080p"}, ensure_ascii=False),
+    )
+
+    payload, image_candidates, meta = await media_provider._build_t8_grok_video_3_payload(
+        provider=provider,
+        project_id="proj-1",
+        prompt="A cinematic product shot with slow camera movement. Use @img1 and @img2 as references.",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=15,
+        reference_images=["https://example.com/a.png", "https://example.com/b.png"],
+        extra_override={"aspect_ratio": "9:16", "seed": 123},
+    )
+
+    assert meta["source_image_count"] == 2
+    assert image_candidates == [
+        ("reference_images", "https://example.com/a.png"),
+        ("reference_images", "https://example.com/b.png"),
+    ]
+    assert payload == {
+        "prompt": "A cinematic product shot with slow camera movement. Use @img1 and @img2 as references.",
+        "model": "grok-video-3",
+        "ratio": "9:16",
+        "duration": 15,
+        "resolution": "1080P",
+        "seed": 123,
+    }
+
+
+@pytest.mark.asyncio
+async def test_t8_grok_video_3_payload_rejects_more_than_seven_images():
+    provider = SimpleNamespace(
+        name="t8-grok-video-3",
+        model_name="grok-video-3",
+        params_json="{}",
+    )
+
+    payload, image_candidates, error = await media_provider._build_t8_grok_video_3_payload(
+        provider=provider,
+        project_id="proj-1",
+        prompt="Animate all references.",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=10,
+        reference_images=[f"https://example.com/{idx}.png" for idx in range(8)],
+        extra_override={},
+    )
+
+    assert payload is None
+    assert image_candidates == []
+    assert error["error_kind"] == "bad_request"
+    assert "最多支持 7 张参考图" in error["error"]
+    assert error["model_feedback"]["suggested_next"] == (
+        "read_video_model_calling_doc_then_update_original_video_node"
+    )
+
+
+@pytest.mark.asyncio
+async def test_t8_grok_video_3_submit_uploads_references_and_returns_job(monkeypatch):
+    provider = SimpleNamespace(
+        name="t8-grok-video-3",
+        model_name="grok-video-3",
+        base_url="https://relay.example/v1",
+        api_key="relay-key",
+        params_json=json.dumps({"resolution": "720p"}, ensure_ascii=False),
+    )
+    captured: dict = {"uploads": []}
+
+    async def fake_image_file_input(project_id, ref):
+        return ("source.png", f"bytes-{ref}".encode(), "image/png"), None
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.status_code = 200
+            self._data = data
+            self.text = json.dumps(data)
+
+        def json(self):
+            return self._data
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, endpoint, **kwargs):
+            if endpoint == "https://relay.example/v1/files":
+                captured["uploads"].append(kwargs)
+                return FakeResponse({"url": f"https://files.example/{len(captured['uploads'])}.png"})
+            captured["endpoint"] = endpoint
+            captured["json"] = kwargs.get("json")
+            captured["headers"] = kwargs.get("headers")
+            return FakeResponse({"task_id": "task-1", "status": "NOT_START"})
+
+    monkeypatch.setattr(media_provider, "_image_file_input", fake_image_file_input)
+    monkeypatch.setattr(media_provider.httpx, "AsyncClient", FakeClient)
+
+    result = await media_provider._call_t8_grok_video_3(
+        provider=provider,
+        project_id="proj-1",
+        prompt="A neon-lit street scene. @img1 is the character, @img2 is the setting.",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=10,
+        reference_images=["/api/media/proj-1/a.png", "/api/media/proj-1/b.png"],
+        extra_override={"aspect_ratio": "16:9"},
+        save_locally=False,
+        wait_for_completion=False,
+    )
+
+    assert len(captured["uploads"]) == 2
+    assert captured["uploads"][0]["headers"]["Authorization"] == "Bearer relay-key"
+    assert captured["endpoint"] == "https://relay.example/v2/videos/generations"
+    assert captured["headers"]["Authorization"] == "Bearer relay-key"
+    assert captured["json"]["images"] == ["https://files.example/1.png", "https://files.example/2.png"]
+    assert captured["json"]["duration"] == 10
+    assert captured["json"]["resolution"] == "720P"
+    assert result["ok"] is True
+    assert result["status"] == "running"
+    assert result["job_id"] == "task-1"
+    assert result["query_endpoint"] == "https://relay.example/v2/videos/generations/task-1"
+
+
+@pytest.mark.asyncio
+async def test_t8_grok_video_3_poll_success_downloads_data_output(monkeypatch):
+    provider = SimpleNamespace(
+        name="t8-grok-video-3",
+        model_name="grok-video-3",
+        base_url="https://relay.example",
+        api_key="relay-key",
+        params_json=json.dumps({"_poll_interval_seconds": 1, "_poll_timeout_seconds": 2}),
+    )
+    captured: dict = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"status":"SUCCESS"}'
+
+        def json(self):
+            return {
+                "status": "SUCCESS",
+                "progress": 100,
+                "data": {"output": "https://example.com/video.mp4"},
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, endpoint, headers):
+            captured["endpoint"] = endpoint
+            captured["headers"] = headers
+            return FakeResponse()
+
+    async def fake_download(project_id: str, remote_url: str):
+        captured["download"] = (project_id, remote_url)
+        return {
+            "local_url": "/api/media/proj-1/generated_videos/video.mp4",
+            "local_path": "/tmp/video.mp4",
+        }
+
+    monkeypatch.setattr(media_provider.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(media_provider, "_download_video_result", fake_download)
+
+    result = await media_provider._poll_t8_grok_video_3_task(
+        provider=provider,
+        project_id="proj-1",
+        task_id="task-1",
+        extra_override={},
+        save_locally=True,
+    )
+
+    assert captured["endpoint"] == "https://relay.example/v2/videos/generations/task-1"
+    assert captured["headers"]["Authorization"] == "Bearer relay-key"
+    assert captured["download"] == ("proj-1", "https://example.com/video.mp4")
+    assert result["ok"] is True
+    assert result["status"] == "completed"
+    assert result["url"] == "/api/media/proj-1/generated_videos/video.mp4"
+    assert result["remote_url"] == "https://example.com/video.mp4"
 
 
 @pytest.mark.asyncio

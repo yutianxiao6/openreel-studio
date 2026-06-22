@@ -255,6 +255,7 @@ function Row({
               value={draft.api_format}
               onChange={() => {}}
               options={[
+                { label: "T8 Grok Video 3", value: "t8_grok_video_3" },
                 { label: "Grok 1.5 Multipart", value: "grok_1_5" },
                 { label: "xAI Video", value: "xai_video" },
                 { label: "Volcengine Ark", value: "volcengine_ark" },

@@ -459,7 +459,7 @@ class ModelConfigRead(ModelConfigBase):
 # ---------------------------------------------------------------------------
 
 MEDIA_KINDS = ["image", "video", "audio"]
-MEDIA_API_FORMATS = ["openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "suno_compatible", "openai_tts"]
+MEDIA_API_FORMATS = ["openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "suno_compatible", "openai_tts"]
 
 
 class MediaProviderBase(SQLModel):
@@ -468,7 +468,7 @@ class MediaProviderBase(SQLModel):
     base_url: str
     api_key: Optional[str] = None
     model_name: str                          # model id sent in payload
-    api_format: str = "openai"               # openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5 | suno_compatible | openai_tts
+    api_format: str = "openai"               # openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5 | t8_grok_video_3 | suno_compatible | openai_tts
     params_json: Optional[str] = None        # default extra params JSON (size, steps, etc.)
     is_active: bool = False
     enabled: bool = True
