@@ -7,19 +7,17 @@
 
 English | [中文](#中文)
 
-OpenReel Studio is a chat-driven creative production workspace for planning, generating, revising, and reviewing video projects. It combines a conversational agent, a node-first canvas, configurable media providers, and desktop packaging support for Windows, Linux, and macOS.
+OpenReel Studio is a chat-driven video creation workspace for planning, generating, revising, and reviewing video projects. It combines a conversational agent, a visual canvas, configurable media providers, and desktop packaging support for Windows, Linux, and macOS.
 
 The project is under active development. Public interfaces, provider integrations, and packaging behavior may change between releases.
 
 ## Capabilities
 
-- Convert natural-language creation requests into editable `text`, `image`, `video`, and `audio` nodes.
-- Use the React Flow canvas as the visible source of truth for creative work.
-- Reuse and revise existing canvas nodes before creating duplicates.
-- Locate existing nodes with fuzzy or regex search, then read exact node details for safe updates.
-- Manage project state, tasks, nodes, media outputs, and agent traces through a local FastAPI backend.
-- Configure LLM, image, video, and audio providers at runtime.
-- Package desktop builds for Windows, Linux, and macOS with Electron, Next.js standalone output, FastAPI, and PyInstaller.
+- Create and organize video projects through chat and a visual node canvas.
+- Turn requests into editable `text`, `image`, `video`, and `audio` nodes.
+- Edit prompts, references, generated outputs, and node history from the workspace.
+- Configure LLM and media providers at runtime.
+- Run as a web app, Linux server deployment, or packaged desktop app.
 - Store project data locally by default with SQLite and filesystem-backed media storage.
 
 ## Architecture
@@ -43,20 +41,9 @@ openreel-studio/
 | Layer | Stack |
 | --- | --- |
 | Frontend | Next.js, React, TypeScript, React Flow, Tailwind CSS, Zustand |
-| Backend | FastAPI, SQLite, SQLModel, LiteLLM, MCP-style tool registry |
+| Backend | FastAPI, SQLite, SQLModel, LiteLLM, agent orchestration |
 | Desktop | Electron, PyInstaller, Next.js standalone output |
 | Runtime | Local filesystem storage, SSE streaming, provider-based media generation |
-
-## Agent Workflow
-
-OpenReel Studio uses a node-first agent model. The canvas is the source of truth, and all creative state is represented by user-visible nodes.
-
-- `text` nodes store briefs, scripts, structure notes, reviews, and prompt notes.
-- `image` nodes store visual references, characters, scenes, storyboards, first/last frames, and generated images.
-- `video` nodes store video prompts, references, status, generated outputs, and generation history.
-- `audio` nodes store audio prompts and outputs such as speech, music, or sound design.
-
-When the agent needs to find existing work, it first narrows candidates with `node.list(query|regex)`. If nothing matches, it falls back to `node.list(limit=0)` to inspect the full index, then reads exact details with `node.get(node_ids=[...])`. This keeps edits tied to real node IDs while avoiding unnecessary full-canvas reads.
 
 ## Requirements
 
@@ -268,19 +255,17 @@ MIT. See [LICENSE](./LICENSE).
 
 # 中文
 
-OpenReel Studio 是一个聊天式创意生产工作台，用于规划、生成、修改和审查视频项目。它将对话式 Agent、节点优先画布、可配置媒体模型 provider，以及 Windows、Linux、macOS 三平台桌面打包能力整合在同一个工作流中。
+OpenReel Studio 是一个聊天式视频创作工作台，用于规划、生成、修改和审查视频项目。它将对话式 Agent、可视化画布、可配置媒体模型 provider，以及 Windows、Linux、macOS 三平台桌面打包能力整合在同一个工作流中。
 
 项目处于持续开发阶段。公开接口、provider 适配和打包行为可能随版本迭代调整。
 
 ## 核心能力
 
-- 将自然语言创作请求转换为可编辑的 `text`、`image`、`video`、`audio` 节点。
-- 使用 React Flow 画布作为用户可见的创作真相源。
-- 优先复用和修改现有画布节点，避免重复创建。
-- 通过模糊查询或正则查询定位已有节点，再读取精确节点详情进行安全更新。
-- 通过本地 FastAPI 后端管理项目状态、任务、节点、媒体产物和 Agent trace。
-- 支持运行时配置 LLM、图片、视频和音频模型 provider。
-- 使用 Electron、Next.js standalone、FastAPI 和 PyInstaller 构建 Windows、Linux、macOS 桌面包。
+- 通过聊天和可视化节点画布创建、组织视频项目。
+- 将创作请求转换为可编辑的 `text`、`image`、`video`、`audio` 节点。
+- 在工作台中修改提示词、参考图、生成结果和节点历史。
+- 支持运行时配置 LLM 和媒体模型 provider。
+- 支持 Web 应用、Linux 服务器部署和桌面端打包。
 - 默认使用 SQLite 和本地文件系统存储项目数据。
 
 ## 架构
@@ -304,20 +289,9 @@ openreel-studio/
 | 层 | 技术 |
 | --- | --- |
 | 前端 | Next.js、React、TypeScript、React Flow、Tailwind CSS、Zustand |
-| 后端 | FastAPI、SQLite、SQLModel、LiteLLM、MCP 风格工具注册表 |
+| 后端 | FastAPI、SQLite、SQLModel、LiteLLM、Agent 工具编排 |
 | 桌面端 | Electron、PyInstaller、Next.js standalone 输出 |
 | 运行时 | 本地文件存储、SSE 流式通信、可配置媒体生成 provider |
-
-## Agent 工作流
-
-OpenReel Studio 使用节点优先的 Agent 模型。画布是创作真相源，所有创作状态都通过用户可见节点表达。
-
-- `text` 节点存放 brief、脚本、结构说明、审查结果和 prompt notes。
-- `image` 节点存放视觉参考、人物、场景、分镜、首尾帧和生成图片。
-- `video` 节点存放视频提示词、参考关系、状态、生成结果和生成历史。
-- `audio` 节点存放语音、音乐、音效等纯音频提示词和产物。
-
-当 Agent 需要查找已有内容时，会先使用 `node.list(query|regex)` 缩小候选范围。没有命中时，再使用 `node.list(limit=0)` 读取完整索引，最后通过 `node.get(node_ids=[...])` 批量读取精确详情。这样既能避免无意义地读取整个画布，也能确保后续修改始终绑定真实节点 ID。
 
 ## 环境要求
 
