@@ -1,7 +1,7 @@
-"""Media Provider MCP Tools — manage image/video provider configurations.
+"""Media Provider MCP Tools — manage image/video/audio provider configurations.
 
 Users configure one or more providers (base_url + api_key + model_name) per
-kind (image / video). Exactly one provider per kind can be 'active' at a time;
+kind (image / video / audio). Exactly one provider per kind can be 'active' at a time;
 generate tools use the active provider by default or accept an explicit model
 name to pick a specific one.
 """
@@ -18,7 +18,8 @@ from app.db.session import session_scope
 from app.services.media_provider import test_provider as _test_provider
 
 
-_MEDIA_API_FORMATS = {"openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5"}
+_MEDIA_API_FORMATS = {"openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "suno_compatible"}
+_MEDIA_KINDS = {"image", "video", "audio"}
 
 
 def _provider_to_dict(p: MediaProvider) -> dict[str, Any]:
@@ -38,7 +39,7 @@ def _provider_to_dict(p: MediaProvider) -> dict[str, Any]:
 
 
 async def media_list_providers(kind: str | None = None) -> dict[str, Any]:
-    """List all configured media providers, optionally filtered by kind (image/video)."""
+    """List all configured media providers, optionally filtered by kind (image/video/audio)."""
     async with session_scope() as session:
         q = select(MediaProvider).where(MediaProvider.enabled == True)
         if kind:
@@ -62,19 +63,19 @@ async def media_add_provider(
     notes: str | None = None,
     params: dict | None = None,
 ) -> dict[str, Any]:
-    """Add a new image or video provider.
+    """Add a new image, video, or audio provider.
 
-    kind: 'image' or 'video'
+    kind: 'image', 'video', or 'audio'
     name: short identifier you'll reference in generate calls (e.g. 'flux-pro', 'sdxl')
     base_url: API base, e.g. 'https://api.siliconflow.cn' (no trailing /v1)
     api_key: provider API key
     model_name: model identifier sent to the API
-    api_format: 'openai' (default image format), 'raw'/'raw_post', 'volcengine_ark', 'xai_video', or 'grok_1_5'
+    api_format: 'openai' (default image format), 'raw'/'raw_post', 'volcengine_ark', 'xai_video', 'grok_1_5', or 'suno_compatible'
     set_active: if True, mark this as the active provider for this kind
     params: extra default parameters (size, quality, steps, etc.)
     """
-    if kind not in ("image", "video"):
-        return {"ok": False, "error": "kind must be 'image' or 'video'"}
+    if kind not in _MEDIA_KINDS:
+        return {"ok": False, "error": "kind must be 'image', 'video', or 'audio'"}
     if api_format not in _MEDIA_API_FORMATS:
         return {"ok": False, "error": f"api_format must be one of {sorted(_MEDIA_API_FORMATS)}"}
 
@@ -203,7 +204,7 @@ async def media_test_provider(provider_id: str) -> dict[str, Any]:
 
 
 async def media_get_active(kind: str) -> dict[str, Any]:
-    """Get the currently active provider for a kind (image/video)."""
+    """Get the currently active provider for a kind (image/video/audio)."""
     async with session_scope() as session:
         result = await session.exec(
             select(MediaProvider)

@@ -16,8 +16,10 @@ from app.db.models import Asset
 from app.db.session import session_scope
 from app.mcp_tools.shot_tools import register_asset
 from app.services.media_provider import (
+    generate_audio_with_provider,
     generate_image_with_provider,
     generate_video_with_provider,
+    poll_audio_with_provider,
     poll_video_with_provider,
 )
 from app.services import media_history
@@ -26,6 +28,7 @@ from app.services import media_history
 _MAX_N = 10
 logger = logging.getLogger(__name__)
 _BACKGROUND_VIDEO_TASKS: set[asyncio.Task] = set()
+_BACKGROUND_AUDIO_TASKS: set[asyncio.Task] = set()
 
 
 def _validate_n(n: int) -> int | None:
@@ -604,6 +607,305 @@ async def generate_video(
         aspect_ratio=aspect_ratio,
         resolution=resolution,
         reference_images=refs_provided,
+    )
+
+
+def _audio_display_url(result: dict[str, Any]) -> str | None:
+    return result.get("local_url") or result.get("remote_url") or result.get("url")
+
+
+def _audio_output(
+    result: dict[str, Any],
+    *,
+    asset_id: str | None,
+    asset_ids: list[str] | None,
+    prompt: str,
+    title: str | None,
+    style: str | None,
+    instrumental: bool | None,
+    duration_seconds: int | None,
+    audio_format: str | None,
+) -> dict[str, Any]:
+    ok = bool(result.get("ok"))
+    status = result.get("status") or ("completed" if ok else "failed")
+    audios = result.get("audios") if isinstance(result.get("audios"), list) else []
+    return {
+        "ok": ok,
+        "type": "audio",
+        "asset_id": asset_id,
+        "asset_ids": asset_ids or ([asset_id] if asset_id else []),
+        "status": status,
+        "prompt": prompt,
+        "title": title,
+        "style": style,
+        "instrumental": instrumental,
+        "duration_seconds": result.get("duration") or duration_seconds,
+        "format": audio_format,
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "job_id": result.get("job_id"),
+        "url": _audio_display_url(result),
+        "local_url": result.get("local_url"),
+        "local_path": result.get("local_path"),
+        "remote_url": result.get("remote_url"),
+        "stream_audio_url": result.get("stream_audio_url"),
+        "source_audio_url": result.get("source_audio_url"),
+        "image_url": result.get("image_url"),
+        "mime_type": result.get("mime_type"),
+        "audios": audios,
+        "error": result.get("error"),
+        "error_kind": result.get("error_kind"),
+        "provider_msg": result.get("provider_msg"),
+        "progress": result.get("progress"),
+        "polls": result.get("polls") or [],
+        "download_error": result.get("download_error"),
+        "async": status in {"queued", "running"},
+    }
+
+
+async def _register_audio_asset(
+    *,
+    project_id: str,
+    prompt: str,
+    node_id: str | None,
+    model: str | None,
+    result: dict[str, Any],
+    title: str | None,
+    style: str | None,
+    instrumental: bool | None,
+    duration_seconds: int | None,
+    audio_format: str | None,
+) -> str:
+    display_url = _audio_display_url(result)
+    local_path = result.get("local_path")
+    mime_type = (result.get("mime_type") or "audio/mpeg") if (display_url or local_path) else None
+    asset = await register_asset(
+        project_id=project_id,
+        asset_type="audio",
+        name=f"audio-{uuid.uuid4().hex[:8]}",
+        prompt=prompt,
+        model_name=result.get("model") or model or "audio",
+        metadata={
+            "title": title,
+            "style": style,
+            "instrumental": instrumental,
+            "duration_seconds": result.get("duration") or duration_seconds,
+            "format": audio_format,
+            "url": display_url,
+            "local_url": result.get("local_url"),
+            "local_path": local_path,
+            "remote_url": result.get("remote_url"),
+            "stream_audio_url": result.get("stream_audio_url"),
+            "source_audio_url": result.get("source_audio_url"),
+            "image_url": result.get("image_url"),
+            "status": result.get("status") or ("completed" if result.get("ok") else "failed"),
+            "provider": result.get("provider"),
+            "model": result.get("model") or model,
+            "job_id": result.get("job_id"),
+            "error": result.get("error"),
+            "error_kind": result.get("error_kind"),
+            "provider_msg": result.get("provider_msg"),
+            "progress": result.get("progress"),
+            "polls": result.get("polls") or [],
+            "download_error": result.get("download_error"),
+            "audios": result.get("audios") if isinstance(result.get("audios"), list) else [],
+        },
+        node_id=node_id,
+        url=display_url,
+        path=local_path,
+        mime_type=mime_type,
+    )
+    return asset["id"]
+
+
+async def _background_audio_poll(
+    *,
+    project_id: str,
+    prompt: str,
+    node_id: str | None,
+    model: str | None,
+    queued_result: dict[str, Any],
+    title: str | None,
+    style: str | None,
+    instrumental: bool | None,
+    duration_seconds: int | None,
+    audio_format: str | None,
+    provider_extra: dict[str, Any],
+    record_asset: bool,
+) -> None:
+    from app.agent.orchestrator import emit_canvas_event
+    from app.mcp_tools import canvas_tools
+
+    job_id = str(queued_result.get("job_id") or "").strip()
+    if not job_id:
+        return
+    result = await poll_audio_with_provider(
+        project_id=project_id,
+        job_id=job_id,
+        model_name=queued_result.get("provider") or model,
+        extra=provider_extra,
+        save_locally=True,
+    )
+
+    asset_id = None
+    if record_asset:
+        asset_id = await _register_audio_asset(
+            project_id=project_id,
+            prompt=prompt,
+            node_id=node_id,
+            model=model,
+            result=result,
+            title=title,
+            style=style,
+            instrumental=instrumental,
+            duration_seconds=duration_seconds,
+            audio_format=audio_format,
+        )
+
+    output = _audio_output(
+        result,
+        asset_id=asset_id,
+        asset_ids=[asset_id] if asset_id else [],
+        prompt=prompt,
+        title=title,
+        style=style,
+        instrumental=instrumental,
+        duration_seconds=duration_seconds,
+        audio_format=audio_format,
+    )
+    if node_id:
+        try:
+            current_node = await canvas_tools.get_node(node_id)
+            output = media_history.preserve_media_history(output, current_node.get("output"))
+        except Exception:
+            logger.exception("preserve audio history failed node_id=%s job_id=%s", node_id, job_id)
+    next_status = "completed" if result.get("ok") else "failed"
+    if node_id:
+        try:
+            await canvas_tools.update_node(
+                node_id,
+                {
+                    "status": next_status,
+                    "error_message": None if result.get("ok") else result.get("error"),
+                    "output_data": output,
+                },
+            )
+            await emit_canvas_event(
+                {
+                    "type": "canvas_action",
+                    "action": "update_node",
+                    "payload": {
+                        "id": node_id,
+                        "status": next_status,
+                        "error": result.get("error"),
+                        "error_message": result.get("error"),
+                        "output": output,
+                    },
+                },
+                project_id=project_id,
+            )
+        except Exception:
+            logger.exception("background audio node update failed node_id=%s job_id=%s", node_id, job_id)
+
+
+def _schedule_background_audio_poll(**kwargs: Any) -> None:
+    task = asyncio.create_task(_background_audio_poll(**kwargs))
+    _BACKGROUND_AUDIO_TASKS.add(task)
+
+    def _done(done: asyncio.Task) -> None:
+        _BACKGROUND_AUDIO_TASKS.discard(done)
+        try:
+            done.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("background audio poll task failed")
+
+    task.add_done_callback(_done)
+
+
+async def generate_audio(
+    project_id: str,
+    prompt: str,
+    node_id: str | None = None,
+    model: str | None = None,
+    title: str | None = None,
+    style: str | None = None,
+    instrumental: bool | None = None,
+    duration_seconds: int | None = None,
+    audio_format: str | None = None,
+    extra: dict[str, Any] | None = None,
+    record_asset: bool = False,
+) -> dict:
+    """Delegate pure audio generation to the active audio provider."""
+    provider_extra = dict(extra or {})
+    result = await generate_audio_with_provider(
+        project_id=project_id,
+        prompt=prompt,
+        title=title,
+        style=style,
+        instrumental=instrumental,
+        model_name=model,
+        extra=provider_extra,
+        save_locally=True,
+        wait_for_completion=False,
+    )
+
+    ok = bool(result.get("ok"))
+    status = result.get("status") or ("completed" if ok else "failed")
+    async_status = status in {"queued", "running"} and result.get("job_id")
+
+    if result.get("ok") and async_status:
+        _schedule_background_audio_poll(
+            project_id=project_id,
+            prompt=prompt,
+            node_id=node_id,
+            model=model,
+            queued_result=result,
+            title=title,
+            style=style,
+            instrumental=instrumental,
+            duration_seconds=duration_seconds,
+            audio_format=audio_format,
+            provider_extra=provider_extra,
+            record_asset=record_asset,
+        )
+        return _audio_output(
+            result,
+            asset_id=None,
+            asset_ids=[],
+            prompt=prompt,
+            title=title,
+            style=style,
+            instrumental=instrumental,
+            duration_seconds=duration_seconds,
+            audio_format=audio_format,
+        )
+
+    asset_id = None
+    if record_asset:
+        asset_id = await _register_audio_asset(
+            project_id=project_id,
+            prompt=prompt,
+            node_id=node_id,
+            model=model,
+            result=result,
+            title=title,
+            style=style,
+            instrumental=instrumental,
+            duration_seconds=duration_seconds,
+            audio_format=audio_format,
+        )
+    return _audio_output(
+        result,
+        asset_id=asset_id,
+        asset_ids=[asset_id] if asset_id else [],
+        prompt=prompt,
+        title=title,
+        style=style,
+        instrumental=instrumental,
+        duration_seconds=duration_seconds,
+        audio_format=audio_format,
     )
 
 

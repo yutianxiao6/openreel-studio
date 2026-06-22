@@ -20,8 +20,9 @@ def test_public_node_types_are_generic_only():
 
 
 @pytest.mark.asyncio
-async def test_audio_node_run_reports_unavailable_until_model_adapter_exists(monkeypatch):
+async def test_audio_node_run_uses_audio_generation_service(monkeypatch):
     updates: list[dict] = []
+    captured: dict = {}
 
     async def fake_get_node(node_id: str):
         return {
@@ -37,13 +38,28 @@ async def test_audio_node_run_reports_unavailable_until_model_adapter_exists(mon
         updates.append(patch)
         return {"id": node_id, **patch}
 
+    async def fake_generate_audio(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": False,
+            "type": "audio",
+            "status": "failed",
+            "error": "No active audio provider configured.",
+            "error_kind": "bad_config",
+        }
+
     monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
     monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+    monkeypatch.setattr(node_universal.media_generation, "generate_audio", fake_generate_audio)
 
     result = await node_universal.node_run(project_id="proj-1", node_id="audio-1")
 
     assert result["ok"] is False
-    assert result["error_kind"] == "audio_generation_unavailable"
+    assert result["error_kind"] == "bad_config"
+    assert captured["project_id"] == "proj-1"
+    assert captured["node_id"] == "audio-1"
+    assert captured["prompt"] == "一段安静的纯音频氛围"
+    assert captured["record_asset"] is True
     assert updates[0] == {"status": "running", "error_message": None}
     assert updates[-1]["status"] == "failed"
 
@@ -481,6 +497,53 @@ def test_media_provider_schema_accepts_grok_1_5_video_format():
     assert entry.api_format == "grok_1_5"
 
 
+def test_media_provider_schema_accepts_suno_compatible_audio_format():
+    entry = MediaProviderEntry(
+        kind="audio",
+        name="suno-compatible",
+        base_url="https://audio.example",
+        api_key="audio-key",
+        model_name="V5",
+        api_format="suno_compatible",
+    )
+
+    assert entry.kind == "audio"
+    assert entry.api_format == "suno_compatible"
+
+
+def test_suno_audio_response_parser_handles_nested_audio_object():
+    items = media_provider._collect_suno_audio_items({
+        "code": 200,
+        "data": {
+            "status": "SUCCESS",
+            "response": {
+                "sunoData": [
+                    {
+                        "id": "song-1",
+                        "title": "Theme",
+                        "audio": {"audioUrl": "https://example.com/theme.mp3"},
+                        "imageUrl": "https://example.com/theme.png",
+                    }
+                ]
+            },
+        },
+    })
+
+    assert items == [
+        {
+            "id": "song-1",
+            "title": "Theme",
+            "url": "https://example.com/theme.mp3",
+            "remote_url": "https://example.com/theme.mp3",
+            "source_audio_url": None,
+            "stream_audio_url": None,
+            "image_url": "https://example.com/theme.png",
+            "duration_seconds": None,
+            "tags": None,
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_node_create_rejects_legacy_type_before_side_effects():
     result = await node_universal.node_create(
@@ -853,6 +916,48 @@ async def test_media_generation_video_queues_background_poll(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_media_generation_audio_queues_background_poll(monkeypatch):
+    captured: dict = {}
+
+    async def fake_generate_audio_with_provider(**kwargs):
+        captured["provider"] = kwargs
+        return {
+            "ok": True,
+            "provider": "suno-audio",
+            "model": "V5",
+            "status": "queued",
+            "job_id": "audio-task-1",
+        }
+
+    def fake_schedule_background_audio_poll(**kwargs):
+        captured["background"] = kwargs
+
+    monkeypatch.setattr(media_generation, "generate_audio_with_provider", fake_generate_audio_with_provider)
+    monkeypatch.setattr(media_generation, "_schedule_background_audio_poll", fake_schedule_background_audio_poll)
+
+    result = await media_generation.generate_audio(
+        project_id="proj-1",
+        prompt="quiet piano theme",
+        node_id="audio-1",
+        model="suno-audio",
+        title="Quiet Theme",
+        style="ambient piano",
+        instrumental=True,
+        record_asset=True,
+    )
+
+    assert captured["provider"]["wait_for_completion"] is False
+    assert captured["provider"]["instrumental"] is True
+    assert captured["background"]["node_id"] == "audio-1"
+    assert captured["background"]["record_asset"] is True
+    assert captured["background"]["queued_result"]["job_id"] == "audio-task-1"
+    assert result["ok"] is True
+    assert result["status"] == "queued"
+    assert result["async"] is True
+    assert result["job_id"] == "audio-task-1"
+
+
+@pytest.mark.asyncio
 async def test_node_run_video_queue_keeps_node_running(monkeypatch):
     updates: list[dict] = []
 
@@ -892,6 +997,48 @@ async def test_node_run_video_queue_keeps_node_running(monkeypatch):
     assert updates[0] == {"status": "running", "error_message": None}
     assert updates[-1]["status"] == "running"
     assert updates[-1]["output_data"]["job_id"] == "ark-task-1"
+
+
+@pytest.mark.asyncio
+async def test_node_run_audio_queue_keeps_node_running(monkeypatch):
+    updates: list[dict] = []
+
+    async def fake_get_node(node_id: str):
+        return {
+            "id": node_id,
+            "project_id": "proj-1",
+            "type": "audio",
+            "status": "idle",
+            "title": "音频",
+            "prompt": "audio prompt",
+            "input": {"prompt": "audio prompt", "style": "ambient", "instrumental": True},
+        }
+
+    async def fake_update_node(node_id: str, patch: dict):
+        updates.append(patch)
+        return {"id": node_id, **patch}
+
+    async def fake_audio_runner(project_id: str, node_id: str, fields: dict):
+        return {
+            "ok": True,
+            "type": "audio",
+            "status": "queued",
+            "job_id": "audio-task-1",
+            "provider": "suno-audio",
+        }
+
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+    monkeypatch.setitem(node_universal._RUNNERS, "audio", fake_audio_runner)
+
+    result = await node_universal.node_run(project_id="proj-1", node_id="audio-1")
+
+    assert result["ok"] is True
+    assert result["async"] is True
+    assert result["status"] == "queued"
+    assert updates[0] == {"status": "running", "error_message": None}
+    assert updates[-1]["status"] == "running"
+    assert updates[-1]["output_data"]["job_id"] == "audio-task-1"
 
 
 @pytest.mark.asyncio

@@ -1409,7 +1409,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
       description=(
         "创建一个或少量 text/image/video/audio 工程节点。制作流程由 active skill 或用户目标指导；"
         "text 节点正文需要模型写进 fields.content；image/video/audio prompt 需要模型显式写入；"
-        "image/video 的 duration、aspect、production_path 等制作参数也写进 fields。"
+        "image/video/audio 的 duration、aspect、style、production_path 等制作参数也写进 fields。"
         "批量搭框架或少量低风险节点可传 nodes；复杂媒体提示词或大量节点要分批。"
         "parent_node_id 只做画布分组；上游节点、资产或 URL 统一写 fields.references，"
         "role=visual_reference 表示参考生成，role=source_image 表示 image 节点直接采用该图作为输出。"

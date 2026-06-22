@@ -454,21 +454,21 @@ class ModelConfigRead(ModelConfigBase):
 
 
 # ---------------------------------------------------------------------------
-# media_providers — user-configured image/video model endpoints
+# media_providers — user-configured image/video/audio model endpoints
 # Multiple per kind; exactly one (or zero) is_active per kind.
 # ---------------------------------------------------------------------------
 
-MEDIA_KINDS = ["image", "video"]
-MEDIA_API_FORMATS = ["openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5"]
+MEDIA_KINDS = ["image", "video", "audio"]
+MEDIA_API_FORMATS = ["openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "suno_compatible"]
 
 
 class MediaProviderBase(SQLModel):
-    kind: str = Field(index=True)            # image | video
+    kind: str = Field(index=True)            # image | video | audio
     name: str = Field(index=True)            # user-supplied label, e.g. "fal-flux-pro"
     base_url: str
     api_key: Optional[str] = None
     model_name: str                          # model id sent in payload
-    api_format: str = "openai"               # openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5
+    api_format: str = "openai"               # openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5 | suno_compatible
     params_json: Optional[str] = None        # default extra params JSON (size, steps, etc.)
     is_active: bool = False
     enabled: bool = True

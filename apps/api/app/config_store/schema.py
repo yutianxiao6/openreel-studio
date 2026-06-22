@@ -77,16 +77,16 @@ class LlmProviderEntry(BaseModel):
 
 
 class MediaProviderEntry(BaseModel):
-    """单个图片/视频 provider，对应 media_providers 表一行。"""
+    """单个图片/视频/音频 provider，对应 media_providers 表一行。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: str = Field(..., description="image | video")
+    kind: str = Field(..., description="image | video | audio")
     name: str = Field(..., min_length=1, max_length=64)
     base_url: str = Field(..., min_length=1)
     api_key: Optional[str] = None
     model_name: str = Field(..., min_length=1)
-    api_format: str = Field("openai", description="openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5")
+    api_format: str = Field("openai", description="openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5 | suno_compatible")
     is_active: bool = False
     enabled: bool = True
     notes: Optional[str] = None
@@ -95,16 +95,16 @@ class MediaProviderEntry(BaseModel):
     @field_validator("kind")
     @classmethod
     def _valid_kind(cls, v: str) -> str:
-        if v not in ("image", "video"):
-            raise ValueError(f"kind must be 'image' or 'video', got {v!r}")
+        if v not in ("image", "video", "audio"):
+            raise ValueError(f"kind must be 'image', 'video', or 'audio', got {v!r}")
         return v
 
     @field_validator("api_format")
     @classmethod
     def _valid_api_format(cls, v: str) -> str:
-        if v not in ("openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5"):
+        if v not in ("openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "suno_compatible"):
             raise ValueError(
-                "api_format must be 'openai', 'raw', 'raw_post', 'volcengine_ark', 'xai_video', or 'grok_1_5', "
+                "api_format must be 'openai', 'raw', 'raw_post', 'volcengine_ark', 'xai_video', 'grok_1_5', or 'suno_compatible', "
                 f"got {v!r}"
             )
         return v
@@ -182,7 +182,7 @@ class RuntimeConfig(BaseModel):
             media_seen.add(key)
 
         # 4. 同 kind 内 is_active 至多 1 条
-        for kind in ("image", "video"):
+        for kind in ("image", "video", "audio"):
             actives = [m.name for m in self.media_providers if m.kind == kind and m.is_active]
             if len(actives) > 1:
                 raise ValueError(

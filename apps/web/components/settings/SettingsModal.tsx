@@ -35,7 +35,7 @@ export interface LlmProviderEntry {
 }
 
 export interface MediaProviderEntry {
-  kind: "image" | "video"
+  kind: "image" | "video" | "audio"
   name: string
   base_url: string
   api_key: string | null
@@ -47,7 +47,7 @@ export interface MediaProviderEntry {
   params: Record<string, unknown>
 }
 
-export type TabKey = "llm" | "image" | "video" | "agent" | "debug" | "raw"
+export type TabKey = "llm" | "image" | "video" | "audio" | "agent" | "debug" | "raw"
 
 export interface ConfigContext {
   config: RuntimeConfig
@@ -123,10 +123,12 @@ export function SettingsModal({ open, onClose }: Props) {
 
   const imageCount = config?.media_providers.filter((p) => p.kind === "image").length ?? 0
   const videoCount = config?.media_providers.filter((p) => p.kind === "video").length ?? 0
+  const audioCount = config?.media_providers.filter((p) => p.kind === "audio").length ?? 0
   const tabs: Array<{ key: TabKey; label: string; count?: number }> = [
     { key: "llm", label: "LLM 模型", count: config?.llm_providers.length },
     { key: "image", label: "图片 Provider", count: imageCount },
     { key: "video", label: "视频 Provider", count: videoCount },
+    { key: "audio", label: "音频 Provider", count: audioCount },
     { key: "agent", label: "Agent 行为", count: Object.keys(config?.app_settings ?? {}).length },
     { key: "debug", label: "Agent 诊断" },
     { key: "raw", label: "原始文件" },
@@ -197,6 +199,7 @@ export function SettingsModal({ open, onClose }: Props) {
           {ctx && tab === "llm" && <LlmTab ctx={ctx} />}
           {ctx && tab === "image" && <MediaTab ctx={ctx} kind="image" />}
           {ctx && tab === "video" && <MediaTab ctx={ctx} kind="video" />}
+          {ctx && tab === "audio" && <MediaTab ctx={ctx} kind="audio" />}
           {ctx && tab === "agent" && <AgentTab ctx={ctx} />}
           {tab === "debug" && <AgentDebugTab />}
           {ctx && tab === "raw" && <RawFileTab onSaved={refresh} />}

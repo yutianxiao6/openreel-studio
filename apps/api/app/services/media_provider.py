@@ -9,12 +9,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import mimetypes
 import os
 import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from sqlmodel import select
@@ -48,6 +50,18 @@ def _media_video_timeout() -> httpx.Timeout:
     return httpx.Timeout(seconds, connect=connect_seconds)
 
 
+def _media_audio_timeout() -> httpx.Timeout:
+    try:
+        seconds = max(
+            120.0,
+            float(os.getenv("DRAMA_AUDIO_PROVIDER_TIMEOUT_SECONDS", "600") or "600"),
+        )
+    except (TypeError, ValueError):
+        seconds = 600.0
+    connect_seconds = min(60.0, seconds)
+    return httpx.Timeout(seconds, connect=connect_seconds)
+
+
 def _storage_path(project_id: str, filename: str) -> Path:
     base = Path(getattr(settings, "STORAGE_DIR", "./storage"))
     d = base / project_id / "generated_images"
@@ -62,13 +76,20 @@ def _storage_video_path(project_id: str, filename: str) -> Path:
     return d / filename
 
 
+def _storage_audio_path(project_id: str, filename: str) -> Path:
+    base = Path(getattr(settings, "STORAGE_DIR", "./storage"))
+    d = base / project_id / "generated_audio"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / filename
+
+
 def _project_media_path_from_url(project_id: str, url: str | None) -> str | None:
     text = str(url or "").strip()
     prefix = f"/api/media/{project_id}/"
     if not text.startswith(prefix):
         return None
     filename = text[len(prefix):].lstrip("/")
-    if filename.startswith(("generated_images/", "generated_videos/")):
+    if filename.startswith(("generated_images/", "generated_videos/", "generated_audio/")):
         rel_paths = [filename]
     else:
         rel_paths = [f"generated_images/{filename}"]
@@ -382,6 +403,30 @@ _XAI_VIDEO_RESOLUTIONS = {"480p", "720p"}
 _GROK_1_5_VIDEO_RESOLUTIONS = {"480p", "720p"}
 _VIDEO_RESOLUTION_ORDER = {"480p": 0, "720p": 1, "1080p": 2, "2k": 3, "4k": 4}
 _VIDEO_MODEL_CALLING_DOC = "apps/api/app/skills/video_production/VIDEO_MODEL_CALLING.md"
+_SUNO_COMPATIBLE_FORMATS = {"suno_compatible", "suno", "suno_api"}
+_SUNO_DONE_STATUSES = {"success", "succeeded", "completed", "complete", "done"}
+_SUNO_FAILED_STATUSES = {
+    "failed",
+    "failure",
+    "error",
+    "cancelled",
+    "canceled",
+    "expired",
+    "create_task_failed",
+    "generate_audio_failed",
+    "submit_failed",
+}
+_SUNO_RUNNING_STATUSES = {
+    "pending",
+    "queued",
+    "running",
+    "processing",
+    "in_progress",
+    "submitted",
+    "created",
+    "text_success",
+    "first_success",
+}
 
 
 def _video_model_calling_doc_hint() -> str:
@@ -464,6 +509,11 @@ def _is_grok_1_5_video_provider(provider: MediaProvider) -> bool:
     return fmt in _GROK_1_5_VIDEO_FORMATS
 
 
+def _is_suno_compatible_audio_provider(provider: MediaProvider) -> bool:
+    fmt = _normalized_api_format(provider)
+    return fmt in _SUNO_COMPATIBLE_FORMATS
+
+
 def _ark_video_tasks_endpoint(base_url: str | None) -> str:
     base = str(base_url or _ARK_DEFAULT_BASE_URL).strip().rstrip("/")
     if not base:
@@ -515,6 +565,28 @@ def _grok_1_5_video_endpoint(base_url: str | None) -> str:
 
 def _grok_1_5_video_query_endpoint(base_url: str | None, request_id: str) -> str:
     return f"{_grok_1_5_video_api_base(base_url)}/videos/{request_id}"
+
+
+def _suno_generate_endpoint(base_url: str | None) -> str:
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/generate"):
+        return base
+    if base.endswith("/api/v1"):
+        return base + "/generate"
+    return base + "/api/v1/generate"
+
+
+def _suno_record_info_endpoint(base_url: str | None, task_id: str) -> str:
+    base = str(base_url or "").strip().rstrip("/")
+    if base.endswith("/generate"):
+        api_base = base[: -len("/generate")]
+    elif base.endswith("/api/v1"):
+        api_base = base
+    else:
+        api_base = base + "/api/v1"
+    return f"{api_base}/generate/record-info?{urlencode({'taskId': task_id})}"
 
 
 def _coerce_bool(value: Any) -> bool | None:
@@ -990,6 +1062,200 @@ async def _download_video_result(project_id: str, remote_url: str) -> dict[str, 
     }
 
 
+def _audio_suffix(remote_url: str, content_type: str | None = None) -> str:
+    parsed_suffix = Path(urlparse(remote_url).path).suffix.lower()
+    if parsed_suffix in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}:
+        return parsed_suffix
+    mime = str(content_type or "").split(";", 1)[0].strip().lower()
+    mapped = mimetypes.guess_extension(mime or "")
+    if mapped in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}:
+        return mapped
+    if mime == "audio/mpeg":
+        return ".mp3"
+    return ".mp3"
+
+
+async def _download_audio_result(project_id: str, remote_url: str) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=_media_audio_timeout()) as client:
+            resp = await client.get(remote_url)
+        if resp.status_code != 200:
+            return {"download_error": f"下载音频失败: HTTP {resp.status_code}"}
+        content_type = resp.headers.get("content-type")
+        suffix = _audio_suffix(remote_url, content_type)
+        filename = f"{uuid.uuid4().hex[:12]}{suffix}"
+        dest = _storage_audio_path(project_id, filename)
+        dest.write_bytes(resp.content)
+    except Exception as exc:
+        return {"download_error": f"下载音频失败: {exc}"}
+    return {
+        "local_path": str(dest),
+        "local_url": f"/api/media/{project_id}/generated_audio/{filename}",
+        "mime_type": str(content_type or "").split(";", 1)[0].strip() or None,
+    }
+
+
+def _first_text(*values: Any) -> str | None:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _suno_payload_data(data: dict[str, Any]) -> dict[str, Any]:
+    nested = data.get("data")
+    return nested if isinstance(nested, dict) else data
+
+
+def _suno_response_success(data: dict[str, Any]) -> bool:
+    code = data.get("code")
+    if code is None:
+        return True
+    return str(code).strip().lower() in {"0", "200", "success"}
+
+
+def _extract_suno_task_id(data: dict[str, Any]) -> str | None:
+    payload = _suno_payload_data(data)
+    return _first_text(
+        payload.get("taskId"),
+        payload.get("task_id"),
+        payload.get("id"),
+        payload.get("job_id"),
+        data.get("taskId"),
+        data.get("task_id"),
+        data.get("id"),
+        data.get("job_id"),
+    )
+
+
+def _suno_status(data: dict[str, Any], fallback: str = "queued") -> str:
+    payload = _suno_payload_data(data)
+    response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+    status = _first_text(
+        payload.get("status"),
+        payload.get("state"),
+        payload.get("taskStatus"),
+        payload.get("task_status"),
+        response.get("status") if isinstance(response, dict) else None,
+        data.get("status"),
+        data.get("state"),
+    )
+    return str(status or fallback).strip().lower()
+
+
+def _suno_provider_message(data: dict[str, Any]) -> str:
+    payload = _suno_payload_data(data)
+    err = payload.get("error") or data.get("error")
+    if isinstance(err, dict):
+        return str(err.get("message") or err.get("error") or err)
+    if err:
+        return str(err)
+    for obj in (payload, data):
+        for key in ("message", "msg", "reason", "detail"):
+            value = obj.get(key) if isinstance(obj, dict) else None
+            if value:
+                return str(value)
+    return "音频生成任务失败"
+
+
+def _audio_url_from_item(item: dict[str, Any]) -> str | None:
+    return _first_text(
+        item.get("audioUrl"),
+        item.get("audio_url"),
+        item.get("sourceAudioUrl"),
+        item.get("source_audio_url"),
+        item.get("streamAudioUrl"),
+        item.get("stream_audio_url"),
+        item.get("url"),
+        item.get("mp3_url"),
+        item.get("wav_url"),
+    )
+
+
+def _normalize_suno_audio_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    remote_url = _audio_url_from_item(item)
+    if not remote_url:
+        audio = item.get("audio") if isinstance(item.get("audio"), dict) else {}
+        remote_url = _audio_url_from_item(audio)
+    if not remote_url:
+        return None
+    return {
+        "id": item.get("id") or item.get("audioId") or item.get("audio_id"),
+        "title": item.get("title") or item.get("name"),
+        "url": remote_url,
+        "remote_url": remote_url,
+        "source_audio_url": item.get("sourceAudioUrl") or item.get("source_audio_url"),
+        "stream_audio_url": item.get("streamAudioUrl") or item.get("stream_audio_url"),
+        "image_url": item.get("imageUrl") or item.get("image_url") or item.get("coverUrl") or item.get("cover_url"),
+        "duration_seconds": item.get("duration") or item.get("duration_seconds"),
+        "tags": item.get("tags"),
+    }
+
+
+def _collect_suno_audio_items(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        out: list[dict[str, Any]] = []
+        for item in value:
+            out.extend(_collect_suno_audio_items(item))
+        return out
+    if not isinstance(value, dict):
+        return []
+
+    current = _normalize_suno_audio_item(value)
+    if current:
+        return [current]
+
+    for path in (
+        ("data",),
+        ("response", "sunoData"),
+        ("response", "suno_data"),
+        ("sunoData",),
+        ("suno_data",),
+        ("songs",),
+        ("audios",),
+        ("audio",),
+        ("items",),
+        ("records",),
+        ("result",),
+        ("results",),
+    ):
+        nested: Any = value
+        for key in path:
+            if not isinstance(nested, dict):
+                nested = None
+                break
+            nested = nested.get(key)
+        if nested is not None and nested is not value:
+            found = _collect_suno_audio_items(nested)
+            if found:
+                return found
+    return []
+
+
+async def _localize_suno_audio_items(project_id: str, items: list[dict[str, Any]], save_locally: bool) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for idx, item in enumerate(items):
+        remote_url = str(item.get("remote_url") or item.get("url") or "").strip()
+        if not remote_url:
+            continue
+        downloaded: dict[str, Any] = {}
+        if save_locally:
+            downloaded = await _download_audio_result(project_id, remote_url)
+        localized = {
+            **item,
+            "n_index": idx,
+            "url": downloaded.get("local_url") or remote_url,
+            "local_url": downloaded.get("local_url"),
+            "local_path": downloaded.get("local_path"),
+            "remote_url": remote_url,
+            "mime_type": downloaded.get("mime_type"),
+            "download_error": downloaded.get("download_error"),
+        }
+        output.append(localized)
+    return output
+
+
 def _response_json(resp: httpx.Response, endpoint: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     try:
         data = resp.json()
@@ -1007,6 +1273,333 @@ def _response_json(resp: httpx.Response, endpoint: str) -> tuple[dict[str, Any] 
             "raw": data,
         }
     return data, None
+
+
+def _build_suno_audio_payload(
+    provider: MediaProvider,
+    prompt: str,
+    title: str | None,
+    style: str | None,
+    instrumental: bool | None,
+    extra_override: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    extra = _parse_extra(provider)
+    extra.update(extra_override or {})
+
+    model_name = str(extra.pop("model", None) or provider.model_name or "").strip()
+    if not model_name:
+        return None, {"error": "Audio provider 缺少 model_name", "error_kind": "bad_config"}
+
+    clean_prompt = str(prompt or "").strip()
+    if not clean_prompt:
+        return None, {"error": "Suno-compatible audio 请求缺少 prompt", "error_kind": "bad_request"}
+
+    custom_mode = _coerce_bool(extra.pop("customMode", extra.pop("custom_mode", None)))
+    if custom_mode is None:
+        custom_mode = False
+    if instrumental is None:
+        instrumental = _coerce_bool(extra.pop("instrumental", None))
+
+    payload: dict[str, Any] = {
+        "prompt": clean_prompt,
+        "customMode": custom_mode,
+        "model": model_name,
+    }
+    if instrumental is not None:
+        payload["instrumental"] = instrumental
+    clean_title = str(title or extra.pop("title", "") or "").strip()
+    if clean_title:
+        payload["title"] = clean_title
+    clean_style = str(style or extra.pop("style", "") or "").strip()
+    if clean_style:
+        payload["style"] = clean_style
+
+    negative_tags = extra.pop("negativeTags", extra.pop("negative_tags", None))
+    if negative_tags:
+        payload["negativeTags"] = negative_tags
+    callback_url = extra.pop("callBackUrl", extra.pop("callback_url", None))
+    if callback_url:
+        payload["callBackUrl"] = callback_url
+
+    for key in list(extra.keys()):
+        if key.startswith("_"):
+            extra.pop(key, None)
+    payload.update({key: value for key, value in extra.items() if value is not None})
+    return payload, None
+
+
+def _suno_poll_settings(provider: MediaProvider, extra_override: dict[str, Any] | None) -> tuple[float, float]:
+    extra = _parse_extra(provider)
+    extra.update(extra_override or {})
+    poll_interval = max(
+        1.0,
+        _coerce_float(
+            extra.get("_poll_interval_seconds")
+            or os.getenv("DRAMA_AUDIO_POLL_INTERVAL_SECONDS")
+            or 8,
+            8.0,
+        ),
+    )
+    poll_timeout = max(
+        poll_interval,
+        _coerce_float(
+            extra.get("_poll_timeout_seconds")
+            or os.getenv("DRAMA_AUDIO_POLL_TIMEOUT_SECONDS")
+            or 1200,
+            1200.0,
+        ),
+    )
+    return poll_interval, poll_timeout
+
+
+async def _call_suno_compatible_audio(
+    provider: MediaProvider,
+    project_id: str,
+    prompt: str,
+    title: str | None,
+    style: str | None,
+    instrumental: bool | None,
+    extra_override: dict[str, Any],
+    save_locally: bool,
+    wait_for_completion: bool = False,
+) -> dict[str, Any]:
+    if not provider.api_key:
+        return {"error": "Suno-compatible audio provider 缺少 API Key", "error_kind": "bad_config"}
+    if not str(provider.base_url or "").strip():
+        return {"error": "Suno-compatible audio provider 缺少 Base URL", "error_kind": "bad_config"}
+
+    payload, payload_error = _build_suno_audio_payload(
+        provider=provider,
+        prompt=prompt,
+        title=title,
+        style=style,
+        instrumental=instrumental,
+        extra_override=extra_override,
+    )
+    if payload is None:
+        return payload_error or {"error": "无法构造 Suno-compatible audio 请求", "error_kind": "bad_request"}
+
+    endpoint = _suno_generate_endpoint(provider.base_url)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {provider.api_key}",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=_media_audio_timeout()) as client:
+            created = await client.post(endpoint, json=payload, headers=headers)
+            if created.status_code >= 400:
+                return _make_http_error(created.status_code, created.text, endpoint)
+            create_data, create_error = _response_json(created, endpoint)
+            if create_error:
+                return create_error
+            if create_data is None:
+                return {
+                    "error": "创建音频任务响应为空",
+                    "error_kind": "bad_response",
+                    "endpoint": endpoint,
+                }
+            if not _suno_response_success(create_data):
+                return {
+                    "error": _suno_provider_message(create_data),
+                    "error_kind": "provider_failed",
+                    "endpoint": endpoint,
+                    "provider_msg": _suno_provider_message(create_data),
+                    "raw": create_data,
+                }
+
+            immediate_items = _collect_suno_audio_items(create_data)
+            if immediate_items:
+                audios = await _localize_suno_audio_items(project_id, immediate_items, save_locally)
+                primary = audios[0] if audios else {}
+                return {
+                    "ok": True,
+                    "provider": provider.name,
+                    "model": payload.get("model") or provider.model_name,
+                    "status": "completed",
+                    "job_id": _extract_suno_task_id(create_data),
+                    "url": primary.get("url"),
+                    "local_url": primary.get("local_url"),
+                    "local_path": primary.get("local_path"),
+                    "remote_url": primary.get("remote_url"),
+                    "stream_audio_url": primary.get("stream_audio_url"),
+                    "source_audio_url": primary.get("source_audio_url"),
+                    "image_url": primary.get("image_url"),
+                    "duration": primary.get("duration_seconds"),
+                    "mime_type": primary.get("mime_type"),
+                    "audios": audios,
+                    "endpoint": endpoint,
+                    "download_error": primary.get("download_error"),
+                }
+
+            task_id = _extract_suno_task_id(create_data)
+            if not task_id:
+                return {
+                    "error": "创建音频任务响应缺少 taskId",
+                    "error_kind": "bad_response",
+                    "endpoint": endpoint,
+                    "raw": create_data,
+                }
+
+            status = _suno_status(create_data)
+            queued_result = {
+                "ok": True,
+                "provider": provider.name,
+                "model": payload.get("model") or provider.model_name,
+                "status": "running" if status in _SUNO_RUNNING_STATUSES else "queued",
+                "job_id": task_id,
+                "endpoint": endpoint,
+                "query_endpoint": _suno_record_info_endpoint(provider.base_url, task_id),
+                "request": {
+                    "customMode": payload.get("customMode"),
+                    "instrumental": payload.get("instrumental"),
+                    "has_style": bool(payload.get("style")),
+                    "has_title": bool(payload.get("title")),
+                },
+            }
+            if not wait_for_completion and status not in (_SUNO_DONE_STATUSES | _SUNO_FAILED_STATUSES):
+                return queued_result
+
+            return await _poll_suno_compatible_audio_task(
+                provider=provider,
+                project_id=project_id,
+                task_id=task_id,
+                extra_override=extra_override,
+                save_locally=save_locally,
+            )
+    except httpx.HTTPError as exc:
+        return {
+            "error": f"网络请求失败: {exc}",
+            "error_kind": "network",
+            "endpoint": endpoint,
+        }
+
+
+async def _poll_suno_compatible_audio_task(
+    provider: MediaProvider,
+    project_id: str,
+    task_id: str,
+    extra_override: dict[str, Any] | None,
+    save_locally: bool,
+) -> dict[str, Any]:
+    if not provider.api_key:
+        return {"error": "Suno-compatible audio provider 缺少 API Key", "error_kind": "bad_config"}
+    if not str(provider.base_url or "").strip():
+        return {"error": "Suno-compatible audio provider 缺少 Base URL", "error_kind": "bad_config"}
+
+    query_endpoint = _suno_record_info_endpoint(provider.base_url, task_id)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {provider.api_key}",
+    }
+    poll_interval, poll_timeout = _suno_poll_settings(provider, extra_override)
+    deadline = time.monotonic() + poll_timeout
+    polls: list[dict[str, Any]] = []
+    latest_data: dict[str, Any] = {}
+    status = "queued"
+
+    try:
+        async with httpx.AsyncClient(timeout=_media_audio_timeout()) as client:
+            while True:
+                queried = await client.get(query_endpoint, headers=headers)
+                if queried.status_code >= 400:
+                    err = _make_http_error(queried.status_code, queried.text, query_endpoint)
+                    err.update({"job_id": task_id, "status": status or "unknown"})
+                    return err
+                query_data, query_error = _response_json(queried, query_endpoint)
+                if query_error:
+                    query_error.update({"job_id": task_id, "status": status or "unknown"})
+                    return query_error
+                if query_data is None:
+                    return {
+                        "error": "音频任务查询响应为空",
+                        "error_kind": "bad_response",
+                        "endpoint": query_endpoint,
+                        "job_id": task_id,
+                    }
+                latest_data = query_data
+                status = _suno_status(query_data, status)
+                payload = _suno_payload_data(query_data)
+                polls.append({
+                    "status": status,
+                    "progress": payload.get("progress") if isinstance(payload, dict) else None,
+                })
+
+                if not _suno_response_success(query_data):
+                    provider_msg = _suno_provider_message(query_data)
+                    return {
+                        "error": provider_msg,
+                        "error_kind": "provider_failed",
+                        "provider": provider.name,
+                        "model": provider.model_name,
+                        "job_id": task_id,
+                        "status": status,
+                        "endpoint": query_endpoint,
+                        "provider_msg": provider_msg,
+                        "raw": query_data,
+                        "polls": polls,
+                    }
+
+                audio_items = _collect_suno_audio_items(query_data)
+                if audio_items and status not in _SUNO_FAILED_STATUSES:
+                    audios = await _localize_suno_audio_items(project_id, audio_items, save_locally)
+                    primary = audios[0] if audios else {}
+                    return {
+                        "ok": True,
+                        "provider": provider.name,
+                        "model": provider.model_name,
+                        "status": "completed",
+                        "job_id": task_id,
+                        "url": primary.get("url"),
+                        "local_url": primary.get("local_url"),
+                        "local_path": primary.get("local_path"),
+                        "remote_url": primary.get("remote_url"),
+                        "stream_audio_url": primary.get("stream_audio_url"),
+                        "source_audio_url": primary.get("source_audio_url"),
+                        "image_url": primary.get("image_url"),
+                        "duration": primary.get("duration_seconds"),
+                        "mime_type": primary.get("mime_type"),
+                        "audios": audios,
+                        "progress": payload.get("progress") if isinstance(payload, dict) else None,
+                        "polls": polls,
+                        "download_error": primary.get("download_error"),
+                    }
+
+                if status in _SUNO_FAILED_STATUSES:
+                    provider_msg = _suno_provider_message(query_data)
+                    return {
+                        "error": provider_msg,
+                        "error_kind": "provider_failed",
+                        "provider": provider.name,
+                        "model": provider.model_name,
+                        "job_id": task_id,
+                        "status": status,
+                        "endpoint": query_endpoint,
+                        "provider_msg": provider_msg,
+                        "raw": query_data,
+                        "polls": polls,
+                    }
+
+                if time.monotonic() >= deadline:
+                    return {
+                        "error": f"音频任务仍在 {status}，已超过本地轮询超时 {int(poll_timeout)} 秒",
+                        "error_kind": "timeout",
+                        "provider": provider.name,
+                        "model": provider.model_name,
+                        "job_id": task_id,
+                        "status": status,
+                        "endpoint": query_endpoint,
+                        "raw": latest_data,
+                        "polls": polls,
+                    }
+
+                await asyncio.sleep(poll_interval)
+    except httpx.HTTPError as exc:
+        return {
+            "error": f"网络请求失败: {exc}",
+            "error_kind": "network",
+            "endpoint": query_endpoint,
+        }
 
 
 async def _call_volcengine_ark_video(
@@ -2218,6 +2811,114 @@ async def generate_image_with_provider(
     }
 
 
+async def generate_audio_with_provider(
+    project_id: str,
+    prompt: str,
+    title: str | None = None,
+    style: str | None = None,
+    instrumental: bool | None = None,
+    model_name: str | None = None,
+    extra: dict[str, Any] | None = None,
+    save_locally: bool = True,
+    wait_for_completion: bool = False,
+) -> dict[str, Any]:
+    if model_name:
+        provider = await _get_provider_by_name_or_model("audio", model_name)
+    else:
+        provider = await _get_active_provider("audio")
+    if not provider:
+        label = f" '{model_name}'" if model_name else ""
+        return {
+            "ok": False,
+            "status": "failed",
+            "error": f"No active audio provider{label} configured. Use the settings panel or config API to add one.",
+            "error_kind": "bad_config",
+        }
+
+    extra_override = extra or {}
+    if _is_suno_compatible_audio_provider(provider):
+        result = await _call_suno_compatible_audio(
+            provider=provider,
+            project_id=project_id,
+            prompt=prompt,
+            title=title,
+            style=style,
+            instrumental=instrumental,
+            extra_override=extra_override,
+            save_locally=save_locally,
+            wait_for_completion=wait_for_completion,
+        )
+    else:
+        result = {
+            "error": (
+                f"Unsupported audio provider api_format: {provider.api_format}. "
+                "Use api_format='suno_compatible' for Suno-compatible music generation APIs."
+            ),
+            "error_kind": "unsupported_provider",
+            "status": "failed",
+        }
+
+    ok = bool(result.get("ok"))
+    return {
+        **result,
+        "ok": ok,
+        "provider": result.get("provider") or provider.name,
+        "model": result.get("model") or provider.model_name,
+        "status": result.get("status") or ("completed" if ok else "failed"),
+    }
+
+
+async def poll_audio_with_provider(
+    project_id: str,
+    job_id: str,
+    model_name: str | None = None,
+    extra: dict[str, Any] | None = None,
+    save_locally: bool = True,
+) -> dict[str, Any]:
+    if model_name:
+        provider = await _get_provider_by_name_or_model("audio", model_name)
+    else:
+        provider = await _get_active_provider("audio")
+    if not provider:
+        label = f" '{model_name}'" if model_name else ""
+        return {
+            "ok": False,
+            "status": "failed",
+            "error": f"No active audio provider{label} configured. Use the settings panel or config API to add one.",
+            "error_kind": "bad_config",
+            "job_id": job_id,
+        }
+
+    if _is_suno_compatible_audio_provider(provider):
+        result = await _poll_suno_compatible_audio_task(
+            provider=provider,
+            project_id=project_id,
+            task_id=job_id,
+            extra_override=extra or {},
+            save_locally=save_locally,
+        )
+    else:
+        result = {
+            "error": (
+                f"Unsupported audio provider api_format: {provider.api_format}. "
+                "Use api_format='suno_compatible' for Suno-compatible music generation APIs."
+            ),
+            "error_kind": "unsupported_provider",
+            "status": "failed",
+            "job_id": job_id,
+        }
+
+    ok = bool(result.get("ok"))
+    return {
+        **result,
+        "ok": ok,
+        "provider": result.get("provider") or provider.name,
+        "model": result.get("model") or provider.model_name,
+        "status": result.get("status") or ("completed" if ok else "failed"),
+        "job_id": result.get("job_id") or job_id,
+    }
+
+
 async def test_provider(provider_id: str) -> dict[str, Any]:
     provider = await _get_provider_by_id(provider_id)
     if not provider:
@@ -2296,6 +2997,32 @@ async def test_provider(provider_id: str) -> dict[str, Any]:
             "provider": provider.name,
             "model": provider.model_name,
             "error": f"Unsupported video provider api_format: {provider.api_format}",
+        }
+
+    if provider.kind == "audio":
+        if _is_suno_compatible_audio_provider(provider):
+            missing: list[str] = []
+            if not provider.api_key:
+                missing.append("api_key")
+            if not provider.model_name:
+                missing.append("model_name")
+            if not provider.base_url:
+                missing.append("base_url")
+            endpoint = _suno_generate_endpoint(provider.base_url) if provider.base_url else ""
+            return {
+                "ok": not missing,
+                "provider": provider.name,
+                "model": provider.model_name,
+                "adapter": "suno_compatible",
+                "endpoint": endpoint,
+                "check": "configuration_only",
+                "error": f"缺少配置: {', '.join(missing)}" if missing else None,
+            }
+        return {
+            "ok": False,
+            "provider": provider.name,
+            "model": provider.model_name,
+            "error": f"Unsupported audio provider api_format: {provider.api_format}",
         }
 
     return {"ok": False, "error": f"Unknown provider kind: {provider.kind}"}

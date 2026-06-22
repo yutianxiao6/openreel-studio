@@ -190,10 +190,11 @@ _NODE_FIELD_SCHEMA: dict[str, dict] = {
     "audio": {
         "required": ["prompt"],
         "optional": [
-            "title", "description", "format", "duration_seconds",
+            "title", "description", "style", "instrumental", "format", "duration_seconds",
+            "negative_tags", "custom_mode", "callback_url",
             "references", "depends_on", "model",
         ],
-        "description": "通用纯音频节点。模型可写音频 prompt 和通用时长/格式等字段；当前后端只保留节点合同，具体音频模型适配尚未接入。",
+        "description": "通用纯音频节点。模型必须自己写最终音频 prompt；后端只按 prompt/fields 调已配置的 audio provider，例如 suno_compatible。",
     },
 }
 
@@ -3074,17 +3075,63 @@ async def _run_audio_node(project_id: str, node_id: str, f: dict) -> dict:
             "error_kind": "missing_prompt",
             "node_id": node_id,
         }
-    return {
-        "ok": False,
-        "type": "audio",
-        "error": "当前版本尚未接入音频生成模型。audio 节点已支持创建、编辑、引用和展示；需要生成时请先接入音频模型适配。",
-        "error_kind": "audio_generation_unavailable",
-        "node_id": node_id,
-        "prompt": prompt,
-        "format": f.get("format"),
-        "duration_seconds": f.get("duration_seconds"),
-        "hint": "后续适配音频模型后，继续沿用当前 audio 节点和 node.run 即可。",
+    duration = f.get("duration_seconds") or f.get("duration")
+    duration_seconds = None
+    if duration not in (None, ""):
+        try:
+            duration_seconds = int(float(str(duration)))
+        except (TypeError, ValueError):
+            duration_seconds = None
+    instrumental = f.get("instrumental")
+    if isinstance(instrumental, str):
+        lowered = instrumental.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            instrumental = True
+        elif lowered in {"0", "false", "no", "n", "off"}:
+            instrumental = False
+        else:
+            instrumental = None
+    elif not isinstance(instrumental, bool):
+        instrumental = None
+    audio_extra = {
+        key: f[key]
+        for key in (
+            "customMode",
+            "custom_mode",
+            "negativeTags",
+            "negative_tags",
+            "callBackUrl",
+            "callback_url",
+            "personaId",
+            "persona_id",
+            "vocalGender",
+            "vocal_gender",
+            "styleWeight",
+            "style_weight",
+            "weirdness",
+            "audioWeight",
+            "audio_weight",
+            "seed",
+        )
+        if key in f
     }
+    result = await media_generation.generate_audio(
+        project_id=project_id,
+        prompt=prompt,
+        node_id=node_id,
+        model=f.get("model"),
+        title=f.get("title"),
+        style=f.get("style"),
+        instrumental=instrumental,
+        duration_seconds=duration_seconds,
+        audio_format=f.get("format"),
+        extra=audio_extra,
+        record_asset=True,
+    )
+    if isinstance(result, dict):
+        result["prompt"] = prompt
+        result["input"] = media_history.strip_media_history(f)
+    return result
 
 
 _RUNNERS: dict[str, NodeRunner] = {
@@ -3542,7 +3589,7 @@ async def node_run(
             ),
         }
 
-    if node_type == "video" and isinstance(result, dict) and result.get("status") in {"queued", "running"}:
+    if node_type in {"video", "audio"} and isinstance(result, dict) and result.get("status") in {"queued", "running"}:
         result = media_history.preserve_media_history(result, archived_output)
         await canvas_tools.update_node(
             node_id,
@@ -3564,7 +3611,7 @@ async def node_run(
                 project_id=project_id,
             )
         except Exception:
-            logger.exception("emit video queued canvas event failed for node %s", node_id)
+            logger.exception("emit media queued canvas event failed for node %s", node_id)
         return {
             "ok": True,
             "node_id": node_id,

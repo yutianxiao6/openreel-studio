@@ -4,8 +4,16 @@ import { useState } from "react"
 import type { ConfigContext, MediaProviderEntry } from "../SettingsModal"
 import { VIDEO_MODEL_OPTIONS, videoApiFormatForModel } from "@/lib/videoModelOptions"
 
+type MediaKind = "image" | "video" | "audio"
+
 function normalizeMediaProvider(entry: MediaProviderEntry): MediaProviderEntry {
-  if (entry.kind !== "video") {
+  if (entry.kind === "audio") {
+    return {
+      ...entry,
+      api_format: "suno_compatible",
+    }
+  }
+  if (entry.kind === "image") {
     return {
       ...entry,
       api_format: entry.api_format || "openai",
@@ -17,7 +25,13 @@ function normalizeMediaProvider(entry: MediaProviderEntry): MediaProviderEntry {
   }
 }
 
-export function MediaTab({ ctx, kind }: { ctx: ConfigContext; kind: "image" | "video" }) {
+function kindLabel(kind: MediaKind): string {
+  if (kind === "image") return "图片"
+  if (kind === "video") return "视频"
+  return "音频"
+}
+
+export function MediaTab({ ctx, kind }: { ctx: ConfigContext; kind: MediaKind }) {
   const { config, applyPatch } = ctx
   const [editingKey, setEditingKey] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
@@ -73,7 +87,7 @@ export function MediaTab({ ctx, kind }: { ctx: ConfigContext; kind: "image" | "v
 
       <div className="flex items-center justify-between">
         <p className="text-xs text-gray-500">
-          {kind === "image" ? "图片生成 Provider" : "视频生成 Provider"}
+          {kindLabel(kind)}生成 Provider
         </p>
         <button
           onClick={() => { setAdding(true); setEditingKey(null) }}
@@ -109,7 +123,7 @@ export function MediaTab({ ctx, kind }: { ctx: ConfigContext; kind: "image" | "v
         )}
         {items.length === 0 && !adding && (
           <div className="text-center text-gray-500 text-xs py-6 border border-dashed border-gray-800 rounded">
-            还没有 {kind === "image" ? "图片" : "视频"} Provider。点击「添加」开始。
+            还没有 {kindLabel(kind)} Provider。点击「添加」开始。
           </div>
         )}
       </div>
@@ -117,14 +131,14 @@ export function MediaTab({ ctx, kind }: { ctx: ConfigContext; kind: "image" | "v
   )
 }
 
-function blank(kind: "image" | "video"): MediaProviderEntry {
+function blank(kind: MediaKind): MediaProviderEntry {
   return {
     kind,
     name: "",
     base_url: "",
     api_key: "",
-    model_name: kind === "video" ? VIDEO_MODEL_OPTIONS[0].modelName : "",
-    api_format: kind === "video" ? VIDEO_MODEL_OPTIONS[0].apiFormat : "openai",
+    model_name: kind === "video" ? VIDEO_MODEL_OPTIONS[0].modelName : kind === "audio" ? "V5" : "",
+    api_format: kind === "video" ? VIDEO_MODEL_OPTIONS[0].apiFormat : kind === "audio" ? "suno_compatible" : "openai",
     is_active: false, enabled: true, notes: "", params: {},
   }
 }
@@ -203,6 +217,8 @@ function Row({
         <F label="Base URL" required value={draft.base_url} onChange={(v) => setField("base_url", v)}
           hint={entry.kind === "video"
             ? "填写当前服务商的 Base URL；系统只按适配模型切换协议。"
+            : entry.kind === "audio"
+              ? "填写 Suno-compatible 服务的 Base URL；系统不会绑定固定中转站。"
             : undefined} />
         {entry.kind === "video" ? (
           <>
@@ -228,6 +244,22 @@ function Row({
               disabled
               defaultText="按适配模型自动选择"
               hint="按适配模型自动选择，不需要手填。"
+            />
+          </>
+        ) : entry.kind === "audio" ? (
+          <>
+            <F label="模型名" required value={draft.model_name} onChange={(v) => setField("model_name", v)}
+              hint="填写服务商支持的模型名，例如 V5、V5_5；具体以当前 Base URL 文档为准。" />
+            <SelectField
+              label="协议/API Format"
+              value="suno_compatible"
+              onChange={() => {}}
+              options={[
+                { label: "Suno-compatible", value: "suno_compatible" },
+              ]}
+              disabled
+              defaultText="默认 suno_compatible"
+              hint="音频 provider 当前使用 Suno-compatible 异步任务协议。"
             />
           </>
         ) : (
