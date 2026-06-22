@@ -39,6 +39,14 @@ def _message_metadata(message: Message) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _message_model_visible(metadata: dict) -> bool:
+    if metadata.get("model_visible") is False:
+        return False
+    if metadata.get("source") == "slash_command" and metadata.get("model_visible") is not True:
+        return False
+    return True
+
+
 # ── Project-scoped memory ────────────────────────────────────────────
 
 def memory_summarization_messages(tail_messages: list[dict]) -> list[dict]:
@@ -223,16 +231,19 @@ async def memory_compact_context(
         )
         active = list(result.all())
 
-    payload = [
-        {
+    payload = []
+    for m in active:
+        if m.role not in ("user", "assistant"):
+            continue
+        metadata = _message_metadata(m)
+        if not _message_model_visible(metadata):
+            continue
+        payload.append({
             "role": m.role,
             "content": m.content,
             "_message_id": m.id,
-            "_metadata": _message_metadata(m),
-        }
-        for m in active
-        if m.role in ("user", "assistant")
-    ]
+            "_metadata": metadata,
+        })
     active_tokens = estimate_tokens(payload)
     if not auto_compact_needed(payload):
         return {

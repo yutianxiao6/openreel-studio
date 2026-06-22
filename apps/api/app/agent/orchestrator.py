@@ -143,6 +143,14 @@ def _sanitize_user_visible_text(text: str) -> str:
     return cleaned
 
 
+def _message_model_visible(metadata: dict[str, Any]) -> bool:
+    if metadata.get("model_visible") is False:
+        return False
+    if metadata.get("source") == "slash_command" and metadata.get("model_visible") is not True:
+        return False
+    return True
+
+
 def _active_blueprint_state(state: dict[str, Any]) -> dict[str, Any] | None:
     blueprint = state.get("project_blueprint") if isinstance(state, dict) else None
     if isinstance(blueprint, dict) and str(blueprint.get("status") or "") == "active":
@@ -3860,6 +3868,8 @@ class AgentOrchestrator:
                         metadata = parsed
                 except (json.JSONDecodeError, TypeError):
                     metadata = {}
+            if not _message_model_visible(metadata):
+                continue
             vision_context = await build_vision_context_from_metadata(
                 project_id,
                 metadata,
@@ -3918,6 +3928,8 @@ class AgentOrchestrator:
                             metadata = parsed
                     except (json.JSONDecodeError, TypeError):
                         metadata = {}
+                if not _message_model_visible(metadata):
+                    continue
                 active_messages.append({
                     "role": row.role,
                     "content": row.content,

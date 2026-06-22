@@ -1095,6 +1095,9 @@ async def _save_message(
     content: str,
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    if isinstance(metadata, dict) and metadata.get("source") == "slash_command":
+        metadata = dict(metadata)
+        metadata.setdefault("model_visible", False)
     async with session_scope() as session:
         session.add(
             Message(

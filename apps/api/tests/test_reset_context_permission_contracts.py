@@ -660,6 +660,58 @@ async def test_build_messages_keeps_all_active_history_without_sliding_window() 
     assert messages[-1] == {"role": "user", "content": "继续刚才的要求"}
 
 @pytest.mark.asyncio
+async def test_build_messages_excludes_slash_command_history_from_model_context() -> None:
+    class FakeResult:
+        def all(self):
+            return [
+                SimpleNamespace(
+                    role="assistant",
+                    content="slash doctor dump should stay out",
+                    metadata_json=json.dumps({"source": "slash_command", "command": "doctor"}, ensure_ascii=False),
+                ),
+                SimpleNamespace(
+                    role="user",
+                    content="/project list",
+                    metadata_json=json.dumps({"source": "slash_command", "command": "project"}, ensure_ascii=False),
+                ),
+                SimpleNamespace(
+                    role="assistant",
+                    content="正常历史回复",
+                    metadata_json=None,
+                ),
+                SimpleNamespace(
+                    role="user",
+                    content="显式允许进入模型的 slash",
+                    metadata_json=json.dumps({
+                        "source": "slash_command",
+                        "command": "plan",
+                        "model_visible": True,
+                    }, ensure_ascii=False),
+                ),
+            ]
+
+    class FakeDB:
+        async def exec(self, statement):
+            return FakeResult()
+
+    orchestrator = AgentOrchestrator.__new__(AgentOrchestrator)
+    orchestrator.db = FakeDB()
+
+    messages = await orchestrator._build_messages(
+        "project-1",
+        "继续",
+        include_history=True,
+    )
+    body = json.dumps(messages, ensure_ascii=False)
+
+    assert "slash doctor dump should stay out" not in body
+    assert "/project list" not in body
+    assert "正常历史回复" in body
+    assert "显式允许进入模型的 slash" in body
+    assert messages[-1] == {"role": "user", "content": "继续"}
+
+
+@pytest.mark.asyncio
 async def test_build_messages_window_zero_isolates_pending_confirmation_history() -> None:
     called = False
 
@@ -711,6 +763,42 @@ async def test_maybe_compress_history_does_not_archive_short_history_by_message_
     await orchestrator._maybe_compress_history("project-1")
 
     assert called is False
+
+@pytest.mark.asyncio
+async def test_maybe_compress_history_ignores_slash_command_output_tokens(monkeypatch) -> None:
+    from app.mcp_tools import memory_tools
+
+    called = False
+
+    class FakeResult:
+        def all(self):
+            return [
+                SimpleNamespace(
+                    role="assistant",
+                    content="x" * 180000,
+                    metadata_json=json.dumps({"source": "slash_command", "command": "doctor"}, ensure_ascii=False),
+                ),
+                SimpleNamespace(role="user", content="继续正常任务", metadata_json=None),
+            ]
+
+    class FakeDB:
+        async def exec(self, statement):
+            return FakeResult()
+
+    async def fake_compact(project_id: str, target_tail_tokens: int | None = None):
+        nonlocal called
+        called = True
+        return {"archived": 1, "target_tail_tokens": target_tail_tokens}
+
+    monkeypatch.setattr(memory_tools, "memory_compact_context", fake_compact)
+
+    orchestrator = AgentOrchestrator.__new__(AgentOrchestrator)
+    orchestrator.db = FakeDB()
+
+    await orchestrator._maybe_compress_history("project-1")
+
+    assert called is False
+
 
 @pytest.mark.asyncio
 async def test_maybe_compress_history_archives_only_when_token_threshold_is_exceeded(monkeypatch) -> None:
