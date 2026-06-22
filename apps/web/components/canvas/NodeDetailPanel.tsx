@@ -48,10 +48,15 @@ interface EditableNodeDraft {
   content: string
   prompt: string
   model: string
+  style: string
+  format: string
+  negative_tags: string
   aspect_ratio: string
   resolution: string
   quality: string
   duration_seconds: string
+  instrumental: boolean
+  custom_mode: boolean
   reference_images: string[]
 }
 
@@ -62,10 +67,15 @@ const EMPTY_DRAFT: EditableNodeDraft = {
   content: "",
   prompt: "",
   model: "",
+  style: "",
+  format: "",
+  negative_tags: "",
   aspect_ratio: "",
   resolution: "",
   quality: "",
   duration_seconds: "",
+  instrumental: true,
+  custom_mode: false,
   reference_images: [],
 }
 
@@ -780,6 +790,13 @@ const FIELD_LABELS: Record<string, string> = {
   aspect_ratio: "画幅",
   duration: "时长",
   duration_seconds: "时长",
+  style: "风格",
+  format: "格式",
+  instrumental: "纯音乐",
+  custom_mode: "高级模式",
+  customMode: "高级模式",
+  negative_tags: "负面标签",
+  negativeTags: "负面标签",
   production_path: "制作方式",
   prompt_template: "提示词模板",
   references: "参考",
@@ -1248,6 +1265,13 @@ function pickMediaInfo(input: Record<string, unknown>, output: Record<string, un
     "quality",
     "model",
     "provider",
+    "style",
+    "format",
+    "instrumental",
+    "custom_mode",
+    "customMode",
+    "negative_tags",
+    "negativeTags",
     "production_path",
   ]
   const entries = keys
@@ -1262,6 +1286,18 @@ function firstText(...values: unknown[]): string {
     if (typeof value === "number" || typeof value === "boolean") return String(value)
   }
   return ""
+}
+
+function firstBool(defaultValue: boolean, ...values: unknown[]): boolean {
+  for (const value of values) {
+    if (typeof value === "boolean") return value
+    if (typeof value === "number") return value !== 0
+    if (typeof value !== "string") continue
+    const text = value.trim().toLowerCase()
+    if (["1", "true", "yes", "y", "on", "是"].includes(text)) return true
+    if (["0", "false", "no", "n", "off", "否"].includes(text)) return false
+  }
+  return defaultValue
 }
 
 function nodeInputFields(input: unknown): Record<string, unknown> {
@@ -1331,6 +1367,9 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
     content: firstText(input.content, output.content, input.text, output.text, input.summary, output.summary),
     prompt: pickPromptText(nodePrompt, input, output),
     model: firstText(input.model, output.model),
+    style: firstText(input.style, output.style),
+    format: firstText(input.format, output.format),
+    negative_tags: firstText(input.negative_tags, input.negativeTags, output.negative_tags, output.negativeTags),
     aspect_ratio: node.type === "video"
       ? normalizeVideoAspectRatio(firstText(input.aspect_ratio, output.aspect_ratio))
       : firstText(input.aspect_ratio, output.aspect_ratio) || (node.type === "image" ? "16:9" : ""),
@@ -1338,6 +1377,8 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
       || (node.type === "image" ? "2560x1440" : node.type === "video" ? "720p" : ""),
     quality: firstText(input.quality, output.quality) || (node.type === "image" ? "high" : ""),
     duration_seconds: firstText(input.duration_seconds, input.duration, output.duration_seconds, output.duration) || (node.type === "video" ? "5" : ""),
+    instrumental: firstBool(true, input.instrumental, output.instrumental),
+    custom_mode: firstBool(false, input.custom_mode, input.customMode, output.custom_mode, output.customMode),
     reference_images: Array.from(new Set(referenceImages)),
   }
 }
@@ -1383,6 +1424,26 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft): {
     else delete nextInput.resolution
     const duration = draft.duration_seconds.trim()
     nextInput.duration_seconds = duration && Number.isFinite(Number(duration)) ? Number(duration) : duration
+  }
+
+  if (node.type === "audio") {
+    const model = draft.model.trim()
+    if (model) nextInput.model = model
+    else delete nextInput.model
+    const style = draft.style.trim()
+    if (style) nextInput.style = style
+    else delete nextInput.style
+    const format = draft.format.trim()
+    if (format) nextInput.format = format
+    else delete nextInput.format
+    const duration = draft.duration_seconds.trim()
+    if (duration) nextInput.duration_seconds = Number.isFinite(Number(duration)) ? Number(duration) : duration
+    else delete nextInput.duration_seconds
+    const negativeTags = draft.negative_tags.trim()
+    if (negativeTags) nextInput.negative_tags = negativeTags
+    else delete nextInput.negative_tags
+    nextInput.instrumental = draft.instrumental
+    nextInput.custom_mode = draft.custom_mode
   }
 
   return { title, prompt: prompt || null, input: nextInput }
@@ -1598,6 +1659,33 @@ function SelectControl({
   )
 }
 
+function ToggleControl({
+  label,
+  checked,
+  onChange,
+  hint,
+}: {
+  label: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+  hint?: string
+}) {
+  return (
+    <label className="flex items-start justify-between gap-3 rounded-md border border-white/[0.08] bg-black/25 px-2.5 py-2">
+      <span className="min-w-0">
+        <span className="block text-[10px] font-medium uppercase tracking-[0.12em] text-zinc-500">{label}</span>
+        {hint && <span className="mt-1 block text-[10px] leading-4 text-zinc-600">{hint}</span>}
+      </span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="mt-0.5 h-4 w-4 accent-cyan-400"
+      />
+    </label>
+  )
+}
+
 function ReferenceEditor({
   refs,
   projectId,
@@ -1722,7 +1810,7 @@ function NodeEditView({
   const isImage = node.type === "image"
   const isVideo = node.type === "video"
   const isAudio = node.type === "audio"
-  const hasSidePanel = isImage || isVideo
+  const hasSidePanel = isImage || isVideo || isAudio
   const mainLabel = isText ? "正文" : isImage ? "图片提示词" : isAudio ? "音频提示词" : "视频提示词"
   const knownVideoModel = VIDEO_MODEL_OPTIONS.some((item) => item.modelName === draft.model)
   const videoModelOptions = [
@@ -1793,7 +1881,60 @@ function NodeEditView({
           <div className="rounded-lg border border-white/[0.08] bg-[#121722] p-3">
             <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">规格</div>
             <div className="space-y-3">
-              {isVideo ? (
+              {isAudio ? (
+                <>
+                  <DraftField label="模型 / Provider">
+                    <input
+                      value={draft.model}
+                      onChange={(event) => onChange({ model: event.target.value })}
+                      className={inputClass}
+                      placeholder="留空使用当前激活音频 Provider"
+                    />
+                  </DraftField>
+                  <DraftField label="风格">
+                    <input
+                      value={draft.style}
+                      onChange={(event) => onChange({ style: event.target.value })}
+                      className={inputClass}
+                      placeholder="ambient piano, cinematic, lo-fi..."
+                    />
+                  </DraftField>
+                  <ChipControl
+                    label="格式"
+                    value={draft.format}
+                    options={["mp3", "wav", "m4a"]}
+                    placeholder="默认"
+                    onChange={(format) => onChange({ format })}
+                  />
+                  <ChipControl
+                    label="时长"
+                    value={draft.duration_seconds}
+                    options={["30", "60", "120"]}
+                    placeholder="秒"
+                    onChange={(duration_seconds) => onChange({ duration_seconds })}
+                  />
+                  <ToggleControl
+                    label="纯音乐"
+                    checked={draft.instrumental}
+                    onChange={(instrumental) => onChange({ instrumental })}
+                    hint="关闭后 prompt 通常会作为歌词或含人声需求处理。"
+                  />
+                  <ToggleControl
+                    label="高级模式"
+                    checked={draft.custom_mode}
+                    onChange={(custom_mode) => onChange({ custom_mode })}
+                    hint="Suno-compatible 服务可用 style/title 等高级字段。"
+                  />
+                  <DraftField label="负面标签">
+                    <input
+                      value={draft.negative_tags}
+                      onChange={(event) => onChange({ negative_tags: event.target.value })}
+                      className={inputClass}
+                      placeholder="不想要的风格、乐器或声音"
+                    />
+                  </DraftField>
+                </>
+              ) : isVideo ? (
                 <SelectControl
                   label="画幅"
                   value={normalizeVideoAspectRatio(draft.aspect_ratio)}
@@ -1854,20 +1995,22 @@ function NodeEditView({
             </div>
           </div>
 
-          <div className="rounded-lg border border-white/[0.08] bg-[#121722] p-3">
-            <div className="mb-2.5 flex items-center justify-between">
-              <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">引用图</div>
-              <span className="text-[11px] text-zinc-600">{draft.reference_images.length}</span>
+          {!isAudio && (
+            <div className="rounded-lg border border-white/[0.08] bg-[#121722] p-3">
+              <div className="mb-2.5 flex items-center justify-between">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">引用图</div>
+                <span className="text-[11px] text-zinc-600">{draft.reference_images.length}</span>
+              </div>
+              <ReferenceEditor
+                refs={draft.reference_images}
+                projectId={projectId}
+                uploading={uploading}
+                setLightbox={setLightbox}
+                onChange={(reference_images) => onChange({ reference_images })}
+                onUpload={onUploadRefs}
+              />
             </div>
-            <ReferenceEditor
-              refs={draft.reference_images}
-              projectId={projectId}
-              uploading={uploading}
-              setLightbox={setLightbox}
-              onChange={(reference_images) => onChange({ reference_images })}
-              onUpload={onUploadRefs}
-            />
-          </div>
+          )}
         </div>
       )}
     </div>
