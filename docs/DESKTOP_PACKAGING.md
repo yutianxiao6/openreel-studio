@@ -5,7 +5,7 @@ OpenReel Studio keeps the existing web/API architecture in desktop builds:
 - Electron launches the local services and owns the app window.
 - FastAPI is packaged as a local executable.
 - Next.js runs from standalone output.
-- Runtime data is stored outside the installation directory.
+- Runtime data is stored under the installation directory.
 
 ## 中文摘要
 
@@ -14,7 +14,7 @@ OpenReel Studio 桌面端保留现有 Web/API 架构：
 - Electron 负责启动本地服务并打开桌面窗口。
 - FastAPI 通过 PyInstaller 打包成本地可执行文件。
 - Next.js 使用 standalone 输出作为本地 Web runtime。
-- 用户数据、配置、日志和媒体文件写入安装目录之外的用户数据目录。
+- 用户数据、配置、日志和媒体文件写入安装目录下的固定子目录。
 
 三平台入口：
 
@@ -129,6 +129,12 @@ OpenReel Studio-Setup-0.0.1.exe
 OpenReel Studio-0.0.1-x64.AppImage
 OpenReel Studio-0.0.1-x64.dmg
 ```
+
+Windows uses the assisted NSIS installer. It shows the installation directory
+page, supports installing over an existing OpenReel Studio installation, and
+keeps `data`, `storage`, `config`, and `logs` when upgrading. If the selected
+directory is a drive root, NSIS creates the application subdirectory before
+copying files.
 
 ## Automated Release Workflow
 
