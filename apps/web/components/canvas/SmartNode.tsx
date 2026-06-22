@@ -205,6 +205,16 @@ function videoMimeType(src: string): string {
   return "video/mp4"
 }
 
+function audioMimeType(src: string): string {
+  const path = src.split(/[?#]/, 1)[0]?.toLowerCase() || ""
+  if (path.endsWith(".wav")) return "audio/wav"
+  if (path.endsWith(".m4a")) return "audio/mp4"
+  if (path.endsWith(".aac")) return "audio/aac"
+  if (path.endsWith(".ogg")) return "audio/ogg"
+  if (path.endsWith(".flac")) return "audio/flac"
+  return "audio/mpeg"
+}
+
 function ratioFromSize(width?: number, height?: number): number | null {
   if (!width || !height || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     return null
@@ -942,7 +952,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 </div>
               </div>
               <div className="space-y-2">
-                <div className="flex h-9 items-end gap-1.5 rounded-md border border-white/10 bg-black/28 px-2.5 py-2">
+                <div className="pointer-events-none flex h-8 items-end gap-1.5 rounded-md border border-white/10 bg-black/28 px-2.5 py-1.5">
                   {[0.35, 0.72, 0.48, 0.86, 0.55, 0.68, 0.4, 0.78, 0.5, 0.62].map((height, index) => (
                     <span
                       key={index}
@@ -951,9 +961,26 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                     />
                   ))}
                 </div>
-                <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-400">
-                  <span className="truncate">{audio.format || "音频文件"}</span>
-                  {audio.duration && <span>{audio.duration}</span>}
+                <div
+                  className="nodrag nowheel rounded-md border border-white/10 bg-black/45 px-2 py-1.5 shadow-lg shadow-black/20"
+                  onClick={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onTouchStart={(event) => event.stopPropagation()}
+                >
+                  <audio
+                    controls
+                    preload="metadata"
+                    className="nodrag h-8 w-full"
+                    controlsList="nodownload"
+                  >
+                    <source src={audio.src} type={audioMimeType(audio.src)} />
+                  </audio>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-zinc-400">
+                    <span className="truncate">{audio.format || "音频文件"}</span>
+                    {audio.duration && <span>{audio.duration}</span>}
+                  </div>
                 </div>
               </div>
               {isRunning && (
@@ -1112,11 +1139,13 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
             </div>
           )}
 
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent px-3 pb-2.5 pt-8">
-            <div className="line-clamp-2 text-[13px] font-medium leading-4 text-white" title={data.title}>
-              {data.title || "未命名"}
+          {!(data.type === "audio" && audio?.src) && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent px-3 pb-2.5 pt-8">
+              <div className="line-clamp-2 text-[13px] font-medium leading-4 text-white" title={data.title}>
+                {data.title || "未命名"}
+              </div>
             </div>
-          </div>
+          )}
           {status === "failed" && (
             <div className="absolute left-2 top-2 rounded bg-red-500/90 px-1.5 py-0.5 text-[10px] font-medium text-white">
               失败
