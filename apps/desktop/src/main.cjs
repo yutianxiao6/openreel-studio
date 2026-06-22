@@ -25,6 +25,28 @@ function fixedUserDataDir() {
   return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "OpenReel Studio");
 }
 
+function packagedInstallRoot() {
+  if (!isPackaged) {
+    return null;
+  }
+  if (process.platform === "darwin") {
+    // .../OpenReel Studio.app/Contents/MacOS/OpenReel Studio -> parent of .app
+    return path.dirname(path.dirname(path.dirname(path.dirname(process.execPath))));
+  }
+  return path.dirname(process.execPath);
+}
+
+function desktopDataRoot() {
+  if (process.env.OPENREEL_DATA_DIR) {
+    return path.resolve(process.env.OPENREEL_DATA_DIR);
+  }
+  const installRoot = packagedInstallRoot();
+  if (installRoot) {
+    return installRoot;
+  }
+  return fixedUserDataDir();
+}
+
 function mkdirp(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
@@ -46,10 +68,7 @@ function writeLogLine(logDir, name, line) {
 
 function writeStartupLog(line) {
   const targets = [
-    path.join(fixedUserDataDir(), "logs"),
-    process.platform === "win32" && process.env.LOCALAPPDATA
-      ? path.join(process.env.LOCALAPPDATA, "OpenReel Studio", "logs")
-      : null,
+    path.join(desktopDataRoot(), "logs"),
     path.join(os.tmpdir(), "OpenReel Studio", "logs"),
   ].filter(Boolean);
 
@@ -229,16 +248,17 @@ function trayIcon() {
 }
 
 function desktopDirs() {
-  const userData = fixedUserDataDir();
-  app.setPath("userData", userData);
+  const root = desktopDataRoot();
   const dirs = {
-    userData,
-    data: path.join(userData, "data"),
-    storage: path.join(userData, "storage"),
-    config: path.join(userData, "config"),
-    logs: path.join(userData, "logs"),
+    root,
+    userData: path.join(root, "data", "electron"),
+    data: path.join(root, "data"),
+    storage: path.join(root, "storage"),
+    config: path.join(root, "config"),
+    logs: path.join(root, "logs"),
   };
   Object.values(dirs).forEach(mkdirp);
+  app.setPath("userData", dirs.userData);
   return dirs;
 }
 
@@ -251,20 +271,20 @@ function buildRuntimeEnv({ apiPort, webPort, dirs }) {
     APP_HOST: "127.0.0.1",
     APP_PORT: String(apiPort),
     WEB_PORT: String(webPort),
-    PROJECT_ROOT: dirs.userData,
+    PROJECT_ROOT: dirs.root,
     DATABASE_URL: `sqlite+aiosqlite:///${path.join(dirs.data, "app.db").replace(/\\/g, "/")}`,
     STORAGE_PATH: dirs.storage,
     STORAGE_DIR: dirs.storage,
     CORS_ORIGINS: `${webBase},${apiBase}`,
     OPENREEL_DESKTOP: "1",
-    OPENREEL_USER_DATA_DIR: dirs.userData,
+    OPENREEL_USER_DATA_DIR: dirs.root,
   };
 }
 
 function startApi({ apiPort, webPort, dirs }) {
   const env = buildRuntimeEnv({ apiPort, webPort, dirs });
   if (isPackaged) {
-    return spawnLogged(packagedApiExecutable(), [], { cwd: dirs.userData, env }, dirs.logs, "api");
+    return spawnLogged(packagedApiExecutable(), [], { cwd: dirs.root, env }, dirs.logs, "api");
   }
   const apiDir = path.resolve(__dirname, "..", "..", "api");
   return spawnLogged(

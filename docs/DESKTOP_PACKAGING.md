@@ -159,12 +159,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\desktop\build-window
 
 ## Runtime Data
 
-Desktop builds write mutable data under the Electron user data directory:
+Desktop builds write mutable data under the installed application directory by default:
 
 ```text
-Windows: %APPDATA%/OpenReel Studio/
-macOS:   ~/Library/Application Support/OpenReel Studio/
-Linux:   ~/.config/OpenReel Studio/
+Windows: <install-dir>\
+macOS:   directory containing OpenReel Studio.app
+Linux:   directory containing the AppImage/binary
 ```
 
 The important subdirectories are:
@@ -175,6 +175,8 @@ storage/
 config/
 logs/
 ```
+
+Set `OPENREEL_DATA_DIR` before launch to override this location.
 
 Model keys and runtime provider settings belong in `config/runtime.jsonc` via the settings UI. They are not compiled into the installer.
 
@@ -201,13 +203,13 @@ Menu. The desktop app should:
 1. Open one Electron window.
 2. Start the local API on a random `127.0.0.1` port.
 3. Start the local Next.js server on a second `127.0.0.1` port.
-4. Create `%APPDATA%\OpenReel Studio\data`, `storage`, `config`, and `logs`.
+4. Create `data`, `storage`, `config`, and `logs` under the install directory.
 
 If startup fails, inspect:
 
 ```text
-%APPDATA%\OpenReel Studio\logs\api.log
-%APPDATA%\OpenReel Studio\logs\web.log
+<install-dir>\logs\api.log
+<install-dir>\logs\web.log
 ```
 
 Common failures:

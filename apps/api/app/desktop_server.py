@@ -9,6 +9,8 @@ from app.main import app
 
 
 def _default_user_data_dir() -> Path:
+    if os.environ.get("OPENREEL_DESKTOP") == "1":
+        return Path.cwd()
     if os.name == "nt":
         root = os.environ.get("APPDATA") or os.environ.get("LOCALAPPDATA") or str(Path.home())
         return Path(root) / "OpenReel Studio"
