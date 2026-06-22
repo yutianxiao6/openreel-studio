@@ -381,6 +381,15 @@ def _openai_images_endpoint(base_url: str) -> str:
     return base + "/v1/images/generations"
 
 
+def _openai_tts_endpoint(base_url: str) -> str:
+    base = str(base_url or "").strip().rstrip("/")
+    if base.endswith("/audio/speech"):
+        return base
+    if base.endswith("/v1"):
+        return base + "/audio/speech"
+    return base + "/v1/audio/speech"
+
+
 _ARK_VIDEO_FORMATS = {"volcengine_ark", "ark", "ark_video"}
 _ARK_DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 _ARK_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "expired"}
@@ -404,6 +413,7 @@ _GROK_1_5_VIDEO_RESOLUTIONS = {"480p", "720p"}
 _VIDEO_RESOLUTION_ORDER = {"480p": 0, "720p": 1, "1080p": 2, "2k": 3, "4k": 4}
 _VIDEO_MODEL_CALLING_DOC = "apps/api/app/skills/video_production/VIDEO_MODEL_CALLING.md"
 _SUNO_COMPATIBLE_FORMATS = {"suno_compatible", "suno", "suno_api"}
+_OPENAI_TTS_FORMATS = {"openai_tts", "tts", "openai_speech", "openai_audio_speech"}
 _SUNO_DONE_STATUSES = {"success", "succeeded", "completed", "complete", "done"}
 _SUNO_FAILED_STATUSES = {
     "failed",
@@ -512,6 +522,11 @@ def _is_grok_1_5_video_provider(provider: MediaProvider) -> bool:
 def _is_suno_compatible_audio_provider(provider: MediaProvider) -> bool:
     fmt = _normalized_api_format(provider)
     return fmt in _SUNO_COMPATIBLE_FORMATS
+
+
+def _is_openai_tts_audio_provider(provider: MediaProvider) -> bool:
+    fmt = _normalized_api_format(provider)
+    return fmt in _OPENAI_TTS_FORMATS
 
 
 def _ark_video_tasks_endpoint(base_url: str | None) -> str:
@@ -1256,6 +1271,30 @@ async def _localize_suno_audio_items(project_id: str, items: list[dict[str, Any]
     return output
 
 
+async def _save_audio_bytes(
+    project_id: str,
+    content: bytes,
+    *,
+    response_format: str | None = None,
+    content_type: str | None = None,
+) -> dict[str, Any]:
+    suffix = ""
+    if response_format:
+        normalized = str(response_format).strip().lower().lstrip(".")
+        if normalized:
+            suffix = f".{normalized}"
+    if suffix not in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus", ".pcm"}:
+        suffix = _audio_suffix("", content_type)
+    filename = f"{uuid.uuid4().hex[:12]}{suffix}"
+    dest = _storage_audio_path(project_id, filename)
+    dest.write_bytes(content)
+    return {
+        "local_path": str(dest),
+        "local_url": f"/api/media/{project_id}/generated_audio/{filename}",
+        "mime_type": str(content_type or "").split(";", 1)[0].strip() or None,
+    }
+
+
 def _response_json(resp: httpx.Response, endpoint: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     try:
         data = resp.json()
@@ -1321,6 +1360,86 @@ def _build_suno_audio_payload(
     if callback_url:
         payload["callBackUrl"] = callback_url
 
+    for key in ("voice", "speed", "instructions", "response_format", "format", "audio_format"):
+        extra.pop(key, None)
+    for key in list(extra.keys()):
+        if key.startswith("_"):
+            extra.pop(key, None)
+    payload.update({key: value for key, value in extra.items() if value is not None})
+    return payload, None
+
+
+def _build_openai_tts_payload(
+    provider: MediaProvider,
+    prompt: str,
+    extra_override: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    override = dict(extra_override or {})
+    extra = _parse_extra(provider)
+    extra.update(override)
+
+    model_name = str(extra.pop("model", None) or provider.model_name or "").strip()
+    if not model_name:
+        return None, {"error": "TTS provider 缺少 model_name", "error_kind": "bad_config"}
+    clean_input = str(extra.pop("input", None) or extra.pop("text", None) or prompt or "").strip()
+    if not clean_input:
+        return None, {"error": "OpenAI-compatible TTS 请求缺少 input 文本", "error_kind": "bad_request"}
+
+    voice = str(extra.pop("voice", None) or "").strip() or "alloy"
+    payload: dict[str, Any] = {
+        "model": model_name,
+        "input": clean_input,
+        "voice": voice,
+    }
+
+    response_format = str(
+        override.get("response_format")
+        or override.get("format")
+        or override.get("audio_format")
+        or extra.pop("response_format", None)
+        or extra.pop("format", None)
+        or extra.pop("audio_format", None)
+        or ""
+    ).strip().lower()
+    for key in ("response_format", "format", "audio_format"):
+        extra.pop(key, None)
+    if response_format:
+        payload["response_format"] = response_format
+
+    speed = extra.pop("speed", None)
+    if speed not in (None, ""):
+        try:
+            payload["speed"] = float(str(speed))
+        except (TypeError, ValueError):
+            return None, {"error": f"TTS speed 必须是数字，收到: {speed!r}", "error_kind": "bad_request"}
+
+    instructions = str(extra.pop("instructions", None) or extra.pop("style", None) or "").strip()
+    if instructions:
+        payload["instructions"] = instructions
+
+    for key in (
+        "title",
+        "duration",
+        "duration_seconds",
+        "instrumental",
+        "customMode",
+        "custom_mode",
+        "negativeTags",
+        "negative_tags",
+        "callBackUrl",
+        "callback_url",
+        "personaId",
+        "persona_id",
+        "vocalGender",
+        "vocal_gender",
+        "styleWeight",
+        "style_weight",
+        "weirdness",
+        "audioWeight",
+        "audio_weight",
+        "seed",
+    ):
+        extra.pop(key, None)
     for key in list(extra.keys()):
         if key.startswith("_"):
             extra.pop(key, None)
@@ -1473,6 +1592,99 @@ async def _call_suno_compatible_audio(
             "error_kind": "network",
             "endpoint": endpoint,
         }
+
+
+async def _call_openai_tts_audio(
+    provider: MediaProvider,
+    project_id: str,
+    prompt: str,
+    extra_override: dict[str, Any],
+    save_locally: bool,
+) -> dict[str, Any]:
+    if not provider.api_key:
+        return {"error": "OpenAI-compatible TTS provider 缺少 API Key", "error_kind": "bad_config"}
+    if not str(provider.base_url or "").strip():
+        return {"error": "OpenAI-compatible TTS provider 缺少 Base URL", "error_kind": "bad_config"}
+
+    payload, payload_error = _build_openai_tts_payload(
+        provider=provider,
+        prompt=prompt,
+        extra_override=extra_override,
+    )
+    if payload is None:
+        return payload_error or {"error": "无法构造 OpenAI-compatible TTS 请求", "error_kind": "bad_request"}
+
+    endpoint = _openai_tts_endpoint(provider.base_url)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {provider.api_key}",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=_media_audio_timeout()) as client:
+            resp = await client.post(endpoint, json=payload, headers=headers)
+    except httpx.HTTPError as exc:
+        return {
+            "error": f"网络请求失败: {exc}",
+            "error_kind": "network",
+            "endpoint": endpoint,
+        }
+
+    if resp.status_code >= 400:
+        return _make_http_error(resp.status_code, resp.text, endpoint)
+
+    content_type = resp.headers.get("content-type", "")
+    if "application/json" in content_type.lower():
+        data, parse_error = _response_json(resp, endpoint)
+        if parse_error:
+            return parse_error
+        return {
+            "error": "TTS 响应是 JSON，不是音频二进制",
+            "error_kind": "bad_response",
+            "endpoint": endpoint,
+            "raw": data,
+        }
+
+    if not resp.content:
+        return {
+            "error": "TTS 响应为空",
+            "error_kind": "empty_response",
+            "endpoint": endpoint,
+        }
+
+    saved: dict[str, Any] = {}
+    if save_locally:
+        saved = await _save_audio_bytes(
+            project_id,
+            resp.content,
+            response_format=payload.get("response_format"),
+            content_type=content_type,
+        )
+
+    return {
+        "ok": True,
+        "provider": provider.name,
+        "model": payload.get("model") or provider.model_name,
+        "status": "completed",
+        "url": saved.get("local_url"),
+        "local_url": saved.get("local_url"),
+        "local_path": saved.get("local_path"),
+        "mime_type": saved.get("mime_type") or str(content_type or "").split(";", 1)[0].strip() or None,
+        "voice": payload.get("voice"),
+        "speed": payload.get("speed"),
+        "instructions": payload.get("instructions"),
+        "format": payload.get("response_format"),
+        "endpoint": endpoint,
+        "audios": [
+            {
+                "n_index": 0,
+                "url": saved.get("local_url"),
+                "local_url": saved.get("local_url"),
+                "local_path": saved.get("local_path"),
+                "mime_type": saved.get("mime_type"),
+            }
+        ] if saved.get("local_url") else [],
+    }
 
 
 async def _poll_suno_compatible_audio_task(
@@ -2848,11 +3060,22 @@ async def generate_audio_with_provider(
             save_locally=save_locally,
             wait_for_completion=wait_for_completion,
         )
+    elif _is_openai_tts_audio_provider(provider):
+        tts_extra = dict(extra_override)
+        if style and "instructions" not in tts_extra and "style" not in tts_extra:
+            tts_extra["style"] = style
+        result = await _call_openai_tts_audio(
+            provider=provider,
+            project_id=project_id,
+            prompt=prompt,
+            extra_override=tts_extra,
+            save_locally=save_locally,
+        )
     else:
         result = {
             "error": (
                 f"Unsupported audio provider api_format: {provider.api_format}. "
-                "Use api_format='suno_compatible' for Suno-compatible music generation APIs."
+                "Use api_format='openai_tts' for OpenAI-compatible speech or 'suno_compatible' for Suno-compatible music generation APIs."
             ),
             "error_kind": "unsupported_provider",
             "status": "failed",
@@ -2897,11 +3120,18 @@ async def poll_audio_with_provider(
             extra_override=extra or {},
             save_locally=save_locally,
         )
+    elif _is_openai_tts_audio_provider(provider):
+        result = {
+            "error": "OpenAI-compatible TTS 是同步接口，不支持按 job_id 轮询",
+            "error_kind": "unsupported_action",
+            "status": "failed",
+            "job_id": job_id,
+        }
     else:
         result = {
             "error": (
                 f"Unsupported audio provider api_format: {provider.api_format}. "
-                "Use api_format='suno_compatible' for Suno-compatible music generation APIs."
+                "Use api_format='openai_tts' for OpenAI-compatible speech or 'suno_compatible' for Suno-compatible music generation APIs."
             ),
             "error_kind": "unsupported_provider",
             "status": "failed",
@@ -3000,6 +3230,24 @@ async def test_provider(provider_id: str) -> dict[str, Any]:
         }
 
     if provider.kind == "audio":
+        if _is_openai_tts_audio_provider(provider):
+            missing: list[str] = []
+            if not provider.api_key:
+                missing.append("api_key")
+            if not provider.model_name:
+                missing.append("model_name")
+            if not provider.base_url:
+                missing.append("base_url")
+            endpoint = _openai_tts_endpoint(provider.base_url) if provider.base_url else ""
+            return {
+                "ok": not missing,
+                "provider": provider.name,
+                "model": provider.model_name,
+                "adapter": "openai_tts",
+                "endpoint": endpoint,
+                "check": "configuration_only",
+                "error": f"缺少配置: {', '.join(missing)}" if missing else None,
+            }
         if _is_suno_compatible_audio_provider(provider):
             missing: list[str] = []
             if not provider.api_key:

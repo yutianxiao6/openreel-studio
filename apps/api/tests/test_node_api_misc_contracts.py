@@ -511,6 +511,103 @@ def test_media_provider_schema_accepts_suno_compatible_audio_format():
     assert entry.api_format == "suno_compatible"
 
 
+def test_media_provider_schema_accepts_openai_tts_audio_format():
+    entry = MediaProviderEntry(
+        kind="audio",
+        name="openai-tts",
+        base_url="https://audio.example/v1",
+        api_key="audio-key",
+        model_name="tts-1",
+        api_format="openai_tts",
+    )
+
+    assert entry.kind == "audio"
+    assert entry.api_format == "openai_tts"
+
+
+def test_openai_tts_payload_prefers_node_format_and_filters_music_fields():
+    provider = SimpleNamespace(
+        model_name="tts-1",
+        params_json=json.dumps({
+            "response_format": "mp3",
+            "speed": 1.05,
+            "custom_mode": True,
+        }),
+    )
+
+    payload, error = media_provider._build_openai_tts_payload(
+        provider,
+        prompt="旁白文本",
+        extra_override={
+            "voice": "nova",
+            "format": "wav",
+            "instructions": "自然、清晰的旁白",
+            "negative_tags": "noise",
+            "_debug": "hidden",
+        },
+    )
+
+    assert error is None
+    assert payload == {
+        "model": "tts-1",
+        "input": "旁白文本",
+        "voice": "nova",
+        "response_format": "wav",
+        "speed": 1.05,
+        "instructions": "自然、清晰的旁白",
+    }
+
+
+@pytest.mark.asyncio
+async def test_audio_provider_routes_openai_tts(monkeypatch):
+    provider = SimpleNamespace(
+        name="tts-provider",
+        kind="audio",
+        api_format="openai_tts",
+        base_url="https://audio.example/v1",
+        api_key="audio-key",
+        model_name="tts-1",
+        enabled=True,
+        params_json=None,
+    )
+    captured: dict = {}
+
+    async def fake_get_active_provider(kind: str):
+        assert kind == "audio"
+        return provider
+
+    async def fake_call_openai_tts_audio(**kwargs):
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "status": "completed",
+            "provider": provider.name,
+            "model": provider.model_name,
+            "voice": kwargs["extra_override"]["voice"],
+            "format": kwargs["extra_override"]["format"],
+        }
+
+    monkeypatch.setattr(media_provider, "_get_active_provider", fake_get_active_provider)
+    monkeypatch.setattr(media_provider, "_call_openai_tts_audio", fake_call_openai_tts_audio)
+
+    result = await media_provider.generate_audio_with_provider(
+        project_id="proj-1",
+        prompt="生成一句旁白",
+        style="温和",
+        extra={"voice": "nova", "format": "wav"},
+    )
+
+    assert result["ok"] is True
+    assert result["provider"] == "tts-provider"
+    assert captured["project_id"] == "proj-1"
+    assert captured["prompt"] == "生成一句旁白"
+    assert captured["extra_override"] == {
+        "voice": "nova",
+        "format": "wav",
+        "style": "温和",
+    }
+
+
 def test_suno_audio_response_parser_handles_nested_audio_object():
     items = media_provider._collect_suno_audio_items({
         "code": 200,

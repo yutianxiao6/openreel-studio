@@ -191,10 +191,11 @@ _NODE_FIELD_SCHEMA: dict[str, dict] = {
         "required": ["prompt"],
         "optional": [
             "title", "description", "style", "instrumental", "format", "duration_seconds",
+            "voice", "speed", "instructions",
             "negative_tags", "custom_mode", "callback_url",
             "references", "depends_on", "model",
         ],
-        "description": "通用纯音频节点。模型必须自己写最终音频 prompt；后端只按 prompt/fields 调已配置的 audio provider，例如 suno_compatible。",
+        "description": "通用纯音频节点。模型必须自己写最终音频 prompt；TTS 语音可写 voice/speed/instructions，音乐可写 style/instrumental；后端只按 prompt/fields 调已配置的 audio provider。",
     },
 }
 
@@ -3112,6 +3113,10 @@ async def _run_audio_node(project_id: str, node_id: str, f: dict) -> dict:
             "audioWeight",
             "audio_weight",
             "seed",
+            "voice",
+            "speed",
+            "instructions",
+            "format",
         )
         if key in f
     }

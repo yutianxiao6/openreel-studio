@@ -49,6 +49,9 @@ interface EditableNodeDraft {
   prompt: string
   model: string
   style: string
+  voice: string
+  speed: string
+  instructions: string
   format: string
   negative_tags: string
   aspect_ratio: string
@@ -68,6 +71,9 @@ const EMPTY_DRAFT: EditableNodeDraft = {
   prompt: "",
   model: "",
   style: "",
+  voice: "",
+  speed: "",
+  instructions: "",
   format: "",
   negative_tags: "",
   aspect_ratio: "",
@@ -791,6 +797,9 @@ const FIELD_LABELS: Record<string, string> = {
   duration: "时长",
   duration_seconds: "时长",
   style: "风格",
+  voice: "声音",
+  speed: "语速",
+  instructions: "TTS 指令",
   format: "格式",
   instrumental: "纯音乐",
   custom_mode: "高级模式",
@@ -1266,6 +1275,9 @@ function pickMediaInfo(input: Record<string, unknown>, output: Record<string, un
     "model",
     "provider",
     "style",
+    "voice",
+    "speed",
+    "instructions",
     "format",
     "instrumental",
     "custom_mode",
@@ -1368,6 +1380,9 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
     prompt: pickPromptText(nodePrompt, input, output),
     model: firstText(input.model, output.model),
     style: firstText(input.style, output.style),
+    voice: firstText(input.voice, output.voice),
+    speed: firstText(input.speed, output.speed),
+    instructions: firstText(input.instructions, output.instructions),
     format: firstText(input.format, output.format),
     negative_tags: firstText(input.negative_tags, input.negativeTags, output.negative_tags, output.negativeTags),
     aspect_ratio: node.type === "video"
@@ -1433,6 +1448,15 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft): {
     const style = draft.style.trim()
     if (style) nextInput.style = style
     else delete nextInput.style
+    const voice = draft.voice.trim()
+    if (voice) nextInput.voice = voice
+    else delete nextInput.voice
+    const speed = draft.speed.trim()
+    if (speed) nextInput.speed = Number.isFinite(Number(speed)) ? Number(speed) : speed
+    else delete nextInput.speed
+    const instructions = draft.instructions.trim()
+    if (instructions) nextInput.instructions = instructions
+    else delete nextInput.instructions
     const format = draft.format.trim()
     if (format) nextInput.format = format
     else delete nextInput.format
@@ -1897,6 +1921,29 @@ function NodeEditView({
                       onChange={(event) => onChange({ style: event.target.value })}
                       className={inputClass}
                       placeholder="ambient piano, cinematic, lo-fi..."
+                    />
+                  </DraftField>
+                  <ChipControl
+                    label="声音"
+                    value={draft.voice}
+                    options={["alloy", "nova", "shimmer", "onyx"]}
+                    placeholder="TTS voice"
+                    onChange={(voice) => onChange({ voice })}
+                  />
+                  <ChipControl
+                    label="语速"
+                    value={draft.speed}
+                    options={["0.8", "1", "1.2"]}
+                    placeholder="默认"
+                    onChange={(speed) => onChange({ speed })}
+                  />
+                  <DraftField label="TTS 指令">
+                    <textarea
+                      value={draft.instructions}
+                      onChange={(event) => onChange({ instructions: event.target.value })}
+                      rows={3}
+                      className={`${inputClass} resize-y text-[12px] leading-5`}
+                      placeholder="例如：自然、清晰、轻松的旁白语气"
                     />
                   </DraftField>
                   <ChipControl

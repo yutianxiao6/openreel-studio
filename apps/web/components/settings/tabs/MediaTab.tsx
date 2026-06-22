@@ -6,11 +6,20 @@ import { VIDEO_MODEL_OPTIONS, videoApiFormatForModel } from "@/lib/videoModelOpt
 
 type MediaKind = "image" | "video" | "audio"
 
+const AUDIO_API_FORMAT_OPTIONS = [
+  { label: "TTS 语音 (OpenAI-compatible)", value: "openai_tts" },
+  { label: "音乐生成 (Suno-compatible)", value: "suno_compatible" },
+]
+
+function normalizeAudioApiFormat(value?: string): string {
+  return AUDIO_API_FORMAT_OPTIONS.some((item) => item.value === value) ? value as string : "openai_tts"
+}
+
 function normalizeMediaProvider(entry: MediaProviderEntry): MediaProviderEntry {
   if (entry.kind === "audio") {
     return {
       ...entry,
-      api_format: "suno_compatible",
+      api_format: normalizeAudioApiFormat(entry.api_format),
     }
   }
   if (entry.kind === "image") {
@@ -137,8 +146,8 @@ function blank(kind: MediaKind): MediaProviderEntry {
     name: "",
     base_url: "",
     api_key: "",
-    model_name: kind === "video" ? VIDEO_MODEL_OPTIONS[0].modelName : kind === "audio" ? "V5" : "",
-    api_format: kind === "video" ? VIDEO_MODEL_OPTIONS[0].apiFormat : kind === "audio" ? "suno_compatible" : "openai",
+    model_name: kind === "video" ? VIDEO_MODEL_OPTIONS[0].modelName : kind === "audio" ? "tts-1" : "",
+    api_format: kind === "video" ? VIDEO_MODEL_OPTIONS[0].apiFormat : kind === "audio" ? "openai_tts" : "openai",
     is_active: false, enabled: true, notes: "", params: {},
   }
 }
@@ -198,6 +207,13 @@ function Row({
       api_format: videoApiFormatForModel(modelName),
     })
   }
+  const setAudioApiFormat = (apiFormat: string) => {
+    setDraft({
+      ...draft,
+      api_format: normalizeAudioApiFormat(apiFormat),
+      model_name: draft.model_name || (apiFormat === "suno_compatible" ? "V5" : "tts-1"),
+    })
+  }
 
   const videoModelOptions = entry.kind === "video" && !VIDEO_MODEL_OPTIONS.some((item) => item.modelName === draft.model_name)
     ? [
@@ -218,7 +234,9 @@ function Row({
           hint={entry.kind === "video"
             ? "填写当前服务商的 Base URL；系统只按适配模型切换协议。"
             : entry.kind === "audio"
-              ? "填写 Suno-compatible 服务的 Base URL；系统不会绑定固定中转站。"
+              ? draft.api_format === "suno_compatible"
+                ? "填写 Suno-compatible 服务的 Base URL；系统不会绑定固定中转站。"
+                : "填写 OpenAI-compatible 服务根地址或 /v1 地址；系统会调用 /audio/speech。"
             : undefined} />
         {entry.kind === "video" ? (
           <>
@@ -249,17 +267,16 @@ function Row({
         ) : entry.kind === "audio" ? (
           <>
             <F label="模型名" required value={draft.model_name} onChange={(v) => setField("model_name", v)}
-              hint="填写服务商支持的模型名，例如 V5、V5_5；具体以当前 Base URL 文档为准。" />
+              hint={draft.api_format === "suno_compatible"
+                ? "填写服务商支持的音乐模型名，例如 V5、V5_5；具体以当前 Base URL 文档为准。"
+                : "填写服务商支持的 TTS 模型名，例如 tts-1；具体以当前 Base URL 文档为准。"} />
             <SelectField
               label="协议/API Format"
-              value="suno_compatible"
-              onChange={() => {}}
-              options={[
-                { label: "Suno-compatible", value: "suno_compatible" },
-              ]}
-              disabled
-              defaultText="默认 suno_compatible"
-              hint="音频 provider 当前使用 Suno-compatible 异步任务协议。"
+              value={normalizeAudioApiFormat(draft.api_format)}
+              onChange={setAudioApiFormat}
+              options={AUDIO_API_FORMAT_OPTIONS}
+              defaultText="默认 openai_tts"
+              hint="TTS 语音走同步 /v1/audio/speech；音乐生成走 Suno-compatible 异步任务协议。"
             />
           </>
         ) : (

@@ -86,7 +86,7 @@ class MediaProviderEntry(BaseModel):
     base_url: str = Field(..., min_length=1)
     api_key: Optional[str] = None
     model_name: str = Field(..., min_length=1)
-    api_format: str = Field("openai", description="openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5 | suno_compatible")
+    api_format: str = Field("openai", description="openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5 | suno_compatible | openai_tts")
     is_active: bool = False
     enabled: bool = True
     notes: Optional[str] = None
@@ -102,9 +102,9 @@ class MediaProviderEntry(BaseModel):
     @field_validator("api_format")
     @classmethod
     def _valid_api_format(cls, v: str) -> str:
-        if v not in ("openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "suno_compatible"):
+        if v not in ("openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "suno_compatible", "openai_tts"):
             raise ValueError(
-                "api_format must be 'openai', 'raw', 'raw_post', 'volcengine_ark', 'xai_video', 'grok_1_5', or 'suno_compatible', "
+                "api_format must be 'openai', 'raw', 'raw_post', 'volcengine_ark', 'xai_video', 'grok_1_5', 'suno_compatible', or 'openai_tts', "
                 f"got {v!r}"
             )
         return v
