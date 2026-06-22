@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from
 import { motion } from "framer-motion"
 import {
   callTool,
+  getRuntimeConfigFile,
   getProjectNodeDetails,
   listProjectAssets,
   resolveMediaUrl,
@@ -62,6 +63,17 @@ interface EditableNodeDraft {
   custom_mode: boolean
   reference_images: string[]
 }
+
+interface AudioProviderOption {
+  kind: string
+  name: string
+  model_name: string
+  api_format: string
+  is_active?: boolean
+  enabled?: boolean
+}
+
+type AudioProviderMode = "tts" | "music" | "unknown"
 
 const EDITABLE_NODE_TYPES = new Set(["text", "image", "video", "audio"])
 
@@ -1312,6 +1324,31 @@ function firstBool(defaultValue: boolean, ...values: unknown[]): boolean {
   return defaultValue
 }
 
+function audioProviderModeFromFormat(apiFormat?: string | null): AudioProviderMode {
+  const format = String(apiFormat || "").trim().toLowerCase()
+  if (["openai_tts", "tts", "openai_speech", "openai_audio_speech"].includes(format)) return "tts"
+  if (["suno_compatible", "suno", "suno_api"].includes(format)) return "music"
+  return "unknown"
+}
+
+function audioProviderTypeLabel(mode: AudioProviderMode): string {
+  if (mode === "tts") return "TTS 语音"
+  if (mode === "music") return "音乐生成"
+  return "未知协议"
+}
+
+function resolveAudioProvider(
+  value: string,
+  providers: AudioProviderOption[],
+): AudioProviderOption | undefined {
+  const enabled = providers.filter((provider) => provider.enabled !== false)
+  const selected = value.trim()
+  if (selected) {
+    return enabled.find((provider) => provider.name === selected || provider.model_name === selected)
+  }
+  return enabled.find((provider) => provider.is_active) || enabled[0]
+}
+
 function nodeInputFields(input: unknown): Record<string, unknown> {
   const inputObj = asObj(parseJson(input)) || {}
   const nestedFields = asObj(inputObj.fields)
@@ -1398,7 +1435,7 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
   }
 }
 
-function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft): {
+function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: AudioProviderMode = "unknown"): {
   title: string
   prompt: string | null
   input: Record<string, unknown>
@@ -1445,29 +1482,44 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft): {
     const model = draft.model.trim()
     if (model) nextInput.model = model
     else delete nextInput.model
-    const style = draft.style.trim()
-    if (style) nextInput.style = style
-    else delete nextInput.style
-    const voice = draft.voice.trim()
-    if (voice) nextInput.voice = voice
-    else delete nextInput.voice
-    const speed = draft.speed.trim()
-    if (speed) nextInput.speed = Number.isFinite(Number(speed)) ? Number(speed) : speed
-    else delete nextInput.speed
-    const instructions = draft.instructions.trim()
-    if (instructions) nextInput.instructions = instructions
-    else delete nextInput.instructions
-    const format = draft.format.trim()
-    if (format) nextInput.format = format
-    else delete nextInput.format
-    const duration = draft.duration_seconds.trim()
-    if (duration) nextInput.duration_seconds = Number.isFinite(Number(duration)) ? Number(duration) : duration
-    else delete nextInput.duration_seconds
-    const negativeTags = draft.negative_tags.trim()
-    if (negativeTags) nextInput.negative_tags = negativeTags
-    else delete nextInput.negative_tags
-    nextInput.instrumental = draft.instrumental
-    nextInput.custom_mode = draft.custom_mode
+    if (audioMode === "tts") {
+      delete nextInput.style
+      delete nextInput.duration_seconds
+      delete nextInput.duration
+      delete nextInput.negative_tags
+      delete nextInput.negativeTags
+      delete nextInput.instrumental
+      delete nextInput.custom_mode
+      delete nextInput.customMode
+      const voice = draft.voice.trim()
+      if (voice) nextInput.voice = voice
+      else delete nextInput.voice
+      const speed = draft.speed.trim()
+      if (speed) nextInput.speed = Number.isFinite(Number(speed)) ? Number(speed) : speed
+      else delete nextInput.speed
+      const instructions = draft.instructions.trim()
+      if (instructions) nextInput.instructions = instructions
+      else delete nextInput.instructions
+      const format = draft.format.trim()
+      if (format) nextInput.format = format
+      else delete nextInput.format
+    } else if (audioMode === "music") {
+      delete nextInput.voice
+      delete nextInput.speed
+      delete nextInput.instructions
+      delete nextInput.format
+      const style = draft.style.trim()
+      if (style) nextInput.style = style
+      else delete nextInput.style
+      const duration = draft.duration_seconds.trim()
+      if (duration) nextInput.duration_seconds = Number.isFinite(Number(duration)) ? Number(duration) : duration
+      else delete nextInput.duration_seconds
+      const negativeTags = draft.negative_tags.trim()
+      if (negativeTags) nextInput.negative_tags = negativeTags
+      else delete nextInput.negative_tags
+      nextInput.instrumental = draft.instrumental
+      nextInput.custom_mode = draft.custom_mode
+    }
   }
 
   return { title, prompt: prompt || null, input: nextInput }
@@ -1812,6 +1864,8 @@ function ReferenceEditor({
 function NodeEditView({
   node,
   draft,
+  audioProviders,
+  audioConfigError,
   projectId,
   saving,
   uploading,
@@ -1822,6 +1876,8 @@ function NodeEditView({
 }: {
   node: NodeFull
   draft: EditableNodeDraft
+  audioProviders: AudioProviderOption[]
+  audioConfigError?: string | null
   projectId?: string | null
   saving: boolean
   uploading: boolean
@@ -1836,6 +1892,25 @@ function NodeEditView({
   const isAudio = node.type === "audio"
   const hasSidePanel = isImage || isVideo || isAudio
   const mainLabel = isText ? "正文" : isImage ? "图片提示词" : isAudio ? "音频提示词" : "视频提示词"
+  const enabledAudioProviders = audioProviders.filter((provider) => provider.enabled !== false)
+  const selectedAudioProvider = isAudio ? resolveAudioProvider(draft.model, enabledAudioProviders) : undefined
+  const selectedAudioMode = audioProviderModeFromFormat(selectedAudioProvider?.api_format)
+  const audioProviderSelectValue = draft.model.trim()
+    ? (selectedAudioProvider?.name || draft.model)
+    : ""
+  const hasConfiguredAudioProviders = enabledAudioProviders.length > 0
+  const audioProviderOptions = [
+    { label: "使用当前激活音频 Provider", value: "" },
+    ...(draft.model && !selectedAudioProvider ? [{ label: `当前: ${draft.model}`, value: draft.model }] : []),
+    ...enabledAudioProviders.map((provider) => {
+      const mode = audioProviderModeFromFormat(provider.api_format)
+      const suffix = provider.is_active ? " · 激活" : ""
+      return {
+        label: `${provider.name} · ${audioProviderTypeLabel(mode)} · ${provider.model_name}${suffix}`,
+        value: provider.name,
+      }
+    }),
+  ]
   const knownVideoModel = VIDEO_MODEL_OPTIONS.some((item) => item.modelName === draft.model)
   const videoModelOptions = [
     { label: "使用当前激活视频模型", value: "" },
@@ -1862,6 +1937,9 @@ function NodeEditView({
     const supported = videoSupportedResolutionsForModel(model)
     const resolution = supported.includes(draft.resolution) ? draft.resolution : defaultVideoResolutionForModel(model)
     onChange({ model, resolution })
+  }
+  const updateAudioProvider = (providerName: string) => {
+    onChange({ model: providerName })
   }
 
   return (
@@ -1907,79 +1985,102 @@ function NodeEditView({
             <div className="space-y-3">
               {isAudio ? (
                 <>
-                  <DraftField label="模型 / Provider">
-                    <input
-                      value={draft.model}
-                      onChange={(event) => onChange({ model: event.target.value })}
-                      className={inputClass}
-                      placeholder="留空使用当前激活音频 Provider"
-                    />
-                  </DraftField>
-                  <DraftField label="风格">
-                    <input
-                      value={draft.style}
-                      onChange={(event) => onChange({ style: event.target.value })}
-                      className={inputClass}
-                      placeholder="ambient piano, cinematic, lo-fi..."
-                    />
-                  </DraftField>
-                  <ChipControl
-                    label="声音"
-                    value={draft.voice}
-                    options={["alloy", "nova", "shimmer", "onyx"]}
-                    placeholder="TTS voice"
-                    onChange={(voice) => onChange({ voice })}
+                  <SelectControl
+                    label="音频 Provider"
+                    value={audioProviderSelectValue}
+                    options={audioProviderOptions}
+                    onChange={updateAudioProvider}
+                    hint={
+                      audioConfigError
+                        ? audioConfigError
+                        : selectedAudioProvider
+                          ? `${audioProviderTypeLabel(selectedAudioMode)} · ${selectedAudioProvider.api_format}`
+                          : "请先在设置里的音频 Provider 配置并启用。"
+                    }
                   />
-                  <ChipControl
-                    label="语速"
-                    value={draft.speed}
-                    options={["0.8", "1", "1.2"]}
-                    placeholder="默认"
-                    onChange={(speed) => onChange({ speed })}
-                  />
-                  <DraftField label="TTS 指令">
-                    <textarea
-                      value={draft.instructions}
-                      onChange={(event) => onChange({ instructions: event.target.value })}
-                      rows={3}
-                      className={`${inputClass} resize-y text-[12px] leading-5`}
-                      placeholder="例如：自然、清晰、轻松的旁白语气"
-                    />
-                  </DraftField>
-                  <ChipControl
-                    label="格式"
-                    value={draft.format}
-                    options={["mp3", "wav", "m4a"]}
-                    placeholder="默认"
-                    onChange={(format) => onChange({ format })}
-                  />
-                  <ChipControl
-                    label="时长"
-                    value={draft.duration_seconds}
-                    options={["30", "60", "120"]}
-                    placeholder="秒"
-                    onChange={(duration_seconds) => onChange({ duration_seconds })}
-                  />
-                  <ToggleControl
-                    label="纯音乐"
-                    checked={draft.instrumental}
-                    onChange={(instrumental) => onChange({ instrumental })}
-                    hint="关闭后 prompt 通常会作为歌词或含人声需求处理。"
-                  />
-                  <ToggleControl
-                    label="高级模式"
-                    checked={draft.custom_mode}
-                    onChange={(custom_mode) => onChange({ custom_mode })}
-                    hint="Suno-compatible 服务可用 style/title 等高级字段。"
-                  />
-                  <DraftField label="负面标签">
-                    <input
-                      value={draft.negative_tags}
-                      onChange={(event) => onChange({ negative_tags: event.target.value })}
-                      className={inputClass}
-                      placeholder="不想要的风格、乐器或声音"
-                    />
-                  </DraftField>
+                  {!hasConfiguredAudioProviders && (
+                    <div className="rounded-md border border-amber-500/20 bg-amber-950/15 px-3 py-2 text-xs leading-5 text-amber-100/80">
+                      需要先在设置的「音频 Provider」里配置并启用 TTS 或音乐 Provider。
+                    </div>
+                  )}
+                  {selectedAudioMode === "tts" && (
+                    <>
+                      <ChipControl
+                        label="声音"
+                        value={draft.voice}
+                        options={["alloy", "nova", "shimmer", "onyx"]}
+                        placeholder="TTS voice"
+                        onChange={(voice) => onChange({ voice })}
+                      />
+                      <ChipControl
+                        label="语速"
+                        value={draft.speed}
+                        options={["0.8", "1", "1.2"]}
+                        placeholder="默认"
+                        onChange={(speed) => onChange({ speed })}
+                      />
+                      <DraftField label="TTS 指令">
+                        <textarea
+                          value={draft.instructions}
+                          onChange={(event) => onChange({ instructions: event.target.value })}
+                          rows={3}
+                          className={`${inputClass} resize-y text-[12px] leading-5`}
+                          placeholder="例如：自然、清晰、轻松的旁白语气"
+                        />
+                      </DraftField>
+                      <ChipControl
+                        label="格式"
+                        value={draft.format}
+                        options={["mp3", "wav", "m4a"]}
+                        placeholder="默认"
+                        onChange={(format) => onChange({ format })}
+                      />
+                    </>
+                  )}
+                  {selectedAudioMode === "music" && (
+                    <>
+                      <DraftField label="风格">
+                        <input
+                          value={draft.style}
+                          onChange={(event) => onChange({ style: event.target.value })}
+                          className={inputClass}
+                          placeholder="ambient piano, cinematic, lo-fi..."
+                        />
+                      </DraftField>
+                      <ChipControl
+                        label="时长"
+                        value={draft.duration_seconds}
+                        options={["30", "60", "120"]}
+                        placeholder="秒"
+                        onChange={(duration_seconds) => onChange({ duration_seconds })}
+                      />
+                      <ToggleControl
+                        label="纯音乐"
+                        checked={draft.instrumental}
+                        onChange={(instrumental) => onChange({ instrumental })}
+                        hint="关闭后 prompt 通常会作为歌词或含人声需求处理。"
+                      />
+                      <ToggleControl
+                        label="高级模式"
+                        checked={draft.custom_mode}
+                        onChange={(custom_mode) => onChange({ custom_mode })}
+                        hint="Suno-compatible 服务可用 style/title 等高级字段。"
+                      />
+                      <DraftField label="负面标签">
+                        <input
+                          value={draft.negative_tags}
+                          onChange={(event) => onChange({ negative_tags: event.target.value })}
+                          className={inputClass}
+                          placeholder="不想要的风格、乐器或声音"
+                        />
+                      </DraftField>
+                    </>
+                  )}
+                  {hasConfiguredAudioProviders && selectedAudioMode === "unknown" && (
+                    <div className="rounded-md border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-xs leading-5 text-zinc-400">
+                      当前音频 Provider 协议未适配详情字段；这里只保存标题、提示词和 Provider 选择。
+                    </div>
+                  )}
                 </>
               ) : isVideo ? (
                 <SelectControl
@@ -3405,6 +3506,8 @@ export default function NodeDetailPanel({
   const [uploadingRefs, setUploadingRefs] = useState(false)
   const [switchingHistoryId, setSwitchingHistoryId] = useState<string | null>(null)
   const [detailReloadTick, setDetailReloadTick] = useState(0)
+  const [audioProviders, setAudioProviders] = useState<AudioProviderOption[]>([])
+  const [audioConfigError, setAudioConfigError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -3464,6 +3567,31 @@ export default function NodeDetailPanel({
   }, [data, editing])
 
   useEffect(() => {
+    let cancelled = false
+    const loadAudioProviders = async () => {
+      try {
+        const result = await getRuntimeConfigFile<{
+          parsed?: { media_providers?: AudioProviderOption[] }
+        }>(true)
+        if (cancelled) return
+        const providers = result.parsed?.media_providers || []
+        setAudioProviders(providers.filter((provider) => provider.kind === "audio"))
+        setAudioConfigError(null)
+      } catch (err) {
+        if (cancelled) return
+        setAudioConfigError(err instanceof Error ? err.message : String(err))
+      }
+    }
+    void loadAudioProviders()
+    const handleConfigUpdate = () => void loadAudioProviders()
+    window.addEventListener("drama:runtime-config-updated", handleConfigUpdate)
+    return () => {
+      cancelled = true
+      window.removeEventListener("drama:runtime-config-updated", handleConfigUpdate)
+    }
+  }, [])
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !lightbox && !videoLightbox) onClose()
     }
@@ -3509,6 +3637,10 @@ export default function NodeDetailPanel({
 
   const canEdit = Boolean(data && EDITABLE_NODE_TYPES.has(data.type))
   const actionBusy = actionDisabled || rerunning
+  const selectedAudioProvider = data?.type === "audio" ? resolveAudioProvider(draft.model, audioProviders) : undefined
+  const selectedAudioMode = data?.type === "audio"
+    ? audioProviderModeFromFormat(selectedAudioProvider?.api_format)
+    : "unknown"
 
   const startEdit = () => {
     if (!data) return
@@ -3553,7 +3685,7 @@ export default function NodeDetailPanel({
       const result = await updateProjectNodeDetails<NodeFull>(
         currentProjectId,
         data.id,
-        payloadFromDraft(data, draft),
+        payloadFromDraft(data, draft, selectedAudioMode),
       )
       setData(result)
       setDraft(draftFromNode(result))
@@ -3717,6 +3849,8 @@ export default function NodeDetailPanel({
               <NodeEditView
                 node={data}
                 draft={draft}
+                audioProviders={audioProviders}
+                audioConfigError={audioConfigError}
                 projectId={currentProjectId}
                 saving={saving}
                 uploading={uploadingRefs}

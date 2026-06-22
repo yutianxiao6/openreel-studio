@@ -195,7 +195,7 @@ _NODE_FIELD_SCHEMA: dict[str, dict] = {
             "negative_tags", "custom_mode", "callback_url",
             "references", "depends_on", "model",
         ],
-        "description": "通用纯音频节点。模型必须自己写最终音频 prompt；TTS 语音可写 voice/speed/instructions，音乐可写 style/instrumental；后端只按 prompt/fields 调已配置的 audio provider。",
+        "description": "通用纯音频节点。模型必须自己写最终音频 prompt；fields.model 可填音频 Provider 名或模型名；TTS 语音可写 voice/speed/instructions，音乐可写 style/instrumental；后端只按 prompt/fields 调已配置的 audio provider。",
     },
 }
 
