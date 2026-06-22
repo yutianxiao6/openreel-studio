@@ -544,10 +544,28 @@ function writeStoredNodeDimensions(updates: Record<string, StoredNodeDimensions>
 function hasManualNodeDimensions(node: Node | undefined, storedDimensions: Record<string, StoredNodeDimensions>): boolean {
   if (!node) return false
   const data = node.data as { type?: unknown; canvasSizeMode?: unknown } | undefined
+  const stored = storedDimensions[node.id]
+  if (isAutoSizedMediaType(data?.type)) {
+    const manualSize = data?.canvasSizeMode === "manual"
+      ? {
+          width: numericDimension((node.data as { canvasWidth?: unknown })?.canvasWidth),
+          height: numericDimension((node.data as { canvasHeight?: unknown })?.canvasHeight),
+        }
+      : stored?.mode === "manual"
+      ? stored
+      : undefined
+    return Boolean(manualSize && mediaManualDimensionsMatchPreview(node, manualSize))
+  }
   return data?.canvasSizeMode === "manual"
-    || (isAutoSizedMediaType(data?.type)
-      ? storedDimensions[node.id]?.mode === "manual"
-      : Boolean(storedDimensions[node.id]))
+    || Boolean(stored)
+}
+
+function mediaManualDimensionsMatchPreview(node: Node, dimensions: { width?: number; height?: number }): boolean {
+  const data = node.data as { preview?: Record<string, unknown> } | undefined
+  const previewRatio = ratioFromPreviewObject(data?.preview)
+  const dimensionRatio = ratioFromSize(dimensions.width, dimensions.height)
+  if (!previewRatio || !dimensionRatio) return true
+  return Math.abs(dimensionRatio - previewRatio) / previewRatio < 0.06
 }
 
 function clampNodeDimension(width: number, height: number): StoredNodeDimensions {
@@ -555,45 +573,6 @@ function clampNodeDimension(width: number, height: number): StoredNodeDimensions
     width: Math.max(NODE_MIN_WIDTH, Math.min(NODE_MAX_WIDTH, Math.round(width))),
     height: Math.max(NODE_MIN_HEIGHT, Math.min(NODE_MAX_HEIGHT, Math.round(height))),
   }
-}
-
-function dimensionUpdatesFromChanges(
-  changes: NodeChange[],
-  options: { completedOnly?: boolean; manualOnly?: boolean } = { completedOnly: true, manualOnly: true },
-): Record<string, StoredNodeDimensions> {
-  const updates: Record<string, StoredNodeDimensions> = {}
-  for (const change of changes) {
-    if (change.type !== "dimensions" || !change.dimensions) continue
-    if (options.manualOnly && typeof change.resizing !== "boolean") continue
-    if (options.completedOnly && change.resizing !== false) continue
-    const width = Math.round(change.dimensions.width)
-    const height = Math.round(change.dimensions.height)
-    if (width >= NODE_MIN_WIDTH && height >= NODE_MIN_HEIGHT) {
-      updates[change.id] = clampNodeDimension(width, height)
-    }
-  }
-  return updates
-}
-
-function applyDimensionChangesToData(nodes: Node[], changes: NodeChange[]): Node[] {
-  const updates = dimensionUpdatesFromChanges(changes, { completedOnly: false, manualOnly: true })
-  if (Object.keys(updates).length === 0) return nodes
-  return nodes.map((node) => {
-    const dimensions = updates[node.id]
-    if (!dimensions) return node
-    const width = Math.max(NODE_MIN_WIDTH, Math.min(NODE_MAX_WIDTH, dimensions.width))
-    const height = Math.max(NODE_MIN_HEIGHT, Math.min(NODE_MAX_HEIGHT, dimensions.height))
-    return {
-      ...node,
-      style: { ...node.style, width, height },
-      data: {
-        ...node.data,
-        canvasWidth: width,
-        canvasHeight: height,
-        canvasSizeMode: "manual",
-      },
-    }
-  })
 }
 
 function applyAutoMediaNodeDimensions(
@@ -629,7 +608,9 @@ function applyStoredNodeDimensions(
   const dimensions = storedDimensions[node.id]
   if (!dimensions) return node
   const data = node.data as { type?: unknown } | undefined
-  if (isAutoSizedMediaType(data?.type) && dimensions.mode !== "manual") return node
+  if (isAutoSizedMediaType(data?.type) && (dimensions.mode !== "manual" || !mediaManualDimensionsMatchPreview(node, dimensions))) {
+    return node
+  }
   const width = Math.max(NODE_MIN_WIDTH, Math.min(NODE_MAX_WIDTH, dimensions.width))
   const height = Math.max(NODE_MIN_HEIGHT, Math.min(NODE_MAX_HEIGHT, dimensions.height))
   return {
@@ -1227,10 +1208,9 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     }))
   },
   applyNodeChanges: (changes) => {
-    writeStoredNodeDimensions(dimensionUpdatesFromChanges(changes, { completedOnly: true, manualOnly: true }))
     set((s) => ({
       ...keepManualCanvas(
-        applyDimensionChangesToData(applyReactFlowNodeChanges(changes, s.nodes), changes),
+        applyReactFlowNodeChanges(changes, s.nodes),
         s.edges,
       ),
       manualLayout: s.manualLayout || changes.some((change) => change.type === "position"),
