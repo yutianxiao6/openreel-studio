@@ -1,0 +1,29 @@
+{
+  "name": "openreel-studio-installer",
+  "version": "0.1.2",
+  "description": "Installer CLI for OpenReel Studio desktop and server deployments.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "openreel-studio": "bin/openreel-studio.js",
+    "openreel-studio-installer": "bin/openreel-studio.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yutianxiao6/openreel-studio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yutianxiao6/openreel-studio/issues"
+  },
+  "homepage": "https://github.com/yutianxiao6/openreel-studio#readme",
+  "publishConfig": {
+    "access": "public"
+  }
+}

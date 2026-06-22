@@ -1,0 +1,44 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file:
+      - .env.production
+    environment:
+      DRAMA_PROMPT_DUMP_ENABLED: "true"
+      DRAMA_PROMPT_DUMP_FULL: "true"
+      DRAMA_PROMPT_DUMP_DIR: /workspace/data/prompt_dumps
+      DRAMA_VIDEO_POLL_TIMEOUT_SECONDS: "1200"
+    volumes:
+      - ./data:/workspace/data
+      - ./storage:/workspace/storage
+      - ./config:/workspace/config
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_BASE_PATH: /studio
+        NEXT_PUBLIC_API_BASE_URL: /studio
+    environment:
+      INTERNAL_API_BASE_URL: http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  gateway:
+    image: caddy:2-alpine
+    environment:
+      AUTH_USER: ${AUTH_USER}
+      AUTH_PASSWORD_HASH: ${AUTH_PASSWORD_HASH}
+    ports:
+      - "${APP_PUBLIC_PORT:-3100}:3000"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/certs:/etc/caddy/certs:ro
+    depends_on:
+      - web
+    restart: unless-stopped

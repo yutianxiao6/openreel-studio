@@ -1,0 +1,27 @@
+"""Event stream tools — query lifecycle events for debugging and monitoring."""
+from __future__ import annotations
+
+from typing import Any
+
+from app.agent.event_stream import event_stream
+from app.mcp_tools.registry import register
+
+
+@register("events.tail", description="Get the most recent lifecycle events", tags=["events", "read"])
+async def events_tail(project_id: str = "", n: int = 20) -> dict[str, Any]:
+    events = event_stream.tail(project_id or None, n=n)
+    return {"events": events, "count": len(events)}
+
+
+@register("events.query", description="Query events by type and time range", tags=["events", "read"])
+async def events_query(
+    project_id: str = "",
+    event_type: str = "",
+    limit: int = 50,
+) -> dict[str, Any]:
+    events = event_stream.query(
+        project_id=project_id or None,
+        event_type=event_type or None,
+        limit=limit,
+    )
+    return {"events": events, "count": len(events)}

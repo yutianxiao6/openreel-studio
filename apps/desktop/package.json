@@ -1,0 +1,79 @@
+{
+  "name": "desktop",
+  "version": "0.1.2",
+  "private": true,
+  "description": "OpenReel Studio desktop shell",
+  "homepage": "https://github.com/yutianxiao6/openreel-studio",
+  "author": {
+    "name": "OpenReel Studio Contributors",
+    "email": "yutianxiao6@users.noreply.github.com"
+  },
+  "main": "src/main.cjs",
+  "scripts": {
+    "dev": "electron .",
+    "package:win": "electron-builder --win nsis --x64 --publish never",
+    "package:linux": "electron-builder --linux AppImage deb --x64 --publish never",
+    "package:mac": "electron-builder --mac dmg zip --publish never"
+  },
+  "devDependencies": {
+    "electron": "^42.4.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "studio.openreel.desktop",
+    "productName": "OpenReel Studio",
+    "asar": true,
+    "directories": {
+      "output": "../../dist/installers",
+      "buildResources": "build"
+    },
+    "files": [
+      "package.json",
+      "src/**/*",
+      "build/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/resources/api",
+        "to": "api"
+      },
+      {
+        "from": "dist/resources/web",
+        "to": "web"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "AudioVideo",
+      "maintainer": "OpenReel Studio Contributors <yutianxiao6@users.noreply.github.com>",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OpenReel Studio"
+    }
+  }
+}

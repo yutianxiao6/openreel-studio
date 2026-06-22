@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --studio-bg: #0d0f12;
+  --studio-panel: #111318;
+  --studio-control: #171a20;
+  --studio-elevated: #1c2028;
+  --studio-border: rgb(255 255 255 / 0.10);
+  --studio-border-strong: rgb(255 255 255 / 0.16);
+  --studio-text: #f4f4f5;
+  --studio-text-muted: #a1a1aa;
+  --studio-text-faint: #71717a;
+  --studio-primary: #f4f4f5;
+  --studio-primary-text: #09090b;
+  --studio-danger: #f87171;
+  --studio-warning: #fbbf24;
+  --studio-success: #34d399;
+  --studio-info: #22d3ee;
+  --studio-radius-card: 8px;
+  --studio-radius-control: 8px;
+  --studio-shadow-panel: 0 18px 48px rgb(0 0 0 / 0.38);
+}
+
+html,
+body {
+  height: 100%;
+  background-color: var(--studio-bg);
+  color: var(--studio-text);
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.openreel-smart-node-card {
+  transform-origin: center center;
+  transition:
+    transform 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    filter 150ms ease;
+}
+
+.openreel-grid-drop-source .openreel-smart-node-card {
+  transform: scale(var(--openreel-grid-drop-scale, 0.72));
+  border-color: rgb(34 211 238 / 0.9) !important;
+  box-shadow:
+    0 0 0 2px rgb(34 211 238 / 0.35),
+    0 22px 48px rgb(0 0 0 / 0.42);
+  filter: saturate(1.08) brightness(1.05);
+}
+
+.openreel-grid-drop-target {
+  outline: 2px solid rgb(34 211 238 / 0.95);
+  outline-offset: -2px;
+  background: rgb(8 145 178 / 0.22) !important;
+}
+
+.openreel-grid-drop-target::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 6px;
+  border: 1px dashed rgb(255 255 255 / 0.72);
+  pointer-events: none;
+}
+
+.react-flow__handle {
+  min-width: 0;
+  min-height: 0;
+}
+
+.react-flow__handle.openreel-port-handle {
+  z-index: 24;
+}
+
+@media (pointer: coarse) {
+  .react-flow__handle.openreel-port-handle {
+    opacity: 0.82 !important;
+    touch-action: none;
+  }
+
+  .react-flow__handle.openreel-port-handle::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 48px;
+    height: 52px;
+    transform: translate(-50%, -50%);
+    border-radius: 999px;
+    background: rgb(0 0 0 / 0.001);
+    pointer-events: auto;
+  }
+}

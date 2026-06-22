@@ -1,0 +1,39 @@
+// Copy this file to config/runtime.jsonc when you want to manage providers by file.
+// Keep real secrets in .env.local, .env.production, or shell environment variables.
+// The API also auto-generates config/runtime.jsonc on first start from *_API_KEY env vars.
+{
+  "$schema_version": 1,
+  "llm_providers": [
+    {
+      "name": "deepseek-default",
+      "provider": "deepseek",
+      "model_name": "deepseek-chat",
+      "base_url": null,
+      "api_key": "${DEEPSEEK_API_KEY}",
+      "context_window_tokens": null,
+      "max_input_tokens": null,
+      "max_output_tokens": null,
+      "supports_prompt_cache": null,
+      "supports_vision": null,
+      "tokenizer": null,
+      "is_default": true,
+      "enabled": true,
+      "notes": "",
+      "params": {}
+    }
+  ],
+  "media_providers": [],
+  "model_assignments": {},
+  "app_settings": {
+    "agent.skip_confirmations": false,
+    "agent.max_iterations": 200,
+    "agent.auto_archive": true,
+    "agent.blueprint_review_mode": "continuous_final_review",
+    "agent.video_plan_confirmation_mode": "one_shot",
+    "agent.vision_context_max_images": 8,
+    "agent.vision_context_max_dimension": 1536,
+    "ui.canvas_default_view": "canvas",
+    "feature_flags": {},
+    "kill_switches": {}
+  }
+}

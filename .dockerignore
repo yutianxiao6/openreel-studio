@@ -1,0 +1,17 @@
+.git
+.env
+.env.local
+.env.production
+node_modules
+**/node_modules
+apps/web/.next
+**/.next
+apps/api/.venv
+**/.venv
+apps/api/data
+apps/api/storage
+data
+storage
+*.tsbuildinfo
+tmp_*
+*.log

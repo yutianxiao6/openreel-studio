@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+
+WORKDIR /workspace/apps/api
+
+RUN pip install uv
+
+COPY apps/api/pyproject.toml apps/api/README.md ./
+RUN uv sync --no-dev
+
+COPY apps/api/app/ ./app/
+
+EXPOSE 8000
+
+CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

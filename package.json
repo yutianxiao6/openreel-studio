@@ -1,0 +1,29 @@
+{
+  "name": "openreel-studio",
+  "version": "0.1.2",
+  "private": true,
+  "license": "MIT",
+  "description": "聊天式视频智能创作工作台",
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "lint": "pnpm --filter web lint",
+    "typecheck": "pnpm -r typecheck",
+    "api:dev": "cd apps/api && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
+    "api:init-db": "cd apps/api && uv run python ../../scripts/init_db.py",
+    "desktop:dev": "pnpm --filter desktop dev",
+    "desktop:check:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop/check-windows.ps1",
+    "desktop:stage:web": "node scripts/desktop/stage-web.mjs",
+    "desktop:package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop/build-windows.ps1",
+    "desktop:package:linux": "bash scripts/desktop/build-unix.sh linux",
+    "desktop:package:mac": "bash scripts/desktop/build-unix.sh mac"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
+  }
+}

@@ -1,0 +1,75 @@
+name: Publish npm Installer
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish openreel-studio-installer
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Show publish toolchain
+        run: |
+          node --version
+          npm --version
+
+      - name: Select npm auth mode
+        id: npm-auth
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM: ${{ secrets.NPM }}
+          NPM1: ${{ secrets.NPM1 }}
+        run: |
+          if [ -n "${NPM_TOKEN:-}" ] || [ -n "${NPM:-}" ] || [ -n "${NPM1:-}" ]; then
+            echo "mode=token" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=trusted-publisher" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check published package version
+        id: npm-version
+        run: |
+          version="$(node -p "require('./packages/installer/package.json').version")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if npm view "openreel-studio-installer@${version}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "openreel-studio-installer@${version} already exists; skipping publish."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure npm token
+        if: steps.npm-version.outputs.exists != 'true' && steps.npm-auth.outputs.mode == 'token'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM: ${{ secrets.NPM }}
+          NPM1: ${{ secrets.NPM1 }}
+        run: |
+          token="${NPM_TOKEN:-${NPM:-${NPM1:-}}}"
+          userconfig="${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$token" > "$userconfig"
+
+      - name: Publish installer package with token
+        if: steps.npm-version.outputs.exists != 'true' && steps.npm-auth.outputs.mode == 'token'
+        run: npm publish ./packages/installer --access public --provenance
+
+      - name: Publish installer package with trusted publisher
+        if: steps.npm-version.outputs.exists != 'true' && steps.npm-auth.outputs.mode == 'trusted-publisher'
+        run: npm publish ./packages/installer --access public --provenance
