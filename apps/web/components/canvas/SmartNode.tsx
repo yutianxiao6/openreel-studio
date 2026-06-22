@@ -32,7 +32,11 @@ export interface StageData {
   // 图片元数据（生成参数）
   size?: string
   size_requested?: string
+  size_final?: string
   aspect_ratio?: string
+  ratio?: string | number
+  resolution?: string
+  output_size?: string
   quality?: string
   downgraded?: boolean
   provider?: string
@@ -81,6 +85,13 @@ interface PreviewData {
   duration_seconds?: unknown
   width?: number
   height?: number
+  aspect_ratio?: string
+  ratio?: string | number
+  size?: string
+  size_requested?: string
+  size_final?: string
+  resolution?: string
+  output_size?: string
   grid?: { rows?: number; cols?: number }
   cells?: ImageGridPreviewCell[]
   prompt?: string
@@ -109,6 +120,7 @@ interface NodeData {
   updatedAt?: string
   canvasWidth?: number
   canvasHeight?: number
+  canvasSizeMode?: "manual"
 }
 
 const CARD_WIDTH = 260
@@ -222,17 +234,75 @@ function ratioFromSize(width?: number, height?: number): number | null {
   return Math.min(3.2, Math.max(0.42, width / height))
 }
 
-function mediaNodeDimensions(preview?: PreviewData, image?: { width?: number; height?: number } | null): { width: number; height: number } {
+function ratioFromAspectValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return ratioFromSize(value, 1)
+  }
+  if (typeof value !== "string") return null
+  const text = value.trim().toLowerCase()
+  if (!text) return null
+  const numeric = Number(text)
+  if (Number.isFinite(numeric) && numeric > 0) return ratioFromSize(numeric, 1)
+  const pair = text.match(/(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)/)
+  if (pair) return ratioFromSize(Number(pair[1]), Number(pair[2]))
+  const size = text.match(/(\d{2,5})\s*[x×*]\s*(\d{2,5})/)
+  if (size) return ratioFromSize(Number(size[1]), Number(size[2]))
+  if (/square|正方|方图/.test(text)) return 1
+  if (/portrait|vertical|竖/.test(text)) return ratioFromSize(9, 16)
+  if (/landscape|horizontal|横/.test(text)) return ratioFromSize(16, 9)
+  return null
+}
+
+function ratioFromPreview(preview?: PreviewData): number | null {
+  if (!preview) return null
+  const direct =
+    ratioFromSize(preview.width, preview.height) ||
+    ratioFromAspectValue(preview.aspect_ratio) ||
+    ratioFromAspectValue(preview.ratio) ||
+    ratioFromAspectValue(preview.size) ||
+    ratioFromAspectValue(preview.size_requested) ||
+    ratioFromAspectValue(preview.size_final) ||
+    ratioFromAspectValue(preview.resolution) ||
+    ratioFromAspectValue(preview.output_size)
+  if (direct) return direct
+
+  if (Array.isArray(preview.stages)) {
+    for (const stage of preview.stages) {
+      const stageRatio =
+        ratioFromSize(stage.width, stage.height) ||
+        ratioFromAspectValue(stage.aspect_ratio) ||
+        ratioFromAspectValue(stage.ratio) ||
+        ratioFromAspectValue(stage.size) ||
+        ratioFromAspectValue(stage.size_requested) ||
+        ratioFromAspectValue(stage.size_final) ||
+        ratioFromAspectValue(stage.resolution) ||
+        ratioFromAspectValue(stage.output_size)
+      if (stageRatio) return stageRatio
+    }
+  }
+
+  const cell = Array.isArray(preview.cells)
+    ? preview.cells.find((item) => item.width && item.height)
+    : undefined
+  const gridCols = preview.grid?.cols || 1
+  const gridRows = preview.grid?.rows || 1
+  return (
+    (cell ? ratioFromSize((cell.width || 1) * gridCols, (cell.height || 1) * gridRows) : null) ||
+    (preview.type === "image_grid" ? ratioFromSize(gridCols, gridRows) : null)
+  )
+}
+
+function mediaNodeDimensions(preview?: PreviewData, media?: { width?: number; height?: number } | null): { width: number; height: number } {
   const cell = Array.isArray(preview?.cells)
     ? preview.cells.find((item) => item.width && item.height)
     : undefined
   const gridCols = preview?.grid?.cols || 1
   const gridRows = preview?.grid?.rows || 1
   const ratio =
-    ratioFromSize(preview?.width, preview?.height) ||
-    ratioFromSize(image?.width, image?.height) ||
+    ratioFromPreview(preview) ||
+    ratioFromSize(media?.width, media?.height) ||
     (cell ? ratioFromSize((cell.width || 1) * gridCols, (cell.height || 1) * gridRows) : null) ||
-    (preview?.type === "image_grid" ? gridCols / gridRows : null) ||
+    (preview?.type === "image_grid" ? ratioFromSize(gridCols, gridRows) : null) ||
     CARD_WIDTH / CARD_HEIGHT
 
   let width = Math.sqrt(MEDIA_TARGET_AREA * ratio)
@@ -633,11 +703,17 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const video = videoFromPreview(data.preview)
   const audio = audioFromPreview(data.preview)
   const [naturalImage, setNaturalImage] = useState<{ src: string; width: number; height: number } | null>(null)
+  const [naturalVideo, setNaturalVideo] = useState<{ src: string; width: number; height: number } | null>(null)
   const imageForSize = image?.width && image?.height
     ? image
     : naturalImage?.src === image?.primary
     ? naturalImage
     : image
+  const videoForSize = video?.width && video?.height
+    ? video
+    : naturalVideo?.src === video?.src
+    ? naturalVideo
+    : video
   const gridPreview = data.preview?.type === "image_grid" ? data.preview : undefined
   const gridCells = Array.isArray(gridPreview?.cells) ? gridPreview.cells : []
   const gridCols = gridPreview?.grid?.cols || 2
@@ -648,11 +724,21 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const [gridDragStart, setGridDragStart] = useState<{ cellId: string; x: number; y: number } | null>(null)
   const [gridError, setGridError] = useState<string | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const lastAutoSizeRef = useRef<string | null>(null)
   const [cardVideoPlaying, setCardVideoPlaying] = useState(false)
   const previewText = textFromPreview(data.preview, data.prompt, data.title)
-  const autoNodeSize = data.type === "image" ? mediaNodeDimensions(data.preview, imageForSize) : { width: CARD_WIDTH, height: CARD_HEIGHT }
-  const storedWidth = typeof data.canvasWidth === "number" && Number.isFinite(data.canvasWidth) ? data.canvasWidth : undefined
-  const storedHeight = typeof data.canvasHeight === "number" && Number.isFinite(data.canvasHeight) ? data.canvasHeight : undefined
+  const autoNodeSize = data.type === "image"
+    ? mediaNodeDimensions(data.preview, imageForSize)
+    : data.type === "video"
+    ? mediaNodeDimensions(data.preview, videoForSize)
+    : { width: CARD_WIDTH, height: CARD_HEIGHT }
+  const useManualCanvasSize = data.canvasSizeMode === "manual" || (data.type !== "image" && data.type !== "video")
+  const storedWidth = useManualCanvasSize && typeof data.canvasWidth === "number" && Number.isFinite(data.canvasWidth)
+    ? data.canvasWidth
+    : undefined
+  const storedHeight = useManualCanvasSize && typeof data.canvasHeight === "number" && Number.isFinite(data.canvasHeight)
+    ? data.canvasHeight
+    : undefined
   const nodeWidth = Math.max(
     NODE_MIN_WIDTH,
     Math.min(NODE_MAX_WIDTH, storedWidth ?? autoNodeSize.width),
@@ -664,6 +750,24 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   useEffect(() => {
     updateNodeInternals(id)
   }, [id, nodeWidth, nodeHeight, updateNodeInternals])
+  useEffect(() => {
+    const autoSizedMedia = (data.type === "image" || data.type === "video") && !useManualCanvasSize
+    if (!autoSizedMedia) {
+      lastAutoSizeRef.current = null
+      return
+    }
+    const key = `${Math.round(autoNodeSize.width)}x${Math.round(autoNodeSize.height)}`
+    if (lastAutoSizeRef.current === key) return
+    lastAutoSizeRef.current = key
+    resizeCanvasNode(id, autoNodeSize.width, autoNodeSize.height, { mode: "auto" })
+  }, [
+    autoNodeSize.height,
+    autoNodeSize.width,
+    data.type,
+    id,
+    resizeCanvasNode,
+    useManualCanvasSize,
+  ])
   const gridToolActive = gridMode !== "idle"
   const gridEditing = gridToolActive && gridCells.length > 0
   const canGridCrop = data.type === "image" && !isRunning && !isSuperseded && Boolean(image?.primary || gridCells.length)
@@ -1004,6 +1108,12 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 playsInline
                 preload="metadata"
                 draggable={false}
+                onLoadedMetadata={(event) => {
+                  const el = event.currentTarget
+                  if ((!video.width || !video.height) && el.videoWidth > 0 && el.videoHeight > 0) {
+                    setNaturalVideo({ src: video.src, width: el.videoWidth, height: el.videoHeight })
+                  }
+                }}
                 onPlay={() => setCardVideoPlaying(true)}
                 onPause={() => setCardVideoPlaying(false)}
                 onEnded={() => setCardVideoPlaying(false)}
@@ -1048,7 +1158,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 className="block h-full w-full select-none object-cover"
                 onLoad={(e) => {
                   const el = e.currentTarget
-                  if (!image.width && !image.height && el.naturalWidth > 0 && el.naturalHeight > 0) {
+                  if ((!image.width || !image.height) && el.naturalWidth > 0 && el.naturalHeight > 0) {
                     setNaturalImage({ src: image.primary, width: el.naturalWidth, height: el.naturalHeight })
                   }
                 }}

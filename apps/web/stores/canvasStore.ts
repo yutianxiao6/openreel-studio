@@ -30,7 +30,7 @@ interface CanvasState {
   setEdges: (edges: Edge[]) => void
   addNode: (node: Node, options?: { manual?: boolean }) => void
   updateNode: (id: string, data: Partial<Node["data"]>) => void
-  resizeNode: (id: string, width: number, height: number, options?: { persist?: boolean }) => void
+  resizeNode: (id: string, width: number, height: number, options?: { persist?: boolean; mode?: "manual" | "auto" }) => void
   applyNodeChanges: (changes: NodeChange[]) => void
   applyEdgeChanges: (changes: EdgeChange[]) => void
   connectNodes: (connection: Connection) => Edge | null
@@ -188,6 +188,10 @@ function nodeSort(a: Node, b: Node): number {
   )
 }
 
+function isAutoSizedMediaType(type: unknown): boolean {
+  return type === "image" || type === "video"
+}
+
 function ratioFromSize(width?: number, height?: number): number | null {
   if (!width || !height || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     return null
@@ -195,19 +199,75 @@ function ratioFromSize(width?: number, height?: number): number | null {
   return Math.min(3.2, Math.max(0.42, width / height))
 }
 
-function mediaNodeDimensionsFromPreview(preview?: Record<string, unknown>): { width: number; height: number } {
-  const grid = preview?.grid && typeof preview.grid === "object" && !Array.isArray(preview.grid)
+function ratioFromAspectValue(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return ratioFromSize(value, 1)
+  }
+  if (typeof value !== "string") return null
+  const text = value.trim().toLowerCase()
+  if (!text) return null
+  const numeric = Number(text)
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return ratioFromSize(numeric, 1)
+  }
+  const pair = text.match(/(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)/)
+  if (pair) {
+    return ratioFromSize(Number(pair[1]), Number(pair[2]))
+  }
+  const size = text.match(/(\d{2,5})\s*[x×*]\s*(\d{2,5})/)
+  if (size) {
+    return ratioFromSize(Number(size[1]), Number(size[2]))
+  }
+  if (/square|正方|方图/.test(text)) return 1
+  if (/portrait|vertical|竖/.test(text)) return ratioFromSize(9, 16)
+  if (/landscape|horizontal|横/.test(text)) return ratioFromSize(16, 9)
+  return null
+}
+
+function ratioFromPreviewObject(preview?: Record<string, unknown>): number | null {
+  if (!preview) return null
+  const direct =
+    ratioFromSize(numericDimension(preview.width), numericDimension(preview.height)) ||
+    ratioFromAspectValue(preview.aspect_ratio) ||
+    ratioFromAspectValue(preview.ratio) ||
+    ratioFromAspectValue(preview.size) ||
+    ratioFromAspectValue(preview.size_requested) ||
+    ratioFromAspectValue(preview.size_final) ||
+    ratioFromAspectValue(preview.resolution) ||
+    ratioFromAspectValue(preview.output_size)
+  if (direct) return direct
+
+  if (Array.isArray(preview.stages)) {
+    for (const stage of preview.stages) {
+      if (!stage || typeof stage !== "object" || Array.isArray(stage)) continue
+      const item = stage as Record<string, unknown>
+      const stageRatio = ratioFromPreviewObject(item)
+      if (stageRatio) return stageRatio
+    }
+  }
+
+  for (const key of ["image", "video", "result", "output", "asset", "metadata"]) {
+    const nested = preview[key]
+    if (!nested || typeof nested !== "object" || Array.isArray(nested)) continue
+    const nestedRatio = ratioFromPreviewObject(nested as Record<string, unknown>)
+    if (nestedRatio) return nestedRatio
+  }
+
+  const grid = preview.grid && typeof preview.grid === "object" && !Array.isArray(preview.grid)
     ? preview.grid as Record<string, unknown>
     : undefined
-  const cells = Array.isArray(preview?.cells) ? preview.cells as Record<string, unknown>[] : []
+  const cells = Array.isArray(preview.cells) ? preview.cells as Record<string, unknown>[] : []
   const cell = cells.find((item) => numericDimension(item.width) && numericDimension(item.height))
   const gridCols = numericDimension(grid?.cols) || 1
   const gridRows = numericDimension(grid?.rows) || 1
-  const ratio =
-    ratioFromSize(numericDimension(preview?.width), numericDimension(preview?.height)) ||
+  return (
     (cell ? ratioFromSize((numericDimension(cell.width) || 1) * gridCols, (numericDimension(cell.height) || 1) * gridRows) : null) ||
-    (preview?.type === "image_grid" ? gridCols / gridRows : null) ||
-    NODE_CARD_WIDTH / NODE_CARD_HEIGHT
+    (preview.type === "image_grid" ? ratioFromSize(gridCols, gridRows) : null)
+  )
+}
+
+function mediaNodeDimensionsFromPreview(preview?: Record<string, unknown>): { width: number; height: number } {
+  const ratio = ratioFromPreviewObject(preview) || NODE_CARD_WIDTH / NODE_CARD_HEIGHT
 
   let width = Math.sqrt(MEDIA_TARGET_AREA * ratio)
   const minWidthForRatio = Math.max(MEDIA_MIN_WIDTH, MEDIA_MIN_HEIGHT * ratio)
@@ -219,15 +279,21 @@ function mediaNodeDimensionsFromPreview(preview?: Record<string, unknown>): { wi
 }
 
 function nodeVisualSize(node: Node): { width: number; height: number } {
-  const data = node.data as { type?: string; preview?: Record<string, unknown>; canvasWidth?: number; canvasHeight?: number } | undefined
-  if (data?.canvasWidth && data.canvasHeight) {
+  const data = node.data as {
+    type?: string
+    preview?: Record<string, unknown>
+    canvasWidth?: number
+    canvasHeight?: number
+    canvasSizeMode?: string
+  } | undefined
+  if (data?.canvasWidth && data.canvasHeight && (!isAutoSizedMediaType(data.type) || data.canvasSizeMode === "manual")) {
     return {
       width: Math.max(NODE_MIN_WIDTH, Math.min(NODE_MAX_WIDTH, Number(data.canvasWidth) || NODE_CARD_WIDTH)),
       height: Math.max(NODE_MIN_HEIGHT, Math.min(NODE_MAX_HEIGHT, Number(data.canvasHeight) || NODE_CARD_HEIGHT)),
     }
   }
-  if (data?.type === "image") {
-    const size = mediaNodeDimensionsFromPreview(data.preview)
+  if (isAutoSizedMediaType(data?.type)) {
+    const size = mediaNodeDimensionsFromPreview(data?.preview)
     return { width: size.width, height: size.height }
   }
   return {
@@ -468,6 +534,13 @@ function writeStoredNodeDimensions(updates: Record<string, StoredNodeDimensions>
   }
 }
 
+function hasManualNodeDimensions(node: Node | undefined, storedDimensions: Record<string, StoredNodeDimensions>): boolean {
+  if (!node) return false
+  if (storedDimensions[node.id]) return true
+  const data = node.data as { canvasSizeMode?: unknown } | undefined
+  return data?.canvasSizeMode === "manual"
+}
+
 function clampNodeDimension(width: number, height: number): StoredNodeDimensions {
   return {
     width: Math.max(NODE_MIN_WIDTH, Math.min(NODE_MAX_WIDTH, Math.round(width))),
@@ -477,11 +550,12 @@ function clampNodeDimension(width: number, height: number): StoredNodeDimensions
 
 function dimensionUpdatesFromChanges(
   changes: NodeChange[],
-  options: { completedOnly?: boolean } = { completedOnly: true },
+  options: { completedOnly?: boolean; manualOnly?: boolean } = { completedOnly: true, manualOnly: true },
 ): Record<string, StoredNodeDimensions> {
   const updates: Record<string, StoredNodeDimensions> = {}
   for (const change of changes) {
     if (change.type !== "dimensions" || !change.dimensions) continue
+    if (options.manualOnly && typeof change.resizing !== "boolean") continue
     if (options.completedOnly && change.resizing !== false) continue
     const width = Math.round(change.dimensions.width)
     const height = Math.round(change.dimensions.height)
@@ -493,7 +567,7 @@ function dimensionUpdatesFromChanges(
 }
 
 function applyDimensionChangesToData(nodes: Node[], changes: NodeChange[]): Node[] {
-  const updates = dimensionUpdatesFromChanges(changes, { completedOnly: false })
+  const updates = dimensionUpdatesFromChanges(changes, { completedOnly: false, manualOnly: true })
   if (Object.keys(updates).length === 0) return nodes
   return nodes.map((node) => {
     const dimensions = updates[node.id]
@@ -507,9 +581,36 @@ function applyDimensionChangesToData(nodes: Node[], changes: NodeChange[]): Node
         ...node.data,
         canvasWidth: width,
         canvasHeight: height,
+        canvasSizeMode: "manual",
       },
     }
   })
+}
+
+function applyAutoMediaNodeDimensions(
+  node: Node,
+  storedDimensions: Record<string, StoredNodeDimensions>,
+): Node {
+  const data = node.data as {
+    type?: string
+    preview?: Record<string, unknown>
+    canvasWidth?: number
+    canvasHeight?: number
+    canvasSizeMode?: string
+  } | undefined
+  if (!isAutoSizedMediaType(data?.type) || hasManualNodeDimensions(node, storedDimensions)) {
+    return node
+  }
+  const size = mediaNodeDimensionsFromPreview(data?.preview)
+  const nextData = { ...(node.data as Record<string, unknown>) }
+  delete nextData.canvasWidth
+  delete nextData.canvasHeight
+  delete nextData.canvasSizeMode
+  return {
+    ...node,
+    style: { ...node.style, width: size.width, height: size.height },
+    data: nextData,
+  }
 }
 
 function applyStoredNodeDimensions(
@@ -527,6 +628,7 @@ function applyStoredNodeDimensions(
       ...node.data,
       canvasWidth: width,
       canvasHeight: height,
+      canvasSizeMode: "manual",
     },
   }
 }
@@ -640,6 +742,18 @@ function numericDimension(value: unknown): number | undefined {
   return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined
 }
 
+function mediaPreviewHints(data: Record<string, unknown>): Record<string, unknown> {
+  const hints: Record<string, unknown> = {}
+  const width = numericDimension(data.width)
+  const height = numericDimension(data.height)
+  if (width) hints.width = width
+  if (height) hints.height = height
+  for (const key of ["aspect_ratio", "ratio", "size", "size_requested", "size_final", "resolution", "output_size"]) {
+    if (data[key] != null) hints[key] = data[key]
+  }
+  return hints
+}
+
 function existingNodeDimension(node: Node, key: "width" | "height"): number | undefined {
   const data = node.data as { canvasWidth?: unknown; canvasHeight?: unknown } | undefined
   const dataValue = key === "width" ? data?.canvasWidth : data?.canvasHeight
@@ -647,10 +761,19 @@ function existingNodeDimension(node: Node, key: "width" | "height"): number | un
   return numericDimension(dataValue) ?? numericDimension(styleValue) ?? numericDimension(node[key])
 }
 
-function preserveExistingNodeLayout(next: Node, existing: Node | undefined): Node {
+function preserveExistingNodeLayout(
+  next: Node,
+  existing: Node | undefined,
+  storedDimensions: Record<string, StoredNodeDimensions> = {},
+): Node {
   if (!existing) return next
-  const width = existingNodeDimension(existing, "width")
-  const height = existingNodeDimension(existing, "height")
+  const nextData = next.data as { type?: string } | undefined
+  const preserveDimensions =
+    !isAutoSizedMediaType(nextData?.type) ||
+    hasManualNodeDimensions(next, storedDimensions) ||
+    hasManualNodeDimensions(existing, storedDimensions)
+  const width = preserveDimensions ? existingNodeDimension(existing, "width") : undefined
+  const height = preserveDimensions ? existingNodeDimension(existing, "height") : undefined
   return {
     ...next,
     position: existing.position,
@@ -666,6 +789,7 @@ function preserveExistingNodeLayout(next: Node, existing: Node | undefined): Nod
       ...next.data,
       ...(width ? { canvasWidth: width } : {}),
       ...(height ? { canvasHeight: height } : {}),
+      ...(width && height ? { canvasSizeMode: "manual" } : {}),
     },
   }
 }
@@ -846,8 +970,7 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         url: data.url,
         local_url: data.local_url,
         remote_url: data.remote_url,
-        width: numericDimension(data.width),
-        height: numericDimension(data.height),
+        ...mediaPreviewHints(data),
       }
     }
     // Storyboard with grid image / shot list
@@ -860,8 +983,7 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         url: data.url,
         local_url: data.local_url,
         remote_url: data.remote_url,
-        width: numericDimension(data.width),
-        height: numericDimension(data.height),
+        ...mediaPreviewHints(data),
       }
     }
     // Standalone image preview from node/media service output
@@ -871,8 +993,7 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         url: data.url as string | undefined,
         local_url: data.local_url as string | undefined,
         remote_url: data.remote_url as string | undefined,
-        width: numericDimension(data.width),
-        height: numericDimension(data.height),
+        ...mediaPreviewHints(data),
       }
     }
     if (data.type === "video" && (data.url || data.local_url || data.remote_url)) {
@@ -883,8 +1004,7 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         remote_url: data.remote_url as string | undefined,
         poster: data.poster as string | undefined,
         thumbnail_url: data.thumbnail_url as string | undefined,
-        width: numericDimension(data.width),
-        height: numericDimension(data.height),
+        ...mediaPreviewHints(data),
       }
     }
     if (data.type === "audio" && (data.url || data.local_url || data.remote_url)) {
@@ -905,8 +1025,7 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         url: (data.url || data.composite_url) as string | undefined,
         local_url: (data.local_url || data.composite_url) as string | undefined,
         composite_url: data.composite_url as string | undefined,
-        width: numericDimension(data.width),
-        height: numericDimension(data.height),
+        ...mediaPreviewHints(data),
       }
     }
     // Nested image: { image: {url, local_url, ...} }
@@ -917,8 +1036,7 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         url: img.url as string | undefined,
         local_url: img.local_url as string | undefined,
         remote_url: img.remote_url as string | undefined,
-        width: numericDimension(img.width),
-        height: numericDimension(img.height),
+        ...mediaPreviewHints(img),
       }
     }
     // Nested video: { video: {url, local_url, ...} }
@@ -931,8 +1049,7 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         remote_url: video.remote_url as string | undefined,
         poster: video.poster as string | undefined,
         thumbnail_url: video.thumbnail_url as string | undefined,
-        width: numericDimension(video.width),
-        height: numericDimension(video.height),
+        ...mediaPreviewHints(video),
       }
     }
     const audio = data.audio as Record<string, unknown> | undefined
@@ -954,8 +1071,7 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         url: data.url as string | undefined,
         local_url: data.local_url as string | undefined,
         remote_url: data.remote_url as string | undefined,
-        width: numericDimension(data.width),
-        height: numericDimension(data.height),
+        ...mediaPreviewHints(data),
       }
     }
     if (typeof bareUrl === "string" && /\.(mp4|webm|mov)(\?|$)/i.test(bareUrl)) {
@@ -966,8 +1082,7 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         remote_url: data.remote_url as string | undefined,
         poster: data.poster as string | undefined,
         thumbnail_url: data.thumbnail_url as string | undefined,
-        width: numericDimension(data.width),
-        height: numericDimension(data.height),
+        ...mediaPreviewHints(data),
       }
     }
     if (typeof bareUrl === "string" && /\.(mp3|wav|m4a|aac|ogg|flac)(\?|$)/i.test(bareUrl)) {
@@ -1005,7 +1120,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         manualLayout,
       }
   }),
-	  updateNode: (id, data) =>
+	  updateNode: (id, data) => {
+    const storedDimensions = readStoredNodeDimensions()
 	    set((s) => {
 	      const nodes = s.nodes.map((n) => {
         if (n.id !== id) return n
@@ -1018,16 +1134,18 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         )
         if (nextRenderState) nextData.renderState = nextRenderState
         nextData.preview = normalizePreviewForNode(nextData.type ?? n.type, nextData.preview, nextData.prompt)
-        return { ...n, data: nextData }
+        return applyAutoMediaNodeDimensions({ ...n, data: nextData }, storedDimensions)
       })
 	      return {
 	        ...keepManualCanvas(nodes, s.edges),
 	        manualLayout: s.manualLayout,
 	      }
-	    }),
+	    })
+  },
   resizeNode: (id, width, height, options) => {
     const dimensions = clampNodeDimension(width, height)
-    if (options?.persist) {
+    const mode = options?.mode ?? "manual"
+    if (mode === "manual" && options?.persist) {
       writeStoredNodeDimensions({ [id]: dimensions })
     }
     set((s) => ({
@@ -1037,11 +1155,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           return {
             ...node,
             style: { ...node.style, width: dimensions.width, height: dimensions.height },
-            data: {
-              ...node.data,
-              canvasWidth: dimensions.width,
-              canvasHeight: dimensions.height,
-            },
+            data: mode === "manual"
+              ? {
+                  ...node.data,
+                  canvasWidth: dimensions.width,
+                  canvasHeight: dimensions.height,
+                  canvasSizeMode: "manual",
+                }
+              : (() => {
+                  const nextData = { ...(node.data as Record<string, unknown>) }
+                  delete nextData.canvasWidth
+                  delete nextData.canvasHeight
+                  delete nextData.canvasSizeMode
+                  return nextData
+                })(),
           }
         }),
         s.edges,
@@ -1050,7 +1177,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     }))
   },
   applyNodeChanges: (changes) => {
-    writeStoredNodeDimensions(dimensionUpdatesFromChanges(changes))
+    writeStoredNodeDimensions(dimensionUpdatesFromChanges(changes, { completedOnly: true, manualOnly: true }))
     set((s) => ({
       ...keepManualCanvas(
         applyDimensionChangesToData(applyReactFlowNodeChanges(changes, s.nodes), changes),
@@ -1142,34 +1269,34 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       if (!id) return
 
       const { nodes, edges } = get()
+      const storedDimensions = readStoredNodeDimensions()
       if (nodes.some((n) => n.id === id)) {
         set((s) => arrangeCanvas(
-          s.nodes.map((n) =>
-            n.id === id
-              ? {
-                  ...n,
-                  data: {
-                    ...n.data,
-                    type: payload.type ?? n.data.type,
-                    title: payload.title ?? n.data.title,
-                    status: payload.status ?? n.data.status,
-                    surface: payload.surface ?? n.data.surface,
-                    prompt: payload.prompt ?? n.data.prompt,
-                    renderState: renderStateFromPayload(
-                      payload as Record<string, unknown>,
-                      payload.type ?? n.data.type,
-                      payload.status ?? n.data.status,
-                      payload.preview ?? n.data.preview,
-                    ) ?? n.data.renderState,
-                    preview: normalizePreviewForNode(
-                      payload.type ?? n.data.type,
-                      payload.preview ?? n.data.preview,
-                      payload.prompt ?? n.data.prompt,
-                    ),
-                  },
-                }
-              : n,
-          ),
+          s.nodes.map((n) => {
+            if (n.id !== id) return n
+            return applyAutoMediaNodeDimensions({
+              ...n,
+              data: {
+                ...n.data,
+                type: payload.type ?? n.data.type,
+                title: payload.title ?? n.data.title,
+                status: payload.status ?? n.data.status,
+                surface: payload.surface ?? n.data.surface,
+                prompt: payload.prompt ?? n.data.prompt,
+                renderState: renderStateFromPayload(
+                  payload as Record<string, unknown>,
+                  payload.type ?? n.data.type,
+                  payload.status ?? n.data.status,
+                  payload.preview ?? n.data.preview,
+                ) ?? n.data.renderState,
+                preview: normalizePreviewForNode(
+                  payload.type ?? n.data.type,
+                  payload.preview ?? n.data.preview,
+                  payload.prompt ?? n.data.prompt,
+                ),
+              },
+            }, storedDimensions)
+          }),
           s.edges,
           s.manualLayout,
         ))
@@ -1213,7 +1340,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
 	      const explicitPosition = payloadPosition(payload)
 	      const preserveExistingLayout = mutatedNodes.length > 0 && !explicitPosition
-	      const newNode: Node = {
+	      const newNode: Node = applyAutoMediaNodeDimensions({
         id,
         type: String(payload.type ?? "default"),
         dragHandle: NODE_DRAG_HANDLE,
@@ -1236,7 +1363,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           supersedes_id: supersedesId,
           createdAt: new Date().toISOString(),
         },
-      }
+      }, storedDimensions)
 
 	      set((s) => {
 	        const nextNodes = [...mutatedNodes, newNode]
@@ -1249,9 +1376,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 	        }
 	        return arrangeCanvas(nextNodes, nextEdges, false)
 	      })
-	    } else if (action === "update_node") {
+    } else if (action === "update_node") {
       const id = String(payload.id ?? "")
       if (!id) return
+      const storedDimensions = readStoredNodeDimensions()
       set((s) => {
         const nodes = s.nodes.map((n) => {
           if (n.id !== id) return n
@@ -1272,6 +1400,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                 url?: string
                 local_url?: string
                 remote_url?: string
+                width?: unknown
+                height?: unknown
+                aspect_ratio?: unknown
+                ratio?: unknown
+                size?: unknown
+                size_requested?: unknown
+                size_final?: unknown
+                resolution?: unknown
+                output_size?: unknown
                 error?: string
                 diagnostics?: unknown
               }>
@@ -1284,6 +1421,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
               url?: string
               local_url?: string
               remote_url?: string
+              width?: unknown
+              height?: unknown
+              aspect_ratio?: unknown
+              ratio?: unknown
+              size?: unknown
+              size_requested?: unknown
+              size_final?: unknown
+              resolution?: unknown
+              output_size?: unknown
             }
           }
           const prevPreview = prevData.preview
@@ -1313,6 +1459,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                 url: nextPreview.url ?? (hasIncomingMedia ? undefined : stages[idx].url),
                 local_url: nextPreview.local_url ?? (hasIncomingMedia ? undefined : stages[idx].local_url),
                 remote_url: nextPreview.remote_url ?? (hasIncomingMedia ? undefined : stages[idx].remote_url),
+                width: nextPreview.width ?? stages[idx].width,
+                height: nextPreview.height ?? stages[idx].height,
+                aspect_ratio: nextPreview.aspect_ratio ?? stages[idx].aspect_ratio,
+                ratio: nextPreview.ratio ?? stages[idx].ratio,
+                size: nextPreview.size ?? stages[idx].size,
+                size_requested: nextPreview.size_requested ?? stages[idx].size_requested,
+                size_final: nextPreview.size_final ?? stages[idx].size_final,
+                resolution: nextPreview.resolution ?? stages[idx].resolution,
+                output_size: nextPreview.output_size ?? stages[idx].output_size,
               }
               delete stages[idx].error
               delete stages[idx].diagnostics
@@ -1361,7 +1516,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           if (mergedPreview !== undefined || Object.prototype.hasOwnProperty.call(dataPatch, "prompt")) {
             dataPatch.preview = normalizePreviewForNode(nextType, mergedPreview ?? prevPreview, nextPrompt)
           }
-          return { ...n, data: { ...n.data, ...dataPatch } }
+          return applyAutoMediaNodeDimensions({ ...n, data: { ...n.data, ...dataPatch } }, storedDimensions)
         })
 	        return {
 	          ...keepManualCanvas(nodes, s.edges),
@@ -1411,7 +1566,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 	        : preserveExistingLayout
 	        ? nextManualNodePosition([...currentNodeList, ...nodes])
 	        : { x: CANVAS_ORIGIN_X, y: CANVAS_ORIGIN_Y }
-	      const nextNode = applyStoredNodeDimensions({
+	      const baseNode: Node = {
 	        id: n.id,
 	        type: n.type,
         dragHandle: NODE_DRAG_HANDLE,
@@ -1432,8 +1587,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           error_message: n.error_message ?? errorMessageFromUnknown(n.output_json),
 	          preview,
 	        },
-	      }, storedDimensions)
-	      nodes.push(preserveExistingLayout ? preserveExistingNodeLayout(nextNode, existing) : nextNode)
+	      }
+      const nextNode = applyStoredNodeDimensions(
+        applyAutoMediaNodeDimensions(baseNode, storedDimensions),
+        storedDimensions,
+      )
+	      nodes.push(preserveExistingLayout ? preserveExistingNodeLayout(nextNode, existing, storedDimensions) : nextNode)
 	    }
 
     const edges: Edge[] = rawEdges.map((e) => ({
