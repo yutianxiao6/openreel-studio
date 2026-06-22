@@ -132,7 +132,7 @@ OpenReel Studio-0.0.1-x64.dmg
 
 Windows uses the assisted NSIS installer. It shows the installation directory
 page, supports installing over an existing OpenReel Studio installation, and
-keeps `data`, `storage`, `config`, and `logs` when upgrading. If the selected
+keeps `data`, `storage`, `config`, `logs`, and `skills` when upgrading. If the selected
 directory is a drive root, NSIS creates the application subdirectory before
 copying files.
 
@@ -180,9 +180,12 @@ data/
 storage/
 config/
 logs/
+skills/
 ```
 
 Set `OPENREEL_DATA_DIR` before launch to override this location.
+Set `OPENREEL_SKILLS_DIR` before launch to override the editable skill directory.
+In source/dev mode, editable Markdown skills default to `<repo-root>/skills/`.
 
 Model keys and runtime provider settings belong in `config/runtime.jsonc` via the settings UI. They are not compiled into the installer.
 
@@ -209,7 +212,7 @@ Menu. The desktop app should:
 1. Open one Electron window.
 2. Start the local API on a random `127.0.0.1` port.
 3. Start the local Next.js server on a second `127.0.0.1` port.
-4. Create `data`, `storage`, `config`, and `logs` under the install directory.
+4. Create `data`, `storage`, `config`, `logs`, and `skills` under the install directory.
 
 If startup fails, inspect:
 

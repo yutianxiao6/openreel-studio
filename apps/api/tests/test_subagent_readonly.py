@@ -126,9 +126,10 @@ def test_subagent_node_get_render_keeps_media_output_before_long_prompt() -> Non
     assert "script-1" in rendered
 
 
-def test_review_skill_key_loads_from_data_review_skills(tmp_path, monkeypatch) -> None:
+def test_review_skill_key_loads_from_root_skill_review_dir(tmp_path, monkeypatch) -> None:
     root = tmp_path
-    skill_dir = root / "data" / "review_skills"
+    monkeypatch.delenv("OPENREEL_SKILLS_DIR", raising=False)
+    skill_dir = root / "skills" / "review"
     skill_dir.mkdir(parents=True)
     (skill_dir / "my_storyboard_check.md").write_text(
         "# 我的分镜检查\n\n- 必须逐格核对\n- 不得新增剧情\n",
@@ -140,14 +141,15 @@ def test_review_skill_key_loads_from_data_review_skills(tmp_path, monkeypatch) -
 
     assert loaded["ok"] is True
     assert loaded["key"] == "my_storyboard_check"
-    assert loaded["path"] == "data/review_skills/my_storyboard_check.md"
+    assert loaded["path"] == "skills/review/my_storyboard_check.md"
     assert "必须逐格核对" in loaded["content"]
 
 
 @pytest.mark.asyncio
 async def test_agent_review_loads_review_skill_key_before_subagent(tmp_path, monkeypatch) -> None:
     root = tmp_path
-    skill_dir = root / "data" / "review_skills"
+    monkeypatch.delenv("OPENREEL_SKILLS_DIR", raising=False)
+    skill_dir = root / "skills" / "review"
     skill_dir.mkdir(parents=True)
     (skill_dir / "my_prompt_check.md").write_text(
         "# 提示词检查\n\n- 必须检查主体、动作和镜头\n",

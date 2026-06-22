@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import uuid
 import zipfile
@@ -220,9 +221,17 @@ _REVIEW_SEVERITIES = {"low", "medium", "high", "blocking"}
 
 
 def _review_skill_dir() -> Path:
-    path = Path(settings.PROJECT_ROOT) / "data" / "review_skills"
+    skills_root = Path(os.environ.get("OPENREEL_SKILLS_DIR") or Path(settings.PROJECT_ROOT) / "skills")
+    path = skills_root / "review"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _project_relative_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(Path(settings.PROJECT_ROOT)))
+    except ValueError:
+        return str(path)
 
 
 def _normalize_review_skill_key(value: Any) -> str:
@@ -244,7 +253,7 @@ def _read_review_skill(key: str) -> dict[str, Any]:
     return {
         "ok": True,
         "key": normalized,
-        "path": str(path.relative_to(Path(settings.PROJECT_ROOT))),
+        "path": _project_relative_path(path),
         "content": content[:8000],
         "chars": len(content),
     }

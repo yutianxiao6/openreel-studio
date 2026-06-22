@@ -512,7 +512,7 @@ def test_agent_review_is_model_called_not_orchestrator_hardcoded() -> None:
     assert "通用只读审查" in prompt_text
     assert "review_skill_key" in prompt_text
     assert "custom_checklist" in prompt_text
-    assert "data/review_skills/<key>.md" in prompt_text
+    assert "skills/review/<key>.md" in prompt_text
     assert "blueprint.finalize_tree_draft" not in prompt_text
     assert "自定义检查项" in prompt_text or "用户自定义检查项" in prompt_text
 

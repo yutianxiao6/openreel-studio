@@ -1906,7 +1906,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
           "隔离运行通用只读审查子 Agent，用真实项目状态、任务、计划、节点、指南和文件审查主 Agent 指定目标。"
           "复杂视频节点批次或任务需要第二视角时传 review_goal、user_request、work_summary、review_profile、evidence、guide_topics/focus。"
           "媒体运行前可用它批量检查 prompt 是否符合 skill、字段是否可执行、依赖是否使用真实 node id。"
-          "自定义检查 skill 可放在 data/review_skills/<key>.md，或通过 review_skill_key 指定。"
+          "自定义检查 skill 可放在 skills/review/<key>.md，或通过 review_skill_key 指定。"
           "返回 pass/revise_required/blocked 等结果；主 Agent 只修有 evidence 或 violated_requirement 的具体问题。"
       ))
     # panel.* — project-level panel view (mode/axis switching)

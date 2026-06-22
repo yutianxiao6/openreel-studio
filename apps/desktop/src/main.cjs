@@ -33,6 +33,9 @@ function packagedInstallRoot() {
     // .../OpenReel Studio.app/Contents/MacOS/OpenReel Studio -> parent of .app
     return path.dirname(path.dirname(path.dirname(path.dirname(process.execPath))));
   }
+  if (process.platform === "linux" && process.env.APPIMAGE) {
+    return path.dirname(process.env.APPIMAGE);
+  }
   return path.dirname(process.execPath);
 }
 
@@ -49,6 +52,20 @@ function desktopDataRoot() {
 
 function mkdirp(dir) {
   fs.mkdirSync(dir, { recursive: true });
+}
+
+function repoRoot() {
+  return path.resolve(__dirname, "..", "..", "..");
+}
+
+function desktopSkillsRoot(root) {
+  if (process.env.OPENREEL_SKILLS_DIR) {
+    return path.resolve(process.env.OPENREEL_SKILLS_DIR);
+  }
+  if (!isPackaged) {
+    return path.join(repoRoot(), "skills");
+  }
+  return path.join(root, "skills");
 }
 
 function writeLogStream(logDir, name) {
@@ -249,6 +266,7 @@ function trayIcon() {
 
 function desktopDirs() {
   const root = desktopDataRoot();
+  const skills = desktopSkillsRoot(root);
   const dirs = {
     root,
     userData: path.join(root, "data", "electron"),
@@ -256,6 +274,10 @@ function desktopDirs() {
     storage: path.join(root, "storage"),
     config: path.join(root, "config"),
     logs: path.join(root, "logs"),
+    skills,
+    skillWorkflows: path.join(skills, "workflows"),
+    skillPrompts: path.join(skills, "prompts"),
+    skillReview: path.join(skills, "review"),
   };
   Object.values(dirs).forEach(mkdirp);
   app.setPath("userData", dirs.userData);
@@ -278,6 +300,7 @@ function buildRuntimeEnv({ apiPort, webPort, dirs }) {
     CORS_ORIGINS: `${webBase},${apiBase}`,
     OPENREEL_DESKTOP: "1",
     OPENREEL_USER_DATA_DIR: dirs.root,
+    OPENREEL_SKILLS_DIR: dirs.skills,
   };
 }
 

@@ -2,7 +2,7 @@
 
 Two skill sources:
   apps/api/app/skills/<name>/  — Python packages (SKILL.md + __init__.py)
-  data/skills/                  — Markdown files (workflows/ + prompts/)
+  skills/                       — Markdown files (workflows/ + prompts/)
 
 skill.search → returns matching names + descriptions (lightweight)
 skill.get    → returns full content (on-demand, model decides when to read)
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import os
 import re
 import shutil
 from datetime import datetime
@@ -24,7 +25,13 @@ from app.mcp_tools.registry import register
 logger = logging.getLogger(__name__)
 
 _SKILLS_ROOT = Path(__file__).resolve().parent.parent / "skills"
-_MD_SKILLS_ROOT = Path(settings.PROJECT_ROOT) / "data" / "skills"
+
+
+def _md_skills_root() -> Path:
+    root = Path(os.environ.get("OPENREEL_SKILLS_DIR") or Path(settings.PROJECT_ROOT) / "skills")
+    for child in (root, root / "workflows", root / "prompts", root / "review"):
+        child.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 # What a skill is ALLOWED to import. Everything else triggers a refusal.
@@ -285,7 +292,7 @@ async def skill_reload() -> dict:
 
 
 # ── Unified on-demand skill search / get ──────────────────────────────────────
-# Scans both apps/api/app/skills/ (Python packages) and data/skills/ (markdown)
+# Scans both apps/api/app/skills/ (Python packages) and skills/ (markdown)
 
 
 def _parse_frontmatter(raw: str) -> dict[str, str]:
@@ -323,10 +330,11 @@ def _build_unified_index() -> list[dict[str, Any]]:
                 "source": "python_package",
             })
 
-    # Markdown skills (data/skills/workflows/ + data/skills/prompts/)
-    if _MD_SKILLS_ROOT.exists():
+    # Markdown skills (skills/workflows/ + skills/prompts/)
+    md_skills_root = _md_skills_root()
+    if md_skills_root.exists():
         for category in ("workflows", "prompts"):
-            cat_dir = _MD_SKILLS_ROOT / category
+            cat_dir = md_skills_root / category
             if not cat_dir.is_dir():
                 continue
             for fpath in sorted(cat_dir.glob("*.md")):

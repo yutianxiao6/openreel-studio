@@ -118,7 +118,7 @@ _STATIC_SEARCH_HINTS: dict[str, str] = {
     "task.delete": "delete stale task cleanup residual task explicit user request 清理任务 删除任务 残留任务 过期任务",
     "agent.review": (
         "readonly review checker inspect prompt image storyboard video consistency cinematic design hook punch "
-        "review_skill custom_checklist data/review_skills 检查 审查 提示词 图片一致性 分镜连续性 "
+        "review_skill custom_checklist skills/review 检查 审查 提示词 图片一致性 分镜连续性 "
         "视频提示词 分镜一致 影视设计 爆点 钩子 自定义检查 skill"
     ),
     "reference.manage": "reference image @图 @图片 style visual asset analyze visual analysis alias bind blueprint memory asset library register asset_id source_path 参考图 风格图 视觉分析 图片识别 别名 蓝图绑定 资产库 长期风格记忆",

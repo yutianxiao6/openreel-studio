@@ -5,8 +5,6 @@ from pathlib import Path
 
 import uvicorn
 
-from app.main import app
-
 
 def _default_user_data_dir() -> Path:
     if os.environ.get("OPENREEL_DESKTOP") == "1":
@@ -26,12 +24,23 @@ def _ensure_desktop_env() -> None:
     storage_dir = user_data / "storage"
     config_dir = user_data / "config"
     logs_dir = user_data / "logs"
-    for directory in (data_dir, storage_dir, config_dir, logs_dir):
+    skills_dir = user_data / "skills"
+    for directory in (
+        data_dir,
+        storage_dir,
+        config_dir,
+        logs_dir,
+        skills_dir,
+        skills_dir / "workflows",
+        skills_dir / "prompts",
+        skills_dir / "review",
+    ):
         directory.mkdir(parents=True, exist_ok=True)
 
     os.environ.setdefault("APP_ENV", "desktop")
     os.environ.setdefault("APP_HOST", "127.0.0.1")
     os.environ.setdefault("PROJECT_ROOT", str(user_data))
+    os.environ.setdefault("OPENREEL_SKILLS_DIR", str(skills_dir))
     os.environ.setdefault("STORAGE_PATH", str(storage_dir))
     os.environ.setdefault("STORAGE_DIR", str(storage_dir))
     os.environ.setdefault(
@@ -42,6 +51,8 @@ def _ensure_desktop_env() -> None:
 
 def main() -> None:
     _ensure_desktop_env()
+    from app.main import app
+
     host = os.environ.get("APP_HOST", "127.0.0.1")
     port = int(os.environ.get("APP_PORT", "8000"))
     uvicorn.run(app, host=host, port=port, reload=False)
