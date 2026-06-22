@@ -55,7 +55,7 @@ interface EditableNodeDraft {
   reference_images: string[]
 }
 
-const EDITABLE_NODE_TYPES = new Set(["text", "image", "video"])
+const EDITABLE_NODE_TYPES = new Set(["text", "image", "video", "audio"])
 
 const EMPTY_DRAFT: EditableNodeDraft = {
   title: "",
@@ -119,7 +119,7 @@ function Lightbox({ src, alt, onClose }: { src: string; alt?: string; onClose: (
 }
 
 interface MediaItem {
-  kind: "image" | "video"
+  kind: "image" | "video" | "audio"
   src: string
   poster?: string
   label?: string
@@ -196,11 +196,25 @@ function isVideoSource(value: unknown): value is string {
   return typeof value === "string" && /\.(mp4|webm|mov)(\?|#|$)/i.test(value)
 }
 
+function isAudioSource(value: unknown): value is string {
+  return typeof value === "string" && /\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/i.test(value)
+}
+
 function videoMimeType(src: string): string {
   const path = src.split(/[?#]/, 1)[0]?.toLowerCase() || ""
   if (path.endsWith(".webm")) return "video/webm"
   if (path.endsWith(".mov")) return "video/quicktime"
   return "video/mp4"
+}
+
+function audioMimeType(src: string): string {
+  const path = src.split(/[?#]/, 1)[0]?.toLowerCase() || ""
+  if (path.endsWith(".wav")) return "audio/wav"
+  if (path.endsWith(".m4a")) return "audio/mp4"
+  if (path.endsWith(".aac")) return "audio/aac"
+  if (path.endsWith(".ogg")) return "audio/ogg"
+  if (path.endsWith(".flac")) return "audio/flac"
+  return "audio/mpeg"
 }
 
 function numericDimension(value: unknown): number | undefined {
@@ -271,6 +285,9 @@ function referenceFileUrl(projectId: string | null | undefined, value: string): 
   if (value.startsWith("generated_images/")) {
     return resolveMediaUrl(`/api/media/${projectId}/${value.replace(/^generated_images\//, "")}`)
   }
+  if (value.startsWith("generated_audio/")) {
+    return resolveMediaUrl(`/api/media/${projectId}/${value}`)
+  }
   return ""
 }
 
@@ -286,7 +303,7 @@ function normalizeReferenceValue(text: string, label: string, refId?: string): R
     return { kind: "node", value, label: "节点引用" }
   }
   if (value.startsWith("asset:")) return { kind: "asset", value: value.slice(6), label: "资产引用" }
-  if (value.startsWith("uploads/") || value.startsWith("generated_images/")) return { kind: "file", value, label }
+  if (value.startsWith("uploads/") || value.startsWith("generated_images/") || value.startsWith("generated_audio/")) return { kind: "file", value, label }
   if (refId) return { kind: "reference", value: refId, label }
   return { kind: "text", value, label: "视觉锚点" }
 }
@@ -499,7 +516,24 @@ function InlineVideoPreview({
   )
 }
 
-/** Walk arbitrary output JSON and pick out images / videos / fusion stages. */
+function InlineAudioPreview({
+  src,
+  title,
+}: {
+  src: string
+  title?: string
+}) {
+  return (
+    <div className="rounded-lg border border-white/[0.08] bg-black/35 p-3">
+      <audio controls preload="metadata" className="w-full">
+        <source src={src} type={audioMimeType(src)} />
+      </audio>
+      {title && <div className="mt-2 truncate text-[11px] text-zinc-500">{title}</div>}
+    </div>
+  )
+}
+
+/** Walk arbitrary output JSON and pick out images / videos / audio / fusion stages. */
 function collectMedia(output: unknown): MediaItem[] {
   if (!output) return []
   const items: MediaItem[] = []
@@ -534,6 +568,13 @@ function collectMedia(output: unknown): MediaItem[] {
       height: numericDimension(height),
     })
   }
+  const pushAudio = (src: string | null, label?: string, prompt?: string) => {
+    if (!src) return
+    const resolved = resolveMediaUrl(src)
+    if (!resolved || seen.has(resolved)) return
+    seen.add(resolved)
+    items.push({ kind: "audio", src: resolved, label, prompt })
+  }
 
   const obj = asObj(output)
 
@@ -544,7 +585,9 @@ function collectMedia(output: unknown): MediaItem[] {
       if (!src) continue
       // crude detection: first/last frame & video-stage names
       const isVideo = /视频|video|clip/i.test(s.name) && typeof src === "string"
+      const isAudio = /音频|audio|sound/i.test(s.name) && typeof src === "string"
       if (isVideo) pushVideo(src, undefined, s.name, s.prompt, s.width, s.height)
+      else if (isAudio) pushAudio(src, s.name, s.prompt)
       else pushImage(src, s.name, s.prompt, s.width, s.height)
     }
     return items
@@ -606,11 +649,28 @@ function collectMedia(output: unknown): MediaItem[] {
   if (typeof obj.url === "string" && /\.(mp4|webm|mov)$/i.test(obj.url)) {
     pushVideo(obj.url as string, undefined, "视频")
   }
+  const audio = asObj(obj.audio)
+  if (audio) {
+    pushAudio(
+      pickUrl(audio),
+      "音频",
+      typeof audio.prompt === "string" ? audio.prompt : undefined,
+    )
+  }
+  if (obj.type === "audio") {
+    pushAudio(pickUrl(obj), "音频", typeof obj.prompt === "string" ? obj.prompt : undefined)
+  }
+  if (isAudioSource(obj.url)) {
+    pushAudio(obj.url, "音频")
+  }
+  if (isAudioSource(obj.local_url)) {
+    pushAudio(obj.local_url, "音频")
+  }
 
   return items
 }
 
-function mediaHistoryEntriesFromOutput(output: unknown, kind: "image" | "video"): MediaHistoryEntry[] {
+function mediaHistoryEntriesFromOutput(output: unknown, kind: "image" | "video" | "audio"): MediaHistoryEntry[] {
   const obj = asObj(parseJson(output))
   const raw = obj?.history ?? obj?.media_history
   if (!Array.isArray(raw)) return []
@@ -682,7 +742,7 @@ function formatHistoryTime(value?: string): string {
 
 const STORY_REVISION_NODE_TYPES = new Set(["text"])
 
-const MEDIA_RERUN_NODE_TYPES = new Set(["image", "video"])
+const MEDIA_RERUN_NODE_TYPES = new Set(["image", "video", "audio"])
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -1114,6 +1174,7 @@ const TYPED_RENDERED_NODE_TYPES = new Set([
   "text",
   "image",
   "video",
+  "audio",
   "character",
   "scene",
   "episode_script",
@@ -1660,8 +1721,9 @@ function NodeEditView({
   const isText = node.type === "text"
   const isImage = node.type === "image"
   const isVideo = node.type === "video"
+  const isAudio = node.type === "audio"
   const hasSidePanel = isImage || isVideo
-  const mainLabel = isText ? "正文" : isImage ? "图片提示词" : "视频提示词"
+  const mainLabel = isText ? "正文" : isImage ? "图片提示词" : isAudio ? "音频提示词" : "视频提示词"
   const knownVideoModel = VIDEO_MODEL_OPTIONS.some((item) => item.modelName === draft.model)
   const videoModelOptions = [
     { label: "使用当前激活视频模型", value: "" },
@@ -2126,7 +2188,7 @@ function MediaHistorySection({
   switchingId,
   onSwitch,
 }: {
-  kind: "image" | "video"
+  kind: "image" | "video" | "audio"
   output: unknown
   busy: boolean
   switchingId?: string | null
@@ -2134,7 +2196,7 @@ function MediaHistorySection({
 }) {
   const entries = mediaHistoryEntriesFromOutput(output, kind)
   if (entries.length === 0) return null
-  const title = kind === "video" ? `视频历史状态 (${entries.length})` : `图片历史状态 (${entries.length})`
+  const title = kind === "video" ? `视频历史状态 (${entries.length})` : kind === "audio" ? `音频历史状态 (${entries.length})` : `图片历史状态 (${entries.length})`
   return (
     <Section title={title}>
       <div className="space-y-3">
@@ -2175,7 +2237,7 @@ function MediaHistorySection({
                         ;(event.currentTarget as HTMLImageElement).style.opacity = "0.25"
                       }}
                     />
-                  ) : (
+                  ) : primary.kind === "video" ? (
                     <video
                       poster={primary.poster}
                       muted
@@ -2186,6 +2248,11 @@ function MediaHistorySection({
                     >
                       <source src={primary.src} type={videoMimeType(primary.src)} />
                     </video>
+                  ) : (
+                    <div className="flex h-full w-full flex-col items-center justify-center gap-1 bg-zinc-950 text-[10px] text-amber-100">
+                      <span className="font-semibold tracking-[0.16em]">AU</span>
+                      <span className="text-zinc-500">音频</span>
+                    </div>
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
@@ -2378,6 +2445,43 @@ function TypedRenderer({
         )}
         <MediaHistorySection
           kind="video"
+          output={outObj}
+          busy={busy}
+          switchingId={switchingHistoryId}
+          onSwitch={onSwitchHistory}
+        />
+      </div>
+    )
+  }
+
+  if (type === "audio") {
+    const media = collectMedia(outObj)
+    const audio = media.find((item) => item.kind === "audio")
+    const prompt = pickPromptText(topPrompt, inObj, outObj)
+    const refs = pickReferences(inObj, outObj)
+    return (
+      <div className="space-y-3">
+        {audio ? (
+          <Section title={audio.label || "音频预览"}>
+            <InlineAudioPreview
+              src={audio.src}
+              title={audio.label || node.title || "音频预览"}
+            />
+            <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
+          </Section>
+        ) : (
+          <Section title="音频预览">
+            <ImagePlaceholder label={busy ? "音频生成中..." : "待生成音频"} busy={busy} />
+            <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
+          </Section>
+        )}
+        {prompt && (
+          <Section title="音频提示词">
+            <PromptBlock>{prompt}</PromptBlock>
+          </Section>
+        )}
+        <MediaHistorySection
+          kind="audio"
           output={outObj}
           busy={busy}
           switchingId={switchingHistoryId}
@@ -3202,7 +3306,7 @@ export default function NodeDetailPanel({
     : "absolute bottom-3 left-3 right-3 top-3 z-30 flex flex-col overflow-hidden rounded-lg border border-white/[0.09] bg-[#0f131b]/96 shadow-2xl backdrop-blur sm:left-auto sm:w-[380px]"
   const canRequestStoryRevision = Boolean(data && onRequestStoryRevision && STORY_REVISION_NODE_TYPES.has(data.type))
   const canRerunMediaNode = Boolean(data && onRerun && MEDIA_RERUN_NODE_TYPES.has(data.type))
-  const mediaRunTarget = data?.type === "video" ? "视频" : "图片"
+  const mediaRunTarget = data?.type === "video" ? "视频" : data?.type === "audio" ? "音频" : "图片"
   const mediaRunLabel = data && (data.status === "idle" || data.status === "queued")
     ? `生成${mediaRunTarget}`
     : `重新生成${mediaRunTarget}`
@@ -3476,7 +3580,7 @@ export default function NodeDetailPanel({
                               }}
                             />
                           </button>
-                        ) : (
+                        ) : m.kind === "video" ? (
 	                          <InlineVideoPreview
 	                            src={m.src}
 	                            poster={m.poster}
@@ -3484,6 +3588,10 @@ export default function NodeDetailPanel({
 	                            className="h-40 w-full bg-black object-cover"
 	                            onOpen={() => setVideoLightbox({ src: m.src, poster: m.poster, title: m.label || "视频预览" })}
 	                          />
+                        ) : (
+                          <div className="p-3">
+                            <InlineAudioPreview src={m.src} title={m.label || "音频预览"} />
+                          </div>
                         )}
                         {m.label && (
                           <div className="border-t border-white/[0.06] px-2.5 py-1.5 text-[10px] text-zinc-400">

@@ -381,7 +381,7 @@ def _node_media_field_properties() -> dict[str, Any]:
 
 
 def _node_create_field_properties() -> dict[str, Any]:
-    """Fields accepted when creating text/image/video nodes."""
+    """Fields accepted when creating text/image/video/audio nodes."""
     properties: dict[str, Any] = {
         "title": {"type": "string"},
         "content": {"type": "string"},
@@ -909,7 +909,7 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "memory.recall_user": "检索跨项目用户偏好记忆",
     "memory.save_fact": "保存当前项目级长期事实",
     "memory.save_user_fact": "保存跨项目用户偏好或稳定工作习惯",
-    "node.create": "创建一个或少量 text/image/video 创作节点",
+    "node.create": "创建一个或少量 text/image/video/audio 创作节点",
     "node.get": "读取一个或多个指定节点的完整输入、输出、提示词、状态、surface 和链接信息",
     "node.list": "列出当前项目画布节点索引，默认返回 20 个节点，可按节点类型、状态或关键词过滤",
     "node.run": "执行指定节点并由后端按节点类型派发 runner、落库状态和产物",
@@ -1403,13 +1403,13 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
 
     # ─────────────────────────────────────────────────────────────────────
     # node.* —— 5 个普适工具,Agent 创作的唯一入口
-    # type 使用 text / image / video 三类通用节点；具体制作方法写在树和字段里。
+    # type 使用 text / image / video / audio 四类通用节点；具体制作方法写在树和字段里。
     # ─────────────────────────────────────────────────────────────────────
     R("node.create", node_universal.node_create, tags=["node", "write"],
       description=(
-        "创建一个或少量 text/image/video 工程节点。制作流程由 skill.video_production 指导；"
-        "text 节点正文需要模型写进 fields.content；image/video prompt、duration、aspect、"
-        "production_path 也需要模型显式写入。"
+        "创建一个或少量 text/image/video/audio 工程节点。制作流程由 active skill 或用户目标指导；"
+        "text 节点正文需要模型写进 fields.content；image/video/audio prompt 需要模型显式写入；"
+        "image/video 的 duration、aspect、production_path 等制作参数也写进 fields。"
         "批量搭框架或少量低风险节点可传 nodes；复杂媒体提示词或大量节点要分批。"
         "parent_node_id 只做画布分组；上游节点、资产或 URL 统一写 fields.references，"
         "role=visual_reference 表示参考生成，role=source_image 表示 image 节点直接采用该图作为输出。"
@@ -1421,7 +1421,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
           "type": "object",
           "properties": {
               "project_id": {"type": "string"},
-              "type": {"type": "string", "enum": ["text", "image", "video"]},
+              "type": {"type": "string", "enum": ["text", "image", "video", "audio"]},
               "fields": _node_object_schema(_node_create_field_properties()),
               "parent_node_id": {"type": "string"},
               "nodes": {
@@ -1431,7 +1431,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
                       "additionalProperties": True,
                       "properties": {
                           "client_ref": {"type": "string"},
-                          "type": {"type": "string", "enum": ["text", "image", "video"]},
+                          "type": {"type": "string", "enum": ["text", "image", "video", "audio"]},
                           "fields": {"type": "object", "additionalProperties": True},
                           "parent_node_id": {"type": "string"},
                       },
@@ -1509,7 +1509,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
           "type": "object",
           "properties": {
               "project_id": {"type": "string"},
-              "type": {"type": "string", "enum": ["text", "image", "video"]},
+              "type": {"type": "string", "enum": ["text", "image", "video", "audio"]},
               "status": {"type": "string"},
               "surface": {"type": "string", "enum": ["project_panel", "draft_canvas"]},
               "query": {"type": "string"},
@@ -1546,7 +1546,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
       })
     R("node.run", node_universal.node_run, tags=["node", "execute"],
       description=(
-        "执行已有 text/image/video 节点并保存产物。需要节点已具备可运行输入；"
+        "执行已有 text/image/video/audio 节点并保存产物。需要节点已具备可运行输入；"
         "text 节点只保存已有 fields.content，不会替模型起草脚本或提示词；"
         "节点运行前先按当前 skill 和用户要求检查内容/prompt、fields 和依赖；"
         "不符合时先 node.update 修原节点，不要只改无关字段后重跑；"

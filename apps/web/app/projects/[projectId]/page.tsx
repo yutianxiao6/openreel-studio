@@ -121,7 +121,7 @@ export default function ProjectWorkspacePage() {
           <div className="flex shrink-0 items-center gap-1 border-b border-white/10 bg-[#111318]/80 px-3 py-2">
             <span className="rounded-md bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-950">创作画布</span>
             <span className="ml-auto hidden truncate text-[10px] text-zinc-600 sm:block">
-              任务驱动的 text / image / video 节点实时展示
+              任务驱动的 text / image / video / audio 节点实时展示
             </span>
           </div>
           <div className="min-h-0 flex-1 overflow-hidden">

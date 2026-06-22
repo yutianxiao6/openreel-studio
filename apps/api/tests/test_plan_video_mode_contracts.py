@@ -137,4 +137,4 @@ async def test_node_creation_guide_only_exposes_generic_types(monkeypatch):
     assert ok["required_fields"] == ["prompt", "aspect_ratio", "resolution"]
     assert ok["call_example"]["args"]["fields"]["resolution"] == "2560x1440"
     assert bad["ok"] is False
-    assert bad["valid_types"] == ["text", "image", "video"]
+    assert bad["valid_types"] == ["text", "image", "video", "audio"]

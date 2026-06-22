@@ -22,6 +22,7 @@ from app.agent.blueprint_tree_normalizer import (
     _DRAFT_PATCH_FIELD_ALIASES_TO_FIELDS,
     _MAX_APPEND_NODES,
     _PROMPT_EVIDENCE_FIELDS,
+    _VALID_AUDIO_FIELDS,
     _VALID_IMAGE_FIELDS,
     _VALID_TEXT_FIELDS,
     _VALID_VIDEO_FIELDS,
@@ -815,7 +816,7 @@ async def blueprint_start_tree_draft(
 @register(
     "blueprint.append_tree_node",
     description=(
-        "向 pending 草稿追加或 upsert text/image/video 语义节点；视频草稿追加前需已读取所需 full guide。"
+        "向 pending 草稿追加或 upsert text/image/video/audio 语义节点；视频草稿追加前需已读取所需 full guide。"
         "node 用于单个节点，nodes 用于少量同父级节点；parent_id 表示分组，生产依赖写 references/depends_on。"
         "该工具不运行、批准或覆盖整树。"
     ),
@@ -1037,7 +1038,7 @@ async def blueprint_append_tree_node(
 @register(
     "blueprint.update_tree_node",
     description=(
-        "更新或移动 pending 草稿中的既有 text/image/video 节点。"
+        "更新或移动 pending 草稿中的既有 text/image/video/audio 节点。"
         "用户点名修改待确认蓝图节点时直接调用；finalize 前可补 title/content/prompt/fields/references/depends_on，"
         "修层级时传 parent_id 移到新父节点。该工具不改 id/type、运行媒体或修改已确认蓝图。"
     ),
@@ -1307,7 +1308,7 @@ async def blueprint_finalize_tree_draft(
     "blueprint.propose_tree",
     description=(
         "提交一棵完整语义蓝图树并创建待确认蓝图方案。传 title、summary 和 tree 或 nodes；"
-        "可物化节点 type 只能是 text/image/video，视觉资产写 image 节点，分集分段写 text，视频节点引用上游节点。"
+        "可物化节点 type 只能是 text/image/video/audio，视觉资产写 image 节点，分集分段写 text，视频节点引用上游节点，纯音频写 audio 节点。"
         "该隐藏/测试路径不批准方案、创建节点、运行媒体、覆盖 active blueprint 或替模型选择制作路径。"
     ),
     tags=["blueprint", "write"],
@@ -1318,7 +1319,7 @@ async def blueprint_finalize_tree_draft(
             "title": {"type": "string", "description": "蓝图标题，用户可见"},
             "summary": {"type": "string", "description": "蓝图摘要，用户可见"},
             "tree": {"type": "object", "description": "完整树，可包含 root.children 或 children"},
-            "nodes": {"type": "array", "description": "根节点 children 的简写；每个物化节点 type 只能是 text/image/video"},
+            "nodes": {"type": "array", "description": "根节点 children 的简写；每个物化节点 type 只能是 text/image/video/audio"},
             "source_request": {"type": "string", "description": "用户原始请求摘要"},
         },
         "required": ["project_id", "title"],
@@ -1338,7 +1339,7 @@ async def blueprint_propose_tree(
             "ok": False,
             "error": "必须提供 tree.children、tree.root.children 或 nodes。",
             "error_kind": "empty_tree",
-            "hint": "提交完整语义树；公开节点 type 只允许 text / image / video。结构分组、制作方法和执行参数写在 title/content/description/fields/references 中。",
+            "hint": "提交完整语义树；公开节点 type 只允许 text / image / video / audio。结构分组、制作方法和执行参数写在 title/content/description/fields/references 中。",
         }
 
     errors: list[str] = []
@@ -1471,8 +1472,11 @@ def _validate_node(node: dict[str, Any]) -> dict[str, Any] | None:
     elif ntype == "video":
         valid = _VALID_VIDEO_FIELDS
         required = ["title", "description", "duration", "resolution"]
+    elif ntype == "audio":
+        valid = _VALID_AUDIO_FIELDS
+        required = ["title"]
     else:
-        return {"ok": False, "error": "node.type 必须是 text / image / video", "error_kind": "invalid_type"}
+        return {"ok": False, "error": "node.type 必须是 text / image / video / audio", "error_kind": "invalid_type"}
 
     unknown = [k for k in node if k not in valid and k not in ("children", "status", "created_at", "updated_at")]
     if unknown:
@@ -1489,7 +1493,7 @@ def _validate_node(node: dict[str, Any]) -> dict[str, Any] | None:
     description=(
         "往蓝图树中指定父节点下追加一个子节点。"
         "增量草稿流程使用 blueprint.append_tree_node；此工具仅保留给内部/兼容路径。"
-        "image/video 节点的可执行内容使用 prompt，text 节点传 title 和 content。"
+        "image/video/audio 节点的可执行内容使用 prompt，text 节点传 title 和 content。"
     ),
     tags=["blueprint", "write"],
 )
@@ -1502,8 +1506,8 @@ async def blueprint_add_child(
         return {"ok": False, "error": "node 必须是一个 JSON 对象", "error_kind": "missing_node"}
     if not node.get("id"):
         return {"ok": False, "error": "node.id 是必填字段", "error_kind": "missing_id"}
-    if not node.get("type") or node["type"] not in ("text", "image", "video"):
-        return {"ok": False, "error": "node.type 必须是 text / image / video", "error_kind": "invalid_type"}
+    if not node.get("type") or node["type"] not in ("text", "image", "video", "audio"):
+        return {"ok": False, "error": "node.type 必须是 text / image / video / audio", "error_kind": "invalid_type"}
     err = _validate_node(node)
     if err:
         return err
@@ -1561,6 +1565,8 @@ async def blueprint_update_node(
         valid = _VALID_IMAGE_FIELDS | {"prompt", "negative_prompt", "url"}  # writable in generation
     elif ntype == "video":
         valid = _VALID_VIDEO_FIELDS | {"prompt", "url"}
+    elif ntype == "audio":
+        valid = _VALID_AUDIO_FIELDS | {"url", "local_url", "remote_url"}
     else:
         valid = {
             "id",

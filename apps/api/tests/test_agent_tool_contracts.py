@@ -251,6 +251,8 @@ def test_node_create_schema_uses_single_references_entrypoint() -> None:
     refs = fields["references"]
     role_enum = refs["items"]["oneOf"][1]["properties"]["role"]["enum"]
 
+    assert top_level_props["type"]["enum"] == ["text", "image", "video", "audio"]
+    assert top_level_props["nodes"]["items"]["properties"]["type"]["enum"] == ["text", "image", "video", "audio"]
     assert "prompt" not in top_level_props
     assert "name" not in top_level_props
     assert "nodes" in top_level_props

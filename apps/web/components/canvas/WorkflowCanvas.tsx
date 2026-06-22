@@ -787,6 +787,7 @@ export default function WorkflowCanvas() {
       text: "文本节点",
       image: "图片节点",
       video: "视频节点",
+      audio: "音频节点",
     }[type]
     setContextMenu(null)
     try {
@@ -990,7 +991,7 @@ export default function WorkflowCanvas() {
   const handleRerun = useCallback(async (nodeId: string) => {
     if (!currentProject || streaming) return
     const targetType = String(nodes.find((node) => node.id === nodeId)?.data?.type ?? "")
-    const action = targetType === "video" ? "force" : "render"
+    const action = targetType === "image" ? "render" : "force"
     setStreaming(true)
     updateCanvasNode(nodeId, { status: "running", error: undefined, error_message: undefined })
     try {
@@ -1043,7 +1044,7 @@ export default function WorkflowCanvas() {
           <div className="text-center">
             <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-md bg-white/[0.06] text-[12px] font-semibold tracking-tight text-zinc-300">WF</div>
             <div className="text-sm text-zinc-200">创作画布</div>
-            <div className="text-xs mt-1 text-zinc-500">任务驱动的 text / image / video 节点会显示在这里</div>
+            <div className="text-xs mt-1 text-zinc-500">任务驱动的 text / image / video / audio 节点会显示在这里</div>
           </div>
         </div>
       )}
@@ -1133,7 +1134,7 @@ export default function WorkflowCanvas() {
       {contextMenu && (
         <div
           className="fixed z-[80] w-40 overflow-hidden rounded-md border border-white/10 bg-[#11151d]/96 py-1 text-sm text-zinc-200 shadow-2xl shadow-black/50 backdrop-blur"
-          style={menuPositionStyle(contextMenu.x, contextMenu.y, 160, contextMenu.connectFrom ? 158 : 122)}
+          style={menuPositionStyle(contextMenu.x, contextMenu.y, 160, contextMenu.connectFrom ? 190 : 154)}
           onClick={(event) => event.stopPropagation()}
         >
           {contextMenu.connectFrom && (
@@ -1145,6 +1146,7 @@ export default function WorkflowCanvas() {
             ["text", "文本节点"],
             ["image", "图片节点"],
             ["video", "视频节点"],
+            ["audio", "音频节点"],
           ] as const).map(([type, label]) => (
             <button
               key={type}

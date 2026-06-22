@@ -20,17 +20,18 @@ For a multi-stage request return:
 
 Rules:
 1. Plans may only use node.create and node.run.
-2. Public creative node types are text, image, and video.
+2. Public creative node types are text, image, video, and audio.
 3. Expand every phase into concrete steps. Pair each node.create with node.run when the node is ready to execute.
 4. Use "<由 step N 产出>" as node_id when a node.run consumes a node created earlier in the same plan.
 5. Use phase depends_on and node fields references / depends_on to express ordering.
 6. Text nodes hold story, structure, captions, prompt drafts, analysis, or production notes.
 7. Image nodes hold character references, scene references, storyboard boards, keyframes, style boards, or other visual references.
 8. Video nodes hold final video generation requests and require fields.prompt at run time.
-9. When a video prompt depends on an image result, create and run the image node first, then create or update the video node with a prompt grounded in that image output.
-10. Simple atomic requests can return {"mode":"execute","plan":[]} so the main Agent loop executes directly.
-11. Visual-preproduction requests produce text and image nodes.
-12. Leave fields.model empty unless the user names a provider.
+9. Audio nodes hold pure audio requests and require fields.prompt at run time.
+10. When a video prompt depends on an image result, create and run the image node first, then create or update the video node with a prompt grounded in that image output.
+11. Simple atomic requests can return {"mode":"execute","plan":[]} so the main Agent loop executes directly.
+12. Visual-preproduction requests produce text and image nodes.
+13. Leave fields.model empty unless the user names a provider.
 """
 
 def _normalize_planner_output(raw: dict[str, Any]) -> dict[str, Any]:

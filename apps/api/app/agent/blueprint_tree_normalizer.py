@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-_SEMANTIC_NODE_TYPES = {"text", "image", "video"}
+_SEMANTIC_NODE_TYPES = {"text", "image", "video", "audio"}
 _VIDEO_ASPECT_RATIOS = {"16:9", "9:16"}
 _MEDIA_PROMPT_NODE_TYPES = {"image", "video"}
 _PROMPT_EVIDENCE_FIELDS = {"prompt_source"}
@@ -65,6 +65,17 @@ _VALID_VIDEO_FIELDS = {
     "aspect_ratio",
     "production_path",
     "prompt",
+    "references",
+    "depends_on",
+}
+_VALID_AUDIO_FIELDS = {
+    "id",
+    "type",
+    "title",
+    "description",
+    "prompt",
+    "format",
+    "duration_seconds",
     "references",
     "depends_on",
 }

@@ -1,4 +1,4 @@
-"""Blueprint materializer - deterministic text/image/video tree to canvas nodes.
+"""Blueprint materializer - deterministic text/image/video/audio tree to canvas nodes.
 
 The materializer must not reinterpret model-authored workflow structure. It walks
 the tree, creates the same public node types, and preserves fields/references so
@@ -35,7 +35,7 @@ async def materialize_visual_prompt_node_from_active_blueprint(
 
 logger = logging.getLogger(__name__)
 
-_MATERIALIZED_NODE_TYPES = {"text", "image", "video"}
+_MATERIALIZED_NODE_TYPES = {"text", "image", "video", "audio"}
 _REPLACEMENT_DRAFT_KEY = "replacement_draft"
 
 

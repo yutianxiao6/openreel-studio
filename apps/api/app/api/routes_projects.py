@@ -324,7 +324,7 @@ def _reference_role(raw: Any) -> str:
 
 
 def _manual_edge_reference_role(source: WorkflowNode, target: WorkflowNode) -> str | None:
-    if source.type == "image" and target.type in {"text", "image", "video"}:
+    if source.type == "image" and target.type in {"text", "image", "video", "audio"}:
         return "visual_reference"
     return None
 
@@ -571,13 +571,14 @@ async def create_project_canvas_node(
     db: AsyncSession = Depends(get_session),
 ):
     node_type = req.type.strip().lower()
-    if node_type not in {"text", "image", "video"}:
-        raise HTTPException(status_code=400, detail="Node type must be text, image, or video")
+    if node_type not in {"text", "image", "video", "audio"}:
+        raise HTTPException(status_code=400, detail="Node type must be text, image, video, or audio")
 
     title = req.title or {
         "text": "文本节点",
         "image": "图片节点",
         "video": "视频节点",
+        "audio": "音频节点",
     }[node_type]
     svc = NodeService(db)
     node = await svc.create_node(
@@ -682,8 +683,8 @@ async def switch_project_canvas_node_history(
     node = await db.get(WorkflowNode, node_id)
     if not node or node.project_id != project_id:
         raise HTTPException(status_code=404, detail="Node not found")
-    if node.type not in {"image", "video"}:
-        raise HTTPException(status_code=400, detail="Only image/video nodes have media history")
+    if node.type not in {"image", "video", "audio"}:
+        raise HTTPException(status_code=400, detail="Only image/video/audio nodes have media history")
 
     current_output = _parse_json_value(node.output_json)
     current_input = _parse_json_dict(node.input_json)
@@ -781,7 +782,7 @@ async def restore_project_canvas_snapshot(
 
     for item in req.nodes:
         node_type = item.type.strip().lower()
-        if node_type not in {"text", "image", "video"}:
+        if node_type not in {"text", "image", "video", "audio"}:
             continue
         position = item.position or {}
         model_config = {"surface": "draft_canvas", "_ui_creator": "user" if item.creator == "user" else "agent"}
@@ -790,7 +791,12 @@ async def restore_project_canvas_snapshot(
             continue
         node = existing or WorkflowNode(id=item.id, project_id=project_id, created_at=now)
         node.type = node_type
-        node.title = item.title or {"text": "文本节点", "image": "图片节点", "video": "视频节点"}[node_type]
+        node.title = item.title or {
+            "text": "文本节点",
+            "image": "图片节点",
+            "video": "视频节点",
+            "audio": "音频节点",
+        }[node_type]
         node.status = item.status or "idle"
         node.position_x = float(position.get("x", 0.0) or 0.0)
         node.position_y = float(position.get("y", 0.0) or 0.0)

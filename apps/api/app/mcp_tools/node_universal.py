@@ -1,10 +1,10 @@
-"""统一的节点 API — 模型只需 text/image/video + 字段,后端只执行通用媒介能力。
+"""统一的节点 API — 模型只需 text/image/video/audio + 字段,后端只执行通用媒介能力。
 
 Agent 只看到节点原语(node.create / get / update / delete / list / run),
 内部委托给 canvas_tools 和 service-level media services 实现。
 
 公开节点 type 只允许:
-  text / image / video
+  text / image / video / audio
 """
 from __future__ import annotations
 
@@ -53,6 +53,7 @@ _NODE_DEPENDENCIES: dict[str, list[str]] = {
     "text": [],
     "image": [],
     "video": [],
+    "audio": [],
 }
 
 _SUBJECT_BY_TYPE: dict[str, tuple[str, str]] = {
@@ -64,6 +65,7 @@ _CREATIVE_NODE_TYPES: set[str] = {
     "text",
     "image",
     "video",
+    "audio",
 }
 
 _MODE_ALLOWED_TYPES: dict[str, set[str]] = {
@@ -184,6 +186,14 @@ _NODE_FIELD_SCHEMA: dict[str, dict] = {
             "production_path", "prompt_status", "prompt_source",
         ],
         "description": "通用视频节点。模型必须自己写最终视频 prompt，并把已确认时长、比例、制作路径、参考图依赖写入 fields；后端只按 prompt/fields/references 调视频服务，不合成视频提示词。",
+    },
+    "audio": {
+        "required": ["prompt"],
+        "optional": [
+            "title", "description", "format", "duration_seconds",
+            "references", "depends_on", "model",
+        ],
+        "description": "通用纯音频节点。模型可写音频 prompt 和通用时长/格式等字段；当前后端只保留节点合同，具体音频模型适配尚未接入。",
     },
 }
 
@@ -412,6 +422,7 @@ NODE_TYPES = (
     "text",
     "image",
     "video",
+    "audio",
 )
 
 
@@ -419,6 +430,7 @@ _TITLE_BUILDERS: dict[str, Callable[[dict], str]] = {
     "text":  lambda f: f.get("title") or "文本",
     "image": lambda f: f.get("title") or "图片",
     "video": lambda f: f.get("title") or "视频",
+    "audio": lambda f: f.get("title") or "音频",
 }
 
 
@@ -1300,7 +1312,7 @@ async def node_list_creatable_types(project_id: str) -> dict:
                 "有蓝图/视频任务或视频链路节点默认工程面板(project_panel)。"
             ),
             "creatable_types": items,
-            "next_step": "根据 skill.video_production 和 node.create schema 直接创建 text/image/video 节点；缺少阻塞信息时先向用户提问。",
+            "next_step": "根据当前用户目标和 node.create schema 直接创建 text/image/video/audio 节点；缺少阻塞信息时先向用户提问。",
         }
     allowed = sorted(_MODE_ALLOWED_TYPES.get(mode, set()))
     items = []
@@ -1325,12 +1337,12 @@ async def node_list_creatable_types(project_id: str) -> dict:
             "single_node 创建草稿画布节点(draft_canvas)。"
         ),
         "creatable_types": items,
-        "next_step": "根据 skill.video_production 和 node.create schema 直接创建 text/image/video 节点；缺少阻塞信息时先向用户提问。",
+        "next_step": "根据当前用户目标和 node.create schema 直接创建 text/image/video/audio 节点；缺少阻塞信息时先向用户提问。",
     }
 
 
 async def node_get_creation_guide(project_id: str, type: str) -> dict:
-    """创建任何创作类节点前必调:返回 text/image/video 字段 schema。
+    """创建任何创作类节点前必调:返回 text/image/video/audio 字段 schema。
 
     调用后,本会话内允许 node.create(type=同 type)。下一轮新对话需重新拉(防 LLM 用旧记忆)。
     """
@@ -1340,7 +1352,7 @@ async def node_get_creation_guide(project_id: str, type: str) -> dict:
             "error": f"未知节点类型 {type!r},允许:{', '.join(NODE_TYPES)}",
             "error_kind": "unknown_node_type",
             "valid_types": list(NODE_TYPES),
-            "hint": "公开节点 type 只允许 text / image / video；制作方法、分组关系、质量参数和提示词策略写在 fields/content/prompt/references 中。",
+            "hint": "公开节点 type 只允许 text / image / video / audio；制作方法、分组关系、质量参数和提示词策略写在 fields/content/prompt/references 中。",
         }
     state = await _read_project_state(project_id)
     state, inferred_mode = await _ensure_project_mode_for_type(project_id, state, type)
@@ -1394,7 +1406,7 @@ async def node_get_creation_guide(project_id: str, type: str) -> dict:
         },
         "next_step": (
             f"已记录 {type} 的指南本会话内有效。现在按 schema 填 fields 调 node.create(type={type!r})。"
-            + (" image/video 必须由模型写入可执行 prompt；后端不会自动合成。" if type in {"image", "video"} else "")
+            + (" image/video/audio 必须由模型写入可执行 prompt；后端不会自动合成。" if type in {"image", "video", "audio"} else "")
         ),
     }
 
@@ -1561,7 +1573,7 @@ async def _scan_unfinished_nodes(project_id: str) -> list[dict]:
 async def node_list_unfinished(project_id: str) -> dict:
     """列出画布上所有未完成节点，供 Agent 决定是否原地修复。
 
-    未完成 = 没出图的 image 节点 / 没写内容的 text/video 节点 / 失败节点 / 中断的 running 节点。
+    未完成 = 没出图的 image 节点 / 没写内容或没产物的 text/video/audio 节点 / 失败节点 / 中断的 running 节点。
     """
     unfinished = await _scan_unfinished_nodes(project_id)
     return {
@@ -1680,7 +1692,7 @@ async def _node_create_one(
     """创建一个画布节点。
 
     Args:
-      type: 必须是 text / image / video
+      type: 必须是 text / image / video / audio
       fields: 通用字段；text 正文写 fields.content；视频时长/比例/制作路径/依赖写 fields.duration_seconds/aspect_ratio/production_path/references/depends_on
       name: 短标题(可选,后端会按 type 推断)
       prompt: 图片/视频类节点的提示词
@@ -1983,7 +1995,7 @@ async def _node_get_one(node_id: str, project_id: str = "") -> dict:
             "error": "Node not found",
             "error_kind": "node_not_found",
             "node_id": node_id,
-            "hint": "node_id 必须是 node.create 返回的真实节点 id，不是 shot_id、segment_id、标题或别名。新任务没有节点时先创建合适的 text/image/video 节点。",
+            "hint": "node_id 必须是 node.create 返回的真实节点 id，不是 shot_id、segment_id、标题或别名。新任务没有节点时先创建合适的 text/image/video/audio 节点。",
         }
     if project_id and isinstance(node, dict) and str(node.get("project_id") or "") != project_id:
         return {
@@ -3052,10 +3064,34 @@ async def _run_video_node(project_id: str, node_id: str, f: dict) -> dict:
     return result
 
 
+async def _run_audio_node(project_id: str, node_id: str, f: dict) -> dict:
+    prompt = str(f.get("prompt") or "").strip()
+    if not prompt:
+        return {
+            "ok": False,
+            "type": "audio",
+            "error": "audio 节点缺 prompt，无法生成音频。请先写入纯音频提示词。",
+            "error_kind": "missing_prompt",
+            "node_id": node_id,
+        }
+    return {
+        "ok": False,
+        "type": "audio",
+        "error": "当前版本尚未接入音频生成模型。audio 节点已支持创建、编辑、引用和展示；需要生成时请先接入音频模型适配。",
+        "error_kind": "audio_generation_unavailable",
+        "node_id": node_id,
+        "prompt": prompt,
+        "format": f.get("format"),
+        "duration_seconds": f.get("duration_seconds"),
+        "hint": "后续适配音频模型后，继续沿用当前 audio 节点和 node.run 即可。",
+    }
+
+
 _RUNNERS: dict[str, NodeRunner] = {
     "text": _run_text_node,
     "image": _run_image_node,
     "video": _run_video_node,
+    "audio": _run_audio_node,
 }
 
 
@@ -3067,10 +3103,10 @@ async def node_run(
 ) -> dict:
     """跑这个节点。后端按 type 自动派发,自动管 status/产物落库。
 
-    image/video 节点必须已经有模型写入的 prompt。后端只执行,不合成业务提示词。
+    image/video/audio 节点必须已经有模型写入的 prompt。后端只执行,不合成业务提示词。
 
     action 选项:
-      None / "run":  默认 — text 保存内容,image 出图,video 生成视频
+      None / "run":  默认 — text 保存内容,image 出图,video 生成视频,audio 生成音频
       "render":      仅 image — 用节点 prompt+参数出图。失败/不满意可先 node.update 改参数再 render。
       "force":       忽略已 completed 状态强制重跑准备阶段
     extra_fields:    临时补字段(不写回 input),render 时可临时替换 prompt 等
@@ -3082,7 +3118,7 @@ async def node_run(
             "error": node.get("error") or "Node not found",
             "error_kind": "node_not_found",
             "node_id": node_id,
-            "hint": "node.run 的 node_id 必须来自已存在节点。不要把 shot_id/segment_id/标题当 node_id；如果是新图片任务，先 node.create 创建 image 节点，再 node.run。",
+                "hint": "node.run 的 node_id 必须来自已存在节点。不要把 shot_id/segment_id/标题当 node_id；如果是新任务，先 node.create 创建合适节点，再 node.run。",
         }
     node_type = node.get("type")
     if (
@@ -3426,7 +3462,7 @@ async def node_run(
         }
 
     archived_output = None
-    if node_type in {"image", "video"}:
+    if node_type in {"image", "video", "audio"}:
         archived_output = await _archive_current_media_output_for_rerun(node_id, node, str(node_type), fields)
 
     if action == "force":
@@ -3556,7 +3592,7 @@ async def node_run(
             **{k: v for k, v in result.items() if k not in ("error", "hint", "ok")},
         }
 
-    if node_type in {"image", "video"} and isinstance(result, dict):
+    if node_type in {"image", "video", "audio"} and isinstance(result, dict):
         result = media_history.preserve_media_history(result, archived_output)
     await canvas_tools.update_node(
         node_id, {"status": "completed", "output_data": result},

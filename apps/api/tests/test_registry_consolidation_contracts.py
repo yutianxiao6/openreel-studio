@@ -219,7 +219,7 @@ async def test_project_mentor_video_workflow_keeps_moved_prompt_details() -> Non
     assert "interaction.request_input" in workflow["guidance"]
     assert "节点优先流程" in workflow["guidance"]
     assert "15秒短视频通常不问分集分段" in workflow["guidance"]
-    assert "text/image/video" in workflow["guidance"]
+    assert "text/image/video/audio" in workflow["guidance"]
     assert "skill.video_production" in workflow["guidance"]
     assert "自动连线" in workflow["guidance"]
     assert "canvas.connect_nodes" not in workflow["guidance"]

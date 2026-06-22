@@ -526,7 +526,7 @@ def _summarize_node_input(value: Any, *, node_type: str = "") -> dict[str, Any]:
     )
     prompt = value.get("prompt")
     if prompt not in (None, "", [], {}):
-        limit = 1200 if node_type in {"image", "video"} else 600
+        limit = 1200 if node_type in {"image", "video", "audio"} else 600
         payload["prompt_preview"] = _truncate_text(prompt, limit)
         payload["prompt_chars"] = len(str(prompt))
     content = value.get("content") or value.get("description")

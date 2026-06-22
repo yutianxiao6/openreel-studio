@@ -39,6 +39,11 @@ export const NODE_STYLES: Record<string, NodeStyleConfig> = {
     runningGlow: "shadow-[0_0_20px_rgba(6,182,212,0.5)]",
     shape: "wide", width: 280, decoration: "play-overlay", tier: "export",
   },
+  audio: {
+    icon: "AU", label: "音频", accent: "amber", color: "#f59e0b",
+    runningGlow: "shadow-[0_0_20px_rgba(245,158,11,0.45)]",
+    shape: "wide", width: 260, decoration: "timeline-tick", tier: "shot_artifact",
+  },
 }
 
 export const DEFAULT_NODE_STYLE: NodeStyleConfig = {

@@ -14,9 +14,38 @@ from app.services.node_service import canvas_edge_payloads
 
 
 def test_public_node_types_are_generic_only():
-    assert node_universal.NODE_TYPES == ("text", "image", "video")
-    assert set(node_universal._RUNNERS) == {"text", "image", "video"}
-    assert set(node_universal._NODE_FIELD_SCHEMA) == {"text", "image", "video"}
+    assert node_universal.NODE_TYPES == ("text", "image", "video", "audio")
+    assert set(node_universal._RUNNERS) == {"text", "image", "video", "audio"}
+    assert set(node_universal._NODE_FIELD_SCHEMA) == {"text", "image", "video", "audio"}
+
+
+@pytest.mark.asyncio
+async def test_audio_node_run_reports_unavailable_until_model_adapter_exists(monkeypatch):
+    updates: list[dict] = []
+
+    async def fake_get_node(node_id: str):
+        return {
+            "id": node_id,
+            "project_id": "proj-1",
+            "type": "audio",
+            "status": "idle",
+            "input": {"prompt": "一段安静的纯音频氛围"},
+            "prompt": "",
+        }
+
+    async def fake_update_node(node_id: str, patch: dict):
+        updates.append(patch)
+        return {"id": node_id, **patch}
+
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+
+    result = await node_universal.node_run(project_id="proj-1", node_id="audio-1")
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "audio_generation_unavailable"
+    assert updates[0] == {"status": "running", "error_message": None}
+    assert updates[-1]["status"] == "failed"
 
 
 def test_video_defaults_preserve_duration_alias():

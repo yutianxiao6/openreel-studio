@@ -409,7 +409,7 @@ def _current_blueprint_review_evidence(project_id: str) -> dict[str, Any]:
     for node, parent_id in _iter_blueprint_nodes(root):
         fields = node.get("fields") if isinstance(node.get("fields"), dict) else {}
         prompt = str(node.get("prompt") or fields.get("prompt") or "").strip()
-        is_media = node.get("type") in {"image", "video"}
+        is_media = node.get("type") in {"image", "video", "audio"}
         nodes.append({
             "id": node.get("id"),
             "type": node.get("type"),
@@ -428,7 +428,7 @@ def _current_blueprint_review_evidence(project_id: str) -> dict[str, Any]:
             ),
         })
 
-    media_nodes = [node for node in nodes if node.get("type") in {"image", "video"}]
+    media_nodes = [node for node in nodes if node.get("type") in {"image", "video", "audio"}]
     checksum = ""
     try:
         checksum = uuid.uuid5(

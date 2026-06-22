@@ -13,7 +13,7 @@ This skill explains OpenReel Studio project rules and points to the right local
 guide when the model needs more than `skill.video_production`.
 
 Default production is node-first: the model works on one visible canvas with
-`text`, `image`, and `video` nodes. It does not create a separate blueprint or
+`text`, `image`, `video`, and `audio` nodes. It does not create a separate blueprint or
 maintain separate canvas/panel state before work appears.
 
 ## Topics
@@ -35,7 +35,7 @@ maintain separate canvas/panel state before work appears.
 
 - Ordinary image/video work starts with `skill.video_production`, then creates
   lightweight tasks for multi-step or media-generation work, then creates or
-  updates `text`, `image`, and `video` nodes directly on the canvas.
+  updates `text`, `image`, `video`, and `audio` nodes directly on the canvas.
 - Canvas state is the creative truth source visible to the model. Drafts,
   grouping, method choice, review notes, and assumptions are node fields or text
   nodes, not a separate blueprint object.

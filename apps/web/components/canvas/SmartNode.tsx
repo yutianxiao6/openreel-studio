@@ -77,6 +77,8 @@ interface PreviewData {
   composite_url?: string
   poster?: string
   thumbnail_url?: string
+  format?: unknown
+  duration_seconds?: unknown
   width?: number
   height?: number
   grid?: { rows?: number; cols?: number }
@@ -173,6 +175,25 @@ function videoFromPreview(preview?: PreviewData): { src: string; poster?: string
     const src = resolveMediaUrl(preview.local_url || preview.url || preview.remote_url)
     const poster = resolveMediaUrl(preview.poster || preview.thumbnail_url)
     return src ? { src, poster, width: preview.width, height: preview.height } : null
+  }
+  return null
+}
+
+function audioFromPreview(preview?: PreviewData): { src: string; format?: string; duration?: string } | null {
+  if (!preview) return null
+  if (preview.type === "fusion" && Array.isArray(preview.stages)) {
+    const audioStage = preview.stages.find((stage) => {
+      const src = stage.local_url || stage.url || stage.remote_url
+      return /音频|audio|sound/i.test(stage.name ?? "") && typeof src === "string" && src.length > 0
+    })
+    const src = audioStage ? resolveMediaUrl(audioStage.local_url || audioStage.url || audioStage.remote_url) : ""
+    return src ? { src, duration: audioStage?.duration_seconds ? `${audioStage.duration_seconds}s` : undefined } : null
+  }
+  if (preview.type === "audio" || [preview.local_url, preview.url, preview.remote_url].some((item) => typeof item === "string" && /\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/i.test(item))) {
+    const src = resolveMediaUrl(preview.local_url || preview.url || preview.remote_url)
+    const format = typeof preview.format === "string" ? preview.format : undefined
+    const duration = preview.duration_seconds != null ? `${preview.duration_seconds}s` : undefined
+    return src ? { src, format, duration } : null
   }
   return null
 }
@@ -531,7 +552,7 @@ function PreviewContent({ preview, color }: { preview: PreviewData; color: strin
     )
   }
 
-  if (preview.type === "image_prompt" || preview.type === "video_prompt") {
+  if (preview.type === "image_prompt" || preview.type === "video_prompt" || preview.type === "audio_prompt") {
     return (
       <div className="mt-1.5 text-[10px] text-gray-400 line-clamp-3 italic">
         {preview.prompt}
@@ -597,9 +618,10 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const status = data.status ?? "idle"
   const isRunning = status === "running"
   const isSuperseded = !!data.superseded
-  const isMediaNode = data.type === "image" || data.type === "video"
+  const isMediaNode = data.type === "image" || data.type === "video" || data.type === "audio"
   const image = imageFromPreview(data.preview)
   const video = videoFromPreview(data.preview)
+  const audio = audioFromPreview(data.preview)
   const [naturalImage, setNaturalImage] = useState<{ src: string; width: number; height: number } | null>(null)
   const imageForSize = image?.width && image?.height
     ? image
@@ -908,6 +930,41 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 )
               })}
             </div>
+          ) : data.type === "audio" && audio?.src ? (
+            <div className="flex h-full w-full flex-col justify-between bg-[radial-gradient(circle_at_18%_12%,rgba(245,158,11,0.24),transparent_32%),linear-gradient(135deg,#111827,#18181b)] px-4 py-4">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ background: style.color }} />
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-100/80">Audio</span>
+                </div>
+                <div className="mt-3 line-clamp-2 text-[13px] font-medium leading-4 text-white" title={data.title}>
+                  {data.title || "未命名音频"}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="flex h-9 items-end gap-1.5 rounded-md border border-white/10 bg-black/28 px-2.5 py-2">
+                  {[0.35, 0.72, 0.48, 0.86, 0.55, 0.68, 0.4, 0.78, 0.5, 0.62].map((height, index) => (
+                    <span
+                      key={index}
+                      className="w-1.5 rounded-full bg-amber-200/80"
+                      style={{ height: `${Math.round(height * 100)}%` }}
+                    />
+                  ))}
+                </div>
+                <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-400">
+                  <span className="truncate">{audio.format || "音频文件"}</span>
+                  {audio.duration && <span>{audio.duration}</span>}
+                </div>
+              </div>
+              {isRunning && (
+                <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/38 backdrop-blur-[1px]">
+                  <div className="flex items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">
+                    <span className="h-3.5 w-3.5 rounded-full border-2 border-blue-200 border-t-transparent animate-spin" />
+                    生成中...
+                  </div>
+                </div>
+              )}
+            </div>
           ) : data.type === "video" && video?.src ? (
             <>
               <video
@@ -990,7 +1047,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 ) : (
                   <span className="text-[11px] font-semibold tracking-[0.18em] text-zinc-600">{style.icon}</span>
                 )}
-                <span className="text-xs">{isRunning ? "生成中..." : data.type === "video" ? "待生成视频" : "待生成图片"}</span>
+	                <span className="text-xs">{isRunning ? "生成中..." : data.type === "video" ? "待生成视频" : data.type === "audio" ? "待生成音频" : "待生成图片"}</span>
               </div>
             </div>
           )}

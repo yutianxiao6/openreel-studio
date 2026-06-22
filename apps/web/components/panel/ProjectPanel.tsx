@@ -1398,7 +1398,7 @@ export function ProjectPanel() {
     if (!currentProject || streaming) return
     const canvasType = String(canvasById.get(nodeId)?.data?.type ?? "")
     const panelType = String(panelNodeById.get(nodeId)?.type ?? "")
-    const action = canvasType === "video" || panelType === "video" ? "force" : "render"
+    const action = canvasType === "image" || panelType === "image" ? "render" : "force"
     setStreaming(true)
     updateCanvasNode(nodeId, { status: "running", error: undefined, error_message: undefined })
     try {

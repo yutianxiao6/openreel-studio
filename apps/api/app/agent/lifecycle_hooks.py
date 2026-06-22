@@ -162,7 +162,7 @@ def _build_completion_audit_message(
         + ("\n".join(extras) + "\n" if extras else "")
         + "1) 核对 pending 项是否确实还需执行；核对 failed 项是否可原地修复，不能修复就报告阻塞原因，不要无条件续跑旧失败。\n"
         + "2) 用 node.list 看一遍每个应有节点真存在且 status=completed。\n"
-        + "3) image 节点 output 里有可读 url 才算真出图；video 节点 output 里有可读 url 才算真出片。\n"
+        + "3) image 节点 output 里有可读 url 才算真出图；video 节点 output 里有可读 url 才算真出片；audio 节点 output 里有可读 url 才算真出音频。\n"
         + "4) failed 或 output_json 为空的节点 → 优先在原节点重试；无法修复则向用户报告，未经用户明确要求不得删除。\n"
         + "5) 顺序按蓝图树、references 和 depends_on 核对。\n"
         + "审核完报告真实核对结果和未完成项。\n"

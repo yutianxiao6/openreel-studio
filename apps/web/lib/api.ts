@@ -153,7 +153,7 @@ export async function getProjectNodes(projectId: string) {
   return asJson<{ nodes: unknown[]; edges: unknown[] }>(res)
 }
 
-export type CanvasNodeType = 'text' | 'image' | 'video'
+export type CanvasNodeType = 'text' | 'image' | 'video' | 'audio'
 
 export async function createProjectNode(
   projectId: string,

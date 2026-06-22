@@ -117,7 +117,7 @@ _GUIDANCE = {
     ),
     "video_workflow": (
         "普通图片/视频制作走节点优先流程：先读 skill.video_production，再直接创建或更新 "
-        "轻量任务和 text/image/video 节点。默认成片骨架是剧本/规划 text、人物图、场景图、分镜图、video。"
+        "轻量任务和 text/image/video/audio 节点。默认成片骨架是剧本/规划 text、人物图、场景图、分镜图、video。"
         "用 task blocked_by 表达执行依赖，用 parent_node_id 和 fields.references "
         "自动连线表达分组与依赖；references 可用 role 区分 context、visual_reference 和 source_image。复杂阶段产出用 agent.review 做只读检查。只补问阻塞事实，用 interaction.request_input；用户继续自定义时先修订确认；15秒短视频通常不问分集分段，"
         "但仍按剧本、人物图、场景图和分镜图准备。泛化短视频只给时长时，模型可以自行选择一个具体简单概念并写入剧本/规划 text 节点。"
@@ -212,7 +212,7 @@ def _read_prompt_guide(topic: str, profile: str = "default") -> tuple[str, str] 
     tags=["project", "mentor", "video", "production", "guide", "prompt"],
     metadata={"source": "skill"},
     search_hint=(
-        "guide video workflow node-first canvas text image video node storyboard text-to-video image-to-video prompt writer parent_node_id fields.references visual_reference source_image auto edges "
+        "guide video workflow node-first canvas text image video audio node storyboard text-to-video image-to-video prompt writer parent_node_id fields.references visual_reference source_image auto edges "
         "character_image scene_image storyboard_image first_frame_image last_frame_image story_template video_prompt "
         "T2V I2V R2V final video prompt keyframe first frame last frame multi reference @图片 asset style reference production audit node repair "
         "failed node rerun dependency_missing trace debugging 项目规则 视频工作流 提示词写法 制作审查 "

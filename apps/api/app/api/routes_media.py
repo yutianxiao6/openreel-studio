@@ -2,6 +2,7 @@
 
 Generated images live under storage/<project_id>/generated_images/<filename>.
 Generated videos live under storage/<project_id>/generated_videos/<filename>.
+Generated audio lives under storage/<project_id>/generated_audio/<filename>.
 Provider returns a remote URL (often short-lived) and downloads a copy to disk.
 The frontend should hit /api/media/<project_id>/<path> for stable access.
 """
@@ -40,13 +41,14 @@ def _resolve_media_target(project_id: str, path: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid project_id")
 
     project_root = _storage_root() / project_id
-    if path.startswith(("generated_images/", "generated_videos/")):
+    if path.startswith(("generated_images/", "generated_videos/", "generated_audio/")):
         target = (project_root / path).resolve()
     else:
         target = (project_root / "generated_images" / path).resolve()
     allowed_roots = [
         project_root / "generated_images",
         project_root / "generated_videos",
+        project_root / "generated_audio",
     ]
     if not any(_is_within(target, root) for root in allowed_roots):
         raise HTTPException(status_code=400, detail="Path outside storage")

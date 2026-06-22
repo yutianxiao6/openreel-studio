@@ -560,7 +560,7 @@ _NODE_TARGET_TOOLS: set[str] = {
 }
 
 # 通用画布节点类型。
-_CANVAS_NODE_TYPES: set[str] = {"text", "image", "video"}
+_CANVAS_NODE_TYPES: set[str] = {"text", "image", "video", "audio"}
 
 # Tools that reset/destroy project state — trigger canvas clear
 _CONFIRMABLE_DESTRUCTIVE_TOOLS = {

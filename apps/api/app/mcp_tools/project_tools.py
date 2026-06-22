@@ -95,7 +95,7 @@ async def project_get_state(project_id: str) -> dict[str, Any]:
                 result["model_feedback"] = {
                     "what_went_wrong": "项目存在旧蓝图文件，但当前 Agent 工具面已改为节点优先。",
                     "how_to_fix": (
-                        "读取当前节点状态，优先把可用旧蓝图信息转换成 text/image/video 节点；"
+                        "读取当前节点状态，优先把可用旧蓝图信息转换成 text/image/video/audio 节点；"
                         "后续修改和执行都走 node.list、node.get、node.create、node.update、node.run。"
                     ),
                     "suggested_next": result["suggested_next"],

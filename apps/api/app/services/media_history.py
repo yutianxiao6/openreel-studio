@@ -22,6 +22,7 @@ MEDIA_URL_KEYS = {
     "thumbnail_url",
     "poster",
     "last_frame_url",
+    "audio_url",
 }
 MEDIA_EXTENSIONS = (
     ".png",
@@ -34,6 +35,12 @@ MEDIA_EXTENSIONS = (
     ".mp4",
     ".webm",
     ".mov",
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".aac",
+    ".ogg",
+    ".flac",
 )
 
 
@@ -54,6 +61,7 @@ def _looks_like_media_ref(value: str) -> bool:
         text.startswith(("/api/media/", "/storage/"))
         or "/generated_images/" in text
         or "/generated_videos/" in text
+        or "/generated_audio/" in text
         or text.endswith(MEDIA_EXTENSIONS)
     )
 

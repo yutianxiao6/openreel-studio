@@ -721,9 +721,9 @@ function promptPreviewFromNodeType(nodeType: unknown, prompt: unknown): Record<s
   const currentPrompt = normalizedPrompt(prompt)
   if (!currentPrompt) return undefined
   const type = String(nodeType ?? "")
-  if (type !== "image" && type !== "video") return undefined
+  if (type !== "image" && type !== "video" && type !== "audio") return undefined
   return {
-    type: type === "video" ? "video_prompt" : "image_prompt",
+    type: type === "video" ? "video_prompt" : type === "audio" ? "audio_prompt" : "image_prompt",
     prompt: currentPrompt,
   }
 }
@@ -752,7 +752,7 @@ function applyCurrentPromptToPreview(
     return changed ? { ...data, stages } : data
   }
 
-  if (data.type === "image_prompt" || data.type === "video_prompt") {
+  if (data.type === "image_prompt" || data.type === "video_prompt" || data.type === "audio_prompt") {
     return { ...data, prompt: currentPrompt }
   }
 
@@ -887,6 +887,16 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         height: numericDimension(data.height),
       }
     }
+    if (data.type === "audio" && (data.url || data.local_url || data.remote_url)) {
+      return {
+        type: "audio",
+        url: data.url as string | undefined,
+        local_url: data.local_url as string | undefined,
+        remote_url: data.remote_url as string | undefined,
+        format: data.format,
+        duration_seconds: data.duration_seconds,
+      }
+    }
     if (data.type === "image_grid" && (data.local_url || data.url || data.composite_url)) {
       return {
         type: "image_grid",
@@ -925,6 +935,17 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         height: numericDimension(video.height),
       }
     }
+    const audio = data.audio as Record<string, unknown> | undefined
+    if (audio && typeof audio === "object" && (audio.url || audio.local_url || audio.remote_url)) {
+      return {
+        type: "audio",
+        url: audio.url as string | undefined,
+        local_url: audio.local_url as string | undefined,
+        remote_url: audio.remote_url as string | undefined,
+        format: audio.format,
+        duration_seconds: audio.duration_seconds,
+      }
+    }
     // Bare {url|local_url} pointing at an image extension
     const bareUrl = (data.local_url || data.url) as string | undefined
     if (typeof bareUrl === "string" && /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(bareUrl)) {
@@ -947,6 +968,16 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         thumbnail_url: data.thumbnail_url as string | undefined,
         width: numericDimension(data.width),
         height: numericDimension(data.height),
+      }
+    }
+    if (typeof bareUrl === "string" && /\.(mp3|wav|m4a|aac|ogg|flac)(\?|$)/i.test(bareUrl)) {
+      return {
+        type: "audio",
+        url: data.url as string | undefined,
+        local_url: data.local_url as string | undefined,
+        remote_url: data.remote_url as string | undefined,
+        format: data.format,
+        duration_seconds: data.duration_seconds,
       }
     }
     return undefined

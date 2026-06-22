@@ -5,7 +5,7 @@ from app.agent.prompts import flow_paths, task_loop
 def test_planner_prompt_uses_generic_node_surface():
     text = planner.PLANNER_PROMPT
 
-    assert "text, image, and video" in text
+    assert "text, image, video, and audio" in text
     assert "segment_video_prompt" not in text
     assert "episode_script" not in text
     assert "selected_video_mode" not in text
