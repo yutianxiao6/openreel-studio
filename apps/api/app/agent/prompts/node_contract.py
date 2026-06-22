@@ -14,6 +14,6 @@ Shared nodes: `text`, `image`, `video`, `audio`.
 - `node.create` writes fields; `node.run` saves/generates. Text needs `fields.content`; media need prompt.
 - `parent_node_id` groups UI; `fields.references` drives edges. Visual refs feed media.
 - Text refs are context; `visual_reference` feeds generation; `source_image` adopts image.
-- Resolve with `node.list`; details with `node.get(node_ids=[...])`; use real `node_id`.
+- Resolve with `node.list(query|regex)` before broad `node.list(limit=0)`; details with `node.get(node_ids=[...])`; use real `node_id`.
 - For `dependency_missing`/missing prompt/refs, update original/upstream node, then rerun.
 """

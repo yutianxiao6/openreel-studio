@@ -751,6 +751,8 @@ def test_single_image_prompt_documents_reference_image_to_image_path() -> None:
     assert "fields.references" in prompt_text
     assert "source_image" in prompt_text
     assert "node.list" in prompt_text
+    assert "node.list(query|regex)" in prompt_text
+    assert "node.list(limit=0)" in prompt_text
     assert "active/user skill" in prompt_text
     assert "prompt rules" in prompt_text
     assert "不要进入蓝图或计划流程" in prompt_text

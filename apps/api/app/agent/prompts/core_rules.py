@@ -7,7 +7,7 @@ PROMPT = """\
 # Project Rules
 
 - The shared canvas is creative truth; user and Agent nodes have equal authority.
-- `node.list` indexes; batch `node.get(node_ids=[...])`; update matching empty/draft nodes before new ones.
+- `node.list(query|regex)` first; else `node.list(limit=0)`; batch `node.get(node_ids)`; update drafts first.
 - Drafts live in fields (`tmp`, `purpose`, `stage`, notes); ask only for fact gaps/conflicts.
 - Node work uses active skill/process, `task.*`, `node.*`; dependencies use `parent_node_id` and `fields.references`.
 - Before run/report, check latest user + skill; self-check or `agent.review` for complex evidence, then fix same node.
