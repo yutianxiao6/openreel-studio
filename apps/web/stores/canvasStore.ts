@@ -84,6 +84,7 @@ const NODE_DRAG_HANDLE = ".openreel-smart-node-drag"
 interface StoredNodeDimensions {
   width: number
   height: number
+  mode?: "manual"
 }
 
 const NODE_TIER: Record<string, number> = {
@@ -525,9 +526,15 @@ function writeStoredNodeDimensions(updates: Record<string, StoredNodeDimensions>
   if (typeof window === "undefined" || Object.keys(updates).length === 0) return
   try {
     const current = readStoredNodeDimensions()
+    const normalizedUpdates = Object.fromEntries(
+      Object.entries(updates).map(([id, dimensions]) => [
+        id,
+        { ...dimensions, mode: dimensions.mode ?? "manual" },
+      ]),
+    )
     window.localStorage.setItem(
       NODE_DIMENSIONS_STORAGE_KEY,
-      JSON.stringify({ ...current, ...updates }),
+      JSON.stringify({ ...current, ...normalizedUpdates }),
     )
   } catch {
     // localStorage can be unavailable in private mode; canvas editing still works for this session.
@@ -536,9 +543,11 @@ function writeStoredNodeDimensions(updates: Record<string, StoredNodeDimensions>
 
 function hasManualNodeDimensions(node: Node | undefined, storedDimensions: Record<string, StoredNodeDimensions>): boolean {
   if (!node) return false
-  if (storedDimensions[node.id]) return true
-  const data = node.data as { canvasSizeMode?: unknown } | undefined
+  const data = node.data as { type?: unknown; canvasSizeMode?: unknown } | undefined
   return data?.canvasSizeMode === "manual"
+    || (isAutoSizedMediaType(data?.type)
+      ? storedDimensions[node.id]?.mode === "manual"
+      : Boolean(storedDimensions[node.id]))
 }
 
 function clampNodeDimension(width: number, height: number): StoredNodeDimensions {
@@ -619,6 +628,8 @@ function applyStoredNodeDimensions(
 ): Node {
   const dimensions = storedDimensions[node.id]
   if (!dimensions) return node
+  const data = node.data as { type?: unknown } | undefined
+  if (isAutoSizedMediaType(data?.type) && dimensions.mode !== "manual") return node
   const width = Math.max(NODE_MIN_WIDTH, Math.min(NODE_MAX_WIDTH, dimensions.width))
   const height = Math.max(NODE_MIN_HEIGHT, Math.min(NODE_MAX_HEIGHT, dimensions.height))
   return {
@@ -752,6 +763,40 @@ function mediaPreviewHints(data: Record<string, unknown>): Record<string, unknow
     if (data[key] != null) hints[key] = data[key]
   }
   return hints
+}
+
+function collectMediaPreviewHints(...sources: unknown[]): Record<string, unknown> {
+  const hints: Record<string, unknown> = {}
+  for (const source of sources) {
+    const item = parseObjectJson(source)
+    if (!item) continue
+    const fields = parseObjectJson(item.fields)
+    if (fields) Object.assign(hints, mediaPreviewHints(fields))
+    const input = parseObjectJson(item.input)
+    if (input) Object.assign(hints, mediaPreviewHints(input))
+    const inputJson = parseObjectJson(item.input_json)
+    if (inputJson) Object.assign(hints, mediaPreviewHints(inputJson))
+    Object.assign(hints, mediaPreviewHints(item))
+  }
+  return hints
+}
+
+function mergeMediaPreviewHints(
+  nodeType: unknown,
+  preview: Record<string, unknown> | undefined,
+  ...sources: unknown[]
+): Record<string, unknown> | undefined {
+  if (!isAutoSizedMediaType(nodeType)) return preview
+  const hints = collectMediaPreviewHints(...sources)
+  if (Object.keys(hints).length === 0) return preview
+  const base: Record<string, unknown> = {
+    type: nodeType === "video" ? "video_prompt" : "image_prompt",
+    ...(preview ?? {}),
+  }
+  for (const [key, value] of Object.entries(hints)) {
+    if (base[key] == null) base[key] = value
+  }
+  return base
 }
 
 function existingNodeDimension(node: Node, key: "width" | "height"): number | undefined {
@@ -1133,7 +1178,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           nextData.preview,
         )
         if (nextRenderState) nextData.renderState = nextRenderState
-        nextData.preview = normalizePreviewForNode(nextData.type ?? n.type, nextData.preview, nextData.prompt)
+        nextData.preview = mergeMediaPreviewHints(
+          nextData.type ?? n.type,
+          normalizePreviewForNode(nextData.type ?? n.type, nextData.preview, nextData.prompt),
+          data as Record<string, unknown>,
+          nextData,
+        )
         return applyAutoMediaNodeDimensions({ ...n, data: nextData }, storedDimensions)
       })
 	      return {
@@ -1289,10 +1339,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                   payload.status ?? n.data.status,
                   payload.preview ?? n.data.preview,
                 ) ?? n.data.renderState,
-                preview: normalizePreviewForNode(
+                preview: mergeMediaPreviewHints(
                   payload.type ?? n.data.type,
-                  payload.preview ?? n.data.preview,
-                  payload.prompt ?? n.data.prompt,
+                  normalizePreviewForNode(
+                    payload.type ?? n.data.type,
+                    payload.preview ?? n.data.preview,
+                    payload.prompt ?? n.data.prompt,
+                  ),
+                  payload,
+                  n.data,
                 ),
               },
             }, storedDimensions)
@@ -1354,7 +1409,11 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           status: payload.status ?? "running",
           prompt: normalizedPrompt(payload.prompt),
           renderState: renderStateFromPayload(payload as Record<string, unknown>, payload.type, payload.status, payload.preview),
-          preview: normalizePreviewForNode(payload.type, payload.preview, payload.prompt),
+          preview: mergeMediaPreviewHints(
+            payload.type,
+            normalizePreviewForNode(payload.type, payload.preview, payload.prompt),
+            payload,
+          ),
           group_id: groupId,
           group_label: hint?.group_label,
           layout_strategy: hint?.strategy ?? "vertical",
@@ -1513,8 +1572,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             dataPatch.renderState = nextRenderState
           }
           delete dataPatch.render_state
-          if (mergedPreview !== undefined || Object.prototype.hasOwnProperty.call(dataPatch, "prompt")) {
-            dataPatch.preview = normalizePreviewForNode(nextType, mergedPreview ?? prevPreview, nextPrompt)
+          const hasMediaHintPatch =
+            isAutoSizedMediaType(nextType) &&
+            Object.keys(collectMediaPreviewHints(dataPatch)).length > 0
+          if (mergedPreview !== undefined || Object.prototype.hasOwnProperty.call(dataPatch, "prompt") || hasMediaHintPatch) {
+            dataPatch.preview = mergeMediaPreviewHints(
+              nextType,
+              normalizePreviewForNode(nextType, mergedPreview ?? prevPreview, nextPrompt),
+              dataPatch,
+            )
           }
           return applyAutoMediaNodeDimensions({ ...n, data: { ...n.data, ...dataPatch } }, storedDimensions)
         })
@@ -1554,7 +1620,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const nodes: Node[] = []
     for (const n of rawNodes) {
       const prompt = promptFromRawNode(n)
-      const preview = normalizePreviewForNode(n.type, parseOutputPreview(n.output_json), prompt)
+      const preview = mergeMediaPreviewHints(
+        n.type,
+        normalizePreviewForNode(n.type, parseOutputPreview(n.output_json), prompt),
+        n.input_json,
+        n.model_config_json,
+      )
       const existing = currentNodes.get(n.id)
 	      const rawHasPosition = !forceLayout && hasStoredPosition(n)
 	      const position = rawHasPosition
