@@ -1477,13 +1477,15 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
   const hasInputReferences = hasOwnKey(input, "references")
   const hasInputDependsOn = hasOwnKey(input, "depends_on")
   const referenceImages = (
-    hasInputReferenceImages
+    hasInputReferenceImages && inputReferenceImages.length > 0
       ? inputReferenceImages
-      : hasInputReferences
+      : hasInputReferences && inputReferences.length > 0
         ? inputReferences
-        : hasInputDependsOn
+        : hasInputDependsOn && inputDependsOn.length > 0
           ? inputDependsOn
-          : stringArrayFromUnknown(output.reference_images)
+          : hasInputReferenceImages || hasInputReferences || hasInputDependsOn
+            ? []
+            : stringArrayFromUnknown(output.reference_images)
   )
 
   return {

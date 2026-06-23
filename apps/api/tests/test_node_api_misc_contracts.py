@@ -383,7 +383,11 @@ def test_manual_image_edge_writes_visual_reference_for_text_and_image_targets():
         project_id="proj-1",
         type="image",
         title="图片",
-        input_json=json.dumps({"render_state": "fresh"}, ensure_ascii=False),
+        input_json=json.dumps({
+            "render_state": "fresh",
+            "reference_images": [],
+            "fields": {"depends_on": [], "references": [], "reference_images": []},
+        }, ensure_ascii=False),
     )
 
     assert routes_projects._add_edge_dependency(text_target, source) is True
@@ -394,8 +398,13 @@ def test_manual_image_edge_writes_visual_reference_for_text_and_image_targets():
     expected_ref = {"ref": "node:image-source", "role": "visual_reference"}
     assert text_input["depends_on"] == ["node:image-source"]
     assert text_input["references"] == [expected_ref]
+    assert text_input["reference_images"] == ["node:image-source"]
     assert image_input["depends_on"] == ["node:image-source"]
     assert image_input["references"] == [expected_ref]
+    assert image_input["reference_images"] == ["node:image-source"]
+    assert image_input["fields"]["depends_on"] == ["node:image-source"]
+    assert image_input["fields"]["references"] == [expected_ref]
+    assert image_input["fields"]["reference_images"] == ["node:image-source"]
     assert image_input["render_state"] == "stale"
 
     image_input["references"].append({"ref": "node:image-source", "role": "source_image"})

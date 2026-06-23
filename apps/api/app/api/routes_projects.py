@@ -347,23 +347,38 @@ def _manual_edge_reference_role(source: WorkflowNode, target: WorkflowNode) -> s
 def _add_edge_dependency(target: WorkflowNode, source: WorkflowNode | str) -> bool:
     source_node_id = source.id if isinstance(source, WorkflowNode) else source
     input_data = _parse_json_dict(target.input_json)
-    changed = False
-    deps = _dependency_values(input_data.get("depends_on"))
     aliases = _node_dependency_aliases(source_node_id)
-    if not any(dep in aliases for dep in deps):
-        deps.append(f"node:{source_node_id}")
-        input_data["depends_on"] = deps
-        changed = True
 
-    if isinstance(source, WorkflowNode):
-        role = _manual_edge_reference_role(source, target)
-        if role:
-            refs = input_data.get("references")
-            ref_items = refs if isinstance(refs, list) else ([refs] if refs else [])
-            if not any(_reference_value(item) in aliases for item in ref_items):
-                ref_items.append({"ref": f"node:{source_node_id}", "role": role})
-                input_data["references"] = ref_items
-                changed = True
+    def add_to_container(container: dict[str, Any]) -> bool:
+        changed = False
+        deps = _dependency_values(container.get("depends_on"))
+        if not any(dep in aliases for dep in deps):
+            deps.append(f"node:{source_node_id}")
+            container["depends_on"] = deps
+            changed = True
+
+        if isinstance(source, WorkflowNode):
+            role = _manual_edge_reference_role(source, target)
+            if role:
+                refs = container.get("references")
+                ref_items = refs if isinstance(refs, list) else ([refs] if refs else [])
+                if not any(_reference_value(item) in aliases for item in ref_items):
+                    ref_items.append({"ref": f"node:{source_node_id}", "role": role})
+                    container["references"] = ref_items
+                    changed = True
+                if target.type in {"text", "image", "video"}:
+                    reference_images = _dependency_values(container.get("reference_images"))
+                    if not any(ref in aliases for ref in reference_images):
+                        reference_images.append(f"node:{source_node_id}")
+                        container["reference_images"] = reference_images
+                        changed = True
+        return changed
+
+    changed = add_to_container(input_data)
+    fields = input_data.get("fields")
+    if isinstance(fields, dict) and any(key in fields for key in _DEPENDENCY_FIELD_KEYS):
+        if add_to_container(fields):
+            changed = True
 
     if changed and target.type == "image":
         input_data["render_state"] = "stale"
