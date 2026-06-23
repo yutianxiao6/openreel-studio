@@ -46,10 +46,15 @@ def _as_dict(value: Any) -> dict[str, Any]:
 
 def _reference_value(item: Any) -> str:
     if isinstance(item, dict):
-        for key in ("ref", "node_id", "source_node_id", "id"):
+        for key in ("ref", "reference", "reference_input", "node_id", "nodeId", "source_node_id", "sourceNodeId", "id", "value"):
             value = item.get(key)
             if value is not None:
-                return str(value).strip()
+                text = str(value).strip()
+                return (
+                    f"node:{text}"
+                    if key in {"node_id", "nodeId", "source_node_id", "sourceNodeId"} and text and not text.startswith("node:")
+                    else text
+                )
         return ""
     return str(item or "").strip()
 
@@ -87,6 +92,14 @@ def _dependency_node_ids(input_data: dict[str, Any], node_ids: set[str]) -> list
     return deps
 
 
+def _has_dependency_keys(input_data: dict[str, Any]) -> bool:
+    containers: list[dict[str, Any]] = [input_data]
+    fields = input_data.get("fields")
+    if isinstance(fields, dict):
+        containers.append(fields)
+    return any(any(key in container for key in ("depends_on", "references", "reference_images")) for container in containers)
+
+
 def canvas_edge_payloads(
     nodes: list[WorkflowNode],
     persisted_edges: list[WorkflowEdge],
@@ -99,8 +112,12 @@ def canvas_edge_payloads(
     """
     node_ids = {node.id for node in nodes}
     desired_by_target: dict[str, list[str]] = {}
+    dependency_owned_targets: set[str] = set()
     for node in nodes:
-        deps = [dep for dep in _dependency_node_ids(_as_dict(node.input_json), node_ids) if dep != node.id]
+        input_data = _as_dict(node.input_json)
+        if _has_dependency_keys(input_data):
+            dependency_owned_targets.add(node.id)
+        deps = [dep for dep in _dependency_node_ids(input_data, node_ids) if dep != node.id]
         if deps:
             desired_by_target[node.id] = deps
 
@@ -116,8 +133,8 @@ def canvas_edge_payloads(
         pair = (edge.source_node_id, edge.target_node_id)
         if pair[0] not in node_ids or pair[1] not in node_ids or pair[0] == pair[1]:
             continue
-        desired_sources = desired_by_target.get(edge.target_node_id)
-        if desired_sources and edge.source_node_id not in desired_sources:
+        desired_sources = desired_by_target.get(edge.target_node_id, [])
+        if edge.target_node_id in dependency_owned_targets and edge.source_node_id not in desired_sources:
             continue
         if pair in seen:
             continue
@@ -258,6 +275,15 @@ class NodeService:
         target_node_id: str,
         label: str | None = None,
     ) -> WorkflowEdge:
+        existing = (await self.db.exec(
+            select(WorkflowEdge).where(
+                WorkflowEdge.project_id == project_id,
+                WorkflowEdge.source_node_id == source_node_id,
+                WorkflowEdge.target_node_id == target_node_id,
+            )
+        )).first()
+        if existing is not None:
+            return existing
         edge = WorkflowEdge(
             id=str(uuid.uuid4()),
             project_id=project_id,

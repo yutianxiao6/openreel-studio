@@ -1251,13 +1251,15 @@ function pickReadableText(input: Record<string, unknown>, output: Record<string,
 
 function pickReferences(input: Record<string, unknown>, output: Record<string, unknown>): unknown[] | undefined {
   const inputFields = asObj(input.fields) || {}
-  const hasInputReferenceFields = ["reference_images", "references", "reference_assets"].some((key) =>
+  const hasInputReferenceFields = ["depends_on", "reference_images", "references", "reference_assets"].some((key) =>
     hasOwnKey(input, key) || hasOwnKey(inputFields, key),
   )
   const inputValues = [
+    input.depends_on,
     input.reference_images,
     input.references,
     input.reference_assets,
+    inputFields.depends_on,
     inputFields.reference_images,
     inputFields.references,
     inputFields.reference_assets,
@@ -1355,8 +1357,12 @@ function resolveAudioProvider(
   return enabled.find((provider) => provider.is_active) || enabled[0]
 }
 
+function rawNodeInput(input: unknown): Record<string, unknown> {
+  return asObj(parseJson(input)) || {}
+}
+
 function nodeInputFields(input: unknown): Record<string, unknown> {
-  const inputObj = asObj(parseJson(input)) || {}
+  const inputObj = rawNodeInput(input)
   const nestedFields = asObj(inputObj.fields)
   return nestedFields ? { ...inputObj, ...nestedFields } : inputObj
 }
@@ -1390,7 +1396,7 @@ function stringArrayFromUnknown(value: unknown): string[] {
       if (!obj) return ""
       const direct = obj.reference_input || obj.rel_path || obj.path || obj.source_path || obj.url || obj.local_url || obj.remote_url
       if (typeof direct === "string" && direct.trim()) return direct.trim()
-      const ref = obj.ref || obj.reference
+      const ref = obj.ref || obj.reference || obj.value
       if (typeof ref === "string" && ref.trim()) return ref.trim()
       const nodeId = obj.node_id || obj.nodeId || obj.source_node_id || obj.sourceNodeId
       if (typeof nodeId === "string" && nodeId.trim()) return `node:${nodeId.trim()}`
@@ -1416,7 +1422,7 @@ function nodeRefIdFromUnknown(value: unknown): string {
   }
   const obj = asObj(value)
   if (!obj) return ""
-  for (const key of ["ref", "reference", "reference_input"]) {
+  for (const key of ["ref", "reference", "reference_input", "value"]) {
     const ref = obj[key]
     const nodeId = nodeRefIdFromUnknown(ref)
     if (nodeId) return nodeId
@@ -1446,7 +1452,7 @@ function removeNodeReferencesFromContainer(
 ): { next: Record<string, unknown>; changed: boolean } {
   const next = { ...container }
   let changed = false
-  for (const key of ["depends_on", "references"] as const) {
+  for (const key of ["depends_on", "references", "reference_images"] as const) {
     if (!hasOwnKey(container, key)) continue
     const filtered = filterRemovedNodeReferences(container[key], removedNodeIds)
     if (JSON.stringify(filtered) === JSON.stringify(referenceListFromUnknown(container[key]))) continue
@@ -1466,14 +1472,18 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
   const nodePrompt = typeof node.prompt === "string" ? node.prompt : ""
   const inputReferenceImages = stringArrayFromUnknown(input.reference_images)
   const inputReferences = stringArrayFromUnknown(input.references)
+  const inputDependsOn = stringArrayFromUnknown(input.depends_on)
   const hasInputReferenceImages = hasOwnKey(input, "reference_images")
   const hasInputReferences = hasOwnKey(input, "references")
+  const hasInputDependsOn = hasOwnKey(input, "depends_on")
   const referenceImages = (
     hasInputReferenceImages
       ? inputReferenceImages
       : hasInputReferences
         ? inputReferences
-        : stringArrayFromUnknown(output.reference_images)
+        : hasInputDependsOn
+          ? inputDependsOn
+          : stringArrayFromUnknown(output.reference_images)
   )
 
   return {
@@ -1506,23 +1516,31 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: A
   prompt: string | null
   input: Record<string, unknown>
 } {
-  const current = nodeInputFields(node.input)
-  const nextInput: Record<string, unknown> = { ...current }
+  const currentRaw = rawNodeInput(node.input)
+  const output = asObj(parseJson(node.output)) || {}
+  const nextInput: Record<string, unknown> = { ...currentRaw }
   const title = draft.title.trim() || node.title || "未命名节点"
   const prompt = draft.prompt.trim()
 
   nextInput.title = title
-  const currentFields = asObj(current.fields)
-  const currentHasReferenceImages = hasOwnKey(current, "reference_images")
+  const currentFields = asObj(currentRaw.fields)
   const currentFieldsHasReferenceImages = currentFields ? hasOwnKey(currentFields, "reference_images") : false
+  const currentHasReferenceFields = ["depends_on", "reference_images", "references"].some((key) =>
+    hasOwnKey(currentRaw, key) || Boolean(currentFields && hasOwnKey(currentFields, key)),
+  )
+  const outputHasReferenceImages = hasOwnKey(output, "reference_images") || stringArrayFromUnknown(output.reference_images).length > 0
   const referenceImages = Array.from(new Set(draft.reference_images.map((item) => item.trim()).filter(Boolean)))
-  if (currentHasReferenceImages || referenceImages.length > 0) {
+  if (currentHasReferenceFields || outputHasReferenceImages || referenceImages.length > 0) {
     nextInput.reference_images = referenceImages
   }
-  const previousReferenceImages = stringArrayFromUnknown(current.reference_images)
-  const previousEditableRefs = previousReferenceImages.length > 0
-    ? previousReferenceImages
-    : stringArrayFromUnknown(current.references)
+  const previousEditableRefs = Array.from(new Set([
+    ...stringArrayFromUnknown(currentRaw.reference_images),
+    ...stringArrayFromUnknown(currentRaw.references),
+    ...stringArrayFromUnknown(currentRaw.depends_on),
+    ...(currentFields ? stringArrayFromUnknown(currentFields.reference_images) : []),
+    ...(currentFields ? stringArrayFromUnknown(currentFields.references) : []),
+    ...(currentFields ? stringArrayFromUnknown(currentFields.depends_on) : []),
+  ]))
   const nextReferenceNodeIds = new Set(referenceImages.map(nodeRefIdFromUnknown).filter(Boolean))
   const removedReferenceNodeIds = new Set(
     previousEditableRefs

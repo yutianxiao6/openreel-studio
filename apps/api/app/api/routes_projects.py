@@ -302,7 +302,7 @@ def _dependency_values(raw: Any) -> list[str]:
     for item in items:
         if item is None:
             continue
-        text = str(item).strip()
+        text = _reference_value(item).strip()
         if text and text not in values:
             values.append(text)
     return values
@@ -310,11 +310,15 @@ def _dependency_values(raw: Any) -> list[str]:
 
 def _reference_value(raw: Any) -> str:
     if isinstance(raw, dict):
-        for key in ("ref", "node_id", "source_node_id", "id", "value"):
+        for key in ("ref", "reference", "reference_input", "node_id", "nodeId", "source_node_id", "sourceNodeId", "id", "value"):
             value = raw.get(key)
             if value is not None:
                 text = str(value).strip()
-                return f"node:{text}" if key in {"node_id", "source_node_id"} and text and not text.startswith("node:") else text
+                return (
+                    f"node:{text}"
+                    if key in {"node_id", "nodeId", "source_node_id", "sourceNodeId"} and text and not text.startswith("node:")
+                    else text
+                )
         return ""
     return str(raw or "").strip()
 
@@ -372,25 +376,33 @@ def _add_edge_dependency(target: WorkflowNode, source: WorkflowNode | str) -> bo
 
 def _remove_edge_dependency(target: WorkflowNode, source_node_id: str) -> bool:
     input_data = _parse_json_dict(target.input_json)
-    deps = _dependency_values(input_data.get("depends_on"))
     aliases = _node_dependency_aliases(source_node_id)
-    next_deps = [dep for dep in deps if dep not in aliases]
-    changed = next_deps != deps
-    if next_deps:
-        input_data["depends_on"] = next_deps
-    else:
-        input_data.pop("depends_on", None)
-    for key in ("references", "reference_images"):
-        value = input_data.get(key)
-        if not isinstance(value, list):
-            continue
-        next_refs = [item for item in value if _reference_value(item) not in aliases]
-        if next_refs != value:
+
+    def remove_from_container(container: dict[str, Any]) -> bool:
+        changed = False
+        if "depends_on" in container:
+            deps_raw = container.get("depends_on")
+            deps = deps_raw if isinstance(deps_raw, list) else ([deps_raw] if deps_raw else [])
+            next_deps = [dep for dep in deps if _reference_value(dep) not in aliases]
+            if next_deps != deps:
+                container["depends_on"] = next_deps
+                changed = True
+        for key in ("references", "reference_images"):
+            if key not in container:
+                continue
+            value = container.get(key)
+            refs = value if isinstance(value, list) else ([value] if value else [])
+            next_refs = [item for item in refs if _reference_value(item) not in aliases]
+            if next_refs != refs:
+                container[key] = next_refs
+                changed = True
+        return changed
+
+    changed = remove_from_container(input_data)
+    fields = input_data.get("fields")
+    if isinstance(fields, dict):
+        if remove_from_container(fields):
             changed = True
-            if next_refs:
-                input_data[key] = next_refs
-            else:
-                input_data.pop(key, None)
     if changed and target.type == "image":
         input_data["render_state"] = "stale"
     if not changed:
@@ -942,6 +954,7 @@ async def delete_project_edge(
     source_id = ""
     target_id = ""
     deleted_edge_id: str | None = None
+    deleted_edge_ids: list[str] = []
 
     if edge and edge.project_id == project_id:
         source_id = edge.source_node_id
@@ -975,13 +988,24 @@ async def delete_project_edge(
     dependency_removed = _remove_edge_dependency(target, source_id)
     if dependency_removed:
         db.add(target)
-    if edge is not None:
-        await db.delete(edge)
+    edges_to_delete = list((await db.exec(
+        select(WorkflowEdge).where(
+            WorkflowEdge.project_id == project_id,
+            WorkflowEdge.source_node_id == source_id,
+            WorkflowEdge.target_node_id == target_id,
+        )
+    )).all())
+    if edge is not None and edge not in edges_to_delete:
+        edges_to_delete.append(edge)
+    for item in edges_to_delete:
+        deleted_edge_ids.append(item.id)
+        await db.delete(item)
     await db.commit()
     return {
         "ok": True,
         "id": edge_id,
         "deleted_edge_id": deleted_edge_id,
+        "deleted_edge_ids": deleted_edge_ids,
         "source_node_id": source_id,
         "target_node_id": target_id,
         "dependency_removed": dependency_removed,

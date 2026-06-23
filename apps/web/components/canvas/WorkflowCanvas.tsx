@@ -929,7 +929,7 @@ export default function WorkflowCanvas() {
     } catch (error) {
       console.warn("Failed to delete canvas selection", error)
     }
-  }, [currentProject?.id, edges, pushUndo, refreshCanvas, removeEdges, removeNodes])
+  }, [currentProject?.id, edges, pushUndo, removeEdges, removeNodes])
 
   const deleteSelection = useCallback(async () => {
     await deleteCanvasItems(selectedNodeIds, selectedEdgeIds)

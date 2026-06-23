@@ -46,10 +46,15 @@ def _agent_visible_dict(raw) -> dict | None:
 
 def _reference_value(item: Any) -> str:
     if isinstance(item, dict):
-        for key in ("ref", "node_id", "source_node_id", "id"):
+        for key in ("ref", "reference", "reference_input", "node_id", "nodeId", "source_node_id", "sourceNodeId", "id", "value"):
             value = item.get(key)
             if value is not None:
-                return str(value).strip()
+                text = str(value).strip()
+                return (
+                    f"node:{text}"
+                    if key in {"node_id", "nodeId", "source_node_id", "sourceNodeId"} and text and not text.startswith("node:")
+                    else text
+                )
         return ""
     return str(item or "").strip()
 
@@ -207,6 +212,20 @@ async def connect_nodes(
     label: str | None = None,
 ) -> dict:
     async with session_scope() as session:
+        existing = (await session.exec(
+            select(WorkflowEdge).where(
+                WorkflowEdge.project_id == project_id,
+                WorkflowEdge.source_node_id == source_node_id,
+                WorkflowEdge.target_node_id == target_node_id,
+            )
+        )).first()
+        if existing is not None:
+            return {
+                "id": existing.id,
+                "source": existing.source_node_id,
+                "target": existing.target_node_id,
+                "label": existing.label,
+            }
         edge = WorkflowEdge(
             id=str(uuid.uuid4()),
             project_id=project_id,
@@ -257,13 +276,16 @@ async def sync_dependency_edges(
                 WorkflowEdge.target_node_id == target_node_id,
             )
         )).all()
-        existing_by_source = {edge.source_node_id: edge for edge in existing_rows}
+        existing_by_source: dict[str, WorkflowEdge] = {}
 
         added: list[dict[str, Any]] = []
         removed: list[dict[str, Any]] = []
+        kept_sources: set[str] = set()
 
         for edge in existing_rows:
-            if edge.source_node_id in desired_set:
+            if edge.source_node_id in desired_set and edge.source_node_id not in kept_sources:
+                existing_by_source[edge.source_node_id] = edge
+                kept_sources.add(edge.source_node_id)
                 continue
             removed.append({
                 "id": edge.id,

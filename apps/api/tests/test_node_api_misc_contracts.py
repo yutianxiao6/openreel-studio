@@ -101,6 +101,16 @@ def test_canvas_edge_payloads_prefer_node_authored_dependencies():
         project_id="proj-1",
         input_json=json.dumps({"references": [{"ref": "script-1", "role": "context"}]}, ensure_ascii=False),
     )
+    green = SimpleNamespace(
+        id="green-1",
+        project_id="proj-1",
+        input_json=json.dumps({"references": [{"nodeId": "script-1", "role": "context"}]}, ensure_ascii=False),
+    )
+    empty = SimpleNamespace(
+        id="empty-1",
+        project_id="proj-1",
+        input_json=json.dumps({"depends_on": [], "references": [], "reference_images": []}, ensure_ascii=False),
+    )
 
     class FakeEdge:
         def __init__(self, source: str, target: str):
@@ -120,15 +130,19 @@ def test_canvas_edge_payloads_prefer_node_authored_dependencies():
             }
 
     payloads = canvas_edge_payloads(
-        [script, red, blue],
+        [script, red, blue, green, empty],
         [
             FakeEdge("script-1", "red-1"),
+            FakeEdge("script-1", "red-1"),
             FakeEdge("red-1", "blue-1"),
+            FakeEdge("red-1", "green-1"),
+            FakeEdge("script-1", "empty-1"),
         ],
     )
 
     pairs = {(edge["source_node_id"], edge["target_node_id"]) for edge in payloads}
-    assert pairs == {("script-1", "red-1"), ("script-1", "blue-1")}
+    assert pairs == {("script-1", "red-1"), ("script-1", "blue-1"), ("script-1", "green-1")}
+    assert len(payloads) == 3
 
 
 @pytest.mark.asyncio
@@ -384,13 +398,44 @@ def test_manual_image_edge_writes_visual_reference_for_text_and_image_targets():
     assert image_input["references"] == [expected_ref]
     assert image_input["render_state"] == "stale"
 
+    image_input["references"].append({"ref": "node:image-source", "role": "source_image"})
     image_input["reference_images"] = ["node:image-source"]
+    image_input["fields"] = {
+        "depends_on": ["node:image-source"],
+        "references": [
+            {"ref": "node:image-source", "role": "visual_reference"},
+            {"ref": "node:image-source", "role": "source_image"},
+        ],
+        "reference_images": ["node:image-source"],
+    }
     image_target.input_json = json.dumps(image_input, ensure_ascii=False)
     assert routes_projects._remove_edge_dependency(image_target, source.id) is True
     image_input = json.loads(image_target.input_json or "{}")
-    assert "depends_on" not in image_input
-    assert "references" not in image_input
-    assert "reference_images" not in image_input
+    assert image_input["depends_on"] == []
+    assert image_input["references"] == []
+    assert image_input["reference_images"] == []
+    assert image_input["fields"]["depends_on"] == []
+    assert image_input["fields"]["references"] == []
+    assert image_input["fields"]["reference_images"] == []
+    assert node_universal._coerce_reference_values(
+        image_input.get("references"),
+        image_input.get("depends_on"),
+        image_input.get("reference_images"),
+        include_roles=node_universal._MEDIA_REFERENCE_ROLES,
+        exclude_roles=node_universal._DIRECT_IMAGE_SOURCE_ROLES,
+    ) == []
+    assert node_universal._coerce_reference_values(
+        image_input["fields"].get("references"),
+        image_input["fields"].get("depends_on"),
+        image_input["fields"].get("reference_images"),
+        include_roles=node_universal._MEDIA_REFERENCE_ROLES,
+        exclude_roles=node_universal._DIRECT_IMAGE_SOURCE_ROLES,
+    ) == []
+    assert node_universal._coerce_reference_values(
+        image_input.get("references"),
+        image_input["fields"].get("references"),
+        include_roles=node_universal._DIRECT_IMAGE_SOURCE_ROLES,
+    ) == []
     assert image_input["render_state"] == "stale"
 
 

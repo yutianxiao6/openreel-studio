@@ -373,27 +373,6 @@ function keepManualCanvas(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges:
   }
 }
 
-function edgeKey(edge: Pick<Edge, "source" | "target">): string {
-  return `${edge.source}->${edge.target}`
-}
-
-function changedEdgeEndpointIds(previousEdges: Edge[], nextEdges: Edge[]): Set<string> {
-  const previousKeys = new Set(previousEdges.map(edgeKey))
-  const nextKeys = new Set(nextEdges.map(edgeKey))
-  const affected = new Set<string>()
-  for (const edge of nextEdges) {
-    if (previousKeys.has(edgeKey(edge))) continue
-    affected.add(edge.source)
-    affected.add(edge.target)
-  }
-  for (const edge of previousEdges) {
-    if (nextKeys.has(edgeKey(edge))) continue
-    affected.add(edge.source)
-    affected.add(edge.target)
-  }
-  return affected
-}
-
 function expandLocalDependencyScope(seedIds: Set<string>, edges: Edge[], maxHops = 1): Set<string> {
   const scope = new Set(seedIds)
   let frontier = new Set(seedIds)
@@ -1647,23 +1626,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 	      nodes.push(preserveExistingLayout ? preserveExistingNodeLayout(nextNode, existing, storedDimensions) : nextNode)
 	    }
 
-    const edges: Edge[] = rawEdges.map((e) => ({
-      id: e.id,
-      source: e.source_node_id,
-      target: e.target_node_id,
-      ...(e.label ? { label: e.label } : {}),
-    }))
-	    if (preserveExistingLayout) {
-	      const affectedIds = changedEdgeEndpointIds(currentState.edges, edges)
-	      set({
-	        ...keepManualCanvas(
-	          affectedIds.size > 0 ? layoutLocalMindMap(nodes, edges, affectedIds) : nodes,
-	          edges,
-	        ),
-	        manualLayout,
-	      })
-	      return
-	    }
+	    const edges: Edge[] = rawEdges.map((e) => ({
+	      id: e.id,
+	      source: e.source_node_id,
+	      target: e.target_node_id,
+	      ...(e.label ? { label: e.label } : {}),
+	    }))
+		    if (preserveExistingLayout) {
+		      set({
+		        ...keepManualCanvas(nodes, edges),
+		        manualLayout,
+		      })
+		      return
+		    }
 	    set({
 	      ...arrangeCanvas(nodes, edges, manualLayout),
 	      manualLayout,
