@@ -71,3 +71,10 @@ async def test_markdown_skill_search_matches_body_and_prioritizes_user_skills(tm
     assert found["skills"][0]["name"] == "storyboard_video_prompt"
     assert found["skills"][0]["scope"] == "user"
     assert found["skills"][0]["priority"] == 0
+
+    mixed_query = await skill_tools.skill_search(query="video production storyboard 视频 分镜 提示词")
+
+    assert mixed_query["total"] >= 1
+    assert mixed_query["skills"][0]["name"] == "storyboard_video_prompt"
+    assert mixed_query["skills"][0]["scope"] == "user"
+    assert mixed_query["skills"][0]["match"]["mode"] == "query_partial"

@@ -317,6 +317,43 @@ def _markdown_skill_summary(raw: str) -> str:
     return text[:240]
 
 
+def _match_skill_blob(
+    blob: str,
+    *,
+    query: str | None,
+    regex: str | list[str] | None,
+    pattern: str | list[str] | None,
+    case_sensitive: bool,
+) -> dict[str, Any]:
+    match = match_text(
+        blob,
+        query=query,
+        regex=regex,
+        pattern=pattern,
+        case_sensitive=case_sensitive,
+    )
+    if match.get("matched") or not str(query or "").strip():
+        match["score"] = 1000 + len(match.get("matched_terms") or []) + len(match.get("matched_patterns") or [])
+        return match
+
+    raw_blob = str(blob or "")
+    compare_blob = raw_blob if case_sensitive else raw_blob.lower()
+    raw_query = str(query or "").strip()
+    compare_query = raw_query if case_sensitive else raw_query.lower()
+    terms = [term for term in re.split(r"\s+", compare_query) if term]
+    matched_terms = [term for term in terms if term in compare_blob]
+    if matched_terms:
+        return {
+            **match,
+            "matched": True,
+            "mode": "query_partial",
+            "matched_terms": matched_terms,
+            "score": len(matched_terms),
+        }
+    match["score"] = 0
+    return match
+
+
 def _build_unified_index() -> list[dict[str, Any]]:
     """Scan both skill sources and return a unified list."""
     from app.mcp_tools.registry import parse_skill_md
@@ -391,7 +428,7 @@ async def skill_search(
     index = _build_unified_index()
     results = []
     for skill in index:
-        match = match_text(
+        match = _match_skill_blob(
             search_blob(
                 skill.get("name"),
                 skill.get("category"),
@@ -426,8 +463,11 @@ async def skill_search(
                 for key, value in match.items()
                 if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
             }
+        item["_score"] = int(match.get("score") or 0)
         results.append(item)
-    results.sort(key=lambda item: (int(item.get("priority", 100)), str(item.get("name", ""))))
+    results.sort(key=lambda item: (int(item.get("priority", 100)), -int(item.get("_score", 0)), str(item.get("name", ""))))
+    for item in results:
+        item.pop("_score", None)
     return {"ok": True, "skills": results, "total": len(results)}
 
 
