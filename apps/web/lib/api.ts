@@ -239,12 +239,27 @@ export async function createProjectEdge(
   return asJson<Record<string, unknown>>(res)
 }
 
-export async function deleteProjectEdge(projectId: string, edgeId: string) {
+export async function deleteProjectEdge(
+  projectId: string,
+  edgeId: string,
+  endpoints?: { sourceNodeId?: string | null; targetNodeId?: string | null },
+) {
   const base = await getApiBase()
-  const res = await fetch(`${base}/api/projects/${projectId}/edges/${edgeId}`, {
+  const params = new URLSearchParams()
+  if (endpoints?.sourceNodeId) params.set('source_node_id', endpoints.sourceNodeId)
+  if (endpoints?.targetNodeId) params.set('target_node_id', endpoints.targetNodeId)
+  const query = params.toString()
+  const res = await fetch(`${base}/api/projects/${projectId}/edges/${encodeURIComponent(edgeId)}${query ? `?${query}` : ''}`, {
     method: 'DELETE',
   })
-  return asJson<{ ok: boolean; id: string }>(res)
+  return asJson<{
+    ok: boolean
+    id: string
+    deleted_edge_id?: string | null
+    source_node_id?: string | null
+    target_node_id?: string | null
+    dependency_removed?: boolean
+  }>(res)
 }
 
 export interface CanvasNodeSnapshot {

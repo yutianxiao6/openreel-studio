@@ -103,6 +103,7 @@ function edgeVisual(edge: Edge): Edge {
   return {
     ...edge,
     type: edge.type || "bezier",
+    interactionWidth: edge.interactionWidth ?? 28,
     animated: false,
     markerEnd: edge.markerEnd ?? {
       type: MarkerType.ArrowClosed,

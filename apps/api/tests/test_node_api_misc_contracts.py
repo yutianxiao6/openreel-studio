@@ -384,10 +384,13 @@ def test_manual_image_edge_writes_visual_reference_for_text_and_image_targets():
     assert image_input["references"] == [expected_ref]
     assert image_input["render_state"] == "stale"
 
+    image_input["reference_images"] = ["node:image-source"]
+    image_target.input_json = json.dumps(image_input, ensure_ascii=False)
     assert routes_projects._remove_edge_dependency(image_target, source.id) is True
     image_input = json.loads(image_target.input_json or "{}")
     assert "depends_on" not in image_input
     assert "references" not in image_input
+    assert "reference_images" not in image_input
     assert image_input["render_state"] == "stale"
 
 

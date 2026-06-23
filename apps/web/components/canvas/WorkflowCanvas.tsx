@@ -120,6 +120,10 @@ function isVideoUrl(value: unknown): value is string {
   return typeof value === "string" && /\.(mp4|webm|mov)(?:\?|#|$)/i.test(value)
 }
 
+function isPersistedEdgeId(edgeId: string): boolean {
+  return Boolean(edgeId) && !edgeId.startsWith("manual-") && !edgeId.startsWith("dep-")
+}
+
 function isImageStageName(name: unknown): boolean {
   return /图|首帧|尾帧|模板|参考|image|storyboard/i.test(String(name ?? "")) && !/提示词|prompt|视频|video|clip/i.test(String(name ?? ""))
 }
@@ -866,7 +870,7 @@ export default function WorkflowCanvas() {
     const deletedEdgeSnapshots: CanvasEdgeSnapshot[] = edges
       .filter((edge) => edgeIds.includes(edge.id) || nodeIdSet.has(edge.source) || nodeIdSet.has(edge.target))
       .map((edge) => ({
-        id: edge.id.startsWith("manual-") ? undefined : edge.id,
+        id: isPersistedEdgeId(edge.id) ? edge.id : undefined,
         source_node_id: edge.source,
         target_node_id: edge.target,
         label: typeof edge.label === "string" ? edge.label : undefined,
@@ -881,10 +885,17 @@ export default function WorkflowCanvas() {
     try {
       await Promise.all([
         ...nodeIds.map((nodeId) => deleteProjectNode(currentProject.id, nodeId)),
-        ...edgeIds.map((edgeId) => deleteProjectEdge(currentProject.id, edgeId)),
+        ...edgeIds.map((edgeId) => {
+          const edge = edges.find((item) => item.id === edgeId)
+          return deleteProjectEdge(currentProject.id, edgeId, edge ? {
+            sourceNodeId: edge.source,
+            targetNodeId: edge.target,
+          } : undefined)
+        }),
       ])
       if (nodeIds.length) removeNodes(nodeIds)
       if (edgeIds.length) removeEdges(edgeIds)
+      if (edgeIds.length) void refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
       pushUndo({
         label: nodeIds.length ? "删除节点" : "删除连接",
         undo: async () => {
@@ -898,7 +909,7 @@ export default function WorkflowCanvas() {
     } catch (error) {
       console.warn("Failed to delete canvas selection", error)
     }
-  }, [currentProject?.id, edges, pushUndo, removeEdges, removeNodes])
+  }, [currentProject?.id, edges, pushUndo, refreshCanvas, removeEdges, removeNodes])
 
   const deleteSelection = useCallback(async () => {
     await deleteCanvasItems(selectedNodeIds, selectedEdgeIds)
@@ -1054,6 +1065,7 @@ export default function WorkflowCanvas() {
         nodeTypes={nodeTypes}
         defaultEdgeOptions={{
           type: "bezier",
+          interactionWidth: 28,
           markerEnd: { type: MarkerType.ArrowClosed, color: "#64748b" },
           style: { stroke: "#64748b", strokeWidth: 1.7 },
         }}

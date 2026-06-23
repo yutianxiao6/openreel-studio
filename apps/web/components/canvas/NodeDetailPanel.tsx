@@ -1396,6 +1396,60 @@ function stringArrayFromUnknown(value: unknown): string[] {
     .filter(Boolean)
 }
 
+function hasOwnKey(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key)
+}
+
+function nodeRefIdFromUnknown(value: unknown): string {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    let text = String(value).trim()
+    if (!text) return ""
+    if (text.startsWith("@")) text = text.slice(1).trim()
+    if (text.startsWith("node:")) return text.slice(5).trim()
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text) ? text : ""
+  }
+  const obj = asObj(value)
+  if (!obj) return ""
+  for (const key of ["ref", "reference", "reference_input"]) {
+    const ref = obj[key]
+    const nodeId = nodeRefIdFromUnknown(ref)
+    if (nodeId) return nodeId
+  }
+  for (const key of ["node_id", "nodeId", "source_node_id", "sourceNodeId"]) {
+    const nodeId = obj[key]
+    if (typeof nodeId === "string" && nodeId.trim()) return nodeId.trim()
+  }
+  return ""
+}
+
+function referenceListFromUnknown(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value
+  return value == null || value === "" ? [] : [value]
+}
+
+function filterRemovedNodeReferences(value: unknown, removedNodeIds: Set<string>): unknown[] {
+  return referenceListFromUnknown(value).filter((item) => {
+    const nodeId = nodeRefIdFromUnknown(item)
+    return !nodeId || !removedNodeIds.has(nodeId)
+  })
+}
+
+function removeNodeReferencesFromContainer(
+  container: Record<string, unknown>,
+  removedNodeIds: Set<string>,
+): { next: Record<string, unknown>; changed: boolean } {
+  const next = { ...container }
+  let changed = false
+  for (const key of ["depends_on", "references"] as const) {
+    if (!hasOwnKey(container, key)) continue
+    const filtered = filterRemovedNodeReferences(container[key], removedNodeIds)
+    if (JSON.stringify(filtered) === JSON.stringify(referenceListFromUnknown(container[key]))) continue
+    next[key] = filtered
+    changed = true
+  }
+  return { next, changed }
+}
+
 function normalizeVideoAspectRatio(value: string): string {
   return value === "9:16" ? "9:16" : "16:9"
 }
@@ -1404,10 +1458,14 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
   const input = nodeInputFields(node.input)
   const output = asObj(parseJson(node.output)) || {}
   const nodePrompt = typeof node.prompt === "string" ? node.prompt : ""
+  const inputReferenceImages = stringArrayFromUnknown(input.reference_images)
+  const inputReferences = stringArrayFromUnknown(input.references)
   const referenceImages = (
-    stringArrayFromUnknown(input.reference_images).length > 0
-      ? stringArrayFromUnknown(input.reference_images)
-      : stringArrayFromUnknown(output.reference_images)
+    inputReferenceImages.length > 0
+      ? inputReferenceImages
+      : inputReferences.length > 0
+        ? inputReferences
+        : stringArrayFromUnknown(output.reference_images)
   )
 
   return {
@@ -1446,10 +1504,38 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: A
   const prompt = draft.prompt.trim()
 
   nextInput.title = title
-  const currentHasReferenceImages = Object.prototype.hasOwnProperty.call(current, "reference_images")
+  const currentFields = asObj(current.fields)
+  const currentHasReferenceImages = hasOwnKey(current, "reference_images")
+  const currentFieldsHasReferenceImages = currentFields ? hasOwnKey(currentFields, "reference_images") : false
   const referenceImages = Array.from(new Set(draft.reference_images.map((item) => item.trim()).filter(Boolean)))
   if (currentHasReferenceImages || referenceImages.length > 0) {
     nextInput.reference_images = referenceImages
+  }
+  const previousReferenceImages = stringArrayFromUnknown(current.reference_images)
+  const previousEditableRefs = previousReferenceImages.length > 0
+    ? previousReferenceImages
+    : stringArrayFromUnknown(current.references)
+  const nextReferenceNodeIds = new Set(referenceImages.map(nodeRefIdFromUnknown).filter(Boolean))
+  const removedReferenceNodeIds = new Set(
+    previousEditableRefs
+      .map(nodeRefIdFromUnknown)
+      .filter((nodeId) => nodeId && !nextReferenceNodeIds.has(nodeId)),
+  )
+  if (removedReferenceNodeIds.size > 0) {
+    const cleaned = removeNodeReferencesFromContainer(nextInput, removedReferenceNodeIds)
+    Object.assign(nextInput, cleaned.next)
+  }
+  if (currentFields) {
+    const nextFields = { ...currentFields }
+    if (currentFieldsHasReferenceImages) {
+      nextFields.reference_images = referenceImages
+    }
+    const cleanedFields = removedReferenceNodeIds.size > 0
+      ? removeNodeReferencesFromContainer(nextFields, removedReferenceNodeIds)
+      : { next: nextFields, changed: false }
+    if (currentFieldsHasReferenceImages || cleanedFields.changed) {
+      nextInput.fields = cleanedFields.next
+    }
   }
 
   if (node.type === "text") {

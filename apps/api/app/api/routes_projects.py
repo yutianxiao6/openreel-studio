@@ -7,14 +7,14 @@ from datetime import datetime
 from typing import Any, Optional
 
 from sqlalchemy import or_
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.db.models import Message, WorkflowEdge, WorkflowNode
 from app.db.session import get_session
-from app.mcp_tools import panel_tools
+from app.mcp_tools import canvas_tools, panel_tools
 from app.services import media_history
 from app.services.node_service import NodeService, workflow_node_payload
 from app.services.project_service import DEFAULT_EPISODE_COUNT, ProjectService
@@ -135,6 +135,17 @@ def _json_dumps_or_none(value: Any) -> str | None:
 
 def _strip_ui_private(data: dict) -> dict:
     return {key: value for key, value in data.items() if key not in {"_ui_creator", "created_by"}}
+
+
+_DEPENDENCY_FIELD_KEYS = {"depends_on", "references", "reference_images"}
+
+
+def _has_dependency_fields(data: dict[str, Any]) -> bool:
+    containers: list[dict[str, Any]] = [data]
+    fields = data.get("fields")
+    if isinstance(fields, dict):
+        containers.append(fields)
+    return any(any(key in container for key in _DEPENDENCY_FIELD_KEYS) for container in containers)
 
 
 _IMAGE_RENDER_FRESHNESS_KEYS = {
@@ -627,6 +638,7 @@ async def update_project_canvas_node_detail(
 
     current_input = _parse_json_dict(node.input_json)
     old_input = _strip_ui_private(dict(current_input))
+    had_dependency_fields = _has_dependency_fields(old_input)
     old_title = node.title or ""
     old_prompt = node.prompt or ""
     if req.input is not None:
@@ -656,7 +668,8 @@ async def update_project_canvas_node_detail(
     ):
         current_input["render_state"] = "stale"
 
-    node.input_json = json.dumps(_strip_ui_private(current_input), ensure_ascii=False)
+    next_input = _strip_ui_private(current_input)
+    node.input_json = json.dumps(next_input, ensure_ascii=False)
     node.updated_at = datetime.utcnow()
     db.add(node)
     await db.commit()
@@ -670,6 +683,11 @@ async def update_project_canvas_node_detail(
         old_input=old_input,
         new_input=_strip_ui_private(_parse_json_dict(node.input_json)),
     )
+    if had_dependency_fields or _has_dependency_fields(next_input):
+        try:
+            payload["edge_sync"] = await canvas_tools.sync_dependency_edges(project_id, node_id, next_input)
+        except Exception as exc:
+            payload["edge_sync_warning"] = str(exc)[:200]
     return payload
 
 
@@ -916,17 +934,58 @@ async def create_project_edge(
 async def delete_project_edge(
     project_id: str,
     edge_id: str,
+    source_node_id: str | None = Query(default=None),
+    target_node_id: str | None = Query(default=None),
     db: AsyncSession = Depends(get_session),
 ):
     edge = await db.get(WorkflowEdge, edge_id)
-    if not edge or edge.project_id != project_id:
+    source_id = ""
+    target_id = ""
+    deleted_edge_id: str | None = None
+
+    if edge and edge.project_id == project_id:
+        source_id = edge.source_node_id
+        target_id = edge.target_node_id
+        deleted_edge_id = edge.id
+    elif edge:
         raise HTTPException(status_code=404, detail="Edge not found")
-    target = await db.get(WorkflowNode, edge.target_node_id)
-    if target and target.project_id == project_id and _remove_edge_dependency(target, edge.source_node_id):
+    else:
+        source_id = (source_node_id or "").strip()
+        target_id = (target_node_id or "").strip()
+        if not source_id or not target_id:
+            raise HTTPException(status_code=404, detail="Edge not found")
+        existing = (await db.exec(
+            select(WorkflowEdge).where(
+                WorkflowEdge.project_id == project_id,
+                WorkflowEdge.source_node_id == source_id,
+                WorkflowEdge.target_node_id == target_id,
+            )
+        )).first()
+        if existing:
+            edge = existing
+            deleted_edge_id = existing.id
+
+    target = await db.get(WorkflowNode, target_id)
+    if not target or target.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Target node not found")
+    source = await db.get(WorkflowNode, source_id)
+    if source and source.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Source node not found")
+
+    dependency_removed = _remove_edge_dependency(target, source_id)
+    if dependency_removed:
         db.add(target)
-    await db.delete(edge)
+    if edge is not None:
+        await db.delete(edge)
     await db.commit()
-    return {"ok": True, "id": edge_id}
+    return {
+        "ok": True,
+        "id": edge_id,
+        "deleted_edge_id": deleted_edge_id,
+        "source_node_id": source_id,
+        "target_node_id": target_id,
+        "dependency_removed": dependency_removed,
+    }
 
 
 @router.get("/{project_id}/panel/layout")
