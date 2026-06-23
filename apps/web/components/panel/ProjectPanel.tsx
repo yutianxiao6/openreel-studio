@@ -1399,7 +1399,6 @@ export function ProjectPanel() {
     const canvasType = String(canvasById.get(nodeId)?.data?.type ?? "")
     const panelType = String(panelNodeById.get(nodeId)?.type ?? "")
     const action = canvasType === "image" || panelType === "image" ? "render" : "force"
-    setStreaming(true)
     updateCanvasNode(nodeId, { status: "running", error: undefined, error_message: undefined })
     try {
       const result = await callTool<Record<string, unknown>>("node.run", {
@@ -1413,10 +1412,9 @@ export function ProjectPanel() {
       updateCanvasNode(nodeId, { status: "failed", error: message, error_message: message })
       throw error
     } finally {
-      setStreaming(false)
       await fetchPanel()
     }
-  }, [canvasById, currentProject, fetchPanel, panelNodeById, setStreaming, streaming, updateCanvasNode])
+  }, [canvasById, currentProject, fetchPanel, panelNodeById, streaming, updateCanvasNode])
 
   const handleStoryRevision = useCallback(async (nodeId: string) => {
     if (!currentProject || streaming) return

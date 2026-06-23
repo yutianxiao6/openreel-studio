@@ -301,7 +301,6 @@ export default function WorkflowCanvas() {
   const removeNodes = useCanvasStore((s) => s.removeNodes)
   const removeEdges = useCanvasStore((s) => s.removeEdges)
   const currentProject = useProjectStore((s) => s.currentProject)
-  const setStreaming = useChatStore((s) => s.setStreaming)
   const streaming = useChatStore((s) => s.streaming)
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null)
   const [viewport, setViewport] = useState<CanvasViewport>({ x: 0, y: 0, zoom: 1 })
@@ -1023,7 +1022,6 @@ export default function WorkflowCanvas() {
     if (!currentProject || streaming) return
     const targetType = String(nodes.find((node) => node.id === nodeId)?.data?.type ?? "")
     const action = targetType === "image" ? "render" : "force"
-    setStreaming(true)
     updateCanvasNode(nodeId, { status: "running", error: undefined, error_message: undefined })
     try {
       const result = await callTool<Record<string, unknown>>("node.run", {
@@ -1041,10 +1039,8 @@ export default function WorkflowCanvas() {
         // Keep the local failed state if the follow-up refresh also fails.
       }
       throw error
-    } finally {
-      setStreaming(false)
     }
-  }, [currentProject, nodes, refreshCanvas, setStreaming, streaming, updateCanvasNode])
+  }, [currentProject, nodes, refreshCanvas, streaming, updateCanvasNode])
 
   const flowNodes = useMemo(
     () => groupedNodeIdSet.size === 0
