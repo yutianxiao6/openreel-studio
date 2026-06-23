@@ -494,6 +494,7 @@ async def skill_get_skill(name: str = "") -> dict[str, Any]:
         meta = parse_skill_md(skill_md.read_text(encoding="utf-8")) if skill_md.exists() else {}
         return {
             "ok": True, "name": name, "category": match["category"], "description": match["description"],
+            "detail": "full",
             "content": meta.get("_body", ""),
         }
     elif match.get("path"):
@@ -503,6 +504,7 @@ async def skill_get_skill(name: str = "") -> dict[str, Any]:
             return {"ok": False, "error": f"读取失败: {exc}", "error_kind": "read_error"}
         return {
             "ok": True, "name": name, "category": match["category"], "description": match["description"],
+            "detail": "full",
             "content": content,
         }
     return {"ok": False, "error": "无法读取 skill 内容", "error_kind": "unknown_source"}

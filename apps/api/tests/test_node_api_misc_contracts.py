@@ -2138,6 +2138,7 @@ async def test_node_update_keeps_title_and_prompt_in_input_json(monkeypatch):
     assert result["title"] == "人物参考图·一白一玄"
     assert result["input_json"]["title"] == "人物参考图·一白一玄"
     assert result["input_json"]["prompt"] == "两位女修士一白一玄，剑光更清晰。"
+    assert result["input_json"]["prompt_preview"] == "两位女修士一白一玄，剑光更清晰。"
     assert result["input_json"]["aspect_ratio"] == "16:9"
     assert updates == [
         {
@@ -2146,6 +2147,7 @@ async def test_node_update_keeps_title_and_prompt_in_input_json(monkeypatch):
                 "input_json": {
                     "title": "人物参考图·一白一玄",
                     "prompt": "两位女修士一白一玄，剑光更清晰。",
+                    "prompt_preview": "两位女修士一白一玄，剑光更清晰。",
                     "aspect_ratio": "16:9",
                     "render_state": "stale",
                 },

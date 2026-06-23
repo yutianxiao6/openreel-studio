@@ -128,6 +128,34 @@ def test_full_skill_result_keeps_complete_guidance_visible_when_compacted(tmp_pa
     assert "keys:" not in json.dumps(payload["summary"], ensure_ascii=False)
 
 
+def test_skill_get_content_keeps_full_text_visible_when_compacted(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(context_compact, "tool_results_dir", lambda: tmp_path)
+    result = {
+        "ok": True,
+        "name": "storyboard_video_prompt",
+        "category": "prompts",
+        "description": "视频提示词写法",
+        "detail": "full",
+        "content": "参考素材设置：\n" + ("镜头一 —— 低机位跟拍。\n" * 300),
+    }
+
+    content = context_compact.prepare_tool_result_for_context(
+        result,
+        project_id="project-1",
+        run_id="run-1",
+        iteration=1,
+        tool_name="skill.get",
+        budget_chars=200,
+    )
+    payload = json.loads(content)
+
+    assert payload["tool_result_compacted"] is True
+    assert payload["context_policy"] == "full_result"
+    assert payload["summary"]["name"] == "storyboard_video_prompt"
+    assert payload["summary"]["content"] == result["content"]
+    assert "keys:" not in json.dumps(payload["summary"], ensure_ascii=False)
+
+
 def test_deferred_full_skill_result_keeps_guide_content_visible_when_compacted(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(context_compact, "tool_results_dir", lambda: tmp_path)
     result = {

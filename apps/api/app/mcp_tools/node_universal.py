@@ -2825,8 +2825,10 @@ def _sync_prompt_patch_with_input(node: dict, patch: dict) -> dict:
         next_input.update(patch_input)
     if prompt:
         next_input["prompt"] = prompt
+        next_input["prompt_preview"] = prompt[:1200]
     else:
         next_input.pop("prompt", None)
+        next_input.pop("prompt_preview", None)
     next_patch["input_json"] = next_input
     return next_patch
 

@@ -246,7 +246,11 @@ def _allows_full_result_context(tool_name: str, result: dict[str, Any]) -> bool:
     detail = str(result.get("detail") or "").strip().lower()
     if detail not in FULL_RESULT_CONTEXT_DETAIL_VALUES:
         return False
-    return result.get("guidance") not in (None, "", [], {}) or result.get("guide_content") not in (None, "", [], {})
+    return (
+        result.get("guidance") not in (None, "", [], {})
+        or result.get("guide_content") not in (None, "", [], {})
+        or (resolved_tool == "skill.get" and result.get("content") not in (None, "", [], {}))
+    )
 
 
 def _full_result_context_payload(tool_name: str, result: dict[str, Any]) -> dict[str, Any] | None:
