@@ -25,6 +25,7 @@ import { useCanvasStore } from "@/stores/canvasStore"
 import { useProjectStore } from "@/stores/projectStore"
 import { useChatStore } from "@/stores/chatStore"
 import {
+  CANVAS_REFRESH_EVENT,
   callTool,
   createProjectEdge,
   createProjectNode,
@@ -36,6 +37,7 @@ import {
   resolveMediaUrl,
   restoreProjectCanvasSnapshot,
   updateNodePosition,
+  type CanvasRefreshOptions,
   type CanvasEdgeSnapshot,
   type CanvasNodeSnapshot,
   type CanvasNodeType,
@@ -321,6 +323,7 @@ export default function WorkflowCanvas() {
   const connectionCompletedRef = useRef(false)
   const suppressPaneClickRef = useRef(false)
   const longPressRef = useRef<LongPressState | null>(null)
+  const refreshTimerRef = useRef<number | null>(null)
   const nodes = allNodes
   const groupedNodeIdSet = useMemo(() => new Set(groupedNodeIds), [groupedNodeIds])
   const visibleNodeIds = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes])
@@ -381,6 +384,28 @@ export default function WorkflowCanvas() {
       })
     }
   }, [currentProject?.id, flowInstance, loadCanvasNodes])
+
+  useEffect(() => {
+    const handleCanvasRefresh = (event: Event) => {
+      const detail = (event as CustomEvent<CanvasRefreshOptions>).detail || {}
+      if (detail.projectId && detail.projectId !== currentProject?.id) return
+      if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current)
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null
+        void refreshCanvas({
+          preserveOnEmpty: detail.preserveOnEmpty ?? true,
+          preserveLayout: detail.preserveLayout ?? true,
+          fitView: detail.fitView,
+        })
+      }, 60)
+    }
+    window.addEventListener(CANVAS_REFRESH_EVENT, handleCanvasRefresh)
+    return () => {
+      window.removeEventListener(CANVAS_REFRESH_EVENT, handleCanvasRefresh)
+      if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current)
+      refreshTimerRef.current = null
+    }
+  }, [currentProject?.id, refreshCanvas])
 
   const pushUndo = useCallback((record: Omit<CanvasUndoRecord, "id" | "at">) => {
     undoStackRef.current = [
@@ -489,9 +514,7 @@ export default function WorkflowCanvas() {
         .then((result) => {
           if (result && result.ok === false) {
             console.warn("Failed to place image in grid cell", result.error || result)
-            return
           }
-          return refreshCanvas()
         })
         .catch((error) => {
           console.warn("Failed to place image in grid cell", error)
@@ -513,7 +536,7 @@ export default function WorkflowCanvas() {
     }).catch((error) => {
       console.warn("Failed to persist node position", error)
     })
-  }, [clearGridDropPreview, currentProject?.id, findGridCellAtPoint, isPlaceableImageNode, pushUndo, refreshCanvas])
+  }, [clearGridDropPreview, currentProject?.id, findGridCellAtPoint, isPlaceableImageNode, pushUndo])
 
   const isOutputToInputConnection = useCallback((connection: Connection) => {
     if (!connection.source || !connection.target || connection.source === connection.target) return false
@@ -531,7 +554,6 @@ export default function WorkflowCanvas() {
       .then((result) => {
         const persistedId = String(result.id ?? "")
         if (persistedId && persistedId !== edge.id) replaceEdgeId(edge.id, persistedId)
-        void refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
         const undoEdgeId = persistedId || edge.id
         pushUndo({
           label: "创建连接",
@@ -545,7 +567,7 @@ export default function WorkflowCanvas() {
         console.warn("Failed to persist manual edge", error)
         removeEdges([edge.id])
       })
-  }, [connectNodes, currentProject?.id, isOutputToInputConnection, pushUndo, refreshCanvas, removeEdges, replaceEdgeId])
+  }, [connectNodes, currentProject?.id, isOutputToInputConnection, pushUndo, removeEdges, replaceEdgeId])
 
   const openCreateMenuFromConnection = useCallback((
     event: globalThis.MouseEvent | globalThis.TouchEvent,
@@ -632,11 +654,10 @@ export default function WorkflowCanvas() {
         console.warn("Failed to extract grid cell", result.error || result)
         return
       }
-      await refreshCanvas()
     } catch (error) {
       console.warn("Failed to extract grid cell", error)
     }
-  }, [currentProject?.id, flowInstance, refreshCanvas])
+  }, [currentProject?.id, flowInstance])
 
   const handlePaneContextMenu = useCallback((event: MouseEvent) => {
     event.preventDefault()
@@ -895,7 +916,6 @@ export default function WorkflowCanvas() {
       ])
       if (nodeIds.length) removeNodes(nodeIds)
       if (edgeIds.length) removeEdges(edgeIds)
-      if (edgeIds.length) void refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
       pushUndo({
         label: nodeIds.length ? "删除节点" : "删除连接",
         undo: async () => {
@@ -1012,7 +1032,6 @@ export default function WorkflowCanvas() {
         action,
       })
       if (result && result.ok === false) throw new Error(String(result.error || "重新生成失败"))
-      await refreshCanvas({ preserveOnEmpty: true, fitView: true })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       updateCanvasNode(nodeId, { status: "failed", error: message, error_message: message })
@@ -1206,7 +1225,6 @@ export default function WorkflowCanvas() {
             projectId={currentProject?.id}
             onClose={() => selectNode(null)}
             onRerun={handleRerun}
-            onSaved={() => refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })}
             presentation="modal"
           />
         )}

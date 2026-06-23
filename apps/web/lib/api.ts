@@ -1,4 +1,12 @@
 let _cachedApiBase: string | null = null
+export const CANVAS_REFRESH_EVENT = "openreel:canvas-refresh"
+
+export interface CanvasRefreshOptions {
+  projectId?: string
+  preserveOnEmpty?: boolean
+  preserveLayout?: boolean
+  fitView?: boolean
+}
 
 declare global {
   interface Window {
@@ -52,6 +60,17 @@ async function getApiBase(): Promise<string> {
 
 export function resetApiBaseCache() {
   _cachedApiBase = null
+}
+
+export function requestCanvasRefresh(options: CanvasRefreshOptions = {}) {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(new CustomEvent<CanvasRefreshOptions>(CANVAS_REFRESH_EVENT, {
+    detail: {
+      preserveOnEmpty: true,
+      preserveLayout: true,
+      ...options,
+    },
+  }))
 }
 
 /** Cached API base — returns "" if not yet discovered. Use for non-blocking URL prefixing. */
@@ -165,7 +184,9 @@ export async function createProjectNode(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  return asJson<Record<string, unknown>>(res)
+  const result = await asJson<Record<string, unknown>>(res)
+  requestCanvasRefresh({ projectId })
+  return result
 }
 
 export async function getProjectNodeDetails<T = Record<string, unknown>>(projectId: string, nodeId: string): Promise<T> {
@@ -185,7 +206,9 @@ export async function updateProjectNodeDetails<T = Record<string, unknown>>(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  return asJson<T>(res)
+  const result = await asJson<T>(res)
+  requestCanvasRefresh({ projectId })
+  return result
 }
 
 export async function switchProjectNodeHistory<T = Record<string, unknown>>(
@@ -199,7 +222,9 @@ export async function switchProjectNodeHistory<T = Record<string, unknown>>(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  return asJson<T>(res)
+  const result = await asJson<T>(res)
+  requestCanvasRefresh({ projectId })
+  return result
 }
 
 export async function deleteProjectNode(projectId: string, nodeId: string) {
@@ -207,7 +232,9 @@ export async function deleteProjectNode(projectId: string, nodeId: string) {
   const res = await fetch(`${base}/api/projects/${projectId}/nodes/${nodeId}`, {
     method: 'DELETE',
   })
-  return asJson<{ ok: boolean; id: string; deleted_edges?: number }>(res)
+  const result = await asJson<{ ok: boolean; id: string; deleted_edges?: number }>(res)
+  requestCanvasRefresh({ projectId })
+  return result
 }
 
 export async function updateNodePosition(
@@ -221,7 +248,9 @@ export async function updateNodePosition(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(position),
   })
-  return asJson<{ ok: boolean; id: string; position: { x: number; y: number } }>(res)
+  const result = await asJson<{ ok: boolean; id: string; position: { x: number; y: number } }>(res)
+  requestCanvasRefresh({ projectId })
+  return result
 }
 
 export async function createProjectEdge(
@@ -236,7 +265,9 @@ export async function createProjectEdge(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_node_id: sourceNodeId, target_node_id: targetNodeId, label }),
   })
-  return asJson<Record<string, unknown>>(res)
+  const result = await asJson<Record<string, unknown>>(res)
+  requestCanvasRefresh({ projectId })
+  return result
 }
 
 export async function deleteProjectEdge(
@@ -252,7 +283,7 @@ export async function deleteProjectEdge(
   const res = await fetch(`${base}/api/projects/${projectId}/edges/${encodeURIComponent(edgeId)}${query ? `?${query}` : ''}`, {
     method: 'DELETE',
   })
-  return asJson<{
+  const result = await asJson<{
     ok: boolean
     id: string
     deleted_edge_id?: string | null
@@ -260,6 +291,8 @@ export async function deleteProjectEdge(
     target_node_id?: string | null
     dependency_removed?: boolean
   }>(res)
+  requestCanvasRefresh({ projectId })
+  return result
 }
 
 export interface CanvasNodeSnapshot {
@@ -296,7 +329,9 @@ export async function restoreProjectCanvasSnapshot(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
-  return asJson<{ ok: boolean; nodes: string[]; edges: string[] }>(res)
+  const result = await asJson<{ ok: boolean; nodes: string[]; edges: string[] }>(res)
+  requestCanvasRefresh({ projectId })
+  return result
 }
 
 export interface ProjectAsset {
@@ -1084,6 +1119,9 @@ export async function callTool<T = unknown>(
     throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
   }
   const body = await asJson<{ tool: string; result: T }>(res)
+  if (typeof args.project_id === "string" && args.project_id.trim()) {
+    requestCanvasRefresh({ projectId: args.project_id.trim() })
+  }
   return body.result
 }
 

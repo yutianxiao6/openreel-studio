@@ -103,7 +103,6 @@ interface Props {
   onClose: () => void
   onRerun?: (nodeId: string) => void | Promise<void>
   onDelete?: (nodeId: string) => void | Promise<void>
-  onSaved?: (node: NodeFull) => void | Promise<void>
   onRequestStoryRevision?: (nodeId: string) => void | Promise<void>
   actionDisabled?: boolean
   presentation?: "drawer" | "modal"
@@ -1252,10 +1251,10 @@ function pickReadableText(input: Record<string, unknown>, output: Record<string,
 
 function pickReferences(input: Record<string, unknown>, output: Record<string, unknown>): unknown[] | undefined {
   const inputFields = asObj(input.fields) || {}
-  const values = [
-    output.reference_images,
-    output.references,
-    output.reference_assets,
+  const hasInputReferenceFields = ["reference_images", "references", "reference_assets"].some((key) =>
+    hasOwnKey(input, key) || hasOwnKey(inputFields, key),
+  )
+  const inputValues = [
     input.reference_images,
     input.references,
     input.reference_assets,
@@ -1263,6 +1262,12 @@ function pickReferences(input: Record<string, unknown>, output: Record<string, u
     inputFields.references,
     inputFields.reference_assets,
   ]
+  const outputValues = [
+    output.reference_images,
+    output.references,
+    output.reference_assets,
+  ]
+  const values = hasInputReferenceFields ? inputValues : [...inputValues, ...outputValues]
   const refs: unknown[] = []
   const seen = new Set<string>()
   for (const value of values) {
@@ -1461,10 +1466,12 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
   const nodePrompt = typeof node.prompt === "string" ? node.prompt : ""
   const inputReferenceImages = stringArrayFromUnknown(input.reference_images)
   const inputReferences = stringArrayFromUnknown(input.references)
+  const hasInputReferenceImages = hasOwnKey(input, "reference_images")
+  const hasInputReferences = hasOwnKey(input, "references")
   const referenceImages = (
-    inputReferenceImages.length > 0
+    hasInputReferenceImages
       ? inputReferenceImages
-      : inputReferences.length > 0
+      : hasInputReferences
         ? inputReferences
         : stringArrayFromUnknown(output.reference_images)
   )
@@ -2924,10 +2931,7 @@ function TypedRenderer({
     const imgErr = imageStageStatus === "failed"
       ? (((imageStage as Record<string, unknown> | undefined)?.error as string) || "")
       : ""
-    const refsChar = (Array.isArray(outObj.reference_images) && outObj.reference_images.length > 0
-      ? outObj.reference_images
-      : Array.isArray(inObj.reference_images) ? inObj.reference_images : []
-    ) as string[]
+    const refsChar = pickReferences(inObj, outObj)
 
     return (
       <div className="space-y-3">
@@ -3028,10 +3032,7 @@ function TypedRenderer({
       (promptStage?.prompt as string) ||
       (outObj.prompt as string) ||
       ""
-    const refsScene = (Array.isArray(outObj.reference_images) && outObj.reference_images.length > 0
-      ? outObj.reference_images
-      : Array.isArray(inObj.reference_images) ? inObj.reference_images : []
-    ) as string[]
+    const refsScene = pickReferences(inObj, outObj)
     return (
       <div className="space-y-3">
         {imageUrl ? (
@@ -3304,7 +3305,7 @@ function TypedRenderer({
     const cells = Array.isArray(outObj.cells) ? (outObj.cells as Record<string, unknown>[]) : []
     const gridUrl = (outObj.local_url as string) || (outObj.url as string) || ""
     const promptText = topPrompt || (inObj.prompt as string) || (outObj.prompt as string) || ""
-    const refs = Array.isArray(outObj.reference_images) ? (outObj.reference_images as string[]) : []
+    const refs = pickReferences(inObj, outObj)
     const grid = (outObj.grid as string) || (inObj.layout != null ? String(inObj.layout) : "")
     const spec = pickMediaSpec(outObj, inObj)
     return (
@@ -3408,10 +3409,7 @@ function TypedRenderer({
       (outObj.prompt as string) ||
       ""
     const spec = pickMediaSpec(outObj, inObj, imageStage as Record<string, unknown> | undefined)
-    const refsShot = (Array.isArray(outObj.reference_images) && outObj.reference_images.length > 0
-      ? outObj.reference_images
-      : Array.isArray(inObj.reference_images) ? inObj.reference_images : []
-    ) as unknown[]
+    const refsShot = pickReferences(inObj, outObj)
     const continuityNotes = (Array.isArray(outObj.continuity_notes) ? outObj.continuity_notes : []) as unknown[]
     const layoutModules = (Array.isArray(outObj.layout_modules) ? outObj.layout_modules : []) as unknown[]
     const styleTags = (Array.isArray(outObj.style_tags) ? outObj.style_tags : []) as unknown[]
@@ -3460,10 +3458,7 @@ function TypedRenderer({
   // ── segment_video_prompt ──
   if (type === "segment_video_prompt") {
     const prompt = topPrompt || (inObj.prompt as string) || (outObj.prompt as string) || (outObj.video_prompt as string) || ""
-    const refs = (Array.isArray(outObj.reference_images) && outObj.reference_images.length > 0
-      ? outObj.reference_images
-      : Array.isArray(inObj.reference_images) ? inObj.reference_images : []
-    ) as unknown[]
+    const refs = pickReferences(inObj, outObj)
     const anchors = (Array.isArray(outObj.visual_anchors) ? outObj.visual_anchors : []) as unknown[]
     const timeline = (Array.isArray(outObj.timeline)
       ? outObj.timeline
@@ -3572,7 +3567,6 @@ export default function NodeDetailPanel({
   onClose,
   onRerun,
   onDelete,
-  onSaved,
   onRequestStoryRevision,
   actionDisabled = false,
   presentation = "modal",
@@ -3779,7 +3773,6 @@ export default function NodeDetailPanel({
       setDraft(draftFromNode(result))
       setEditing(false)
       updateCanvasNode(result.id, canvasPatchFromNode(result))
-      await onSaved?.(result)
       if (Array.isArray(result.changes) && result.changes.length > 0) {
         appendMessage({
           id: crypto.randomUUID?.() ?? `node-edit-change-${Date.now()}`,

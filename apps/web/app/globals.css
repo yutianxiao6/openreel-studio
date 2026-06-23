@@ -78,6 +78,18 @@ body {
   z-index: 24;
 }
 
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:focus .react-flow__edge-path,
+.react-flow__edge:focus-visible .react-flow__edge-path {
+  stroke: #22d3ee !important;
+  stroke-width: 3px !important;
+  filter: drop-shadow(0 0 7px rgb(34 211 238 / 0.72));
+}
+
+.react-flow__edge.selected .react-flow__edge-textbg {
+  fill: rgb(8 145 178 / 0.9) !important;
+}
+
 @media (pointer: coarse) {
   .react-flow__handle.openreel-port-handle {
     opacity: 0.82 !important;

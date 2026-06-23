@@ -338,6 +338,35 @@ function textFromPreview(preview?: PreviewData, prompt?: string, title?: string)
   return prompt || title || ""
 }
 
+function promptTextForCopy(preview?: PreviewData, prompt?: string): string {
+  const direct = prompt?.trim()
+  if (direct) return direct
+  if (!preview) return ""
+  if (typeof preview.prompt === "string" && preview.prompt.trim()) return preview.prompt.trim()
+  if (Array.isArray(preview.stages)) {
+    const promptStage = preview.stages.find((stage) => /提示词|prompt/i.test(stage.name) && stage.prompt?.trim())
+    if (promptStage?.prompt) return promptStage.prompt.trim()
+  }
+  return ""
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const textarea = document.createElement("textarea")
+  textarea.value = text
+  textarea.setAttribute("readonly", "")
+  textarea.style.position = "fixed"
+  textarea.style.left = "-9999px"
+  textarea.style.top = "0"
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand("copy")
+  document.body.removeChild(textarea)
+}
+
 function statusBorderStyle(status: string, color: string): React.CSSProperties {
   switch (status) {
     case "running":
@@ -723,10 +752,13 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const [gridBusy, setGridBusy] = useState<string | null>(null)
   const [gridDragStart, setGridDragStart] = useState<{ cellId: string; x: number; y: number } | null>(null)
   const [gridError, setGridError] = useState<string | null>(null)
+  const [promptCopied, setPromptCopied] = useState(false)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const copyTimerRef = useRef<number | null>(null)
   const lastAutoSizeRef = useRef<string | null>(null)
   const [cardVideoPlaying, setCardVideoPlaying] = useState(false)
   const previewText = textFromPreview(data.preview, data.prompt, data.title)
+  const promptCopyText = promptTextForCopy(data.preview, data.prompt)
   const autoNodeSize = data.type === "image"
     ? mediaNodeDimensions(data.preview, imageForSize)
     : data.type === "video"
@@ -796,6 +828,12 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   useEffect(() => {
     setCardVideoPlaying(false)
   }, [video?.src])
+  useEffect(() => {
+    setPromptCopied(false)
+  }, [promptCopyText])
+  useEffect(() => () => {
+    if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current)
+  }, [])
 
   const handleResize = useCallback((_event: unknown, params: { width: number; height: number }) => {
     resizeCanvasNode(id, params.width, params.height)
@@ -860,14 +898,13 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
           },
         })
       }
-      await refreshCanvas()
     } catch (error) {
       setGridError(error instanceof Error ? error.message : String(error))
       setGridMode("choosing")
     } finally {
       setGridBusy(null)
     }
-  }, [canGridCrop, currentProjectId, gridBusy, id, refreshCanvas, updateCanvasNode])
+  }, [canGridCrop, currentProjectId, gridBusy, id, updateCanvasNode])
 
   const finishGridTool = useCallback((event: React.MouseEvent) => {
     event.preventDefault()
@@ -891,6 +928,19 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
     player.pause()
     setCardVideoPlaying(false)
   }, [])
+
+  const copyPrompt = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!promptCopyText) return
+    void copyTextToClipboard(promptCopyText)
+      .then(() => {
+        setPromptCopied(true)
+        if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current)
+        copyTimerRef.current = window.setTimeout(() => setPromptCopied(false), 1200)
+      })
+      .catch((error) => console.warn("Failed to copy node prompt", error))
+  }, [promptCopyText])
 
   const emitCellExtract = useCallback((cell: ImageGridPreviewCell, clientX: number, clientY: number) => {
     if (!cell.cell_id) return
@@ -1192,7 +1242,8 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
           {canGridCrop && (
             <div
               className={cn(
-                "absolute right-2 top-2 z-30 flex flex-col items-end gap-1.5 opacity-0 transition-opacity group-hover:opacity-100",
+                "absolute right-2 z-30 flex flex-col items-end gap-1.5 opacity-0 transition-opacity group-hover:opacity-100",
+                promptCopyText ? "top-11" : "top-2",
                 gridToolActive && "opacity-100",
               )}
               onClick={(event) => event.stopPropagation()}
@@ -1235,6 +1286,25 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
             </div>
           )}
 
+          {promptCopyText && (
+            <button
+              type="button"
+              aria-label={promptCopied ? "已复制提示词" : "复制提示词"}
+              title={promptCopied ? "已复制提示词" : "复制提示词"}
+              onClick={copyPrompt}
+              onMouseDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+              className={cn(
+                "nodrag absolute right-2 top-2 z-40 rounded-md border px-2 py-1 text-[11px] font-medium shadow-lg shadow-black/25 backdrop-blur transition md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100",
+                promptCopied
+                  ? "border-emerald-300/30 bg-emerald-400 text-emerald-950"
+                  : "border-white/10 bg-black/70 text-zinc-100 hover:bg-black/85",
+              )}
+            >
+              {promptCopied ? "已复制" : "复制"}
+            </button>
+          )}
+
           {renderState && (
             <div className="pointer-events-none absolute left-2 top-2 z-30">
               <RenderStatePill state={renderState} />
@@ -1269,6 +1339,24 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
             <div className="min-w-0 flex-1 truncate text-[13px] font-semibold text-zinc-100" title={data.title}>
               {data.title || "未命名"}
             </div>
+            {promptCopyText && (
+              <button
+                type="button"
+                aria-label={promptCopied ? "已复制提示词" : "复制提示词"}
+                title={promptCopied ? "已复制提示词" : "复制提示词"}
+                onClick={copyPrompt}
+                onMouseDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+                className={cn(
+                  "nodrag shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium transition",
+                  promptCopied
+                    ? "border-emerald-300/30 bg-emerald-400 text-emerald-950"
+                    : "border-white/10 bg-white/[0.06] text-zinc-200 hover:bg-white/[0.1]",
+                )}
+              >
+                {promptCopied ? "已复制" : "复制"}
+              </button>
+            )}
           </div>
           <div className="min-h-0 flex-1 overflow-hidden rounded bg-white/[0.035] px-3 py-2.5">
             {isRunning ? (
