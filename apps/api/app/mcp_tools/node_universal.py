@@ -698,6 +698,8 @@ def _image_render_failure_diagnosis(
         },
         "last_attempt": {
             "size": result.get("size_final") or requested_size,
+            "actual_size": result.get("actual_size"),
+            "actual_aspect_ratio": result.get("actual_aspect_ratio"),
             "quality": result.get("quality_final"),
             "http_code": code,
             "error_kind": result.get("error_kind"),
@@ -3614,7 +3616,8 @@ async def node_run(
                         "error_kind", "error_source", "http_code", "provider_msg", "endpoint",
                         "provider", "model", "attempts", "node_render_attempts",
                         "size_requested", "size_final", "quality_requested",
-                        "quality_final", "downgraded",
+                        "quality_final", "downgraded", "actual_size", "actual_aspect_ratio",
+                        "requested_aspect_ratio",
                     )
                     if result.get(key) is not None
                 },

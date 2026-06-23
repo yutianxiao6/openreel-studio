@@ -508,6 +508,59 @@ def test_media_provider_timeout_default_is_interactive(monkeypatch):
     assert timeout.pool == 300.0
 
 
+def _png_header(width: int, height: int) -> bytes:
+    return b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big")
+
+
+@pytest.mark.asyncio
+async def test_image_provider_rejects_downloaded_wrong_aspect_ratio(monkeypatch, tmp_path):
+    provider = SimpleNamespace(name="fake-image", model_name="fake-model", api_format="openai")
+
+    async def fake_get_active_provider(kind: str):
+        assert kind == "image"
+        return provider
+
+    async def fake_call_openai_image(*args, **kwargs):
+        return {"images": [{"url": "https://example.test/generated.png"}]}
+
+    class FakeResponse:
+        status_code = 200
+        content = _png_header(1024, 1536)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url: str):
+            assert url == "https://example.test/generated.png"
+            return FakeResponse()
+
+    monkeypatch.setattr(media_provider, "_get_active_provider", fake_get_active_provider)
+    monkeypatch.setattr(media_provider, "_call_openai_image", fake_call_openai_image)
+    monkeypatch.setattr(media_provider.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(media_provider.settings, "STORAGE_DIR", str(tmp_path), raising=False)
+
+    result = await media_provider.generate_image_with_provider(
+        project_id="project-1",
+        prompt="test prompt",
+        size="2560x1440",
+        quality="high",
+    )
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "image_size_mismatch"
+    assert result["size_requested"] == "2560x1440"
+    assert result["size_final"] == "1024x1536"
+    assert result["actual_size"] == "1024x1536"
+    assert result["provider"] == "fake-image"
+
+
 def test_media_provider_video_poll_timeout_default_is_twenty_minutes(monkeypatch):
     monkeypatch.delenv("DRAMA_VIDEO_POLL_TIMEOUT_SECONDS", raising=False)
     provider = SimpleNamespace(params_json="{}")

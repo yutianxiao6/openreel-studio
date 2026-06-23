@@ -12,6 +12,7 @@ import json
 import mimetypes
 import os
 import re
+import struct
 import time
 import uuid
 from dataclasses import dataclass
@@ -136,6 +137,96 @@ def _storage_audio_path(project_id: str, filename: str) -> Path:
     d = base / project_id / "generated_audio"
     d.mkdir(parents=True, exist_ok=True)
     return d / filename
+
+
+def _parse_image_size(size: str | None) -> tuple[int, int] | None:
+    match = re.match(r"^\s*(\d+)\s*[xX×]\s*(\d+)\s*$", str(size or ""))
+    if not match:
+        return None
+    width = int(match.group(1))
+    height = int(match.group(2))
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _ratio_close(a: float, b: float, tolerance: float = 0.015) -> bool:
+    if a <= 0 or b <= 0:
+        return False
+    return abs(a - b) / max(a, b) <= tolerance
+
+
+def _image_dimensions_from_bytes(data: bytes) -> tuple[int, int] | None:
+    if len(data) >= 24 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        width, height = struct.unpack(">II", data[16:24])
+        if width > 0 and height > 0:
+            return width, height
+    if len(data) >= 4 and data[:2] == b"\xff\xd8":
+        idx = 2
+        while idx + 9 <= len(data):
+            if data[idx] != 0xFF:
+                idx += 1
+                continue
+            marker = data[idx + 1]
+            idx += 2
+            if marker in {0xD8, 0xD9}:
+                continue
+            if idx + 2 > len(data):
+                break
+            seg_len = int.from_bytes(data[idx:idx + 2], "big")
+            if seg_len < 2 or idx + seg_len > len(data):
+                break
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                if idx + 7 <= len(data):
+                    height = int.from_bytes(data[idx + 3:idx + 5], "big")
+                    width = int.from_bytes(data[idx + 5:idx + 7], "big")
+                    if width > 0 and height > 0:
+                        return width, height
+                break
+            idx += seg_len
+    return None
+
+
+def _image_size_mismatch_error(
+    *,
+    provider: MediaProvider,
+    requested_size: str,
+    actual_size: str,
+    images: list[dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    quality: str | None,
+) -> dict[str, Any]:
+    actual_dims = _parse_image_size(actual_size)
+    requested_dims = _parse_image_size(requested_size)
+    actual_ratio = (
+        f"{actual_dims[0]}:{actual_dims[1]}" if actual_dims else None
+    )
+    requested_ratio = (
+        f"{requested_dims[0]}:{requested_dims[1]}" if requested_dims else None
+    )
+    message = (
+        f"图片 provider 返回的真实尺寸 {actual_size} 与请求尺寸 {requested_size} 画幅不一致。"
+        "后端已拦截该结果，避免把错误画幅标记为成功。"
+    )
+    return {
+        "ok": False,
+        "provider": provider.name,
+        "model": provider.model_name,
+        "error": message,
+        "error_kind": "image_size_mismatch",
+        "provider_msg": message,
+        "images": images,
+        "attempts": attempts,
+        "size_requested": requested_size,
+        "size_final": actual_size,
+        "actual_size": actual_size,
+        "actual_aspect_ratio": actual_ratio,
+        "requested_aspect_ratio": requested_ratio,
+        "quality_requested": quality,
+        "quality_final": quality,
+        "downgraded": False,
+        "suggested_next": "换支持该画幅/尺寸的图片模型，或把原节点 resolution 改成 provider 实际支持的同画幅尺寸后重试。",
+    }
 
 
 def _project_media_path_from_url(project_id: str, url: str | None) -> str | None:
@@ -3846,23 +3937,28 @@ async def generate_image_with_provider(
 
     images = result.get("images", [])
     output_images = []
+    requested_dims = _parse_image_size(size)
     for img in images:
         remote_url = img.get("url")
         b64 = img.get("b64")
         local_path: str | None = None
         local_url: str | None = None
+        actual_dimensions: tuple[int, int] | None = None
 
         if save_locally:
             filename = f"{uuid.uuid4().hex[:12]}.png"
             dest = _storage_path(project_id, filename)
             try:
                 if b64:
-                    dest.write_bytes(base64.b64decode(b64))
+                    image_bytes = base64.b64decode(b64)
+                    actual_dimensions = _image_dimensions_from_bytes(image_bytes)
+                    dest.write_bytes(image_bytes)
                     local_path = str(dest)
                 elif remote_url:
                     async with httpx.AsyncClient(timeout=_media_http_timeout()) as client:
                         r = await client.get(remote_url)
                     if r.status_code == 200:
+                        actual_dimensions = _image_dimensions_from_bytes(r.content)
                         dest.write_bytes(r.content)
                         local_path = str(dest)
             except Exception:
@@ -3871,12 +3967,46 @@ async def generate_image_with_provider(
                 local_url = f"/api/media/{project_id}/{filename}"
 
         # `url` is what consumers should display: prefer local (stable), fall back to remote
-        output_images.append({
+        image_output = {
             "url": local_url or remote_url,
             "local_url": local_url,
             "local_path": local_path,
             "remote_url": remote_url,
-        })
+        }
+        if actual_dimensions:
+            width, height = actual_dimensions
+            image_output.update({
+                "width": width,
+                "height": height,
+                "actual_size": f"{width}x{height}",
+                "actual_aspect_ratio": f"{width}:{height}",
+            })
+        output_images.append(image_output)
+
+    for image_output in output_images:
+        actual_size = image_output.get("actual_size")
+        actual_dims = _parse_image_size(actual_size)
+        if requested_dims and actual_dims:
+            requested_ratio = requested_dims[0] / requested_dims[1]
+            actual_ratio = actual_dims[0] / actual_dims[1]
+            if not _ratio_close(requested_ratio, actual_ratio):
+                return _image_size_mismatch_error(
+                    provider=provider,
+                    requested_size=size,
+                    actual_size=str(actual_size),
+                    images=output_images,
+                    attempts=attempts,
+                    quality=last_attempt_quality,
+                )
+
+    primary_actual_size = next(
+        (img.get("actual_size") for img in output_images if img.get("actual_size")),
+        None,
+    )
+    primary_actual_ratio = next(
+        (img.get("actual_aspect_ratio") for img in output_images if img.get("actual_aspect_ratio")),
+        None,
+    )
 
     return {
         "ok": True,
@@ -3889,7 +4019,9 @@ async def generate_image_with_provider(
         "partial_error": result.get("partial_error"),
         "attempts": attempts,
         "size_requested": size,
-        "size_final": last_attempt_size,
+        "size_final": primary_actual_size or last_attempt_size,
+        "actual_size": primary_actual_size,
+        "actual_aspect_ratio": primary_actual_ratio,
         "quality_requested": quality,
         "quality_final": last_attempt_quality,
         "downgraded": False,
