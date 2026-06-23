@@ -772,6 +772,89 @@ const STORY_REVISION_NODE_TYPES = new Set(["text"])
 
 const MEDIA_RERUN_NODE_TYPES = new Set(["image", "video", "audio"])
 
+function CopyIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <rect x="8" y="8" width="11" height="11" rx="2.2" />
+      <path d="M5 15.5V6.8C5 5.8 5.8 5 6.8 5h8.7" />
+    </svg>
+  )
+}
+
+function CheckIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M5 12.5l4.2 4.2L19 7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const textarea = document.createElement("textarea")
+  textarea.value = text
+  textarea.setAttribute("readonly", "")
+  textarea.style.position = "fixed"
+  textarea.style.left = "-9999px"
+  textarea.style.top = "0"
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand("copy")
+  document.body.removeChild(textarea)
+}
+
+function CopyTextButton({
+  text,
+  label = "内容",
+  className = "",
+}: {
+  text: string
+  label?: string
+  className?: string
+}) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<number | null>(null)
+  const disabled = !text.trim()
+  const title = copied ? `已复制${label}` : `复制${label}`
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current)
+    }
+  }, [])
+
+  return (
+    <button
+      type="button"
+      aria-label={title}
+      title={title}
+      disabled={disabled}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        if (disabled) return
+        void copyTextToClipboard(text)
+          .then(() => {
+            setCopied(true)
+            if (timerRef.current) window.clearTimeout(timerRef.current)
+            timerRef.current = window.setTimeout(() => setCopied(false), 1200)
+          })
+          .catch((error) => console.warn("Failed to copy node detail text", error))
+      }}
+      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition disabled:cursor-not-allowed disabled:opacity-35 ${
+        copied
+          ? "border-emerald-300/35 bg-emerald-400 text-emerald-950"
+          : "border-white/[0.1] bg-black/55 text-zinc-200 hover:bg-white/[0.08] hover:text-white"
+      } ${className}`}
+    >
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </button>
+  )
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#151923]/88 shadow-[0_18px_42px_rgba(0,0,0,0.24)]">
@@ -785,8 +868,11 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function PromptBlock({ children }: { children: string }) {
   return (
-    <div className="max-h-[320px] overflow-y-auto rounded-lg bg-black/30 px-3.5 py-3 text-[13px] leading-6 text-zinc-200 shadow-inner shadow-black/25">
-      <MarkdownView compact>{children}</MarkdownView>
+    <div className="relative">
+      {children.trim() && <CopyTextButton text={children} label="内容" className="absolute right-2 top-2 z-10" />}
+      <div className="max-h-[320px] overflow-y-auto rounded-lg bg-black/30 px-3.5 py-3 pr-12 text-[13px] leading-6 text-zinc-200 shadow-inner shadow-black/25">
+        <MarkdownView compact>{children}</MarkdownView>
+      </div>
     </div>
   )
 }
@@ -1759,16 +1845,21 @@ function DraftField({
   label,
   children,
   className = "",
+  action,
 }: {
   label: string
   children: React.ReactNode
   className?: string
+  action?: React.ReactNode
 }) {
   return (
-    <label className={`block ${className}`}>
-      <span className="mb-1.5 block text-[10px] font-medium uppercase tracking-[0.12em] text-zinc-500">{label}</span>
+    <div className={`block ${className}`}>
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="block text-[10px] font-medium uppercase tracking-[0.12em] text-zinc-500">{label}</span>
+        {action}
+      </div>
       {children}
-    </label>
+    </div>
   )
 }
 
@@ -2006,6 +2097,8 @@ function NodeEditView({
   const isAudio = node.type === "audio"
   const hasSidePanel = isImage || isVideo || isAudio
   const mainLabel = isText ? "正文" : isImage ? "图片提示词" : isAudio ? "音频提示词" : "视频提示词"
+  const mainText = isText ? draft.content : draft.prompt
+  const mainCopyLabel = isText ? "正文" : "提示词"
   const enabledAudioProviders = audioProviders.filter((provider) => provider.enabled !== false)
   const selectedAudioProvider = isAudio ? resolveAudioProvider(draft.model, enabledAudioProviders) : undefined
   const selectedAudioMode = audioProviderModeFromFormat(selectedAudioProvider?.api_format)
@@ -2081,9 +2174,12 @@ function NodeEditView({
               className={inputClass}
             />
           </DraftField>
-          <DraftField label={mainLabel}>
+          <DraftField
+            label={mainLabel}
+            action={<CopyTextButton text={mainText} label={mainCopyLabel} />}
+          >
             <textarea
-              value={isText ? draft.content : draft.prompt}
+              value={mainText}
               onChange={(event) => onChange(isText ? { content: event.target.value } : { prompt: event.target.value })}
               rows={isText ? 9 : 11}
               className={`${inputClass} min-h-[220px] resize-y font-mono text-[13px] leading-6`}
