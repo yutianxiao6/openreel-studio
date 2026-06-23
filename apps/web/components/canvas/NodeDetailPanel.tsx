@@ -103,6 +103,7 @@ interface Props {
   onClose: () => void
   onRerun?: (nodeId: string) => void | Promise<void>
   onDelete?: (nodeId: string) => void | Promise<void>
+  onSaved?: (node: NodeFull) => void | Promise<void>
   onRequestStoryRevision?: (nodeId: string) => void | Promise<void>
   actionDisabled?: boolean
   presentation?: "drawer" | "modal"
@@ -3571,6 +3572,7 @@ export default function NodeDetailPanel({
   onClose,
   onRerun,
   onDelete,
+  onSaved,
   onRequestStoryRevision,
   actionDisabled = false,
   presentation = "modal",
@@ -3777,6 +3779,7 @@ export default function NodeDetailPanel({
       setDraft(draftFromNode(result))
       setEditing(false)
       updateCanvasNode(result.id, canvasPatchFromNode(result))
+      await onSaved?.(result)
       if (Array.isArray(result.changes) && result.changes.length > 0) {
         appendMessage({
           id: crypto.randomUUID?.() ?? `node-edit-change-${Date.now()}`,

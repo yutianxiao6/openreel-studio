@@ -1206,6 +1206,7 @@ export default function WorkflowCanvas() {
             projectId={currentProject?.id}
             onClose={() => selectNode(null)}
             onRerun={handleRerun}
+            onSaved={() => refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })}
             presentation="modal"
           />
         )}
