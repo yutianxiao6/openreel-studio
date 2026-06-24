@@ -103,7 +103,12 @@ _STATIC_SEARCH_HINTS: dict[str, str] = {
     "file.list_dir": "list directory files in data or project storage 列目录 遍历文件树",
     "file.read_text": (
         "read explicit user uploaded text file project storage rel_path 读取用户上传或本轮明确路径文本文件 "
+        "offset limit next_offset paged large file chunks 大文件分页 分段读取 "
         "not guide source docs trace tool_result guide 内容用 skill.project_mentor 节点状态用 node.get"
+    ),
+    "file.extract_text_from_upload": (
+        "extract text from uploaded txt md docx offset limit next_offset paged chunks "
+        "抽取上传文件文本 大文件分页 分段读取"
     ),
     "file.workspace_delete": "delete workspace file directory recursive force no shell codex-like filesystem 删除工作区文件 目录 不执行命令",
     "file.workspace_list": "list workspace files directory recursive no shell codex-like filesystem 列出工作区文件 不执行命令",

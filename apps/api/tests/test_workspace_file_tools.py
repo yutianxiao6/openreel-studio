@@ -54,6 +54,74 @@ async def test_workspace_file_tools_cover_read_search_write_patch_delete(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_workspace_read_pages_large_text_even_when_full_read_limit_is_small(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(file_tools.settings, "PROJECT_ROOT", str(tmp_path))
+    source = tmp_path / "large.txt"
+    source.write_text("\n".join(f"line-{idx}" for idx in range(1, 306)), encoding="utf-8")
+
+    first = await file_tools.workspace_read(path="large.txt", max_bytes=20)
+
+    assert first["ok"] is True
+    assert first["start_line"] == 1
+    assert first["end_line"] == 200
+    assert first["total_lines"] == 305
+    assert first["truncated"] is True
+    assert first["next_offset"] == 201
+    assert first["content"].splitlines()[0] == "line-1"
+
+    second = await file_tools.workspace_read(path="large.txt", max_bytes=20, offset=first["next_offset"], limit=3)
+
+    assert second["ok"] is True
+    assert second["content"] == "line-201\nline-202\nline-203"
+    assert second["start_line"] == 201
+    assert second["end_line"] == 203
+    assert second["next_offset"] == 204
+
+
+@pytest.mark.asyncio
+async def test_project_read_text_pages_uploaded_large_file(monkeypatch, tmp_path: Path) -> None:
+    storage = tmp_path / "storage"
+    monkeypatch.setattr(file_tools.settings, "STORAGE_DIR", str(storage))
+    uploaded = storage / "project-1" / "uploads" / "script.txt"
+    uploaded.parent.mkdir(parents=True)
+    uploaded.write_text("\n".join(f"scene-{idx}" for idx in range(1, 8)), encoding="utf-8")
+
+    page = await file_tools.read_text(project_id="project-1", rel_path="uploads/script.txt", max_bytes=10, offset=2, limit=3)
+
+    assert page["ok"] is True
+    assert page["path"] == "uploads/script.txt"
+    assert page["content"] == "scene-2\nscene-3\nscene-4"
+    assert page["total_lines"] == 7
+    assert page["start_line"] == 2
+    assert page["end_line"] == 4
+    assert page["truncated"] is True
+    assert page["next_offset"] == 5
+
+
+@pytest.mark.asyncio
+async def test_extract_text_from_upload_supports_paged_text(monkeypatch, tmp_path: Path) -> None:
+    storage = tmp_path / "storage"
+    monkeypatch.setattr(file_tools.settings, "STORAGE_DIR", str(storage))
+    uploaded = storage / "project-1" / "uploads" / "notes.md"
+    uploaded.parent.mkdir(parents=True)
+    uploaded.write_text("\n".join(f"note-{idx}" for idx in range(1, 6)), encoding="utf-8")
+
+    extracted = await file_tools.extract_text_from_upload(
+        project_id="project-1",
+        rel_path="uploads/notes.md",
+        offset=3,
+        limit=2,
+    )
+
+    assert extracted["ok"] is True
+    assert extracted["text"] == "note-3\nnote-4"
+    assert extracted["total_lines"] == 5
+    assert extracted["start_line"] == 3
+    assert extracted["end_line"] == 4
+    assert extracted["next_offset"] == 5
+
+
+@pytest.mark.asyncio
 async def test_workspace_file_tools_reject_escape_and_git_mutation(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(file_tools.settings, "PROJECT_ROOT", str(tmp_path))
 

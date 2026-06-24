@@ -1723,13 +1723,14 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
     R("file.read_text", file_tools.read_text, tags=["file", "read"],
       description=(
           "读取用户上传文件或用户本轮明确给出的项目存储相对路径。"
-          "rel_path 只接受上传结果或用户明确路径，可用 offset/limit 分页；"
+          "rel_path 只接受上传结果或用户明确路径；大文件返回分页片段，按 next_offset 继续读取。"
           "guide、节点、trace 和 tool result 状态查询使用对应工具。"
       ),
       usage_hints=[
         "file.read_text(project_id=project_id, rel_path='uploads/script.txt', offset=1, limit=50)",
       ])
-    R("file.extract_text_from_upload", file_tools.extract_text_from_upload, tags=["file", "read"])
+    R("file.extract_text_from_upload", file_tools.extract_text_from_upload, tags=["file", "read"],
+      description="从 txt、md、docx 上传文件抽取文本；大文件返回分页片段，按 next_offset 继续读取。")
     R("file.workspace_list", file_tools.workspace_list, tags=["file", "read"],
       schema={
           "type": "object",
