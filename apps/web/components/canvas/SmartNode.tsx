@@ -943,6 +943,18 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
     setCardVideoPlaying(false)
   }, [])
 
+  const requestAddImageToAssetLibrary = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    window.dispatchEvent(new CustomEvent("openreel:add-node-to-asset-library", {
+      detail: {
+        nodeId: id,
+        title: data.title || "",
+        publicId: data.publicId ?? null,
+      },
+    }))
+  }, [data.publicId, data.title, id])
+
   const emitCellExtract = useCallback((cell: ImageGridPreviewCell, clientX: number, clientY: number) => {
     if (!cell.cell_id) return
     window.dispatchEvent(new CustomEvent("openreel:grid-cell-extract", {
@@ -1293,6 +1305,21 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 </div>
               )}
             </div>
+          )}
+
+          {data.type === "image" && image?.primary && !gridToolActive && (
+            <button
+              type="button"
+              onClick={requestAddImageToAssetLibrary}
+              onMouseDown={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+              className={cn(
+                "nodrag absolute right-2 z-40 rounded-md border border-white/10 bg-black/72 px-2.5 py-1.5 text-[11px] font-medium text-zinc-100 opacity-0 shadow-xl shadow-black/30 backdrop-blur transition hover:bg-black/86 group-hover:opacity-100",
+                canGridCrop ? "top-12" : "top-2",
+              )}
+            >
+              加入资产库
+            </button>
           )}
 
           {renderState && (

@@ -66,6 +66,8 @@ _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"}
 _VIDEO_SUFFIXES = {".mp4", ".webm", ".mov", ".m4v"}
 _AUDIO_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 _TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".json", ".csv", ".yaml", ".yml"}
+_ASSET_META_SUFFIX = ".openreel.json"
+_GENERIC_ASSET_TITLES = {"", "未命名", "未命名图片", "图片节点", "image", "image node"}
 
 
 def _slug(name: str) -> str:
@@ -151,6 +153,170 @@ def _target_path_without_overwrite(target: Path) -> Path:
         if not candidate.exists():
             return candidate
     return target.with_name(f"{stem}_{_ts()}{suffix}")
+
+
+def _asset_sidecar_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}{_ASSET_META_SUFFIX}")
+
+
+def _is_sidecar_file(path: Path) -> bool:
+    return path.name.startswith(".") and path.name.endswith(_ASSET_META_SUFFIX)
+
+
+def _display_title_from_name(path: Path) -> str:
+    title = re.sub(r"[_\-]+", " ", path.stem).strip()
+    return title or path.stem or path.name
+
+
+def _read_asset_sidecar(path: Path) -> dict[str, Any]:
+    meta_path = _asset_sidecar_path(path)
+    if not meta_path.exists() or not meta_path.is_file():
+        return {}
+    try:
+        parsed = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
+    except (json.JSONDecodeError, OSError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _write_asset_sidecar(path: Path, metadata: dict[str, Any]) -> None:
+    compact = {
+        key: value
+        for key, value in metadata.items()
+        if value not in (None, "", [], {})
+    }
+    if not compact:
+        return
+    compact["asset_file"] = path.name
+    compact["updated_at"] = datetime.utcnow().isoformat()
+    _asset_sidecar_path(path).write_text(json.dumps(compact, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _move_asset_sidecar(source: Path, target: Path) -> None:
+    source_meta = _asset_sidecar_path(source)
+    if not source_meta.exists() or not source_meta.is_file():
+        return
+    target_meta = _asset_sidecar_path(target)
+    target_meta.parent.mkdir(parents=True, exist_ok=True)
+    if target_meta.exists():
+        target_meta.unlink()
+    shutil.move(str(source_meta), str(target_meta))
+
+
+def _image_dimensions(path: Path) -> tuple[int | None, int | None]:
+    if path.suffix.lower() not in _IMAGE_SUFFIXES:
+        return None, None
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            return int(img.width), int(img.height)
+    except Exception:
+        return None, None
+
+
+def _asset_file_payload(path: Path, **extra: Any) -> dict[str, Any]:
+    metadata = _read_asset_sidecar(path)
+    width = metadata.get("width")
+    height = metadata.get("height")
+    if not isinstance(width, int) or not isinstance(height, int):
+        detected_width, detected_height = _image_dimensions(path)
+        width = width if isinstance(width, int) else detected_width
+        height = height if isinstance(height, int) else detected_height
+    title = str(metadata.get("title") or "").strip() or _display_title_from_name(path)
+    prompt = str(metadata.get("prompt") or "").strip()
+    mime_type = _mime_for_path(path)
+    payload = {
+        **extra,
+        "path": str(path),
+        "name": path.name,
+        "title": title,
+        "size": path.stat().st_size,
+        "mime_type": mime_type,
+        "modified_at": datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+    }
+    if isinstance(width, int) and isinstance(height, int):
+        payload["width"] = width
+        payload["height"] = height
+        payload["resolution"] = f"{width}x{height}"
+    if prompt:
+        payload["prompt"] = prompt
+        payload["prompt_snippet"] = prompt[:180]
+    return payload
+
+
+async def _metadata_for_source(project_id: str, source: str, resolved_path: Path) -> dict[str, Any]:
+    text = str(source or "").strip()
+    metadata: dict[str, Any] = {
+        "title": _display_title_from_name(resolved_path),
+        "source": text,
+        "mime_type": _mime_for_path(resolved_path),
+    }
+    if text.startswith("asset:"):
+        asset_id = text[len("asset:"):].strip()
+        async with session_scope() as session:
+            asset = await session.get(Asset, asset_id)
+        if asset and asset.project_id == project_id:
+            if asset.name:
+                metadata["title"] = asset.name
+            if asset.prompt:
+                metadata["prompt"] = asset.prompt
+            if asset.type:
+                metadata["source_type"] = asset.type
+            if asset.metadata_json:
+                try:
+                    parsed = json.loads(asset.metadata_json)
+                    if isinstance(parsed, dict):
+                        for key in ("width", "height", "resolution", "model", "provider"):
+                            if parsed.get(key) is not None:
+                                metadata[key] = parsed[key]
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    elif text.startswith("node:") or looks_like_public_node_id(text) or looks_like_internal_node_id(text):
+        node_ref = text[len("node:"):].strip() if text.startswith("node:") else text
+        async with session_scope() as session:
+            resolved_node_id = await resolve_internal_node_id(session, project_id, node_ref)
+            node = await session.get(WorkflowNode, resolved_node_id)
+        if node and node.project_id == project_id:
+            title = str(node.title or "").strip()
+            if title and title.lower() not in _GENERIC_ASSET_TITLES:
+                metadata["title"] = title
+            prompt = str(node.prompt or "").strip()
+            if not prompt and node.input_json:
+                try:
+                    parsed_input = json.loads(node.input_json)
+                    if isinstance(parsed_input, dict):
+                        prompt = str(parsed_input.get("prompt") or "").strip()
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if prompt:
+                metadata["prompt"] = prompt
+            if node.output_json:
+                try:
+                    parsed_output = json.loads(node.output_json)
+                    if isinstance(parsed_output, dict):
+                        for key in ("width", "height", "resolution", "model", "provider"):
+                            if parsed_output.get(key) is not None:
+                                metadata[key] = parsed_output[key]
+                        stages = parsed_output.get("stages")
+                        if isinstance(stages, list):
+                            for stage in stages:
+                                if not isinstance(stage, dict):
+                                    continue
+                                if stage.get("width") and "width" not in metadata:
+                                    metadata["width"] = stage.get("width")
+                                if stage.get("height") and "height" not in metadata:
+                                    metadata["height"] = stage.get("height")
+                                if stage.get("prompt") and "prompt" not in metadata:
+                                    metadata["prompt"] = stage.get("prompt")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    width, height = _image_dimensions(resolved_path)
+    if width and "width" not in metadata:
+        metadata["width"] = width
+    if height and "height" not in metadata:
+        metadata["height"] = height
+    return metadata
 
 
 def _project_target_dir(lib: dict[str, Any], project_title: str, episode: int, kind: str) -> Path:
@@ -358,16 +524,24 @@ async def assets_save_to_project(
     target_dir = _project_target_dir(lib, title, episode, kind)
 
     src = await _resolve_source(project_id, source)
+    source_metadata = await _metadata_for_source(project_id, source, src)
     suffix = src.suffix
     if kind == "script":
         target = ep_dir / "script.txt"
     elif kind == "story_template":
         target = ep_dir / "story_template.md"
     else:
-        stem = _slug(name) if name else f"{src.stem}_{_ts()}"
-        target = target_dir / f"{stem}{suffix}"
+        stem = _slug(name or str(source_metadata.get("title") or "") or src.stem)
+        target = _target_path_without_overwrite(target_dir / f"{stem}{suffix}")
 
     shutil.copy2(src, target)
+    _write_asset_sidecar(target, {
+        **source_metadata,
+        "title": name or source_metadata.get("title") or _display_title_from_name(target),
+        "library": "project",
+        "kind": kind,
+        "episode": episode,
+    })
     return {"ok": True, "kind": kind, "episode": episode, "path": str(target)}
 
 
@@ -399,9 +573,17 @@ async def assets_save_to_shared(
 
     target_dir = _shared_category_dir(lib, kind, category)
     src = await _resolve_source(project_id, source)
-    stem = _slug(name) if name else f"{src.stem}_{_ts()}"
-    target = target_dir / f"{stem}{src.suffix}"
+    source_metadata = await _metadata_for_source(project_id, source, src)
+    stem = _slug(name or str(source_metadata.get("title") or "") or src.stem)
+    target = _target_path_without_overwrite(target_dir / f"{stem}{src.suffix}")
     shutil.copy2(src, target)
+    _write_asset_sidecar(target, {
+        **source_metadata,
+        "title": name or source_metadata.get("title") or _display_title_from_name(target),
+        "library": "shared",
+        "kind": kind,
+        "category": category,
+    })
     return {"ok": True, "kind": kind, "category": category, "path": str(target)}
 
 
@@ -443,7 +625,7 @@ async def assets_list_categories(
                     category_dir = ep_dir / sub if sub else ep_dir
                     if not category_dir.exists():
                         continue
-                    count = sum(1 for child in category_dir.iterdir() if child.is_file())
+                    count = sum(1 for child in category_dir.iterdir() if child.is_file() and not _is_sidecar_file(child))
                     result["project"].append({
                         "library": "project",
                         "episode": ep_dir.name,
@@ -461,7 +643,7 @@ async def assets_list_categories(
             if not kind_dir.exists():
                 continue
             for category_dir in sorted(p for p in kind_dir.iterdir() if p.is_dir()):
-                count = sum(1 for child in category_dir.iterdir() if child.is_file())
+                count = sum(1 for child in category_dir.iterdir() if child.is_file() and not _is_sidecar_file(child))
                 result["shared"].append({
                     "library": "shared",
                     "kind": item_kind,
@@ -569,6 +751,15 @@ async def assets_move_asset(
         else:
             target = _target_path_without_overwrite(target)
     shutil.move(str(source), str(target))
+    _move_asset_sidecar(source, target)
+    existing_metadata = _read_asset_sidecar(target)
+    _write_asset_sidecar(target, {
+        **existing_metadata,
+        "library": library_key,
+        "kind": item_kind,
+        "category": category if library_key == "shared" else None,
+        "episode": int(episode) if library_key == "project" and episode is not None else None,
+    })
     return {
         "ok": True,
         "from": str(source),
@@ -715,11 +906,11 @@ async def assets_list_project(
                 fname = "script.txt" if k == "script" else "story_template.md"
                 f = ed / fname
                 if f.exists():
-                    items.append({"episode": ep_label, "kind": k, "path": str(f), "size": f.stat().st_size})
+                    items.append(_asset_file_payload(f, episode=ep_label, kind=k))
             else:
                 for f in sorted(scan_dir.iterdir()):
-                    if f.is_file():
-                        items.append({"episode": ep_label, "kind": k, "path": str(f), "size": f.stat().st_size})
+                    if f.is_file() and not _is_sidecar_file(f):
+                        items.append(_asset_file_payload(f, episode=ep_label, kind=k))
     if query or regex or pattern:
         filtered: list[dict[str, Any]] = []
         for item in items:
@@ -775,8 +966,8 @@ async def assets_list_shared(
             if not cd.exists() or not cd.is_dir():
                 continue
             for f in sorted(cd.iterdir()):
-                if f.is_file():
-                    items.append({"kind": cur_kind, "category": cd.name, "path": str(f), "size": f.stat().st_size})
+                if f.is_file() and not _is_sidecar_file(f):
+                    items.append(_asset_file_payload(f, kind=cur_kind, category=cd.name))
     if query or regex or pattern:
         filtered: list[dict[str, Any]] = []
         for item in items:

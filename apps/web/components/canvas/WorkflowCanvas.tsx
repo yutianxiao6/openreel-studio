@@ -80,6 +80,26 @@ interface NodeActionMenuState {
   imageUrl?: string
 }
 
+interface AssetCategoryResult {
+  project?: Array<{ episode?: string; kind?: string; count?: number }>
+  shared?: Array<{ kind?: string; category?: string; count?: number }>
+  error?: string
+}
+
+interface AssetSaveForm {
+  library: "shared" | "project"
+  kind: string
+  category: string
+  episode: string
+  name: string
+}
+
+interface NodeAssetSaveRequest {
+  nodeId: string
+  title: string
+  publicId?: string | number | null
+}
+
 interface LongPressState {
   pointerId: number
   x: number
@@ -92,6 +112,9 @@ interface LongPressState {
 
 const LONG_PRESS_MS = 560
 const LONG_PRESS_MOVE_TOLERANCE = 28
+const PROJECT_ASSET_KINDS = ["script", "character", "scene", "first_frame", "last_frame", "storyboard", "story_template"]
+const SHARED_ASSET_KINDS = ["character", "scene"]
+const GENERIC_IMAGE_TITLES = new Set(["", "未命名", "未命名图片", "图片节点"])
 
 function menuPositionStyle(x: number, y: number, width: number, height: number) {
   if (typeof window === "undefined") return { left: x, top: y }
@@ -314,6 +337,17 @@ export default function WorkflowCanvas() {
     previewLine?: PendingConnectionPreviewLine
   } | null>(null)
   const [nodeActionMenu, setNodeActionMenu] = useState<NodeActionMenuState | null>(null)
+  const [assetSaveRequest, setAssetSaveRequest] = useState<NodeAssetSaveRequest | null>(null)
+  const [assetSaveForm, setAssetSaveForm] = useState<AssetSaveForm>({
+    library: "shared",
+    kind: "scene",
+    category: "",
+    episode: "1",
+    name: "",
+  })
+  const [assetCategories, setAssetCategories] = useState<AssetCategoryResult>({})
+  const [assetSaveLoading, setAssetSaveLoading] = useState(false)
+  const [assetSaveError, setAssetSaveError] = useState<string | null>(null)
   const [coarsePointer, setCoarsePointer] = useState(false)
   const undoStackRef = useRef<CanvasUndoRecord[]>([])
   const canvasContainerRef = useRef<HTMLDivElement>(null)
@@ -383,6 +417,87 @@ export default function WorkflowCanvas() {
       })
     }
   }, [currentProject?.id, flowInstance, loadCanvasNodes])
+
+  const sharedAssetCategoryOptions = useMemo(() => (
+    (assetCategories.shared ?? [])
+      .filter((item) => !assetSaveForm.kind || item.kind === assetSaveForm.kind)
+      .map((item) => item.category)
+      .filter((item): item is string => Boolean(item))
+  ), [assetCategories.shared, assetSaveForm.kind])
+
+  const openNodeAssetSaveDialog = useCallback(async (request: NodeAssetSaveRequest) => {
+    const title = String(request.title || "").trim()
+    const usableTitle = GENERIC_IMAGE_TITLES.has(title) ? "" : title
+    setAssetSaveRequest(request)
+    setAssetSaveForm({
+      library: "shared",
+      kind: "scene",
+      category: "",
+      episode: "1",
+      name: usableTitle,
+    })
+    setAssetSaveError(null)
+    if (!currentProject?.id) return
+    try {
+      const categories = await callTool<AssetCategoryResult>("assets.list_categories", {
+        project_id: currentProject.id,
+      })
+      if (!categories?.error) setAssetCategories(categories)
+    } catch (error) {
+      console.warn("Failed to load asset categories", error)
+    }
+  }, [currentProject?.id])
+
+  useEffect(() => {
+    const handleAddNodeToAssetLibrary = (event: Event) => {
+      const detail = (event as CustomEvent<NodeAssetSaveRequest>).detail
+      if (!detail?.nodeId) return
+      void openNodeAssetSaveDialog({
+        nodeId: String(detail.nodeId),
+        title: String(detail.title || ""),
+        publicId: detail.publicId ?? null,
+      })
+    }
+    window.addEventListener("openreel:add-node-to-asset-library", handleAddNodeToAssetLibrary)
+    return () => window.removeEventListener("openreel:add-node-to-asset-library", handleAddNodeToAssetLibrary)
+  }, [openNodeAssetSaveDialog])
+
+  const saveNodeToAssetLibrary = useCallback(async () => {
+    if (!currentProject?.id || !assetSaveRequest) return
+    const name = assetSaveForm.name.trim()
+    if (!name) {
+      setAssetSaveError("请先填写资产标题")
+      return
+    }
+    setAssetSaveLoading(true)
+    setAssetSaveError(null)
+    try {
+      const source = `node:${assetSaveRequest.publicId ?? assetSaveRequest.nodeId}`
+      const result = assetSaveForm.library === "shared"
+        ? await callTool<Record<string, unknown>>("assets.save_to_shared", {
+            project_id: currentProject.id,
+            source,
+            kind: assetSaveForm.kind,
+            category: assetSaveForm.category,
+            name,
+          })
+        : await callTool<Record<string, unknown>>("assets.save_to_project", {
+            project_id: currentProject.id,
+            source,
+            kind: assetSaveForm.kind,
+            episode: Number(assetSaveForm.episode || 1),
+            name,
+          })
+      if (result?.error || result?.ok === false) {
+        throw new Error(String(result.error || "加入资产库失败"))
+      }
+      setAssetSaveRequest(null)
+    } catch (error) {
+      setAssetSaveError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setAssetSaveLoading(false)
+    }
+  }, [assetSaveForm, assetSaveRequest, currentProject?.id])
 
   useEffect(() => {
     const handleCanvasRefresh = (event: Event) => {
@@ -1184,6 +1299,118 @@ export default function WorkflowCanvas() {
               {label}
             </button>
           ))}
+        </div>
+      )}
+
+      {assetSaveRequest && (
+        <div
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm"
+          onClick={() => setAssetSaveRequest(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-lg border border-white/10 bg-[#11151d] p-4 text-zinc-100 shadow-2xl shadow-black/60"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">加入资产库</div>
+                <div className="mt-1 text-[11px] text-zinc-500">保存到本地资产库文件夹</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAssetSaveRequest(null)}
+                className="rounded border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06]"
+              >
+                关闭
+              </button>
+            </div>
+            <div className="mt-4 space-y-2">
+              <label className="block text-[11px] text-zinc-500">
+                资产标题
+                <input
+                  value={assetSaveForm.name}
+                  onChange={(event) => setAssetSaveForm((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="用于文件命名"
+                  className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100 placeholder-zinc-600"
+                />
+              </label>
+              <label className="block text-[11px] text-zinc-500">
+                目标库
+                <select
+                  value={assetSaveForm.library}
+                  onChange={(event) => setAssetSaveForm((current) => ({
+                    ...current,
+                    library: event.target.value as AssetSaveForm["library"],
+                    kind: event.target.value === "project" ? "scene" : "scene",
+                  }))}
+                  className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100"
+                >
+                  <option value="shared">共享资产库</option>
+                  <option value="project">项目资产库</option>
+                </select>
+              </label>
+              <label className="block text-[11px] text-zinc-500">
+                类型
+                <select
+                  value={assetSaveForm.kind}
+                  onChange={(event) => setAssetSaveForm((current) => ({ ...current, kind: event.target.value }))}
+                  className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100"
+                >
+                  {(assetSaveForm.library === "shared" ? SHARED_ASSET_KINDS : PROJECT_ASSET_KINDS).map((kind) => (
+                    <option key={kind} value={kind}>{kind}</option>
+                  ))}
+                </select>
+              </label>
+              {assetSaveForm.library === "shared" ? (
+                <label className="block text-[11px] text-zinc-500">
+                  分类文件夹
+                  <input
+                    value={assetSaveForm.category}
+                    list="workflow-asset-category-options"
+                    onChange={(event) => setAssetSaveForm((current) => ({ ...current, category: event.target.value }))}
+                    placeholder="选择或输入新分类"
+                    className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100 placeholder-zinc-600"
+                  />
+                  <datalist id="workflow-asset-category-options">
+                    {sharedAssetCategoryOptions.map((category) => <option key={category} value={category} />)}
+                  </datalist>
+                </label>
+              ) : (
+                <label className="block text-[11px] text-zinc-500">
+                  集数
+                  <input
+                    value={assetSaveForm.episode}
+                    type="number"
+                    min="1"
+                    onChange={(event) => setAssetSaveForm((current) => ({ ...current, episode: event.target.value }))}
+                    className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100"
+                  />
+                </label>
+              )}
+            </div>
+            {assetSaveError ? (
+              <div className="mt-3 rounded-md border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                {assetSaveError}
+              </div>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setAssetSaveRequest(null)}
+                className="rounded-md border border-white/10 px-3 py-1.5 text-xs text-zinc-400 hover:bg-white/[0.06]"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveNodeToAssetLibrary()}
+                disabled={assetSaveLoading || !assetSaveForm.name.trim() || (assetSaveForm.library === "shared" && !assetSaveForm.category.trim())}
+                className="rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {assetSaveLoading ? "保存中" : "保存"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

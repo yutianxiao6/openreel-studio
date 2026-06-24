@@ -96,6 +96,16 @@ async def test_asset_library_save_accepts_generated_asset_reference(monkeypatch,
     saved_path = Path(result["path"])
     assert saved_path.exists()
     assert saved_path.name == "桥头场景.png"
+    assert (saved_path.parent / f".{saved_path.name}.openreel.json").exists()
+
+    listed = await asset_library_tools.assets_list_project(
+        project_id="project-1",
+        episode=1,
+        kind="scene",
+    )
+    assert listed["count"] == 1
+    assert listed["items"][0]["title"] == "桥头场景"
+    assert listed["items"][0]["resolution"] == "1x1"
 
 
 @pytest.mark.asyncio

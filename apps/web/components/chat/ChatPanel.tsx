@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react"
 import { motion } from "framer-motion"
 import {
   useChatStore,
@@ -731,12 +731,24 @@ type AssetInfoItem = {
 type AssetLibraryListResult = {
   items?: Array<{
     path?: string
+    name?: string
+    title?: string
     kind?: string
     episode?: string
     category?: string
     size?: number
+    mime_type?: string
+    width?: number
+    height?: number
+    resolution?: string
+    prompt?: string
+    prompt_snippet?: string
+    modified_at?: string
   }>
   error?: string
+  project_dir?: string
+  shared_root?: string
+  count?: number
 }
 
 type AssetCategoryResult = {
@@ -1342,6 +1354,612 @@ function AssetInfoPanel({
           ) : null}
         </div>
       ) : null}
+    </div>
+  )
+}
+
+type AssetFolder = {
+  key: string
+  label: string
+  subtitle: string
+  library: "project" | "shared"
+  source: "project_library" | "shared_library"
+  kind: string
+  category?: string
+  episode?: string
+  count?: number
+}
+
+function folderKeyForAsset(item: AssetInfoItem): string {
+  if (item.source === "shared_library") return `shared:${item.kind || "asset"}:${item.category || "未分类"}`
+  return `project:${item.episode || "ep01"}:${item.kind || "asset"}`
+}
+
+function folderLabel(folder: Pick<AssetFolder, "library" | "kind" | "category" | "episode">): string {
+  if (folder.library === "shared") return folder.category || "未分类"
+  return `${folder.episode || "ep01"} · ${folder.kind || "asset"}`
+}
+
+function AssetLibraryPanel({
+  projectId,
+  disabled,
+}: {
+  projectId?: string | null
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [items, setItems] = useState<AssetInfoItem[]>([])
+  const [categories, setCategories] = useState<AssetCategoryResult>({})
+  const [selectedFolderKey, setSelectedFolderKey] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
+  const [action, setAction] = useState<AssetAction>(null)
+  const [form, setForm] = useState<AssetTargetForm>({
+    library: "shared",
+    kind: "character",
+    category: "",
+    episode: "1",
+    name: "",
+  })
+  const [operationLoading, setOperationLoading] = useState(false)
+  const [operationError, setOperationError] = useState<string | null>(null)
+  const [operationMessage, setOperationMessage] = useState<string | null>(null)
+  const canvasNodeCount = useCanvasStore((state) => state.nodes.length)
+
+  const itemUrl = useCallback((item: AssetInfoItem): string => {
+    if (item.previewUrl) return item.previewUrl
+    return item.path && projectId ? resolveAssetLibraryPreviewUrl(projectId, item.path) : ""
+  }, [projectId])
+
+  const folders = useMemo(() => {
+    const map = new Map<string, AssetFolder>()
+    ;(categories.shared ?? []).forEach((folder) => {
+      const kind = folder.kind || "asset"
+      const category = folder.category || "未分类"
+      const key = `shared:${kind}:${category}`
+      map.set(key, {
+        key,
+        label: category,
+        subtitle: `共享资产库 · ${kind}`,
+        library: "shared",
+        source: "shared_library",
+        kind,
+        category,
+        count: folder.count,
+      })
+    })
+    ;(categories.project ?? []).forEach((folder) => {
+      const kind = folder.kind || "asset"
+      const episode = folder.episode || "ep01"
+      const key = `project:${episode}:${kind}`
+      map.set(key, {
+        key,
+        label: `${episode} · ${kind}`,
+        subtitle: "项目资产库",
+        library: "project",
+        source: "project_library",
+        kind,
+        episode,
+        count: folder.count,
+      })
+    })
+    items.forEach((item) => {
+      const key = folderKeyForAsset(item)
+      if (map.has(key)) return
+      const library = item.source === "shared_library" ? "shared" : "project"
+      map.set(key, {
+        key,
+        label: folderLabel({ library, kind: item.kind || "asset", category: item.category, episode: item.episode }),
+        subtitle: assetSourceLabel(item.source),
+        library,
+        source: item.source === "shared_library" ? "shared_library" : "project_library",
+        kind: item.kind || "asset",
+        category: item.category,
+        episode: item.episode,
+      })
+    })
+    return [...map.values()].sort((a, b) => `${a.library}:${a.label}`.localeCompare(`${b.library}:${b.label}`, "zh-CN"))
+  }, [categories.project, categories.shared, items])
+
+  const selectedFolder = useMemo(
+    () => folders.find((folder) => folder.key === selectedFolderKey) ?? null,
+    [folders, selectedFolderKey],
+  )
+
+  useEffect(() => {
+    if (!open) return
+    if (selectedFolderKey && folders.some((folder) => folder.key === selectedFolderKey)) return
+    setSelectedFolderKey(folders[0]?.key ?? null)
+  }, [folders, open, selectedFolderKey])
+
+  const sharedCategoryOptions = useMemo(() => {
+    const targetKind = form.kind.trim()
+    return (categories.shared ?? [])
+      .filter((item) => !targetKind || item.kind === targetKind)
+      .map((item) => item.category)
+      .filter((item): item is string => Boolean(item))
+  }, [categories.shared, form.kind])
+
+  const loadAssets = useCallback(async () => {
+    if (!projectId) return
+    setLoading(true)
+    setError(null)
+    try {
+      const [projectLibrary, sharedLibrary, categoryResult] = await Promise.all([
+        callTool<AssetLibraryListResult>("assets.list_project", { project_id: projectId }),
+        callTool<AssetLibraryListResult>("assets.list_shared", { project_id: projectId }),
+        callTool<AssetCategoryResult>("assets.list_categories", { project_id: projectId }),
+      ])
+      if (!categoryResult?.error) setCategories(categoryResult)
+      const next: AssetInfoItem[] = []
+      ;[
+        { source: "project_library" as const, result: projectLibrary },
+        { source: "shared_library" as const, result: sharedLibrary },
+      ].forEach(({ source, result }) => {
+        ;(result?.items ?? []).forEach((item, index) => {
+          const path = String(item.path || "")
+          if (!path) return
+          const mediaKind = assetMediaKind(path, item.mime_type)
+          next.push({
+            key: `${source}:${path}:${index}`,
+            source,
+            title: item.title || assetBasename(path),
+            subtitle: item.category || item.episode || item.kind || assetSourceLabel(source),
+            path,
+            sourceRef: path,
+            mediaKind,
+            kind: item.kind,
+            category: item.category,
+            episode: item.episode,
+            size: item.size,
+            mimeType: item.mime_type,
+            previewUrl: mediaKind === "image" || mediaKind === "video" || mediaKind === "audio"
+              ? resolveAssetLibraryPreviewUrl(projectId, path)
+              : "",
+            prompt: item.prompt_snippet || item.prompt,
+          } as AssetInfoItem & {
+            width?: number
+            height?: number
+            resolution?: string
+            modifiedAt?: string
+          })
+          const pushed = next[next.length - 1] as AssetInfoItem & {
+            width?: number
+            height?: number
+            resolution?: string
+            modifiedAt?: string
+          }
+          pushed.width = item.width
+          pushed.height = item.height
+          pushed.resolution = item.resolution
+          pushed.modifiedAt = item.modified_at
+        })
+      })
+      setItems(next)
+      const errors = [projectLibrary?.error, sharedLibrary?.error].filter(Boolean)
+      setError(errors.length && next.length === 0 ? errors.join("；") : null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    if (open) void loadAssets()
+  }, [open, loadAssets])
+
+  const visibleItems = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return items.filter((item) => {
+      if (selectedFolder && folderKeyForAsset(item) !== selectedFolder.key) return false
+      if (!q) return true
+      return `${item.title} ${item.path} ${item.kind || ""} ${item.category || ""} ${item.episode || ""} ${item.prompt || ""}`
+        .toLowerCase()
+        .includes(q)
+    })
+  }, [items, query, selectedFolder])
+
+  const resetOperationState = useCallback(() => {
+    setOperationError(null)
+    setOperationMessage(null)
+  }, [])
+
+  const openAction = useCallback((nextAction: AssetAction) => {
+    resetOperationState()
+    if (nextAction && nextAction.type === "move") {
+      const item = nextAction.item
+      const sourceIsProject = item.source === "project_library"
+      setForm({
+        library: sourceIsProject ? "project" : "shared",
+        kind: item.kind || (sourceIsProject ? "scene" : "character"),
+        category: item.category || "",
+        episode: sourceIsProject ? episodeNumberText(item.episode) : "1",
+        name: "",
+      })
+    } else if (nextAction?.type === "category") {
+      setForm({ library: "shared", kind: "character", category: "", episode: "1", name: "" })
+    }
+    setAction(nextAction)
+  }, [resetOperationState])
+
+  const assertToolOk = (result: Record<string, unknown>) => {
+    if (result?.error) throw new Error(String(result.error))
+    if (result?.ok === false) throw new Error(String(result.error || "操作失败"))
+  }
+
+  const handleDownload = useCallback((item: AssetInfoItem) => {
+    const url = itemUrl(item)
+    if (!url) {
+      setOperationError("这个资产没有可下载地址")
+      return
+    }
+    const anchor = document.createElement("a")
+    anchor.href = url
+    anchor.download = assetBasename(item.path || item.title)
+    anchor.rel = "noopener"
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+  }, [itemUrl])
+
+  const handleAddToCanvas = useCallback(async (item: AssetInfoItem) => {
+    if (!projectId) return
+    resetOperationState()
+    setOperationLoading(true)
+    try {
+      const result = await callTool<Record<string, unknown>>("assets.add_to_canvas", {
+        project_id: projectId,
+        source: item.sourceRef,
+        title: item.title,
+        node_type: item.mediaKind === "file" ? undefined : item.mediaKind,
+        x: 120 + (canvasNodeCount % 4) * 300,
+        y: 90 + Math.floor(canvasNodeCount / 4) * 220,
+      })
+      assertToolOk(result)
+      setOperationMessage("已加入画布")
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setOperationLoading(false)
+    }
+  }, [canvasNodeCount, projectId, resetOperationState])
+
+  const submitAssetAction = useCallback(async () => {
+    if (!projectId || !action || action.type === "preview" || action.type === "save") return
+    resetOperationState()
+    setOperationLoading(true)
+    try {
+      if (action.type === "category") {
+        const result = await callTool<Record<string, unknown>>("assets.create_category", {
+          project_id: projectId,
+          library: form.library,
+          kind: form.kind,
+          category: form.library === "shared" ? form.category : undefined,
+          episode: form.library === "project" ? Number(form.episode || 1) : undefined,
+        })
+        assertToolOk(result)
+        setOperationMessage("分类已创建")
+      } else if (action.type === "move") {
+        const result = await callTool<Record<string, unknown>>("assets.move_asset", {
+          project_id: projectId,
+          path: action.item.path,
+          library: form.library,
+          kind: form.kind,
+          category: form.library === "shared" ? form.category : undefined,
+          episode: form.library === "project" ? Number(form.episode || 1) : undefined,
+          name: form.name || undefined,
+        })
+        assertToolOk(result)
+        setOperationMessage("资产已移动")
+      }
+      await loadAssets()
+      setAction(null)
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setOperationLoading(false)
+    }
+  }, [action, form, loadAssets, projectId, resetOperationState])
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        disabled={!projectId || disabled}
+        title="打开资产库"
+        className="h-8 rounded-md border border-white/10 bg-white/[0.04] px-2.5 text-xs font-medium text-zinc-300 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        资产库
+      </button>
+      {open ? (
+        <div className="fixed inset-3 z-[90] flex items-center justify-center bg-black/48 backdrop-blur-sm sm:inset-6">
+          <div className="flex h-[82dvh] w-full max-w-6xl overflow-hidden rounded-lg border border-white/10 bg-[var(--studio-panel)] shadow-2xl shadow-black/60">
+            <aside className="flex w-64 shrink-0 flex-col border-r border-white/10 bg-black/18">
+              <div className="border-b border-white/10 px-4 py-3">
+                <div className="text-sm font-semibold text-zinc-100">资产库</div>
+                <div className="mt-1 text-[11px] text-zinc-500">本地文件夹分类</div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-2">
+                {folders.length === 0 ? (
+                  <div className="px-2 py-6 text-center text-xs text-zinc-500">没有分类</div>
+                ) : folders.map((folder) => (
+                  <button
+                    key={folder.key}
+                    type="button"
+                    onClick={() => setSelectedFolderKey(folder.key)}
+                    className={`mb-1 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left transition-colors ${
+                      selectedFolderKey === folder.key ? "bg-white/12 text-zinc-50" : "text-zinc-400 hover:bg-white/[0.06]"
+                    }`}
+                  >
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-amber-300/12 text-[13px] text-amber-200">DIR</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-medium">{folder.label}</span>
+                      <span className="block truncate text-[10px] text-zinc-500">{folder.subtitle}</span>
+                    </span>
+                    {folder.count !== undefined ? <span className="text-[10px] text-zinc-500">{folder.count}</span> : null}
+                  </button>
+                ))}
+              </div>
+              <div className="border-t border-white/10 p-2">
+                <button
+                  type="button"
+                  onClick={() => openAction({ type: "category" })}
+                  className="w-full rounded-md border border-white/10 px-3 py-2 text-xs text-zinc-300 hover:bg-white/[0.06]"
+                >
+                  创建分类
+                </button>
+              </div>
+            </aside>
+            <main className="flex min-w-0 flex-1 flex-col">
+              <header className="border-b border-white/10 px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-zinc-100">
+                      {selectedFolder ? selectedFolder.label : "资产库内容"}
+                    </div>
+                    <div className="mt-1 truncate text-[11px] text-zinc-500">
+                      {selectedFolder ? selectedFolder.subtitle : "只显示本地资产库中的文件"}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      placeholder="搜索资产"
+                      className="h-8 w-52 rounded-md border border-white/10 bg-[var(--studio-control)] px-2.5 text-xs text-zinc-100 placeholder-zinc-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void loadAssets()}
+                      disabled={loading}
+                      className="rounded-md border border-white/10 px-3 py-1.5 text-xs text-zinc-400 hover:bg-white/[0.06] disabled:opacity-50"
+                    >
+                      刷新
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setOpen(false)}
+                      className="rounded-md border border-white/10 px-3 py-1.5 text-xs text-zinc-400 hover:bg-white/[0.06]"
+                    >
+                      关闭
+                    </button>
+                  </div>
+                </div>
+                {operationError ? <div className="mt-2 rounded-md border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">{operationError}</div> : null}
+                {operationMessage ? <div className="mt-2 rounded-md border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">{operationMessage}</div> : null}
+              </header>
+              <div className="flex-1 overflow-y-auto p-4">
+                {loading ? (
+                  <div className="flex h-full items-center justify-center text-sm text-zinc-500">正在读取资产库...</div>
+                ) : error ? (
+                  <div className="rounded-md border border-amber-400/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">{error}</div>
+                ) : visibleItems.length === 0 ? (
+                  <div className="flex h-full items-center justify-center text-sm text-zinc-500">这个分类里没有资产</div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {visibleItems.map((item) => {
+                      const rich = item as AssetInfoItem & { resolution?: string; width?: number; height?: number }
+                      const resolution = rich.resolution || (rich.width && rich.height ? `${rich.width}x${rich.height}` : "")
+                      return (
+                        <div key={item.key} className="overflow-hidden rounded-md border border-white/10 bg-white/[0.035]">
+                          <button
+                            type="button"
+                            onClick={() => openAction({ type: "preview", item })}
+                            className="block aspect-video w-full bg-black/30"
+                          >
+                            {item.previewUrl && item.mediaKind === "image" ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={item.previewUrl} alt={item.title} className="h-full w-full object-cover" />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center text-xs text-zinc-600">{assetKindLabel(item.mediaKind)}</div>
+                            )}
+                          </button>
+                          <div className="p-3">
+                            <div className="truncate text-sm font-medium text-zinc-100" title={item.title}>{item.title}</div>
+                            <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] text-zinc-500">
+                              <span>{assetKindLabel(item.mediaKind)}</span>
+                              {resolution ? <span>{resolution}</span> : null}
+                              {item.size ? <span>{formatAssetSize(item.size)}</span> : null}
+                            </div>
+                            {item.prompt ? <div className="mt-2 line-clamp-2 text-[11px] leading-4 text-zinc-500">{item.prompt}</div> : null}
+                            <div className="mt-3 flex flex-wrap gap-1.5">
+                              <button type="button" onClick={() => openAction({ type: "preview", item })} className="rounded border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06]">预览</button>
+                              <button type="button" onClick={() => handleDownload(item)} className="rounded border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06]">下载</button>
+                              <button type="button" onClick={() => void handleAddToCanvas(item)} disabled={operationLoading} className="rounded border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06] disabled:opacity-50">加入画布</button>
+                              <button type="button" onClick={() => openAction({ type: "move", item })} className="rounded border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06]">移动</button>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </main>
+            {action ? (
+              <AssetLibraryActionDialog
+                action={action}
+                form={form}
+                setForm={setForm}
+                sharedCategoryOptions={sharedCategoryOptions}
+                itemUrl={itemUrl}
+                operationLoading={operationLoading}
+                operationError={operationError}
+                onCancel={() => setAction(null)}
+                onSubmit={submitAssetAction}
+              />
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function AssetLibraryActionDialog({
+  action,
+  form,
+  setForm,
+  sharedCategoryOptions,
+  itemUrl,
+  operationLoading,
+  operationError,
+  onCancel,
+  onSubmit,
+}: {
+  action: Exclude<AssetAction, null>
+  form: AssetTargetForm
+  setForm: Dispatch<SetStateAction<AssetTargetForm>>
+  sharedCategoryOptions: string[]
+  itemUrl: (item: AssetInfoItem) => string
+  operationLoading: boolean
+  operationError: string | null
+  onCancel: () => void
+  onSubmit: () => void
+}) {
+  if (action.type === "preview" || action.type === "save") {
+    const item = action.item
+    const url = itemUrl(item)
+    return (
+      <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/62 p-5">
+        <div className="max-h-full w-full max-w-4xl overflow-hidden rounded-lg border border-white/10 bg-[var(--studio-panel)] shadow-2xl">
+          <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-zinc-100">{item.title}</div>
+              <div className="mt-0.5 text-[11px] text-zinc-500">{assetKindLabel(item.mediaKind)}</div>
+            </div>
+            <button type="button" onClick={onCancel} className="rounded border border-white/10 px-3 py-1.5 text-xs text-zinc-400 hover:bg-white/[0.06]">关闭</button>
+          </div>
+          <div className="max-h-[68dvh] overflow-auto bg-black/25 p-4">
+            {item.mediaKind === "image" && url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={url} alt={item.title} className="mx-auto max-h-[62dvh] max-w-full object-contain" />
+            ) : item.mediaKind === "video" && url ? (
+              <video controls preload="metadata" className="mx-auto max-h-[62dvh] max-w-full"><source src={url} /></video>
+            ) : item.mediaKind === "audio" && url ? (
+              <audio controls preload="metadata" className="w-full"><source src={url} /></audio>
+            ) : (
+              <div className="break-all font-mono text-xs text-zinc-400">{item.path}</div>
+            )}
+            {item.prompt ? <div className="mt-3 rounded-md border border-white/10 bg-black/30 p-3 text-xs leading-5 text-zinc-400">{item.prompt}</div> : null}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/62 p-5">
+      <div className="w-full max-w-md rounded-lg border border-white/10 bg-[var(--studio-panel)] p-4 shadow-2xl">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-zinc-100">{action.type === "category" ? "创建分类" : "移动资产"}</div>
+            <div className="mt-0.5 text-[11px] text-zinc-500">分类会同步为本地文件夹</div>
+          </div>
+          <button type="button" onClick={onCancel} className="rounded border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06]">关闭</button>
+        </div>
+        <div className="mt-3 space-y-2">
+          <label className="block text-[11px] text-zinc-500">
+            目标库
+            <select
+              value={form.library}
+              onChange={(event) => setForm((current) => ({
+                ...current,
+                library: event.target.value as AssetTargetForm["library"],
+                kind: event.target.value === "project" ? "scene" : "character",
+              }))}
+              className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
+            >
+              <option value="shared">共享资产库</option>
+              <option value="project">项目资产库</option>
+            </select>
+          </label>
+          <label className="block text-[11px] text-zinc-500">
+            类型
+            <select
+              value={form.kind}
+              onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value }))}
+              className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
+            >
+              {(form.library === "shared" ? SHARED_ASSET_KINDS : PROJECT_ASSET_KINDS).map((kind) => (
+                <option key={kind} value={kind}>{kind}</option>
+              ))}
+            </select>
+          </label>
+          {form.library === "shared" ? (
+            <label className="block text-[11px] text-zinc-500">
+              分类文件夹
+              <input
+                value={form.category}
+                list="asset-library-shared-categories"
+                onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
+                placeholder="例如 main_roles / city_night"
+                className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100 placeholder-zinc-600"
+              />
+              <datalist id="asset-library-shared-categories">
+                {sharedCategoryOptions.map((category) => <option key={category} value={category} />)}
+              </datalist>
+            </label>
+          ) : (
+            <label className="block text-[11px] text-zinc-500">
+              集数
+              <input
+                value={form.episode}
+                type="number"
+                min="1"
+                onChange={(event) => setForm((current) => ({ ...current, episode: event.target.value }))}
+                className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
+              />
+            </label>
+          )}
+          {action.type === "move" ? (
+            <label className="block text-[11px] text-zinc-500">
+              新文件名
+              <input
+                value={form.name}
+                onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                placeholder="选填，默认沿用原文件名"
+                className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100 placeholder-zinc-600"
+              />
+            </label>
+          ) : null}
+        </div>
+        {operationError ? <div className="mt-3 rounded-md border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">{operationError}</div> : null}
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="rounded-md border border-white/10 px-3 py-1.5 text-xs text-zinc-400 hover:bg-white/[0.06]">取消</button>
+          <button
+            type="button"
+            onClick={onSubmit}
+            disabled={operationLoading || (form.library === "shared" && !form.category.trim())}
+            className="rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {operationLoading ? "处理中" : "确认"}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -2783,7 +3401,7 @@ export function ChatPanel() {
             >
               上传
             </button>
-            <AssetInfoPanel
+            <AssetLibraryPanel
               projectId={currentProject?.id}
               disabled={false}
             />
