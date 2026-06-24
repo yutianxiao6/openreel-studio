@@ -340,21 +340,12 @@ function mediaProgressFromOutput(output: unknown, fallbackStatus: string): Media
   }
 }
 
-function MediaProgressBar({ progress }: { progress: MediaProgressInfo }) {
+function MediaProgressText({ progress }: { progress: MediaProgressInfo }) {
   return (
-    <div className="mt-2 w-full max-w-[260px] space-y-1">
-      <div className="flex items-center justify-between gap-2 text-[10px] font-medium text-blue-200">
-        <span>{progress.label}</span>
-        {progress.pollCount ? <span className="text-blue-200/55">{progress.pollCount}次轮询</span> : null}
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
-        <div
-          className={`h-full rounded-full bg-blue-300 shadow-[0_0_10px_rgba(147,197,253,0.55)] ${
-            progress.percent == null ? "w-1/2 animate-pulse" : ""
-          }`}
-          style={progress.percent != null ? { width: `${progress.percent}%` } : undefined}
-        />
-      </div>
+    <div className="mt-2 inline-flex items-center gap-1.5 rounded bg-blue-950/45 px-2 py-1 text-[11px] font-semibold text-blue-200 ring-1 ring-blue-300/15">
+      <span>进度</span>
+      <span className="tabular-nums">{progress.label}</span>
+      {progress.pollCount ? <span className="text-[10px] font-medium text-blue-200/55">{progress.pollCount}次轮询</span> : null}
     </div>
   )
 }
@@ -4188,7 +4179,7 @@ export default function NodeDetailPanel({
                 </span>
               )}
             </div>
-            {mediaProgress && <MediaProgressBar progress={mediaProgress} />}
+            {mediaProgress && <MediaProgressText progress={mediaProgress} />}
           </div>
           {canEdit && !editing && (
             <button

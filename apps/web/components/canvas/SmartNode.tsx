@@ -431,24 +431,13 @@ function mediaProgressFromPreview(preview: PreviewData | undefined, fallbackStat
   return null
 }
 
-function MediaProgressBar({ progress }: { progress: MediaProgressInfo | null }) {
+function MediaProgressText({ progress }: { progress: MediaProgressInfo | null }) {
   if (!progress) return null
   return (
-    <div className="min-w-[112px] space-y-1">
-      <div className="flex items-center justify-between gap-2 text-[10px] font-medium text-blue-100">
-        <span>{progress.label}</span>
-        {progress.pollCount ? <span className="text-blue-200/60">{progress.pollCount}次</span> : null}
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-white/12">
-        <div
-          className={cn(
-            "h-full rounded-full bg-blue-300 shadow-[0_0_10px_rgba(147,197,253,0.55)]",
-            progress.percent == null && "w-1/2 animate-pulse",
-          )}
-          style={progress.percent != null ? { width: `${progress.percent}%` } : undefined}
-        />
-      </div>
-    </div>
+    <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-blue-100">
+      {progress.label}
+      {progress.pollCount ? <span className="ml-1 text-[10px] font-medium text-blue-200/60">{progress.pollCount}次</span> : null}
+    </span>
   )
 }
 
@@ -1176,7 +1165,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/38 backdrop-blur-[1px]">
                   <div className="flex min-w-[150px] items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">
                     <span className="h-3.5 w-3.5 rounded-full border-2 border-blue-200 border-t-transparent animate-spin" />
-                    <MediaProgressBar progress={mediaProgress} />
+                    <MediaProgressText progress={mediaProgress} />
                   </div>
                 </div>
               )}
@@ -1229,7 +1218,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/38 backdrop-blur-[1px]">
                   <div className="flex min-w-[150px] items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">
                     <span className="h-3.5 w-3.5 rounded-full border-2 border-blue-200 border-t-transparent animate-spin" />
-                    <MediaProgressBar progress={mediaProgress} />
+                    <MediaProgressText progress={mediaProgress} />
                   </div>
                 </div>
               )}
@@ -1256,7 +1245,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/38 backdrop-blur-[1px]">
                   <div className="flex min-w-[150px] items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">
                     <span className="h-3.5 w-3.5 rounded-full border-2 border-blue-200 border-t-transparent animate-spin" />
-                    <MediaProgressBar progress={mediaProgress} />
+                    <MediaProgressText progress={mediaProgress} />
                   </div>
                 </div>
               )}
@@ -1270,7 +1259,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                   <span className="text-[11px] font-semibold tracking-[0.18em] text-zinc-600">{style.icon}</span>
                 )}
 	                {isRunning ? (
-                  <MediaProgressBar progress={mediaProgress} />
+                  <MediaProgressText progress={mediaProgress} />
                 ) : (
                   <span className="text-xs">{data.type === "video" ? "待生成视频" : data.type === "audio" ? "待生成音频" : "待生成图片"}</span>
                 )}
