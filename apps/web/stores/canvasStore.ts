@@ -858,6 +858,24 @@ function promptPreviewFromNodeType(nodeType: unknown, prompt: unknown): Record<s
   }
 }
 
+function textPreviewFromInput(input: unknown, prompt: unknown): Record<string, unknown> | undefined {
+  const data = parseObjectJson(input)
+  const nestedInput = parseObjectJson(data?.input_json ?? data?.input)
+  const fields = parseObjectJson(data?.fields)
+  const nestedFields = parseObjectJson(nestedInput?.fields)
+  for (const source of [data, fields, nestedInput, nestedFields]) {
+    if (!source) continue
+    for (const key of ["content", "text", "summary", "description"]) {
+      const value = source[key]
+      if (typeof value === "string" && value.trim()) {
+        return { type: "text", text: value.trim() }
+      }
+    }
+  }
+  const currentPrompt = normalizedPrompt(prompt)
+  return currentPrompt ? { type: "text", text: currentPrompt } : undefined
+}
+
 function applyCurrentPromptToPreview(
   preview: unknown,
   prompt: unknown,
@@ -909,9 +927,12 @@ function normalizePreviewForNode(
   nodeType: unknown,
   preview: unknown,
   prompt: unknown,
+  input?: unknown,
 ): Record<string, unknown> | undefined {
   const normalized = applyCurrentPromptToPreview(preview, prompt) ?? promptPreviewFromNodeType(nodeType, prompt)
-  return normalized ? normalizeFusionPreviewErrors(normalized) : undefined
+  if (normalized) return normalizeFusionPreviewErrors(normalized)
+  if (String(nodeType ?? "") === "text") return textPreviewFromInput(input, prompt)
+  return undefined
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1141,7 +1162,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         if (nextRenderState) nextData.renderState = nextRenderState
         nextData.preview = mergeMediaPreviewHints(
           nextData.type ?? n.type,
-          normalizePreviewForNode(nextData.type ?? n.type, nextData.preview, nextData.prompt),
+          normalizePreviewForNode(nextData.type ?? n.type, nextData.preview, nextData.prompt, data),
           data as Record<string, unknown>,
           nextData,
         )
@@ -1305,6 +1326,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                     payload.type ?? n.data.type,
                     payload.preview ?? n.data.preview,
                     payload.prompt ?? n.data.prompt,
+                    payload.input_json ?? payload.input ?? payload,
                   ),
                   payload,
                   n.data,
@@ -1371,7 +1393,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           renderState: renderStateFromPayload(payload as Record<string, unknown>, payload.type, payload.status, payload.preview),
           preview: mergeMediaPreviewHints(
             payload.type,
-            normalizePreviewForNode(payload.type, payload.preview, payload.prompt),
+            normalizePreviewForNode(payload.type, payload.preview, payload.prompt, payload.input_json ?? payload.input ?? payload),
             payload,
           ),
           group_id: groupId,
@@ -1538,7 +1560,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           if (mergedPreview !== undefined || Object.prototype.hasOwnProperty.call(dataPatch, "prompt") || hasMediaHintPatch) {
             dataPatch.preview = mergeMediaPreviewHints(
               nextType,
-              normalizePreviewForNode(nextType, mergedPreview ?? prevPreview, nextPrompt),
+              normalizePreviewForNode(nextType, mergedPreview ?? prevPreview, nextPrompt, dataPatch),
               dataPatch,
             )
           }
@@ -1582,7 +1604,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       const prompt = promptFromRawNode(n)
       const preview = mergeMediaPreviewHints(
         n.type,
-        normalizePreviewForNode(n.type, parseOutputPreview(n.output_json), prompt),
+        normalizePreviewForNode(n.type, parseOutputPreview(n.output_json), prompt, n.input_json),
         n.input_json,
         n.model_config_json,
       )

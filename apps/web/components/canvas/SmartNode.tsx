@@ -317,10 +317,10 @@ function mediaNodeDimensions(preview?: PreviewData, media?: { width?: number; he
   return { width: Math.round(width), height: Math.round(height) }
 }
 
-function textFromPreview(preview?: PreviewData, prompt?: string, title?: string): string {
-  if (!preview) return prompt || title || ""
+function textFromPreview(preview?: PreviewData, prompt?: string): string {
+  if (!preview) return prompt || ""
   if (preview.type === "text" && typeof (preview as PreviewData & { text?: string }).text === "string") {
-    return (preview as PreviewData & { text?: string }).text || prompt || title || ""
+    return (preview as PreviewData & { text?: string }).text || prompt || ""
   }
   if (preview.summary) return preview.summary
   if (preview.prompt) return preview.prompt
@@ -335,7 +335,7 @@ function textFromPreview(preview?: PreviewData, prompt?: string, title?: string)
     const promptStage = preview.stages.find((stage) => /提示词|prompt/i.test(stage.name) && stage.prompt)
     if (promptStage?.prompt) return promptStage.prompt
   }
-  return prompt || title || ""
+  return prompt || ""
 }
 
 function statusBorderStyle(status: string, color: string): React.CSSProperties {
@@ -726,7 +726,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const lastAutoSizeRef = useRef<string | null>(null)
   const [cardVideoPlaying, setCardVideoPlaying] = useState(false)
-  const previewText = textFromPreview(data.preview, data.prompt, data.title)
+  const previewText = textFromPreview(data.preview, data.prompt)
   const autoNodeSize = data.type === "image"
     ? mediaNodeDimensions(data.preview, imageForSize)
     : data.type === "video"
