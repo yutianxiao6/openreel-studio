@@ -415,6 +415,7 @@ export default function CanvasGroupLayer({
   const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null)
   const [frameGroupId, setFrameGroupId] = useState<string | null>(null)
   const [toolbarGroupId, setToolbarGroupId] = useState<string | null>(null)
+  const [selectionPointerActive, setSelectionPointerActive] = useState(false)
   const groupModelsRef = useRef<GroupViewModel[]>([])
   const dragRef = useRef<GroupDragState | null>(null)
 
@@ -437,6 +438,7 @@ export default function CanvasGroupLayer({
     const bounds = boundsForNodes(selectedNodes)
     return bounds ? flowBoundsToScreen(paddedBounds(bounds), viewport) : null
   }, [selectedNodes, viewport])
+  const selectionToolbarVisible = Boolean(selectionBounds && !selectionPointerActive)
   const groupModels = useMemo<GroupViewModel[]>(() => groups
     .map((group) => {
       const groupNodes = group.nodeIds.map((id) => nodeById.get(id)).filter(Boolean) as Node[]
@@ -648,10 +650,14 @@ export default function CanvasGroupLayer({
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+    const endSelectionPointer = () => {
+      setSelectionPointerActive(false)
+    }
     const handlePointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return
       const target = event.target as HTMLElement | null
       if (target?.closest("[data-openreel-group-toolbar='true']")) return
+      setSelectionPointerActive(true)
       if (target?.closest(".react-flow__node")) return
       const rect = container.getBoundingClientRect()
       const x = event.clientX - rect.left
@@ -691,10 +697,14 @@ export default function CanvasGroupLayer({
     container.addEventListener("pointerdown", handlePointerDown, true)
     container.addEventListener("pointermove", handlePointerMove)
     container.addEventListener("pointerleave", handlePointerLeave)
+    window.addEventListener("pointerup", endSelectionPointer)
+    window.addEventListener("pointercancel", endSelectionPointer)
     return () => {
       container.removeEventListener("pointerdown", handlePointerDown, true)
       container.removeEventListener("pointermove", handlePointerMove)
       container.removeEventListener("pointerleave", handlePointerLeave)
+      window.removeEventListener("pointerup", endSelectionPointer)
+      window.removeEventListener("pointercancel", endSelectionPointer)
     }
   }, [beginGroupDrag, containerRef, revealGroup, revealToolbar])
 
@@ -782,7 +792,7 @@ export default function CanvasGroupLayer({
         )
       })}
 
-      {selectionBounds && (
+      {selectionToolbarVisible && selectionBounds && (
         <div
           data-openreel-group-toolbar="true"
           className="pointer-events-auto absolute z-50 flex h-[34px] items-center gap-1 rounded-md border border-white/10 bg-[#11151d]/95 px-1.5 shadow-2xl shadow-black/35 backdrop-blur"
