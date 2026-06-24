@@ -576,8 +576,8 @@ const TOOL_LABEL: Record<string, string> = {
   // skill (dynamic)
   // assets
   "assets.get_library_path": "查询资产库",
-  "assets.list_project": "项目资产列表",
-  "assets.list_shared": "公用资产列表",
+  "assets.list_project": "资产列表",
+  "assets.list_shared": "资产列表",
   "assets.read_asset": "读取资产",
   "assets.list_categories": "资产分类",
   "assets.create_category": "创建资产分类",
@@ -778,8 +778,7 @@ const ASSET_IMAGE_SUFFIX_RE = /\.(png|jpe?g|webp|gif|bmp)$/i
 const ASSET_VIDEO_SUFFIX_RE = /\.(mp4|webm|mov|m4v)$/i
 const ASSET_AUDIO_SUFFIX_RE = /\.(mp3|wav|m4a|aac|ogg|flac)$/i
 const ASSET_TEXT_SUFFIX_RE = /\.(txt|md|markdown|json|csv|ya?ml)$/i
-const PROJECT_ASSET_KINDS = ["script", "character", "scene", "first_frame", "last_frame", "storyboard", "story_template"]
-const SHARED_ASSET_KINDS = ["character", "scene"]
+const ASSET_LIBRARY_KINDS = ["script", "character", "scene", "first_frame", "last_frame", "storyboard", "story_template"]
 
 function assetMediaKind(text: string, mimeType?: string | null, type?: string | null): AssetInfoItem["mediaKind"] {
   const raw = `${text || ""} ${type || ""}`.toLowerCase()
@@ -797,8 +796,7 @@ function assetBasename(path: string): string {
 
 function assetSourceLabel(source: AssetInfoSource): string {
   if (source === "generated") return "生成资产"
-  if (source === "project_library") return "项目资产库"
-  return "共享资产库"
+  return "资产库"
 }
 
 function assetKindLabel(kind: AssetInfoItem["mediaKind"]): string {
@@ -807,11 +805,6 @@ function assetKindLabel(kind: AssetInfoItem["mediaKind"]): string {
   if (kind === "audio") return "音频"
   if (kind === "text") return "文本"
   return "文件"
-}
-
-function episodeNumberText(value?: string): string {
-  const match = String(value || "").match(/\d+/)
-  return match ? String(Number(match[0])) : "1"
 }
 
 function formatAssetSize(size?: number | null): string {
@@ -869,15 +862,11 @@ function AssetInfoPanel({
   }, [])
 
   const defaultForm = useCallback((item?: AssetInfoItem): AssetTargetForm => {
-    const sourceIsProject = item?.source === "project_library"
-    const sourceIsShared = item?.source === "shared_library"
-    const library: AssetTargetForm["library"] = sourceIsProject ? "project" : "shared"
-    const kind = item?.kind || (library === "project" ? "scene" : "character")
     return {
-      library,
-      kind,
-      category: sourceIsShared ? (item?.category || "") : "",
-      episode: sourceIsProject ? episodeNumberText(item?.episode) : "1",
+      library: "shared",
+      kind: item?.kind || "character",
+      category: item?.category || "",
+      episode: "1",
       name: "",
     }
   }, [])
@@ -917,37 +906,30 @@ function AssetInfoPanel({
         })
       })
 
-      const [projectLibrary, sharedLibrary, categoryResult] = await Promise.all([
-        callTool<AssetLibraryListResult>("assets.list_project", { project_id: projectId }),
+      const [library, categoryResult] = await Promise.all([
         callTool<AssetLibraryListResult>("assets.list_shared", { project_id: projectId }),
         callTool<AssetCategoryResult>("assets.list_categories", { project_id: projectId }),
       ])
       if (!categoryResult?.error) setCategories(categoryResult)
-      ;[
-        { source: "project_library" as const, result: projectLibrary },
-        { source: "shared_library" as const, result: sharedLibrary },
-      ].forEach(({ source, result }) => {
-        if (result?.error) return
-        ;(result?.items ?? []).slice(0, 120).forEach((item, index) => {
-          const path = String(item.path || "")
-          if (!path) return
-          const mediaKind = assetMediaKind(path)
-          next.push({
-            key: `${source}:${path}:${index}`,
-            source,
-            title: assetBasename(path),
-            subtitle: item.category || item.episode || item.kind || assetSourceLabel(source),
-            path,
-            sourceRef: path,
-            mediaKind,
-            kind: item.kind,
-            category: item.category,
-            episode: item.episode,
-            size: item.size,
-            previewUrl: mediaKind === "image" || mediaKind === "video" || mediaKind === "audio"
-              ? resolveAssetLibraryPreviewUrl(projectId, path)
-              : "",
-          })
+      ;(library?.items ?? []).slice(0, 120).forEach((item, index) => {
+        const path = String(item.path || "")
+        if (!path) return
+        const mediaKind = assetMediaKind(path)
+        next.push({
+          key: `asset:${path}:${index}`,
+          source: "shared_library",
+          title: assetBasename(path),
+          subtitle: item.category || item.kind || "资产库",
+          path,
+          sourceRef: path,
+          mediaKind,
+          kind: item.kind,
+          category: item.category,
+          episode: item.episode,
+          size: item.size,
+          previewUrl: mediaKind === "image" || mediaKind === "video" || mediaKind === "audio"
+            ? resolveAssetLibraryPreviewUrl(projectId, path)
+            : "",
         })
       })
       setItems(next)
@@ -1030,30 +1012,21 @@ function AssetInfoPanel({
       if (action.type === "category") {
         const result = await callTool<Record<string, unknown>>("assets.create_category", {
           project_id: projectId,
-          library: form.library,
+          library: "asset",
           kind: form.kind,
-          category: form.library === "shared" ? form.category : undefined,
-          episode: form.library === "project" ? Number(form.episode || 1) : undefined,
+          category: form.category,
         })
         assertToolOk(result)
         setOperationMessage("分类已创建")
       } else if (action.type === "save") {
         const item = action.item
-        const result = form.library === "shared"
-          ? await callTool<Record<string, unknown>>("assets.save_to_shared", {
-              project_id: projectId,
-              source: item.sourceRef,
-              kind: form.kind,
-              category: form.category,
-              name: form.name || undefined,
-            })
-          : await callTool<Record<string, unknown>>("assets.save_to_project", {
-              project_id: projectId,
-              source: item.sourceRef,
-              kind: form.kind,
-              episode: Number(form.episode || 1),
-              name: form.name || undefined,
-            })
+        const result = await callTool<Record<string, unknown>>("assets.save_to_shared", {
+          project_id: projectId,
+          source: item.sourceRef,
+          kind: form.kind,
+          category: form.category,
+          name: form.name || undefined,
+        })
         assertToolOk(result)
         setOperationMessage("已加入资产库")
       } else if (action.type === "move") {
@@ -1061,10 +1034,9 @@ function AssetInfoPanel({
         const result = await callTool<Record<string, unknown>>("assets.move_asset", {
           project_id: projectId,
           path: item.path,
-          library: form.library,
+          library: "asset",
           kind: form.kind,
-          category: form.library === "shared" ? form.category : undefined,
-          episode: form.library === "project" ? Number(form.episode || 1) : undefined,
+          category: form.category,
           name: form.name || undefined,
         })
         assertToolOk(result)
@@ -1264,27 +1236,12 @@ function AssetInfoPanel({
                           {action.type === "category" ? "创建分类" : action.type === "move" ? "移动资产" : "加入资产库"}
                         </div>
                         <div className="mt-0.5 text-[11px] text-zinc-500">
-                          {action.type === "category" ? "创建项目或共享资产分类" : "选择目标库和分类"}
+                          {action.type === "category" ? "创建资产分类" : "选择类型和分类"}
                         </div>
                       </div>
                       <button type="button" onClick={() => setAction(null)} className="rounded border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06]">关闭</button>
                     </div>
                     <div className="mt-3 space-y-2">
-                      <label className="block text-[11px] text-zinc-500">
-                        目标库
-                        <select
-                          value={form.library}
-                          onChange={(event) => setForm((current) => ({
-                            ...current,
-                            library: event.target.value as AssetTargetForm["library"],
-                            kind: event.target.value === "project" ? "scene" : "character",
-                          }))}
-                          className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
-                        >
-                          <option value="shared">共享资产库</option>
-                          <option value="project">项目资产库</option>
-                        </select>
-                      </label>
                       <label className="block text-[11px] text-zinc-500">
                         类型
                         <select
@@ -1292,37 +1249,24 @@ function AssetInfoPanel({
                           onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value }))}
                           className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
                         >
-                          {(form.library === "shared" ? SHARED_ASSET_KINDS : PROJECT_ASSET_KINDS).map((kind) => (
+                          {ASSET_LIBRARY_KINDS.map((kind) => (
                             <option key={kind} value={kind}>{kind}</option>
                           ))}
                         </select>
                       </label>
-                      {form.library === "shared" ? (
-                        <label className="block text-[11px] text-zinc-500">
-                          分类
-                          <input
-                            value={form.category}
-                            list="asset-shared-category-options"
-                            onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
-                            placeholder="输入分类名，跟随当前用户语言"
-                            className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100 placeholder-zinc-600"
-                          />
-                          <datalist id="asset-shared-category-options">
-                            {sharedCategoryOptions.map((category) => <option key={category} value={category} />)}
-                          </datalist>
-                        </label>
-                      ) : (
-                        <label className="block text-[11px] text-zinc-500">
-                          集数
-                          <input
-                            value={form.episode}
-                            type="number"
-                            min="1"
-                            onChange={(event) => setForm((current) => ({ ...current, episode: event.target.value }))}
-                            className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
-                          />
-                        </label>
-                      )}
+                      <label className="block text-[11px] text-zinc-500">
+                        分类
+                        <input
+                          value={form.category}
+                          list="asset-shared-category-options"
+                          onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
+                          placeholder="输入分类名，跟随当前用户语言"
+                          className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100 placeholder-zinc-600"
+                        />
+                        <datalist id="asset-shared-category-options">
+                          {sharedCategoryOptions.map((category) => <option key={category} value={category} />)}
+                        </datalist>
+                      </label>
                       {action.type !== "category" ? (
                         <label className="block text-[11px] text-zinc-500">
                           新名称
@@ -1341,7 +1285,7 @@ function AssetInfoPanel({
                       <button
                         type="button"
                         onClick={() => void submitAssetAction()}
-                        disabled={operationLoading || (form.library === "shared" && !form.category.trim())}
+                        disabled={operationLoading || !form.category.trim()}
                         className="rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {operationLoading ? "处理中" : "确认"}
@@ -1371,13 +1315,11 @@ type AssetFolder = {
 }
 
 function folderKeyForAsset(item: AssetInfoItem): string {
-  if (item.source === "shared_library") return `shared:${item.kind || "asset"}:${item.category || "未分类"}`
-  return `project:${item.episode || "ep01"}:${item.kind || "asset"}`
+  return `asset:${item.kind || "asset"}:${item.category || "未分类"}`
 }
 
 function folderLabel(folder: Pick<AssetFolder, "library" | "kind" | "category" | "episode">): string {
-  if (folder.library === "shared") return folder.category || "未分类"
-  return `${folder.episode || "ep01"} · ${folder.kind || "asset"}`
+  return folder.category || "未分类"
 }
 
 function AssetLibraryPanel({
@@ -1417,11 +1359,11 @@ function AssetLibraryPanel({
     ;(categories.shared ?? []).forEach((folder) => {
       const kind = folder.kind || "asset"
       const category = folder.category || "未分类"
-      const key = `shared:${kind}:${category}`
+      const key = `asset:${kind}:${category}`
       map.set(key, {
         key,
         label: category,
-        subtitle: `共享资产库 · ${kind}`,
+        subtitle: `资产库 · ${kind}`,
         library: "shared",
         source: "shared_library",
         kind,
@@ -1429,38 +1371,22 @@ function AssetLibraryPanel({
         count: folder.count,
       })
     })
-    ;(categories.project ?? []).forEach((folder) => {
-      const kind = folder.kind || "asset"
-      const episode = folder.episode || "ep01"
-      const key = `project:${episode}:${kind}`
-      map.set(key, {
-        key,
-        label: `${episode} · ${kind}`,
-        subtitle: "项目资产库",
-        library: "project",
-        source: "project_library",
-        kind,
-        episode,
-        count: folder.count,
-      })
-    })
     items.forEach((item) => {
       const key = folderKeyForAsset(item)
       if (map.has(key)) return
-      const library = item.source === "shared_library" ? "shared" : "project"
       map.set(key, {
         key,
-        label: folderLabel({ library, kind: item.kind || "asset", category: item.category, episode: item.episode }),
+        label: folderLabel({ library: "shared", kind: item.kind || "asset", category: item.category, episode: item.episode }),
         subtitle: assetSourceLabel(item.source),
-        library,
-        source: item.source === "shared_library" ? "shared_library" : "project_library",
+        library: "shared",
+        source: "shared_library",
         kind: item.kind || "asset",
         category: item.category,
         episode: item.episode,
       })
     })
-    return [...map.values()].sort((a, b) => `${a.library}:${a.label}`.localeCompare(`${b.library}:${b.label}`, "zh-CN"))
-  }, [categories.project, categories.shared, items])
+    return [...map.values()].sort((a, b) => `${a.kind}:${a.label}`.localeCompare(`${b.kind}:${b.label}`, "zh-CN"))
+  }, [categories.shared, items])
 
   const selectedFolder = useMemo(
     () => folders.find((folder) => folder.key === selectedFolderKey) ?? null,
@@ -1486,58 +1412,52 @@ function AssetLibraryPanel({
     setLoading(true)
     setError(null)
     try {
-      const [projectLibrary, sharedLibrary, categoryResult] = await Promise.all([
-        callTool<AssetLibraryListResult>("assets.list_project", { project_id: projectId }),
+      const [library, categoryResult] = await Promise.all([
         callTool<AssetLibraryListResult>("assets.list_shared", { project_id: projectId }),
         callTool<AssetCategoryResult>("assets.list_categories", { project_id: projectId }),
       ])
       if (!categoryResult?.error) setCategories(categoryResult)
       const next: AssetInfoItem[] = []
-      ;[
-        { source: "project_library" as const, result: projectLibrary },
-        { source: "shared_library" as const, result: sharedLibrary },
-      ].forEach(({ source, result }) => {
-        ;(result?.items ?? []).forEach((item, index) => {
-          const path = String(item.path || "")
-          if (!path) return
-          const mediaKind = assetMediaKind(path, item.mime_type)
-          next.push({
-            key: `${source}:${path}:${index}`,
-            source,
-            title: item.title || assetBasename(path),
-            subtitle: item.category || item.episode || item.kind || assetSourceLabel(source),
-            path,
-            sourceRef: path,
-            mediaKind,
-            kind: item.kind,
-            category: item.category,
-            episode: item.episode,
-            size: item.size,
-            mimeType: item.mime_type,
-            previewUrl: mediaKind === "image" || mediaKind === "video" || mediaKind === "audio"
-              ? resolveAssetLibraryPreviewUrl(projectId, path)
-              : "",
-            prompt: item.prompt_snippet || item.prompt,
-          } as AssetInfoItem & {
-            width?: number
-            height?: number
-            resolution?: string
-            modifiedAt?: string
-          })
-          const pushed = next[next.length - 1] as AssetInfoItem & {
-            width?: number
-            height?: number
-            resolution?: string
-            modifiedAt?: string
-          }
-          pushed.width = item.width
-          pushed.height = item.height
-          pushed.resolution = item.resolution
-          pushed.modifiedAt = item.modified_at
+      ;(library?.items ?? []).forEach((item, index) => {
+        const path = String(item.path || "")
+        if (!path) return
+        const mediaKind = assetMediaKind(path, item.mime_type)
+        next.push({
+          key: `asset:${path}:${index}`,
+          source: "shared_library",
+          title: item.title || assetBasename(path),
+          subtitle: item.category || item.kind || "资产库",
+          path,
+          sourceRef: path,
+          mediaKind,
+          kind: item.kind,
+          category: item.category,
+          episode: item.episode,
+          size: item.size,
+          mimeType: item.mime_type,
+          previewUrl: mediaKind === "image" || mediaKind === "video" || mediaKind === "audio"
+            ? resolveAssetLibraryPreviewUrl(projectId, path)
+            : "",
+          prompt: item.prompt_snippet || item.prompt,
+        } as AssetInfoItem & {
+          width?: number
+          height?: number
+          resolution?: string
+          modifiedAt?: string
         })
+        const pushed = next[next.length - 1] as AssetInfoItem & {
+          width?: number
+          height?: number
+          resolution?: string
+          modifiedAt?: string
+        }
+        pushed.width = item.width
+        pushed.height = item.height
+        pushed.resolution = item.resolution
+        pushed.modifiedAt = item.modified_at
       })
       setItems(next)
-      const errors = [projectLibrary?.error, sharedLibrary?.error].filter(Boolean)
+      const errors = [library?.error].filter(Boolean)
       setError(errors.length && next.length === 0 ? errors.join("；") : null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -1570,12 +1490,11 @@ function AssetLibraryPanel({
     resetOperationState()
     if (nextAction && nextAction.type === "move") {
       const item = nextAction.item
-      const sourceIsProject = item.source === "project_library"
       setForm({
-        library: sourceIsProject ? "project" : "shared",
-        kind: item.kind || (sourceIsProject ? "scene" : "character"),
+        library: "shared",
+        kind: item.kind || "character",
         category: item.category || "",
-        episode: sourceIsProject ? episodeNumberText(item.episode) : "1",
+        episode: "1",
         name: "",
       })
     } else if (nextAction?.type === "category") {
@@ -1634,10 +1553,9 @@ function AssetLibraryPanel({
       if (action.type === "category") {
         const result = await callTool<Record<string, unknown>>("assets.create_category", {
           project_id: projectId,
-          library: form.library,
+          library: "asset",
           kind: form.kind,
-          category: form.library === "shared" ? form.category : undefined,
-          episode: form.library === "project" ? Number(form.episode || 1) : undefined,
+          category: form.category,
         })
         assertToolOk(result)
         setOperationMessage("分类已创建")
@@ -1645,10 +1563,9 @@ function AssetLibraryPanel({
         const result = await callTool<Record<string, unknown>>("assets.move_asset", {
           project_id: projectId,
           path: action.item.path,
-          library: form.library,
+          library: "asset",
           kind: form.kind,
-          category: form.library === "shared" ? form.category : undefined,
-          episode: form.library === "project" ? Number(form.episode || 1) : undefined,
+          category: form.category,
           name: form.name || undefined,
         })
         assertToolOk(result)
@@ -1883,58 +1800,30 @@ function AssetLibraryActionDialog({
         </div>
         <div className="mt-3 space-y-2">
           <label className="block text-[11px] text-zinc-500">
-            目标库
-            <select
-              value={form.library}
-              onChange={(event) => setForm((current) => ({
-                ...current,
-                library: event.target.value as AssetTargetForm["library"],
-                kind: event.target.value === "project" ? "scene" : "character",
-              }))}
-              className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
-            >
-              <option value="shared">共享资产库</option>
-              <option value="project">项目资产库</option>
-            </select>
-          </label>
-          <label className="block text-[11px] text-zinc-500">
             类型
             <select
               value={form.kind}
               onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value }))}
               className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
             >
-              {(form.library === "shared" ? SHARED_ASSET_KINDS : PROJECT_ASSET_KINDS).map((kind) => (
+              {ASSET_LIBRARY_KINDS.map((kind) => (
                 <option key={kind} value={kind}>{kind}</option>
               ))}
             </select>
           </label>
-          {form.library === "shared" ? (
-            <label className="block text-[11px] text-zinc-500">
-              分类文件夹
-              <input
-                value={form.category}
-                list="asset-library-shared-categories"
-                onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
-                placeholder="输入分类名，跟随当前用户语言"
-                className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100 placeholder-zinc-600"
-              />
-              <datalist id="asset-library-shared-categories">
-                {sharedCategoryOptions.map((category) => <option key={category} value={category} />)}
-              </datalist>
-            </label>
-          ) : (
-            <label className="block text-[11px] text-zinc-500">
-              集数
-              <input
-                value={form.episode}
-                type="number"
-                min="1"
-                onChange={(event) => setForm((current) => ({ ...current, episode: event.target.value }))}
-                className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
-              />
-            </label>
-          )}
+          <label className="block text-[11px] text-zinc-500">
+            分类文件夹
+            <input
+              value={form.category}
+              list="asset-library-shared-categories"
+              onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
+              placeholder="输入分类名，跟随当前用户语言"
+              className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100 placeholder-zinc-600"
+            />
+            <datalist id="asset-library-shared-categories">
+              {sharedCategoryOptions.map((category) => <option key={category} value={category} />)}
+            </datalist>
+          </label>
           {action.type === "move" ? (
             <label className="block text-[11px] text-zinc-500">
               新文件名
@@ -1953,7 +1842,7 @@ function AssetLibraryActionDialog({
           <button
             type="button"
             onClick={onSubmit}
-            disabled={operationLoading || (form.library === "shared" && !form.category.trim())}
+            disabled={operationLoading || !form.category.trim()}
             className="rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {operationLoading ? "处理中" : "确认"}

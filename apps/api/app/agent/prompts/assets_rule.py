@@ -7,10 +7,10 @@ PROMPT = """\
 
 Asset library work is explicit.
 
-- Read files with `assets.list_project` / `assets.list_shared`; inspect one file with `assets.read_asset`; list buckets with `assets.list_categories`.
-- Save media/scripts with `assets.save_to_project` / `assets.save_to_shared`; category folder names follow the user's language.
-- When saving an image node, use its visible title as `name`; if generic, supply a concise asset name.
-- Organize requested assets with `assets.create_category` and `assets.move_asset`; put requested files on canvas with `assets.add_to_canvas`.
-- To use an image asset in generation, write `asset:<id>` or the resolved asset path into target node `fields.references` with role `visual_reference`; use `source_image` when adopting the image directly.
-- Generated media and scripts stay in node output/project storage until the user asks to save or reuse them in the library.
+- Read the single library with `assets.list_shared` / `assets.list_project`; inspect files with `assets.read_asset`; list folders with `assets.list_categories`.
+- Save with `assets.save_to_shared`; infer kind/category from asset content and user words, using the user's language. Ask only when classification is not reasonably knowable.
+- Use the image node title as `name`; if generic, supply a concise asset name.
+- Organize with `assets.create_category` / `assets.move_asset`; put files on canvas with `assets.add_to_canvas`.
+- Reuse images by writing `asset:<id>` or path into `fields.references` with role `visual_reference`; use `source_image` when adopting directly.
+- Generated media stays outside the library until the user asks to save or reuse it.
 """

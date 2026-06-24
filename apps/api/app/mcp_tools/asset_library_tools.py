@@ -1,26 +1,12 @@
-"""Asset library — user-designated permanent storage for project assets.
+"""Asset library — one local folder for reusable creative assets.
 
-Two roots, both set by the user via dialogue:
-  - project_root: per-project assets, organized by episode/kind
-  - shared_root:  cross-project reusable assets (character/scene templates)
+Assets are organized by kind first, then by user-chosen category folders:
 
-The library supports explicit user-driven classification and moves. Deletion is
-still left to the front-end/filesystem control plane.
-
-Storage layouts:
-
-  <project_root>/<project_title>/episodes/ep<NN>/
-    ├─ script.txt
-    ├─ characters/<role>_<style>_<ts>.png
-    ├─ scenes/
-    ├─ first_frames/shot_<n>_first.png
-    ├─ last_frames/shot_<n>_last.png
-    ├─ storyboards/
-    └─ story_template.md
-
-  <shared_root>/
-    ├─ characters/{male,female}_{young,old,child}/
-    └─ scenes/<style>_<location_type>/
+  <asset_root>/
+    ├─ 人物/<style-or-role>/
+    ├─ 场景/<style-or-place>/
+    ├─ 分镜/<category>/
+    └─ ...
 """
 from __future__ import annotations
 
@@ -52,15 +38,25 @@ _PROJECT_KINDS = {
     "script", "character", "scene", "first_frame", "last_frame",
     "storyboard", "story_template",
 }
-_SHARED_KINDS = {"character", "scene"}
+_LIBRARY_KINDS = set(_PROJECT_KINDS)
+_SHARED_KINDS = _LIBRARY_KINDS
 _PROJECT_KIND_DIR = {
-    "script": "",
-    "character": "characters",
-    "scene": "scenes",
-    "first_frame": "first_frames",
-    "last_frame": "last_frames",
-    "storyboard": "storyboards",
-    "story_template": "",
+    "script": "剧本",
+    "character": "人物",
+    "scene": "场景",
+    "first_frame": "首帧",
+    "last_frame": "尾帧",
+    "storyboard": "分镜",
+    "story_template": "故事模板",
+}
+_LEGACY_KIND_DIRS = {
+    "script": ["scripts"],
+    "character": ["characters"],
+    "scene": ["scenes"],
+    "first_frame": ["first_frames"],
+    "last_frame": ["last_frames"],
+    "storyboard": ["storyboards"],
+    "story_template": ["story_templates"],
 }
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"}
@@ -74,6 +70,11 @@ _GENERIC_ASSET_TITLES = {"", "未命名", "未命名图片", "图片节点", "im
 def _slug(name: str) -> str:
     cleaned = re.sub(r"[^\w一-鿿\-]+", "_", name).strip("_")
     return cleaned or "untitled"
+
+
+def _category_name(category: str | None, fallback: str = "未分类") -> str:
+    text = str(category or "").strip()
+    return text or fallback
 
 
 def _ts() -> str:
@@ -101,12 +102,35 @@ def _path_is_within(path: Path, root: Path) -> bool:
 
 
 def _library_roots(lib: dict[str, Any]) -> list[Path]:
-    roots: list[Path] = []
-    for key in ("project_root", "shared_root"):
-        raw = lib.get(key)
-        if raw:
-            roots.append(Path(str(raw)).expanduser().resolve())
-    return roots
+    raw = lib.get("root") or lib.get("shared_root") or lib.get("project_root")
+    if not raw:
+        return []
+    return [Path(str(raw)).expanduser().resolve()]
+
+
+def _library_root(lib: dict[str, Any]) -> Path:
+    roots = _library_roots(effective_asset_library(lib, ensure_dirs=True))
+    if not roots:
+        roots = _library_roots(effective_asset_library({}, ensure_dirs=True))
+    return roots[0]
+
+
+def _kind_dir_name(kind: str) -> str:
+    return _PROJECT_KIND_DIR.get(kind, _slug(kind))
+
+
+def _kind_dir(root: Path, kind: str) -> Path:
+    return root / _kind_dir_name(kind)
+
+
+def _kind_dir_candidates(root: Path, kind: str) -> list[Path]:
+    names = [_kind_dir_name(kind), *_LEGACY_KIND_DIRS.get(kind, [])]
+    candidates: list[Path] = []
+    for name in names:
+        for candidate in (root / name, root / "shared" / name):
+            if candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
 
 
 def _mime_for_path(path: Path) -> str:
@@ -321,11 +345,9 @@ async def _metadata_for_source(project_id: str, source: str, resolved_path: Path
 
 
 def _project_target_dir(lib: dict[str, Any], project_title: str, episode: int, kind: str) -> Path:
-    if kind not in _PROJECT_KINDS:
-        raise ValueError(f"kind 必须是 {sorted(_PROJECT_KINDS)} 之一")
-    ep_dir = _project_episode_dir(lib, project_title, episode)
-    sub = _PROJECT_KIND_DIR[kind]
-    target_dir = ep_dir / sub if sub else ep_dir
+    if kind not in _LIBRARY_KINDS:
+        raise ValueError(f"kind 必须是 {sorted(_LIBRARY_KINDS)} 之一")
+    target_dir = _kind_dir(_library_root(lib), kind) / f"第{int(episode)}集"
     target_dir.mkdir(parents=True, exist_ok=True)
     return target_dir
 
@@ -467,18 +489,19 @@ async def _set_state(project_id: str, state: dict[str, Any]) -> None:
 
 async def assets_set_library_path(
     project_id: str,
+    root: str | None = None,
+    library_root: str | None = None,
     project_root: str | None = None,
     shared_root: str | None = None,
 ) -> dict[str, Any]:
     state = await _get_state(project_id)
     lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
-    if project_root:
-        p = Path(project_root).expanduser().resolve()
+    selected_root = root or library_root or shared_root or project_root
+    if selected_root:
+        p = Path(selected_root).expanduser().resolve()
         p.mkdir(parents=True, exist_ok=True)
+        lib["root"] = str(p)
         lib["project_root"] = str(p)
-    if shared_root:
-        p = Path(shared_root).expanduser().resolve()
-        p.mkdir(parents=True, exist_ok=True)
         lib["shared_root"] = str(p)
     state["asset_library"] = lib
     await _set_state(project_id, state)
@@ -508,23 +531,22 @@ async def assets_save_to_project(
     source: str,
     name: str | None = None,
 ) -> dict[str, Any]:
-    if kind not in _PROJECT_KINDS:
-        return {"error": f"kind 必须是 {sorted(_PROJECT_KINDS)} 之一"}
+    if kind not in _LIBRARY_KINDS:
+        return {"error": f"kind 必须是 {sorted(_LIBRARY_KINDS)} 之一"}
 
     state = await _get_state(project_id)
     lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
 
     title = (state.get("metadata") or {}).get("title") or project_id
-    ep_dir = _project_episode_dir(lib, title, episode)
     target_dir = _project_target_dir(lib, title, episode, kind)
 
     src = await _resolve_source(project_id, source)
     source_metadata = await _metadata_for_source(project_id, source, src)
     suffix = src.suffix
     if kind == "script":
-        target = ep_dir / "script.txt"
+        target = _target_path_without_overwrite(target_dir / f"{_slug(name or '剧本')}.txt")
     elif kind == "story_template":
-        target = ep_dir / "story_template.md"
+        target = _target_path_without_overwrite(target_dir / f"{_slug(name or '故事模板')}.md")
     else:
         stem = _slug(name or str(source_metadata.get("title") or "") or src.stem)
         target = _target_path_without_overwrite(target_dir / f"{stem}{suffix}")
@@ -533,38 +555,144 @@ async def assets_save_to_project(
     _write_asset_sidecar(target, {
         **source_metadata,
         "title": name or source_metadata.get("title") or _display_title_from_name(target),
-        "library": "project",
+        "library": "asset",
         "kind": kind,
-        "episode": episode,
+        "category": f"第{int(episode)}集",
     })
-    return {"ok": True, "kind": kind, "episode": episode, "path": str(target)}
+    return {"ok": True, "kind": kind, "category": f"第{int(episode)}集", "path": str(target)}
 
 
 def _shared_category_dir(lib: dict[str, Any], kind: str, category: str) -> Path:
-    root = lib.get("shared_root")
-    if not root:
-        root = effective_asset_library({}, ensure_dirs=True)["shared_root"]
-    base = Path(root) / f"{kind}s" / _slug(category)
+    base = _kind_dir(_library_root(lib), kind) / _slug(category)
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def _category_dirs_for_scan(kind_dir: Path, category: str | None) -> list[Path]:
+    if not category:
+        return sorted(p for p in kind_dir.iterdir() if p.is_dir())
+    names = [_slug(category), str(category).strip()]
+    dirs: list[Path] = []
+    for name in names:
+        if not name:
+            continue
+        candidate = kind_dir / name
+        if candidate not in dirs:
+            dirs.append(candidate)
+    return dirs
+
+
+def _filter_asset_items(
+    items: list[dict[str, Any]],
+    *,
+    query: str = "",
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
+) -> list[dict[str, Any]]:
+    if not (query or regex or pattern):
+        return items
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        match = match_text(
+            search_blob(item),
+            query=query,
+            regex=regex,
+            pattern=pattern,
+            case_sensitive=case_sensitive,
+        )
+        if match.get("matched"):
+            next_item = dict(item)
+            next_item["match"] = {
+                key: value
+                for key, value in match.items()
+                if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
+            }
+            filtered.append(next_item)
+    return filtered
+
+
+async def _list_library_items(
+    project_id: str,
+    *,
+    kind: str | None = None,
+    category: str | None = None,
+    query: str = "",
+    regex: str | list[str] | None = None,
+    pattern: str | list[str] | None = None,
+    case_sensitive: bool = False,
+) -> dict[str, Any]:
+    invalid = invalid_regex_response(regex=regex, pattern=pattern)
+    if invalid is not None:
+        return invalid
+
+    state = await _get_state(project_id)
+    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
+    root = _library_root(lib)
+    if not root.exists():
+        return {"ok": True, "items": [], "root": str(root), "shared_root": str(root), "project_dir": str(root), "count": 0}
+
+    item_kinds = [kind] if kind else sorted(_LIBRARY_KINDS)
+    items: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for item_kind in item_kinds:
+        item_kind = str(item_kind or "").strip().lower()
+        if item_kind not in _LIBRARY_KINDS:
+            continue
+        for kind_dir in _kind_dir_candidates(root, item_kind):
+            if not kind_dir.exists() or not kind_dir.is_dir():
+                continue
+            for file_path in sorted(p for p in kind_dir.iterdir() if p.is_file() and not _is_sidecar_file(p)):
+                resolved = str(file_path.resolve())
+                if resolved in seen_paths:
+                    continue
+                seen_paths.add(resolved)
+                items.append(_asset_file_payload(
+                    file_path,
+                    library="asset",
+                    kind=item_kind,
+                    category="未分类",
+                ))
+            for category_dir in _category_dirs_for_scan(kind_dir, category):
+                if not category_dir.exists() or not category_dir.is_dir():
+                    continue
+                for file_path in sorted(p for p in category_dir.iterdir() if p.is_file() and not _is_sidecar_file(p)):
+                    resolved = str(file_path.resolve())
+                    if resolved in seen_paths:
+                        continue
+                    seen_paths.add(resolved)
+                    items.append(_asset_file_payload(
+                        file_path,
+                        library="asset",
+                        kind=item_kind,
+                        category=category_dir.name,
+                    ))
+
+    items = _filter_asset_items(
+        items,
+        query=query,
+        regex=regex,
+        pattern=pattern,
+        case_sensitive=case_sensitive,
+    )
+    return {"ok": True, "items": items, "root": str(root), "shared_root": str(root), "project_dir": str(root), "count": len(items)}
 
 
 async def assets_save_to_shared(
     project_id: str,
     kind: str,
-    category: str,
     source: str,
+    category: str | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
-    if kind not in _SHARED_KINDS:
-        return {"error": f"kind 必须是 {sorted(_SHARED_KINDS)} 之一"}
-    if not str(category or "").strip():
-        return {"error": "保存到共享资产库需要 category 分类"}
+    if kind not in _LIBRARY_KINDS:
+        return {"error": f"kind 必须是 {sorted(_LIBRARY_KINDS)} 之一"}
+    category_name = _category_name(category)
 
     state = await _get_state(project_id)
     lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
 
-    target_dir = _shared_category_dir(lib, kind, category)
+    target_dir = _shared_category_dir(lib, kind, category_name)
     src = await _resolve_source(project_id, source)
     source_metadata = await _metadata_for_source(project_id, source, src)
     stem = _slug(name or str(source_metadata.get("title") or "") or src.stem)
@@ -573,11 +701,11 @@ async def assets_save_to_shared(
     _write_asset_sidecar(target, {
         **source_metadata,
         "title": name or source_metadata.get("title") or _display_title_from_name(target),
-        "library": "shared",
+        "library": "asset",
         "kind": kind,
-        "category": category,
+        "category": category_name,
     })
-    return {"ok": True, "kind": kind, "category": category, "path": str(target)}
+    return {"ok": True, "kind": kind, "category": category_name, "path": str(target)}
 
 
 async def assets_list_categories(
@@ -586,116 +714,75 @@ async def assets_list_categories(
     kind: str | None = None,
     episode: int | None = None,
 ) -> dict[str, Any]:
-    """List project and shared asset-library categories."""
+    """List categories in the single asset library."""
     state = await _get_state(project_id)
     lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
-    library_key = str(library or "all").strip().lower()
-    if library_key not in {"all", "project", "shared"}:
-        return {"error": "library 必须是 all、project 或 shared"}
+    root = _library_root(lib)
     result: dict[str, Any] = {
         "ok": True,
-        "project": [],
+        "root": str(root),
+        "items": [],
         "shared": [],
-        "project_kinds": sorted(_PROJECT_KINDS),
-        "shared_kinds": sorted(_SHARED_KINDS),
+        "project": [],
+        "project_kinds": sorted(_LIBRARY_KINDS),
+        "shared_kinds": sorted(_LIBRARY_KINDS),
+        "kinds": sorted(_LIBRARY_KINDS),
     }
-
-    if library_key in {"all", "project"} and lib.get("project_root"):
-        title = (state.get("metadata") or {}).get("title") or project_id
-        episodes_root = Path(lib["project_root"]) / _slug(title) / "episodes"
-        if episodes_root.exists():
-            ep_dirs = (
-                [episodes_root / f"ep{int(episode):02d}"]
-                if episode is not None
-                else sorted(p for p in episodes_root.iterdir() if p.is_dir())
-            )
-            for ep_dir in ep_dirs:
-                if not ep_dir.exists() or not ep_dir.is_dir():
-                    continue
-                for item_kind, sub in _PROJECT_KIND_DIR.items():
-                    if kind and item_kind != kind:
-                        continue
-                    category_dir = ep_dir / sub if sub else ep_dir
-                    if not category_dir.exists():
-                        continue
-                    count = sum(1 for child in category_dir.iterdir() if child.is_file() and not _is_sidecar_file(child))
-                    result["project"].append({
-                        "library": "project",
-                        "episode": ep_dir.name,
-                        "kind": item_kind,
-                        "path": str(category_dir),
-                        "count": count,
-                    })
-
-    if library_key in {"all", "shared"} and lib.get("shared_root"):
-        shared_root = Path(lib["shared_root"])
-        for item_kind in sorted(_SHARED_KINDS):
-            if kind and item_kind != kind:
-                continue
-            kind_dir = shared_root / f"{item_kind}s"
+    for item_kind in sorted(_LIBRARY_KINDS):
+        if kind and item_kind != kind:
+            continue
+        for kind_dir in _kind_dir_candidates(root, item_kind):
             if not kind_dir.exists():
                 continue
             for category_dir in sorted(p for p in kind_dir.iterdir() if p.is_dir()):
-                count = sum(1 for child in category_dir.iterdir() if child.is_file() and not _is_sidecar_file(child))
-                result["shared"].append({
-                    "library": "shared",
+                count = sum(
+                    1
+                    for child in category_dir.iterdir()
+                    if child.is_file() and not _is_sidecar_file(child)
+                )
+                item = {
+                    "library": "asset",
                     "kind": item_kind,
                     "category": category_dir.name,
                     "path": str(category_dir),
                     "count": count,
-                })
+                }
+                result["items"].append(item)
+                result["shared"].append(item)
 
     return result
 
 
 async def assets_create_category(
     project_id: str,
-    library: str,
     kind: str,
     category: str | None = None,
+    library: str = "asset",
     episode: int | None = None,
 ) -> dict[str, Any]:
     """Create an asset-library classification bucket."""
     state = await _get_state(project_id)
     lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
-    library_key = str(library or "").strip().lower()
     item_kind = str(kind or "").strip().lower()
-    if library_key == "shared":
-        if item_kind not in _SHARED_KINDS:
-            return {"error": f"kind 必须是 {sorted(_SHARED_KINDS)} 之一"}
-        if not str(category or "").strip():
-            return {"error": "共享资产库分类需要 category"}
-        target_dir = _shared_category_dir(lib, item_kind, str(category))
-        return {
-            "ok": True,
-            "library": "shared",
-            "kind": item_kind,
-            "category": target_dir.name,
-            "path": str(target_dir),
-        }
-    if library_key == "project":
-        if item_kind not in _PROJECT_KINDS:
-            return {"error": f"kind 必须是 {sorted(_PROJECT_KINDS)} 之一"}
-        if episode is None:
-            return {"error": "项目资产库分类需要 episode"}
-        title = (state.get("metadata") or {}).get("title") or project_id
-        target_dir = _project_target_dir(lib, title, int(episode), item_kind)
-        return {
-            "ok": True,
-            "library": "project",
-            "episode": int(episode),
-            "kind": item_kind,
-            "path": str(target_dir),
-        }
-    return {"error": "library 必须是 project 或 shared"}
+    if item_kind not in _LIBRARY_KINDS:
+        return {"error": f"kind 必须是 {sorted(_LIBRARY_KINDS)} 之一"}
+    category_name = _category_name(category, f"第{int(episode)}集" if episode is not None else "未分类")
+    target_dir = _shared_category_dir(lib, item_kind, category_name)
+    return {
+        "ok": True,
+        "library": "asset",
+        "kind": item_kind,
+        "category": target_dir.name,
+        "path": str(target_dir),
+    }
 
 
 async def assets_move_asset(
     project_id: str,
     path: str,
-    library: str,
     kind: str,
     category: str | None = None,
+    library: str = "asset",
     episode: int | None = None,
     name: str | None = None,
     overwrite: bool = False,
@@ -709,24 +796,12 @@ async def assets_move_asset(
     if not any(_path_is_within(source, root) for root in _library_roots(lib)):
         return {"error": "只能移动已配置资产库范围内的文件"}
 
-    library_key = str(library or "").strip().lower()
     item_kind = str(kind or "").strip().lower()
     try:
-        if library_key == "shared":
-            if item_kind not in _SHARED_KINDS:
-                return {"error": f"kind 必须是 {sorted(_SHARED_KINDS)} 之一"}
-            if not str(category or "").strip():
-                return {"error": "共享资产移动需要 category"}
-            target_dir = _shared_category_dir(lib, item_kind, str(category))
-        elif library_key == "project":
-            if item_kind not in _PROJECT_KINDS:
-                return {"error": f"kind 必须是 {sorted(_PROJECT_KINDS)} 之一"}
-            if episode is None:
-                return {"error": "项目资产移动需要 episode"}
-            title = (state.get("metadata") or {}).get("title") or project_id
-            target_dir = _project_target_dir(lib, title, int(episode), item_kind)
-        else:
-            return {"error": "library 必须是 project 或 shared"}
+        if item_kind not in _LIBRARY_KINDS:
+            return {"error": f"kind 必须是 {sorted(_LIBRARY_KINDS)} 之一"}
+        category_name = _category_name(category, f"第{int(episode)}集" if episode is not None else "未分类")
+        target_dir = _shared_category_dir(lib, item_kind, category_name)
     except ValueError as exc:
         return {"error": str(exc)}
 
@@ -744,19 +819,17 @@ async def assets_move_asset(
     existing_metadata = _read_asset_sidecar(target)
     _write_asset_sidecar(target, {
         **existing_metadata,
-        "library": library_key,
+        "library": "asset",
         "kind": item_kind,
-        "category": category if library_key == "shared" else None,
-        "episode": int(episode) if library_key == "project" and episode is not None else None,
+        "category": category_name,
     })
     return {
         "ok": True,
         "from": str(source),
         "path": str(target),
-        "library": library_key,
+        "library": "asset",
         "kind": item_kind,
-        "category": category if library_key == "shared" else None,
-        "episode": int(episode) if library_key == "project" and episode is not None else None,
+        "category": category_name,
     }
 
 
@@ -861,63 +934,19 @@ async def assets_list_project(
     pattern: str | list[str] | None = None,
     case_sensitive: bool = False,
 ) -> dict[str, Any]:
-    invalid = invalid_regex_response(regex=regex, pattern=pattern)
-    if invalid is not None:
-        return invalid
-    state = await _get_state(project_id)
-    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
-    root = lib.get("project_root")
-
-    title = (state.get("metadata") or {}).get("title") or project_id
-    proj_dir = Path(root) / _slug(title) / "episodes"
-    if not proj_dir.exists():
-        return {"items": [], "project_dir": str(proj_dir)}
-
-    items: list[dict[str, Any]] = []
-    ep_dirs = (
-        [proj_dir / f"ep{int(episode):02d}"]
-        if episode is not None
-        else sorted(proj_dir.iterdir())
+    result = await _list_library_items(
+        project_id,
+        kind=kind,
+        query=query,
+        regex=regex,
+        pattern=pattern,
+        case_sensitive=case_sensitive,
     )
-    for ed in ep_dirs:
-        if not ed.exists() or not ed.is_dir():
-            continue
-        ep_label = ed.name
-        for k, sub in _PROJECT_KIND_DIR.items():
-            if kind and k != kind:
-                continue
-            scan_dir = ed / sub if sub else ed
-            if not scan_dir.exists():
-                continue
-            if k in {"script", "story_template"}:
-                fname = "script.txt" if k == "script" else "story_template.md"
-                f = ed / fname
-                if f.exists():
-                    items.append(_asset_file_payload(f, episode=ep_label, kind=k))
-            else:
-                for f in sorted(scan_dir.iterdir()):
-                    if f.is_file() and not _is_sidecar_file(f):
-                        items.append(_asset_file_payload(f, episode=ep_label, kind=k))
-    if query or regex or pattern:
-        filtered: list[dict[str, Any]] = []
-        for item in items:
-            match = match_text(
-                search_blob(item),
-                query=query,
-                regex=regex,
-                pattern=pattern,
-                case_sensitive=case_sensitive,
-            )
-            if match.get("matched"):
-                next_item = dict(item)
-                next_item["match"] = {
-                    key: value
-                    for key, value in match.items()
-                    if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
-                }
-                filtered.append(next_item)
-        items = filtered
-    return {"items": items, "project_dir": str(proj_dir), "count": len(items)}
+    if episode is not None and not result.get("error"):
+        category = f"第{int(episode)}集"
+        result["items"] = [item for item in result.get("items", []) if item.get("category") == category]
+        result["count"] = len(result["items"])
+    return result
 
 
 async def assets_list_shared(
@@ -929,72 +958,26 @@ async def assets_list_shared(
     pattern: str | list[str] | None = None,
     case_sensitive: bool = False,
 ) -> dict[str, Any]:
-    invalid = invalid_regex_response(regex=regex, pattern=pattern)
-    if invalid is not None:
-        return invalid
-    state = await _get_state(project_id)
-    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
-    root = lib.get("shared_root")
-
-    base = Path(root)
-    if not base.exists():
-        return {"items": [], "shared_root": str(base)}
-
-    items: list[dict[str, Any]] = []
-    kind_dirs = [base / f"{kind}s"] if kind else [base / f"{k}s" for k in _SHARED_KINDS]
-    for kd in kind_dirs:
-        if not kd.exists():
-            continue
-        cur_kind = kd.name.rstrip("s")
-        cat_dirs = [kd / _slug(category)] if category else sorted(kd.iterdir())
-        for cd in cat_dirs:
-            if not cd.exists() or not cd.is_dir():
-                continue
-            for f in sorted(cd.iterdir()):
-                if f.is_file() and not _is_sidecar_file(f):
-                    items.append(_asset_file_payload(f, kind=cur_kind, category=cd.name))
-    if query or regex or pattern:
-        filtered: list[dict[str, Any]] = []
-        for item in items:
-            match = match_text(
-                search_blob(item),
-                query=query,
-                regex=regex,
-                pattern=pattern,
-                case_sensitive=case_sensitive,
-            )
-            if match.get("matched"):
-                next_item = dict(item)
-                next_item["match"] = {
-                    key: value
-                    for key, value in match.items()
-                    if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
-                }
-                filtered.append(next_item)
-        items = filtered
-    return {"items": items, "shared_root": str(base), "count": len(items)}
+    return await _list_library_items(
+        project_id,
+        kind=kind,
+        category=category,
+        query=query,
+        regex=regex,
+        pattern=pattern,
+        case_sensitive=case_sensitive,
+    )
 
 
 async def assets_read_asset(project_id: str, path: str) -> dict[str, Any]:
     state = await _get_state(project_id)
     lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
-    project_root = lib.get("project_root")
-    shared_root = lib.get("shared_root")
 
     p = Path(path).expanduser().resolve()
     if not p.exists() or not p.is_file():
         return {"error": f"文件不存在: {path}"}
 
-    ok = False
-    for root in (project_root, shared_root):
-        if root:
-            try:
-                p.relative_to(Path(root).resolve())
-                ok = True
-                break
-            except ValueError:
-                continue
-    if not ok:
+    if not any(_path_is_within(p, root) for root in _library_roots(lib)):
         return {"error": "路径不在配置的资产库范围内"}
 
     suffix = p.suffix.lower()

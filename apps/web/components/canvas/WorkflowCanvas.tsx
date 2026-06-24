@@ -112,8 +112,7 @@ interface LongPressState {
 
 const LONG_PRESS_MS = 560
 const LONG_PRESS_MOVE_TOLERANCE = 28
-const PROJECT_ASSET_KINDS = ["script", "character", "scene", "first_frame", "last_frame", "storyboard", "story_template"]
-const SHARED_ASSET_KINDS = ["character", "scene"]
+const ASSET_LIBRARY_KINDS = ["character", "scene", "first_frame", "last_frame", "storyboard", "story_template"]
 const GENERIC_IMAGE_TITLES = new Set(["", "未命名", "未命名图片", "图片节点"])
 
 function menuPositionStyle(x: number, y: number, width: number, height: number) {
@@ -469,25 +468,21 @@ export default function WorkflowCanvas() {
       setAssetSaveError("请先填写资产标题")
       return
     }
+    if (!assetSaveForm.category.trim()) {
+      setAssetSaveError("请先填写分类文件夹")
+      return
+    }
     setAssetSaveLoading(true)
     setAssetSaveError(null)
     try {
       const source = `node:${assetSaveRequest.publicId ?? assetSaveRequest.nodeId}`
-      const result = assetSaveForm.library === "shared"
-        ? await callTool<Record<string, unknown>>("assets.save_to_shared", {
-            project_id: currentProject.id,
-            source,
-            kind: assetSaveForm.kind,
-            category: assetSaveForm.category,
-            name,
-          })
-        : await callTool<Record<string, unknown>>("assets.save_to_project", {
-            project_id: currentProject.id,
-            source,
-            kind: assetSaveForm.kind,
-            episode: Number(assetSaveForm.episode || 1),
-            name,
-          })
+      const result = await callTool<Record<string, unknown>>("assets.save_to_shared", {
+        project_id: currentProject.id,
+        source,
+        kind: assetSaveForm.kind,
+        category: assetSaveForm.category,
+        name,
+      })
       if (result?.error || result?.ok === false) {
         throw new Error(String(result.error || "加入资产库失败"))
       }
@@ -1335,58 +1330,30 @@ export default function WorkflowCanvas() {
                 />
               </label>
               <label className="block text-[11px] text-zinc-500">
-                目标库
-                <select
-                  value={assetSaveForm.library}
-                  onChange={(event) => setAssetSaveForm((current) => ({
-                    ...current,
-                    library: event.target.value as AssetSaveForm["library"],
-                    kind: event.target.value === "project" ? "scene" : "scene",
-                  }))}
-                  className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100"
-                >
-                  <option value="shared">共享资产库</option>
-                  <option value="project">项目资产库</option>
-                </select>
-              </label>
-              <label className="block text-[11px] text-zinc-500">
                 类型
                 <select
                   value={assetSaveForm.kind}
                   onChange={(event) => setAssetSaveForm((current) => ({ ...current, kind: event.target.value }))}
                   className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100"
                 >
-                  {(assetSaveForm.library === "shared" ? SHARED_ASSET_KINDS : PROJECT_ASSET_KINDS).map((kind) => (
+                  {ASSET_LIBRARY_KINDS.map((kind) => (
                     <option key={kind} value={kind}>{kind}</option>
                   ))}
                 </select>
               </label>
-              {assetSaveForm.library === "shared" ? (
-                <label className="block text-[11px] text-zinc-500">
-                  分类文件夹
-                  <input
-                    value={assetSaveForm.category}
-                    list="workflow-asset-category-options"
-                    onChange={(event) => setAssetSaveForm((current) => ({ ...current, category: event.target.value }))}
-                    placeholder="选择或输入新分类"
-                    className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100 placeholder-zinc-600"
-                  />
-                  <datalist id="workflow-asset-category-options">
-                    {sharedAssetCategoryOptions.map((category) => <option key={category} value={category} />)}
-                  </datalist>
-                </label>
-              ) : (
-                <label className="block text-[11px] text-zinc-500">
-                  集数
-                  <input
-                    value={assetSaveForm.episode}
-                    type="number"
-                    min="1"
-                    onChange={(event) => setAssetSaveForm((current) => ({ ...current, episode: event.target.value }))}
-                    className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100"
-                  />
-                </label>
-              )}
+              <label className="block text-[11px] text-zinc-500">
+                分类文件夹
+                <input
+                  value={assetSaveForm.category}
+                  list="workflow-asset-category-options"
+                  onChange={(event) => setAssetSaveForm((current) => ({ ...current, category: event.target.value }))}
+                  placeholder="选择或输入新分类"
+                  className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100 placeholder-zinc-600"
+                />
+                <datalist id="workflow-asset-category-options">
+                  {sharedAssetCategoryOptions.map((category) => <option key={category} value={category} />)}
+                </datalist>
+              </label>
             </div>
             {assetSaveError ? (
               <div className="mt-3 rounded-md border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
@@ -1404,7 +1371,7 @@ export default function WorkflowCanvas() {
               <button
                 type="button"
                 onClick={() => void saveNodeToAssetLibrary()}
-                disabled={assetSaveLoading || !assetSaveForm.name.trim() || (assetSaveForm.library === "shared" && !assetSaveForm.category.trim())}
+                disabled={assetSaveLoading || !assetSaveForm.name.trim() || !assetSaveForm.category.trim()}
                 className="rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {assetSaveLoading ? "保存中" : "保存"}

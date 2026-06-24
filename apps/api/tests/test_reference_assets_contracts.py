@@ -134,8 +134,9 @@ async def test_asset_library_defaults_to_project_root_assets(monkeypatch, tmp_pa
     path_info = await asset_library_tools.assets_get_library_path(project_id="project-1")
     assert path_info["configured"] is True
     assert path_info["using_default"] is True
-    assert Path(path_info["project_root"]) == tmp_path / "assets" / "projects"
-    assert Path(path_info["shared_root"]) == tmp_path / "assets" / "shared"
+    assert Path(path_info["root"]) == tmp_path / "assets"
+    assert Path(path_info["project_root"]) == tmp_path / "assets"
+    assert Path(path_info["shared_root"]) == tmp_path / "assets"
 
     result = await asset_library_tools.assets_save_to_project(
         project_id="project-1",
@@ -148,7 +149,7 @@ async def test_asset_library_defaults_to_project_root_assets(monkeypatch, tmp_pa
     saved_path = Path(result["path"])
     assert result["ok"] is True
     assert saved_path.exists()
-    assert saved_path.is_relative_to(tmp_path / "assets" / "projects")
+    assert saved_path.is_relative_to(tmp_path / "assets")
     assert saved_path.name == "默认保存场景.png"
 
 
@@ -285,7 +286,7 @@ async def test_asset_library_preview_route_is_scoped_to_configured_roots(monkeyp
 @pytest.mark.asyncio
 async def test_asset_library_preview_route_allows_default_project_root_assets(monkeypatch, tmp_path) -> None:
     await _setup_asset_db(monkeypatch, tmp_path)
-    library_dir = tmp_path / "assets" / "shared" / "scenes" / "city"
+    library_dir = tmp_path / "assets" / "场景" / "city"
     library_dir.mkdir(parents=True, exist_ok=True)
     library_path = library_dir / "海的女儿.png"
     library_path.write_bytes(
@@ -353,6 +354,16 @@ async def test_asset_library_categories_move_and_add_to_canvas(monkeypatch, tmp_
     assert Path(shared_category["path"]).exists()
     assert project_category["ok"] is True
     assert Path(project_category["path"]).exists()
+    assert project_category["library"] == "asset"
+    assert project_category["category"] == "第2集"
+
+    legacy_items = await asset_library_tools.assets_list_shared(
+        project_id="project-1",
+        kind="character",
+        category="unsorted",
+    )
+    assert legacy_items["count"] == 1
+    assert legacy_items["items"][0]["title"] == "hero"
 
     moved = await asset_library_tools.assets_move_asset(
         project_id="project-1",
@@ -370,7 +381,7 @@ async def test_asset_library_categories_move_and_add_to_canvas(monkeypatch, tmp_
 
     categories = await asset_library_tools.assets_list_categories(project_id="project-1")
     assert any(item["category"] == "city_night" and item["count"] == 1 for item in categories["shared"])
-    assert any(item["episode"] == "ep02" and item["kind"] == "storyboard" for item in categories["project"])
+    assert categories["project"] == []
 
     added = await asset_library_tools.assets_add_to_canvas(
         project_id="project-1",

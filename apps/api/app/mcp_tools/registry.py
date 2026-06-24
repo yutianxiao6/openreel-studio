@@ -899,8 +899,8 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "agent.review": "隔离运行只读审查子 Agent，按用户需求和证据检查具体错误",
     "asset.list": "读取项目资产记录列表",
     "assets.get_library_path": "读取资产库路径配置",
-    "assets.list_project": "读取当前项目资产库文件列表",
-    "assets.list_shared": "读取共享资产库文件列表",
+    "assets.list_project": "读取单一本地资产库文件列表（兼容入口）",
+    "assets.list_shared": "读取单一本地资产库文件列表",
     "assets.read_asset": "读取指定资产文件的元信息或文本内容",
     "canvas.delete": "删除指定画布节点或清空画布，并清理节点本地产物",
     "config.read": "读取 runtime 配置结构，默认隐藏敏感密钥",
@@ -1887,13 +1887,13 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
     R("media.list_providers", media_provider_tools.media_list_providers, tags=["media", "provider", "read"])
     R("media.test_provider", media_provider_tools.media_test_provider, tags=["media", "provider", "meta"])
 
-    # assets.* — user-designated asset library (project + shared roots)
+    # assets.* — user-designated local asset library
     R("assets.get_library_path", asset_library_tools.assets_get_library_path, tags=["assets", "read"])
     R(
         "assets.save_to_project",
         asset_library_tools.assets_save_to_project,
         tags=["assets", "write"],
-        description="把节点、资产记录或本地文件显式保存到当前项目资产库。",
+        description="兼容入口：把节点、资产记录或本地文件显式保存到单一本地资产库。",
         usage_hints=[
             "tool.execute(name='assets.save_to_project', input={'episode': 1, 'kind': 'scene', 'source': 'node:12', 'name': '场景名'})",
         ],
@@ -1902,9 +1902,9 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         "assets.save_to_shared",
         asset_library_tools.assets_save_to_shared,
         tags=["assets", "write"],
-        description="把人物或场景素材显式保存到共享资产库，分类目录名跟随用户语言。",
+        description="把素材显式保存到单一本地资产库；kind/category 根据内容和用户用语判断，分类名跟随用户语言。",
         usage_hints=[
-            "category 使用用户消息语言的自然文件夹名，例如英文请求用 'main characters'，中文请求用 '主要角色'。",
+            "优先判断人物、场景、分镜等 kind，再选择合适 category。",
             "tool.execute(name='assets.save_to_shared', input={'kind': 'character', 'category': '主要角色', 'source': 'node:12', 'name': '角色名'})",
         ],
     )
@@ -1916,21 +1916,20 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         "assets.create_category",
         asset_library_tools.assets_create_category,
         tags=["assets", "write"],
-        description="在项目资产库或共享资产库创建分类目录。",
+        description="在单一本地资产库中创建 kind/category 文件夹。",
         usage_hints=[
             "category 使用用户消息语言的自然文件夹名。",
-            "tool.execute(name='assets.create_category', input={'library': 'shared', 'kind': 'character', 'category': '主要角色'})",
-            "tool.execute(name='assets.create_category', input={'library': 'project', 'episode': 1, 'kind': 'storyboard'})",
+            "tool.execute(name='assets.create_category', input={'kind': 'character', 'category': '主要角色'})",
         ],
     )
     R(
         "assets.move_asset",
         asset_library_tools.assets_move_asset,
         tags=["assets", "write"],
-        description="把资产库文件移动到另一个项目或共享分类。",
+        description="把资产库文件移动到另一个 kind/category 文件夹。",
         usage_hints=[
             "category 使用用户消息语言的自然文件夹名。",
-            "tool.execute(name='assets.move_asset', input={'path': '/assets/shared/characters/a.png', 'library': 'shared', 'kind': 'character', 'category': '主要角色'})",
+            "tool.execute(name='assets.move_asset', input={'path': '/assets/人物/a.png', 'kind': 'character', 'category': '主要角色'})",
         ],
     )
     R(
@@ -1940,7 +1939,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         description="把生成资产或资产库文件加入画布为可预览节点。",
         usage_hints=[
             "tool.execute(name='assets.add_to_canvas', input={'source': 'asset:asset-id', 'title': '主角参考图'})",
-            "tool.execute(name='assets.add_to_canvas', input={'source': '/assets/shared/characters/a.png', 'node_type': 'image'})",
+            "tool.execute(name='assets.add_to_canvas', input={'source': '/assets/人物/a.png', 'node_type': 'image'})",
         ],
     )
 
