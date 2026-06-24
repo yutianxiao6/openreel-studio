@@ -2084,7 +2084,7 @@ async def _node_get_one(node_id: str, project_id: str = "") -> dict:
             "error": "Node not found",
             "error_kind": "node_not_found",
             "node_id": node_id,
-            "hint": "node_id 使用 node.list/node.create 返回的节点编号，不是 shot_id、segment_id、标题或别名。新任务没有节点时先创建合适的 text/image/video/audio 节点。",
+            "hint": "node_id 使用 node.list/node.create 返回的节点编号；shot_id、segment_id、标题或别名需要先通过 node.list/node.get 转成节点编号。新任务先创建合适的 text/image/video/audio 节点。",
         }
     if project_id and isinstance(node, dict) and str(node.get("project_id") or "") != project_id:
         return {
@@ -3481,7 +3481,7 @@ async def node_run(
             "error": node.get("error") or "Node not found",
             "error_kind": "node_not_found",
             "node_id": requested_node_id,
-            "hint": "node.run 的 node_id 必须来自已存在节点。不要把 shot_id/segment_id/标题当 node_id；如果是新任务，先 node.create 创建合适节点，再 node.run。",
+            "hint": "node.run 的 node_id 使用已存在节点的编号；shot_id、segment_id、标题需要先通过 node.list/node.get 转成节点编号。新任务先 node.create 创建合适节点，再 node.run。",
         }
     model_node_id = public_node_id_from_dict(node)
     project_node_id_map = await _node_public_id_map(project_id)

@@ -45,7 +45,7 @@ def _default_hint(error_kind: str) -> str:
     if kind in {"permission_denied", "plan_pending_approval", "plan_required_before_action"}:
         return "遵守权限边界；需要用户确认、计划批准或补充信息时先停止执行。"
     if kind in {"project_missing", "node_missing", "not_found", "node_not_found", "parent_not_found", "task_not_found", "reference_not_found"}:
-        return "先读取真实状态和可用候选 id，确认目标仍存在；不要把标题、shot_id、segment_id 或旧 id 当真实 id。"
+        return "先读取项目状态和可用候选节点编号，标题、shot_id、segment_id 或旧编号需要通过 node.list/node.get 转成当前节点编号。"
     if kind in {"duplicate_node_id", "unknown_fields", "aspect_ratio_conflict", "unsupported_video_aspect_ratio"}:
         return "按错误里的 allowed/expected/available 字段修正参数后再试；保持用户已确认的时长、画幅和制作路径。"
     return "把错误作为下一步依据：修正参数、补依赖、询问用户，或停止重复调用。"

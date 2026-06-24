@@ -1743,13 +1743,13 @@ class AgentOrchestrator:
                         yield {"type": "canvas_action", "action": "clear_all", "payload": {}}
                         text = f"已清空画布（{int(result.get('deleted_nodes') or 0)} 个节点）。"
                     else:
-                        deleted_ids = result.get("deleted_node_ids") or []
+                        deleted_ids = result.get("_canvas_deleted_node_ids") or result.get("deleted_node_ids") or []
                         if deleted_ids:
                             for nid in deleted_ids:
                                 if nid:
                                     yield {"type": "canvas_action", "action": "delete_node", "payload": {"id": nid}}
-                        elif result.get("id"):
-                            yield {"type": "canvas_action", "action": "delete_node", "payload": {"id": result["id"]}}
+                        elif result.get("_canvas_id") or result.get("id"):
+                            yield {"type": "canvas_action", "action": "delete_node", "payload": {"id": result.get("_canvas_id") or result["id"]}}
                         await self._drop_session_cache(None)
                         text = "已删除节点。"
                     yield {"type": "text_delta", "content": text}
@@ -3340,7 +3340,7 @@ class AgentOrchestrator:
                     if str(result.get("scope") or "") == "all":
                         yield {"type": "canvas_action", "action": "clear_all", "payload": {}}
                     else:
-                        for nid in result.get("deleted_node_ids") or []:
+                        for nid in result.get("_canvas_deleted_node_ids") or result.get("deleted_node_ids") or []:
                             if nid:
                                 yield {"type": "canvas_action", "action": "delete_node", "payload": {"id": nid}}
                 elif event_tool_name == "node.create" and isinstance(result, dict) and (result.get("_canvas_id") or result.get("id")):
@@ -3414,7 +3414,7 @@ class AgentOrchestrator:
                                 "updates": {"title": result.get("title")},
                             }
                     else:
-                        for nid in result.get("deleted_node_ids") or []:
+                        for nid in result.get("_canvas_deleted_node_ids") or result.get("deleted_node_ids") or []:
                             if nid:
                                 yield {"type": "canvas_action", "action": "delete_node", "payload": {"id": nid}}
                     if reset_scope == "full":

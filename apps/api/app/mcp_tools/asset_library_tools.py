@@ -35,6 +35,11 @@ from app.config import settings
 from app.db.models import Asset, Project, WorkflowNode
 from app.db.session import session_scope
 from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
+from app.services.node_public_ids import (
+    looks_like_internal_node_id,
+    looks_like_public_node_id,
+    resolve_internal_node_id,
+)
 from sqlmodel import select
 
 
@@ -99,9 +104,10 @@ async def _resolve_asset_record_source(project_id: str, asset_id: str) -> Path |
 
 async def _resolve_node_asset_source(project_id: str, node_id: str) -> Path | None:
     async with session_scope() as session:
-        stmt = select(Asset).where(Asset.project_id == project_id, Asset.node_id == node_id)
+        resolved_node_id = await resolve_internal_node_id(session, project_id, node_id)
+        stmt = select(Asset).where(Asset.project_id == project_id, Asset.node_id == resolved_node_id)
         rows = (await session.exec(stmt)).all()
-        node = await session.get(WorkflowNode, node_id)
+        node = await session.get(WorkflowNode, resolved_node_id)
     for asset in rows:
         p = await _resolve_asset_record_source(project_id, asset.id)
         if p:
@@ -163,6 +169,10 @@ async def _resolve_source(project_id: str, source: str) -> Path:
         if resolved:
             return resolved
         raise FileNotFoundError(f"Node image source not found: {source}")
+    if looks_like_public_node_id(source) or looks_like_internal_node_id(source):
+        resolved = await _resolve_node_asset_source(project_id, source)
+        if resolved:
+            return resolved
     p = Path(source)
     if p.is_absolute() and p.exists():
         return p

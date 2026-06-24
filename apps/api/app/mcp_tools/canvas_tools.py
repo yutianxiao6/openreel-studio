@@ -13,6 +13,7 @@ from app.config import settings
 from app.db.models import Asset, WorkflowEdge, WorkflowNode
 from app.db.session import session_scope
 from app.services.node_ids import next_node_display_id
+from app.services.node_public_ids import public_node_id_from_model, resolve_internal_node_id
 
 
 def _as_json_str(value) -> str | None:
@@ -616,15 +617,27 @@ async def delete_nodes(
         return {"ok": True, "deleted_nodes": 0, "deleted_node_ids": [], "deleted_files": []}
 
     async with session_scope() as session:
+        resolved_ids: list[str] = []
+        for item_id in ids:
+            resolved = await resolve_internal_node_id(session, project_id, item_id)
+            if resolved and resolved not in resolved_ids:
+                resolved_ids.append(resolved)
         node_rows = (await session.exec(
             select(WorkflowNode).where(
                 WorkflowNode.project_id == project_id,
-                WorkflowNode.id.in_(ids),
+                WorkflowNode.id.in_(resolved_ids),
             )
         )).all()
         if not node_rows:
-            return {"error": "Node not found", "error_kind": "node_not_found"}
+            return {
+                "ok": False,
+                "error": "Node not found",
+                "error_kind": "node_not_found",
+                "requested_node_ids": ids,
+                "hint": "node_ids 使用 node.list/node.get 显示的节点编号；如果只记得标题或描述，先用 node.list(query=...) 找候选。",
+            }
         found_ids = [node.id for node in node_rows]
+        public_ids = [public_node_id_from_model(node) for node in node_rows]
         asset_rows = (await session.exec(
             select(Asset).where(
                 Asset.project_id == project_id,
@@ -660,9 +673,11 @@ async def delete_nodes(
     deleted_files, file_errors = _delete_files(files_to_delete) if delete_local_files else ([], [])
     return {
         "ok": True,
-        "id": found_ids[0] if len(found_ids) == 1 else None,
+        "id": public_ids[0] if len(public_ids) == 1 else None,
         "deleted_nodes": len(found_ids),
-        "deleted_node_ids": found_ids,
+        "deleted_node_ids": public_ids,
+        "_canvas_id": found_ids[0] if len(found_ids) == 1 else None,
+        "_canvas_deleted_node_ids": found_ids,
         "deleted_edges": len(edge_rows),
         "deleted_asset_records": len(asset_rows),
         "deleted_files": deleted_files,

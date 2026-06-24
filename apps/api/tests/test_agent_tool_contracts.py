@@ -580,7 +580,7 @@ def test_tool_error_normalizer_maps_common_id_errors_to_state_recovery() -> None
     )
 
     assert result["suggested_next"] == "read_state"
-    assert "真实 id" in result["hint"]
+    assert "节点编号" in result["hint"]
     assert result["model_feedback"]["evidence"]["node_id"] == "segment_01"
     assert result["model_feedback"]["evidence"]["available_node_ids"] == ["story_synopsis", "characters"]
 

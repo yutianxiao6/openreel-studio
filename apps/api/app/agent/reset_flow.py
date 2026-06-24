@@ -42,7 +42,7 @@ def reset_canvas_events(result: dict[str, Any]) -> list[dict[str, Any]]:
         return [{"type": "canvas_action", "action": "clear_all", "payload": {}}]
     return [
         {"type": "canvas_action", "action": "delete_node", "payload": {"id": node_id}}
-        for node_id in (result.get("deleted_node_ids") or [])
+        for node_id in (result.get("_canvas_deleted_node_ids") or result.get("deleted_node_ids") or [])
         if node_id
     ]
 

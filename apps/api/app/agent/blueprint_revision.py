@@ -794,8 +794,8 @@ async def create_pending_revision_from_node_patch(
             "error": "这个节点修改无法安全映射为确定性蓝图 patch，已记录为待模型修订请求，不能直接修改节点输出。",
             "hint": (
                 "剧情、分段、结尾或结构修改请调用 blueprint.revise。"
-                "如果只是写图片/视频生成提示词，请先 node.list 找到 type=image/video 的真实节点 id，"
-                "再用 node.update 更新该媒体节点的 prompt/input_json，不要改 text 剧情节点或 output_json。"
+                "如果只是写图片/视频生成提示词，请先 node.list 找到 type=image/video 的节点编号，"
+                "再用 node.update 更新该媒体节点的 prompt/input_json；text 剧情节点和 output_json 保持现有内容源。"
             ),
             "pending_revision": pending,
         }

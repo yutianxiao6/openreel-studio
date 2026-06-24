@@ -19,6 +19,7 @@ from app.db.session import session_scope
 from app.prompts import resolve_prompt
 from app.prompts._section import WorkerContext
 from app.services.llm_service import LLMService
+from app.services.node_public_ids import public_node_id_from_model
 
 
 _VALID_WORKFLOW_MODES = ("grid", "frames", "story_template")
@@ -1740,10 +1741,12 @@ async def reset_project(
             )
             candidates = (await session.exec(node_stmt)).all()
             target_ids: set[str] = set()
+            public_ids_by_internal: dict[str, str] = {}
             for n in candidates:
                 if n.output_json and n.output_json.strip() not in ("", "null", "{}"):
                     continue
                 target_ids.add(n.id)
+                public_ids_by_internal[n.id] = public_node_id_from_model(n)
 
             edge_stmt = select(WorkflowEdge).where(
                 (WorkflowEdge.source_node_id.in_(target_ids))
@@ -1754,11 +1757,13 @@ async def reset_project(
                 await session.delete(e)
 
             deleted_ids = await _delete_nodes_by_ids(session, target_ids)
+            public_deleted_ids = [public_ids_by_internal.get(node_id, node_id) for node_id in deleted_ids]
             await session.commit()
             return {
                 "ok": True,
                 "scope": "failed",
-                "deleted_node_ids": deleted_ids,
+                "deleted_node_ids": public_deleted_ids,
+                "_canvas_deleted_node_ids": deleted_ids,
                 "deleted_edges": len(edges),
                 "cleared_all": False,
                 "state_keys_cleared": [],
@@ -1825,6 +1830,7 @@ async def reset_project(
         node_stmt = select(WorkflowNode).where(WorkflowNode.project_id == project_id)
         nodes = (await session.exec(node_stmt)).all()
         deleted_ids = [n.id for n in nodes]
+        public_deleted_ids = [public_node_id_from_model(n) for n in nodes]
         for n in nodes:
             await session.delete(n)
 
@@ -1850,7 +1856,8 @@ async def reset_project(
         return {
             "ok": True,
             "scope": "full",
-            "deleted_node_ids": deleted_ids,
+            "deleted_node_ids": public_deleted_ids,
+            "_canvas_deleted_node_ids": deleted_ids,
             "deleted_edges": len(edges),
             "cleared_all": True,
             "state_keys_cleared": cleared_keys,

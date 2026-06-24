@@ -866,7 +866,7 @@ async def _reset_result_events(
                 "updates": {"title": result.get("title")},
             }
     elif ok:
-        for node_id in result.get("deleted_node_ids") or []:
+        for node_id in result.get("_canvas_deleted_node_ids") or result.get("deleted_node_ids") or []:
             if node_id:
                 yield {"type": "canvas_action", "action": "delete_node", "payload": {"id": node_id}}
     text = _format_reset_result(result)

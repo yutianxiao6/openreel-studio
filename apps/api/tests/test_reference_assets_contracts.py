@@ -8,8 +8,9 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import routes_assets
 from app.db import session as db_session
-from app.db.models import Asset, Project
+from app.db.models import Asset, Project, WorkflowNode
 from app.mcp_tools import asset_library_tools
+from app.mcp_tools import canvas_tools
 from app.mcp_tools import media_tools
 from app.mcp_tools import reference_tools
 from app.mcp_tools.file_tools import write_image_base64_cache
@@ -287,6 +288,57 @@ async def test_reference_manage_registers_generated_asset_record(monkeypatch, tm
 
 
 @pytest.mark.asyncio
+async def test_reference_manage_registers_generated_node_public_id(monkeypatch, tmp_path) -> None:
+    await _setup_reference_db(monkeypatch, tmp_path)
+    generated_dir = tmp_path / "storage" / "project-1" / "generated_images"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    generated_path = generated_dir / "node-gen.png"
+    generated_path.write_bytes(
+        base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+    )
+    internal_node_id = "8e6b1b8a-c4e1-4f8d-8e60-ec57c3300012"
+    async with db_session.session_scope() as session:
+        session.add(WorkflowNode(
+            id=internal_node_id,
+            project_id="project-1",
+            display_id=12,
+            type="image",
+            title="节点编号测试图",
+            status="completed",
+            position_x=0,
+            position_y=0,
+            input_json=json.dumps({"title": "节点编号测试图"}, ensure_ascii=False),
+            output_json=json.dumps({
+                "type": "fusion",
+                "stages": [{
+                    "name": "图片",
+                    "status": "completed",
+                    "url": "/api/media/project-1/node-gen.png",
+                    "local_url": "/api/media/project-1/node-gen.png",
+                }],
+            }, ensure_ascii=False),
+            model_config_json="{}",
+            prompt="",
+            version=1,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        ))
+        await session.commit()
+
+    result = await reference_tools.reference_manage(
+        project_id="project-1",
+        action="register",
+        node_id="12",
+        mention="@节点12",
+    )
+
+    assert result["ok"] is True
+    assert result["asset"]["mention"] == "@节点12"
+    assert result["asset"]["node_id"] == "12"
+    assert result["asset"]["rel_path"] == "generated_images/node-gen.png"
+
+
+@pytest.mark.asyncio
 async def test_reference_manage_registers_asset_library_file(monkeypatch, tmp_path) -> None:
     await _setup_reference_db(monkeypatch, tmp_path)
     library_dir = tmp_path / "asset-library"
@@ -350,6 +402,101 @@ async def test_asset_library_save_accepts_generated_asset_reference(monkeypatch,
     saved_path = Path(result["path"])
     assert saved_path.exists()
     assert saved_path.name == "桥头场景.png"
+
+
+@pytest.mark.asyncio
+async def test_asset_library_save_accepts_generated_node_public_id(monkeypatch, tmp_path) -> None:
+    await _setup_reference_db(monkeypatch, tmp_path)
+    generated_dir = tmp_path / "storage" / "project-1" / "generated_images"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    generated_path = generated_dir / "node-gen.png"
+    generated_path.write_bytes(
+        base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+    )
+    project_root = tmp_path / "project-library"
+    async with db_session.session_scope() as session:
+        project = await session.get(Project, "project-1")
+        project.state_json = json.dumps({
+            "metadata": {"title": "测试短剧"},
+            "asset_library": {"project_root": str(project_root)},
+        }, ensure_ascii=False)
+        session.add(WorkflowNode(
+            id="8e6b1b8a-c4e1-4f8d-8e60-ec57c3300012",
+            project_id="project-1",
+            display_id=12,
+            type="image",
+            title="节点编号测试图",
+            status="completed",
+            position_x=0,
+            position_y=0,
+            input_json=json.dumps({"title": "节点编号测试图"}, ensure_ascii=False),
+            output_json=json.dumps({
+                "type": "fusion",
+                "stages": [{
+                    "name": "图片",
+                    "status": "completed",
+                    "url": "/api/media/project-1/node-gen.png",
+                    "local_url": "/api/media/project-1/node-gen.png",
+                }],
+            }, ensure_ascii=False),
+            model_config_json="{}",
+            prompt="",
+            version=1,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        ))
+        session.add(project)
+        await session.commit()
+
+    result = await asset_library_tools.assets_save_to_project(
+        project_id="project-1",
+        episode=1,
+        kind="scene",
+        source="node:12",
+        name="节点编号场景",
+    )
+
+    assert result["ok"] is True
+    saved_path = Path(result["path"])
+    assert saved_path.exists()
+    assert saved_path.name == "节点编号场景.png"
+
+
+@pytest.mark.asyncio
+async def test_canvas_delete_accepts_public_node_ids(monkeypatch, tmp_path) -> None:
+    await _setup_reference_db(monkeypatch, tmp_path)
+    internal_node_id = "8e6b1b8a-c4e1-4f8d-8e60-ec57c3300012"
+    async with db_session.session_scope() as session:
+        session.add(WorkflowNode(
+            id=internal_node_id,
+            project_id="project-1",
+            display_id=12,
+            type="image",
+            title="待删除编号节点",
+            status="idle",
+            position_x=0,
+            position_y=0,
+            input_json=json.dumps({"title": "待删除编号节点"}, ensure_ascii=False),
+            output_json="{}",
+            model_config_json="{}",
+            prompt="",
+            version=1,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        ))
+        await session.commit()
+
+    result = await canvas_tools.delete_canvas(
+        project_id="project-1",
+        scope="selected",
+        node_ids=["12"],
+    )
+
+    assert result["ok"] is True
+    assert result["deleted_node_ids"] == ["12"]
+    assert result["_canvas_deleted_node_ids"] == [internal_node_id]
+    async with db_session.session_scope() as session:
+        assert await session.get(WorkflowNode, internal_node_id) is None
 
 
 @pytest.mark.asyncio

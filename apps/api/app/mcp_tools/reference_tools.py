@@ -21,6 +21,11 @@ from app.config import settings
 from app.db.models import Asset, Project
 from app.db.session import session_scope
 from app.mcp_tools.file_tools import _safe_path, read_image_base64_data_url
+from app.services.node_public_ids import (
+    internal_to_public_id_map,
+    public_node_id_from_dict,
+    resolve_internal_node_id,
+)
 
 
 REFERENCE_STATE_KEY = "reference_assets"
@@ -204,6 +209,19 @@ def _reference_input_value(asset: dict[str, Any]) -> str:
     if _text(asset.get("asset_id")):
         return f"asset:{asset.get('asset_id')}"
     return ""
+
+
+async def _resolve_workflow_node_id(project_id: str, node_id: str | None) -> str:
+    raw = _text(node_id)
+    if not raw:
+        return ""
+    async with session_scope() as session:
+        return await resolve_internal_node_id(session, project_id, raw)
+
+
+async def _node_public_id_map(project_id: str) -> dict[str, str]:
+    async with session_scope() as session:
+        return await internal_to_public_id_map(session, project_id)
 
 
 def _register_reference_asset(
@@ -426,24 +444,29 @@ async def _register_from_node_output(
     node_id: str,
     mention: str | None = None,
     roles: list[str] | None = None,
+    requested_node_id: str | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     from app.mcp_tools import canvas_tools
 
+    requested = _text(requested_node_id) or node_id
+    resolved_node_id = await _resolve_workflow_node_id(project_id, node_id)
+    if resolved_node_id:
+        node_id = resolved_node_id
     node = await canvas_tools.get_node(node_id)
     if not isinstance(node, dict) or node.get("error"):
         return None, {
             "ok": False,
             "error": "Node not found",
             "error_kind": "node_not_found",
-            "node_id": node_id,
-            "hint": "登记生成图为参考图时，node_id 必须是已完成图片节点的真实 id，不是标题、shot_id 或 segment_id。",
+            "node_id": requested,
+            "hint": "node_id 使用 node.list/node.get 显示的节点编号；后端会按当前项目自动解析。",
         }
     if node.get("status") != "completed":
         return None, {
             "ok": False,
             "error": "Node is not completed",
             "error_kind": "node_not_completed",
-            "node_id": node_id,
+            "node_id": public_node_id_from_dict(node),
             "status": node.get("status"),
         }
 
@@ -480,7 +503,7 @@ async def _register_from_node_output(
             "ok": False,
             "error": "Completed node has no readable image output",
             "error_kind": "node_image_output_missing",
-            "node_id": node_id,
+            "node_id": public_node_id_from_dict(node),
         }
     filename = Path(rel_path or source_path or url).name
     asset = _register_reference_asset(
@@ -514,6 +537,7 @@ async def _find_completed_image_nodes_by_query(
         "character",
         "scene",
         "segment_storyboard",
+        "image",
         "shot_first_frame",
         "shot_last_frame",
         "segment_story_template",
@@ -523,8 +547,9 @@ async def _find_completed_image_nodes_by_query(
             continue
         if node.get("type") not in image_types or node.get("status") != "completed":
             continue
+        public_node_id = public_node_id_from_dict(node)
         blob_parts = [
-            str(node.get("id") or ""),
+            public_node_id,
             str(node.get("title") or ""),
             str(node.get("type") or ""),
             str(node.get("prompt") or ""),
@@ -538,7 +563,7 @@ async def _find_completed_image_nodes_by_query(
                     blob_parts.append(str(value))
         if needle in "\n".join(blob_parts).lower():
             matches.append({
-                "node_id": node.get("id"),
+                "node_id": public_node_id,
                 "title": node.get("title"),
                 "type": node.get("type"),
                 "status": node.get("status"),
@@ -574,7 +599,12 @@ def _register_from_file_path(
     )
 
 
-def _asset_public(asset: dict[str, Any], *, include_analysis: bool = False) -> dict[str, Any]:
+def _asset_public(
+    asset: dict[str, Any],
+    *,
+    include_analysis: bool = False,
+    node_id_map: dict[str, str] | None = None,
+) -> dict[str, Any]:
     keys = [
         "ref_id", "mention", "label", "aliases", "source", "kind", "rel_path",
         "source_path", "url", "asset_id", "node_id", "filename", "mime_type",
@@ -582,6 +612,8 @@ def _asset_public(asset: dict[str, Any], *, include_analysis: bool = False) -> d
         "updated_at", "analysis_schema", "analysis_model", "analysis_error", "analysis_warning",
     ]
     public = {key: asset.get(key) for key in keys if asset.get(key) not in (None, "", [], {})}
+    if public.get("node_id") and node_id_map:
+        public["node_id"] = node_id_map.get(str(public["node_id"]), str(public["node_id"]))
     if include_analysis and isinstance(asset.get("analysis"), dict):
         public["analysis"] = asset["analysis"]
     elif isinstance(asset.get("analysis"), dict):
@@ -966,6 +998,10 @@ async def reference_manage(
     if state is None:
         return {"ok": False, "error": error or "Project not found"}
     store = _reference_store(state)
+    node_id_map = await _node_public_id_map(project_id)
+    requested_node_id = _text(node_id)
+    if requested_node_id:
+        node_id = await _resolve_workflow_node_id(project_id, requested_node_id)
 
     if action == "ingest_attachments":
         registered = _register_attachments(
@@ -978,7 +1014,10 @@ async def reference_manage(
         return {
             "ok": True,
             "action": action,
-            "assets": [_asset_public(asset, include_analysis=include_analysis) for asset in registered],
+            "assets": [
+                _asset_public(asset, include_analysis=include_analysis, node_id_map=node_id_map)
+                for asset in registered
+            ],
             "total": len(_as_list(store.get("assets"))),
         }
 
@@ -995,7 +1034,7 @@ async def reference_manage(
         if asset_error:
             return asset_error
         await _save_state(project_id, state)
-        return {"ok": True, "action": action, "asset": _asset_public(asset or {}, include_analysis=True)}
+        return {"ok": True, "action": action, "asset": _asset_public(asset or {}, include_analysis=True, node_id_map=node_id_map)}
 
     if action in {"register_file", "register_library_asset"}:
         path = _text(library_path or source_path or rel_path)
@@ -1013,7 +1052,7 @@ async def reference_manage(
             source="asset_library" if action == "register_library_asset" else "file",
         )
         await _save_state(project_id, state)
-        return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True)}
+        return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True, node_id_map=node_id_map)}
 
     if action == "register":
         if asset_id:
@@ -1027,7 +1066,7 @@ async def reference_manage(
             if asset_error:
                 return asset_error
             await _save_state(project_id, state)
-            return {"ok": True, "action": action, "asset": _asset_public(asset or {}, include_analysis=True)}
+            return {"ok": True, "action": action, "asset": _asset_public(asset or {}, include_analysis=True, node_id_map=node_id_map)}
         if node_id:
             asset, asset_error = await _register_from_node_output(
                 project_id,
@@ -1035,11 +1074,12 @@ async def reference_manage(
                 node_id=node_id,
                 mention=mention,
                 roles=roles or ([role] if role else None),
+                requested_node_id=requested_node_id,
             )
             if asset_error:
                 return asset_error
             await _save_state(project_id, state)
-            return {"ok": True, "action": action, "asset": _asset_public(asset or {}, include_analysis=True)}
+            return {"ok": True, "action": action, "asset": _asset_public(asset or {}, include_analysis=True, node_id_map=node_id_map)}
         if query:
             matches = await _find_completed_image_nodes_by_query(project_id, query)
             if len(matches) == 1 and matches[0].get("node_id"):
@@ -1049,6 +1089,7 @@ async def reference_manage(
                     node_id=str(matches[0]["node_id"]),
                     mention=mention,
                     roles=roles or ([role] if role else None),
+                    requested_node_id=str(matches[0]["node_id"]),
                 )
                 if asset_error:
                     return asset_error
@@ -1058,7 +1099,7 @@ async def reference_manage(
                     "action": action,
                     "matched_by_query": query,
                     "matched_node": matches[0],
-                    "asset": _asset_public(asset or {}, include_analysis=True),
+                    "asset": _asset_public(asset or {}, include_analysis=True, node_id_map=node_id_map),
                 }
             return {
                 "ok": False,
@@ -1066,10 +1107,21 @@ async def reference_manage(
                 "error_kind": "ambiguous_node_query" if matches else "node_not_found",
                 "query": query,
                 "candidates": matches,
-                "hint": "请先用 node.list(query=...) 或从 candidates 选择真实 node_id，再 reference.manage(action='register', node_id=..., mention=...)。",
+                "hint": "请先用 node.list(query=...) 或从 candidates 选择节点编号，再 reference.manage(action='register', node_id=..., mention=...)。",
             }
         if source_path or library_path:
             path = _text(source_path or library_path)
+            rel = _rel_path_from_media_url(project_id, path)
+            if rel:
+                asset = _register_reference_asset(
+                    store,
+                    rel_path=rel,
+                    mention=mention,
+                    filename=Path(rel).name,
+                    roles=roles or ([role] if role else None),
+                )
+                await _save_state(project_id, state)
+                return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True, node_id_map=node_id_map)}
             target = Path(path).expanduser().resolve()
             if not target.exists() or not target.is_file():
                 return {"ok": False, "error": "Reference image file not found", "error_kind": "file_not_found", "path": path}
@@ -1081,7 +1133,7 @@ async def reference_manage(
                 roles=roles or ([role] if role else None),
             )
             await _save_state(project_id, state)
-            return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True)}
+            return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True, node_id_map=node_id_map)}
         if not (rel_path or url):
             return {
                 "ok": False,
@@ -1096,14 +1148,14 @@ async def reference_manage(
             roles=roles or ([role] if role else None),
         )
         await _save_state(project_id, state)
-        return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True)}
+        return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True, node_id_map=node_id_map)}
 
     if action == "list":
         return {
             "ok": True,
             "action": action,
             "assets": [
-                _asset_public(asset, include_analysis=include_analysis)
+                _asset_public(asset, include_analysis=include_analysis, node_id_map=node_id_map)
                 for asset in _as_list(store.get("assets"))
                 if isinstance(asset, dict)
             ],
@@ -1147,7 +1199,7 @@ async def reference_manage(
         }
 
     if action in {"resolve", "get"}:
-        return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=include_analysis or action == "get")}
+        return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=include_analysis or action == "get", node_id_map=node_id_map)}
 
     if action == "alias":
         if not alias:
@@ -1158,11 +1210,11 @@ async def reference_manage(
         asset["aliases"] = list(dict.fromkeys([*_as_list(asset.get("aliases")), normalized, normalized.lstrip("@")]))
         asset["updated_at"] = _now_iso()
         await _save_state(project_id, state)
-        return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True)}
+        return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True, node_id_map=node_id_map)}
 
     if action == "analyze":
         if asset.get("status") in {"analyzed", "analysis_unavailable"} and asset.get("analysis") and not force:
-            return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True), "cached": True}
+            return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True, node_id_map=node_id_map), "cached": True}
         try:
             analysis_result = await _analyze_image_with_llm(project_id, asset, user_context=user_context)
             asset["analysis"] = analysis_result["analysis"]
@@ -1186,7 +1238,7 @@ async def reference_manage(
         result: dict[str, Any] = {
             "ok": True,
             "action": action,
-            "asset": _asset_public(asset, include_analysis=True),
+            "asset": _asset_public(asset, include_analysis=True, node_id_map=node_id_map),
             "analysis_available": asset.get("status") == "analyzed",
         }
         if usage:
@@ -1211,7 +1263,7 @@ async def reference_manage(
         return {
             "ok": True,
             "action": action,
-            "asset": _asset_public(asset, include_analysis=True),
+            "asset": _asset_public(asset, include_analysis=True, node_id_map=node_id_map),
             "binding": binding,
             "blueprint_update": blueprint_update,
         }
@@ -1224,7 +1276,7 @@ async def reference_manage(
                 "error_kind": "explicit_memory_consent_required",
             }
         memory = await _save_asset_to_user_memory(project_id, asset)
-        return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True), "memory": memory}
+        return {"ok": True, "action": action, "asset": _asset_public(asset, include_analysis=True, node_id_map=node_id_map), "memory": memory}
 
     return {"ok": False, "error": f"Unsupported reference action: {action}", "error_kind": "unsupported_action"}
 

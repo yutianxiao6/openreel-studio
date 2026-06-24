@@ -207,7 +207,7 @@ def _how_to_fix(result: dict[str, Any], *, outcome: str, next_action: str | None
     if next_action == "revise_then_review":
         return "先按返回的 findings 或 required_action 修订，再重新检查。"
     if next_action == "read_state":
-        return "先读取真实项目状态和可用 id，再用真实 id 重试。"
+        return "先读取项目状态和可用节点编号，再用节点编号重试。"
     if next_action == "wait_for_user" or outcome in {"awaiting_user", "requires_confirmation"}:
         return "停止继续工具调用，等待用户提交卡片、补充信息或确认。"
     if outcome == "recoverable_error":
