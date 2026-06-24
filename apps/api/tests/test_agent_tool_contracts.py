@@ -662,7 +662,6 @@ def test_agent_visible_tool_descriptions_do_not_advertise_retired_shortcuts() ->
         "project.update_state",
         "session.",
         "task.get",
-        "tool.list",
     }
     exposed_descriptions = "\n".join(
         spec.description or ""
@@ -841,7 +840,8 @@ def test_prompt_cache_sensitive_snapshot_for_blank_turn() -> None:
         "node.update",
         "project.get_state",
         "project.reset",
-        "skill.video_production",
+        "skill.get",
+        "skill.search",
         "task.complete",
         "task.create",
         "task.list",
@@ -882,7 +882,6 @@ def test_agent_prompt_sections_do_not_advertise_retired_tool_names() -> None:
         "project.update_state",
         "session.",
         "task.get",
-        "tool.list",
     }
 
     for marker in retired_markers:
@@ -902,7 +901,6 @@ def test_generation_prompt_bodies_do_not_advertise_retired_tool_names() -> None:
         "media.generate_",
         "node.draw_",
         "session.",
-        "tool.list",
     }
 
     for marker in retired_markers:

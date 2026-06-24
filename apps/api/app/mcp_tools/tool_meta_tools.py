@@ -25,7 +25,7 @@ from app.mcp_tools.registry import _schema_from_handler, registry, ToolSpec
 # Tier 1 工具不进 list,因为它们已经在主工具表里完整可见。
 # 低频工具通过 deferred 暴露；被节点协议吸收的旧辅助工具标记 hidden。
 _CATEGORIES: dict[str, set[str]] = {
-    "guide": {"skill.project_mentor", "skill.story_template_method"},
+    "guide": {"skill.project_mentor", "skill.story_template_method", "skill.video_production"},
     "project": {"project.create"},
     "delete": set(),
     "query": {
@@ -283,35 +283,37 @@ def _tool_search_item(spec: ToolSpec, *, category: str, detail: bool = False) ->
     return item
 
 
-async def tool_list(category: str | None = None) -> dict[str, Any]:
-    """列出 Tier 2 按需加载的工具(name + 一句话描述)。
-
-    Args:
-      category: 可选,按使用场景过滤。常用值:
-        guide / project / delete / query / assets / system / template / memory / task / collab / canvas / attach / control
-        不传 = 返回 Tier 2 全集
-
-    Returns: {category, tools: [{name, description}], total}
-    """
-    out_tools: list[dict[str, str]] = []
+def _deferred_specs(category: str | None = None) -> list[ToolSpec]:
+    specs: list[ToolSpec] = []
     for spec in registry._tools.values():
         if _tier_of(spec) != 2:
             continue
-        if category is not None:
-            if _category_of(spec.name) != category:
-                continue
-        first_line = (spec.description or spec.name).split("\n")[0]
-        out_tools.append({
-            "name": spec.name,
-            "description": first_line[:200],
-            "category": _category_of(spec.name) or "other",
-        })
+        cat = _category_of(spec.name) or "other"
+        if category and cat != category:
+            continue
+        specs.append(spec)
+    return sorted(specs, key=lambda item: item.name)
 
-    out_tools.sort(key=lambda t: t["name"])
+
+def _catalog_from_specs(specs: list[ToolSpec]) -> dict[str, Any]:
+    grouped: dict[str, list[str]] = {}
+    for spec in specs:
+        cat = _category_of(spec.name) or "other"
+        grouped.setdefault(cat, []).append(spec.name)
+    categories = [
+        {
+            "category": cat,
+            "count": len(sorted(names)),
+            "tool_names": sorted(names),
+        }
+        for cat, names in sorted(grouped.items())
+    ]
+    tool_names = [name for group in categories for name in group["tool_names"]]
     return {
-        "category": category,
-        "total": len(out_tools),
-        "tools": out_tools,
+        "policy": "Only visible deferred tools are listed; core, hidden, and unregistered tools are excluded.",
+        "total": len(tool_names),
+        "categories": categories,
+        "tool_names": tool_names,
     }
 
 
@@ -372,6 +374,7 @@ async def tool_search(
     """Search deferred Tier 2 tools by name, category, hints, tags, or description.
 
     Query modes:
+      - empty query                       list the visible deferred catalog
       - select:project.create,system.models exact deferred tool lookup
       - discover:视频制作 skill              richer result with schema summary/example
       - normal keywords                    ranked lightweight result
@@ -382,7 +385,9 @@ async def tool_search(
         return invalid
     raw_query = (query or "").strip()
     q = raw_query.lower()
-    limit = max(1, min(int(limit or 8), 25))
+    raw_limit = int(limit if limit is not None else 8)
+    list_all = raw_limit <= 0
+    result_limit = 1000 if list_all else max(1, min(raw_limit, 25))
 
     if q.startswith("select:"):
         names = _split_names(raw_query.split(":", 1)[1])
@@ -405,7 +410,7 @@ async def tool_search(
             "pattern": pattern,
             "mode": "select",
             "total": len(tools),
-            "tools": tools[:limit],
+            "tools": tools[:result_limit],
             "not_found": not_found,
         }
 
@@ -417,12 +422,9 @@ async def tool_search(
 
     matches: list[tuple[int, dict[str, Any]]] = []
 
-    for spec in registry._tools.values():
-        if _tier_of(spec) != 2:
-            continue
+    deferred_specs = _deferred_specs(category)
+    for spec in deferred_specs:
         cat = _category_of(spec.name) or "other"
-        if category and cat != category:
-            continue
         haystack = _tool_search_text(spec, cat)
         search_match = match_text(
             haystack,
@@ -472,15 +474,22 @@ async def tool_search(
         matches.append((score, item))
 
     matches.sort(key=lambda item: (-item[0], item[1]["name"]))
-    return {
+    mode = "discover" if detail else "keyword"
+    if not q and not (regex or pattern):
+        mode = "catalog"
+    result = {
         "query": query,
         "category": category,
         "regex": regex,
         "pattern": pattern,
-        "mode": "discover" if detail else "keyword",
+        "mode": mode,
         "total": len(matches),
-        "tools": [item for _, item in matches[:limit]],
+        "returned": min(len(matches), result_limit),
+        "tools": [item for _, item in matches[:result_limit]],
     }
+    if mode == "catalog":
+        result["catalog"] = _catalog_from_specs(deferred_specs)
+    return result
 
 
 def _normalize_input(input_data: dict[str, Any] | str | None) -> dict[str, Any]:

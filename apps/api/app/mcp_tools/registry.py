@@ -148,10 +148,6 @@ UNREGISTERED_PLAN_CONTROL_TOOL_NAMES: tuple[str, ...] = (
     "plan.clear",
 )
 
-UNREGISTERED_TOOL_LIST_TOOL_NAMES: tuple[str, ...] = (
-    "tool.list",
-)
-
 UNREGISTERED_AGENT_LOW_LEVEL_TOOL_NAMES: tuple[str, ...] = (
     "agent.subagent_run",
     "agent.subagent_fan_out",
@@ -719,7 +715,6 @@ class ToolRegistry:
         # task.get/list_pending are folded into task.list and unregistered.
         # session focus tools have been replaced by blueprint/task/runtime
         # context and unregistered.
-        # tool.list is unregistered; full listing is a REST/debug API.
         # Low-level agent wrappers are unregistered. Keep high-level
         # deferred collaboration wrappers and direct Python helpers.
         # 配置/skill/prompt/mcp/panel 全藏；用户可编辑知识只通过 skills 暴露。
@@ -964,7 +959,7 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "task.update": "更新任务状态、负责人、依赖或执行元数据",
     "tool.describe": "读取 deferred 工具的完整 schema 和使用元数据",
     "tool.execute": "执行已经 search/describe 过的 deferred 工具",
-    "tool.search": "按名称、分类、标签和描述搜索 deferred 工具",
+    "tool.search": "列出 visible deferred 工具目录，或按名称、分类、标签和描述搜索 deferred 工具",
     "vision.view_image": "读取项目图片节点或项目存储图片，并把一张或多张图片像素附加给主模型上下文",
 }
 
@@ -988,7 +983,7 @@ _STANDARD_CANNOT_BY_NAME: dict[str, str] = {
     "task.update": "不能篡改任务图结构或绕过用户批准的执行计划",
     "tool.describe": "不能描述隐藏、注销或不存在的工具",
     "tool.execute": "不能执行核心、隐藏或已注销工具，不能绕过 permission policy",
-    "tool.search": "不能返回核心、隐藏或已注销工具全集来替代业务判断",
+    "tool.search": "不能返回核心、隐藏或已注销工具；目录只包含 visible deferred 工具",
     "vision.view_image": "不能分析图片、生成摘要或替模型做判断；只把图片像素附加给主模型",
 }
 
@@ -1032,7 +1027,7 @@ _STANDARD_USAGE_BY_NAME: dict[str, str] = {
     "task.update": "任务开始、阻塞、失败或元数据变化时调用；同项目最多一个 in_progress。",
     "tool.describe": "对已发现的 deferred 工具读取完整 schema 和使用元数据。",
     "tool.execute": "core 工具直接调用；deferred 先 search/describe。",
-    "tool.search": "按名称、能力或 category 搜索低频 deferred 工具。",
+    "tool.search": "query='' 列出 visible deferred 目录；category 可缩小目录；知道名字后用 select:name 精确选择。",
     "vision.view_image": "看已有图片时先定位 node_id；node_ids/sources 可批量附加；工具不做摘要。",
     "project.reset": (
         "scope='failed' 清失败节点；scope='full' 带 reason 返回确认卡，确认后执行。"
@@ -1059,7 +1054,7 @@ _STANDARD_LIMIT_BY_NAME: dict[str, str] = {
     "task.update": "只更新任务状态和元数据",
     "tool.describe": "只描述 visible deferred 工具",
     "tool.execute": "只执行 deferred 工具并受 permission policy 约束",
-    "tool.search": "只搜索 deferred 工具元数据",
+    "tool.search": "只列出或搜索 visible deferred 工具元数据",
     "vision.view_image": "只读取并附加图片像素，不创建摘要、不修改项目",
 }
 
@@ -1283,14 +1278,15 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
       ))
     R("tool.search", tool_meta_tools.tool_search, tags=["tool", "meta", "read"],
       description=(
-        "搜索 deferred/Tier2 工具，用于按需发现指南、模板、系统和低频能力；支持关键词和 regex。"
+        "列出或搜索 deferred/Tier2 工具目录，用于按需发现指南、系统和低频能力；"
+        "query='' 列目录，select:name 精确选择，支持关键词和 regex。"
         "只返回可见按需工具，不替模型做业务判断。"
       ),
       schema={
           "type": "object",
           "properties": {
-              "query": {"type": "string", "description": "关键词，或 select:name,name / discover:能力描述"},
-              "category": {"type": "string", "description": "可选分类，如 guide/delete/template/system"},
+              "query": {"type": "string", "description": "空字符串列 visible deferred 目录；也支持关键词、select:name,name、discover:能力描述"},
+              "category": {"type": "string", "description": "可选分类，如 guide/project/query/assets/system/memory/task/collab/attach/control/file"},
               "regex": {
                   "oneOf": [
                       {"type": "string"},
@@ -1306,7 +1302,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
                   "description": "regex 的别名；用于传一个或多个正则。",
               },
               "case_sensitive": {"type": "boolean", "description": "regex/query 是否大小写敏感，默认 false"},
-              "limit": {"type": "integer"},
+              "limit": {"type": "integer", "description": "默认 8；传 0 返回完整目录或完整匹配结果"},
           },
       })
     R("tool.execute", tool_meta_tools.tool_execute, tags=["tool", "meta", "execute"],

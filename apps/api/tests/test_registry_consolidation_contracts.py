@@ -26,6 +26,44 @@ async def test_tool_search_supports_exact_select_for_deferred_tools() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_search_empty_query_lists_visible_deferred_catalog() -> None:
+    result = await tool_meta_tools.tool_search(query="", limit=0)
+    names = {item["name"] for item in result["tools"]}
+    catalog_names = set(result["catalog"]["tool_names"])
+
+    assert result["mode"] == "catalog"
+    assert result["returned"] == result["total"]
+    assert names == catalog_names
+    assert "assets.save_to_project" in names
+    assert "skill.video_production" in names
+    assert "node.create" not in names
+    assert "assets.set_library_path" not in names
+    for name in names:
+        spec = registry.get(name)
+        assert spec is not None, name
+        assert tool_meta_tools._tier_of(spec) == 2, name
+
+
+@pytest.mark.asyncio
+async def test_tool_search_empty_category_lists_deferred_category_catalog() -> None:
+    result = await tool_meta_tools.tool_search(query="", category="assets", limit=0)
+    names = {item["name"] for item in result["tools"]}
+    categories = {group["category"] for group in result["catalog"]["categories"]}
+
+    assert result["mode"] == "catalog"
+    assert categories == {"assets"}
+    assert {
+        "assets.get_library_path",
+        "assets.save_to_project",
+        "assets.save_to_shared",
+        "assets.list_project",
+        "assets.list_shared",
+        "assets.read_asset",
+    } <= names
+    assert "assets.set_library_path" not in names
+
+
+@pytest.mark.asyncio
 async def test_tool_search_supports_regex_patterns() -> None:
     result = await tool_meta_tools.tool_search(regex=r"workspace_(read|write)", category="file", limit=8)
     names = {item["name"] for item in result["tools"]}
@@ -513,7 +551,7 @@ async def test_registered_internal_raw_runner_set_is_empty() -> None:
 @pytest.mark.asyncio
 async def test_drama_raw_runners_are_unregistered_after_registry_consolidation() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_DRAMA_RAW_RUNNER_TOOL_NAMES) & visible
@@ -541,7 +579,7 @@ async def test_drama_raw_runners_are_unregistered_after_registry_consolidation()
 @pytest.mark.asyncio
 async def test_media_raw_runners_are_unregistered_after_service_extraction() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_MEDIA_RUNNER_TOOL_NAMES) & visible
@@ -564,7 +602,7 @@ async def test_media_raw_runners_are_unregistered_after_service_extraction() -> 
 @pytest.mark.asyncio
 async def test_media_status_wrapper_is_unregistered_after_node_state_extraction() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_MEDIA_STATUS_TOOL_NAMES) & visible
@@ -592,7 +630,7 @@ async def test_media_status_wrapper_is_unregistered_after_node_state_extraction(
 @pytest.mark.asyncio
 async def test_model_config_wrappers_are_unregistered_and_system_models_remains() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert "system.models" not in visible
@@ -619,7 +657,7 @@ async def test_model_config_wrappers_are_unregistered_and_system_models_remains(
 @pytest.mark.asyncio
 async def test_mcp_meta_tools_are_unregistered_and_rest_status_remains() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_MCP_META_TOOL_NAMES) & visible
@@ -647,7 +685,7 @@ async def test_mcp_meta_tools_are_unregistered_and_rest_status_remains() -> None
 @pytest.mark.asyncio
 async def test_config_write_tools_are_unregistered_and_rest_control_plane_remains() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_CONFIG_WRITE_TOOL_NAMES) & visible
@@ -676,7 +714,7 @@ async def test_config_write_tools_are_unregistered_and_rest_control_plane_remain
 @pytest.mark.asyncio
 async def test_drama_segment_wrappers_are_unregistered_after_service_extraction() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_DRAMA_SEGMENT_TOOL_NAMES) & visible
@@ -699,7 +737,7 @@ async def test_drama_segment_wrappers_are_unregistered_after_service_extraction(
 @pytest.mark.asyncio
 async def test_canvas_crud_wrappers_are_unregistered_after_node_convergence() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_CANVAS_CRUD_TOOL_NAMES) & visible
@@ -722,7 +760,7 @@ async def test_canvas_crud_wrappers_are_unregistered_after_node_convergence() ->
 @pytest.mark.asyncio
 async def test_blueprint_write_wrappers_are_unregistered_after_state_machine_internalization() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_BLUEPRINT_WRITE_TOOL_NAMES) & visible
@@ -745,7 +783,7 @@ async def test_blueprint_write_wrappers_are_unregistered_after_state_machine_int
 @pytest.mark.asyncio
 async def test_deprecated_alias_tools_are_unregistered() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_DEPRECATED_ALIAS_TOOL_NAMES) & visible
@@ -768,7 +806,7 @@ async def test_deprecated_alias_tools_are_unregistered() -> None:
 @pytest.mark.asyncio
 async def test_task_helper_tools_are_unregistered_after_task_list_consolidation() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_TASK_HELPER_TOOL_NAMES) & visible
@@ -791,7 +829,7 @@ async def test_task_helper_tools_are_unregistered_after_task_list_consolidation(
 @pytest.mark.asyncio
 async def test_task_write_tools_are_unregistered_after_plan_materialization() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_TASK_WRITE_TOOL_NAMES) & visible
@@ -814,7 +852,7 @@ async def test_task_write_tools_are_unregistered_after_plan_materialization() ->
 @pytest.mark.asyncio
 async def test_project_low_level_tools_are_unregistered_after_rest_and_blueprint_consolidation() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_PROJECT_LOW_LEVEL_TOOL_NAMES) & visible
@@ -837,7 +875,7 @@ async def test_project_low_level_tools_are_unregistered_after_rest_and_blueprint
 @pytest.mark.asyncio
 async def test_memory_low_level_tools_are_unregistered_after_orchestrator_internalization() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_MEMORY_LOW_LEVEL_TOOL_NAMES) & visible
@@ -860,7 +898,7 @@ async def test_memory_low_level_tools_are_unregistered_after_orchestrator_intern
 @pytest.mark.asyncio
 async def test_file_write_tools_are_unregistered_after_readonly_file_boundary() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_FILE_WRITE_TOOL_NAMES) & visible
@@ -917,7 +955,7 @@ async def test_guide_and_file_tools_have_distinct_discovery_boundaries() -> None
 @pytest.mark.asyncio
 async def test_domain_business_skills_are_unregistered_but_project_mentor_remains() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert registry.get("skill.project_mentor") is not None
@@ -942,7 +980,7 @@ async def test_domain_business_skills_are_unregistered_but_project_mentor_remain
 @pytest.mark.asyncio
 async def test_plan_control_tools_are_unregistered_after_deterministic_handlers() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_PLAN_CONTROL_TOOL_NAMES) & visible
@@ -963,32 +1001,9 @@ async def test_plan_control_tools_are_unregistered_after_deterministic_handlers(
         assert result["error_kind"] == "unknown_deferred_tool"
 
 @pytest.mark.asyncio
-async def test_tool_list_tool_is_unregistered_after_rest_debug_list_consolidation() -> None:
-    visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
-    listed_names = {item["name"] for item in listed["tools"]}
-
-    assert not set(UNREGISTERED_TOOL_LIST_TOOL_NAMES) & visible
-    assert not set(UNREGISTERED_TOOL_LIST_TOOL_NAMES) & listed_names
-    for name in UNREGISTERED_TOOL_LIST_TOOL_NAMES:
-        assert registry.get(name) is None, name
-
-    described = await tool_meta_tools.tool_describe(list(UNREGISTERED_TOOL_LIST_TOOL_NAMES))
-    assert described["tools"] == []
-    assert set(described["not_found"]) == set(UNREGISTERED_TOOL_LIST_TOOL_NAMES)
-
-    for name in UNREGISTERED_TOOL_LIST_TOOL_NAMES:
-        result = await tool_meta_tools.tool_execute(
-            project_id="test",
-            name=name,
-            input={},
-        )
-        assert result["error_kind"] == "unknown_deferred_tool"
-
-@pytest.mark.asyncio
 async def test_agent_low_level_tools_are_unregistered_but_high_level_collab_remains() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_AGENT_LOW_LEVEL_TOOL_NAMES) & visible
@@ -1029,7 +1044,7 @@ async def test_agent_low_level_tools_are_unregistered_but_high_level_collab_rema
 @pytest.mark.asyncio
 async def test_team_protocol_tools_are_unregistered_after_collab_consolidation() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_TEAM_TOOL_NAMES) & visible
@@ -1057,7 +1072,7 @@ async def test_team_protocol_tools_are_unregistered_after_collab_consolidation()
 @pytest.mark.asyncio
 async def test_legacy_drama_delete_wrappers_are_unregistered_and_canvas_delete_remains() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert "canvas.delete" in visible
@@ -1089,7 +1104,7 @@ async def test_legacy_drama_delete_wrappers_are_unregistered_and_canvas_delete_r
 @pytest.mark.asyncio
 async def test_node_helper_tools_are_unregistered_after_node_protocol_consolidation() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_NODE_HELPER_TOOL_NAMES) & visible
@@ -1112,7 +1127,7 @@ async def test_node_helper_tools_are_unregistered_after_node_protocol_consolidat
 @pytest.mark.asyncio
 async def test_session_focus_tools_are_unregistered_after_runtime_context_consolidation() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_SESSION_TOOL_NAMES) & visible
@@ -1135,7 +1150,7 @@ async def test_session_focus_tools_are_unregistered_after_runtime_context_consol
 @pytest.mark.asyncio
 async def test_panel_layout_tools_are_unregistered_after_rest_api_migration() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_PANEL_TOOL_NAMES) & visible
@@ -1210,7 +1225,7 @@ def test_panel_layout_keeps_episode_scene_assets_with_preview() -> None:
 @pytest.mark.asyncio
 async def test_scene_shot_asset_write_tools_are_unregistered_after_node_consolidation() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_SCENE_SHOT_ASSET_WRITE_TOOL_NAMES) & visible
@@ -1233,7 +1248,7 @@ async def test_scene_shot_asset_write_tools_are_unregistered_after_node_consolid
 @pytest.mark.asyncio
 async def test_scene_shot_asset_read_tools_are_hidden_after_node_and_assets_consolidation() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(AGENT_HIDDEN_SCENE_SHOT_ASSET_READ_TOOL_NAMES) & visible
@@ -1252,7 +1267,7 @@ async def test_scene_shot_asset_read_tools_are_hidden_after_node_and_assets_cons
 @pytest.mark.asyncio
 async def test_asset_library_path_config_is_unregistered_but_library_tools_are_deferred() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_ASSET_WRITE_TOOL_NAMES) & visible
@@ -1292,7 +1307,7 @@ async def test_asset_library_path_config_is_unregistered_but_library_tools_are_d
 @pytest.mark.asyncio
 async def test_media_provider_write_tools_are_unregistered_but_provider_test_remains() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_MEDIA_PROVIDER_WRITE_TOOL_NAMES) & visible
@@ -1322,7 +1337,7 @@ async def test_media_provider_write_tools_are_unregistered_but_provider_test_rem
 @pytest.mark.asyncio
 async def test_prompt_management_tools_are_unregistered_after_prompt_contract_consolidation() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_PROMPT_TOOL_NAMES) & visible
@@ -1345,7 +1360,7 @@ async def test_prompt_management_tools_are_unregistered_after_prompt_contract_co
 @pytest.mark.asyncio
 async def test_generic_skill_management_tools_are_unregistered_but_concrete_skills_remain() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_list()
+    listed = await tool_meta_tools.tool_search(query="", limit=0)
     listed_names = {item["name"] for item in listed["tools"]}
 
     assert not set(UNREGISTERED_GENERIC_SKILL_TOOL_NAMES) & visible
