@@ -287,7 +287,7 @@ async def test_asset_library_preview_route_allows_default_project_root_assets(mo
     await _setup_asset_db(monkeypatch, tmp_path)
     library_dir = tmp_path / "assets" / "shared" / "scenes" / "city"
     library_dir.mkdir(parents=True, exist_ok=True)
-    library_path = library_dir / "street.png"
+    library_path = library_dir / "海的女儿.png"
     library_path.write_bytes(
         base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
     )
@@ -301,6 +301,9 @@ async def test_asset_library_preview_route_allows_default_project_root_assets(mo
             db=session,
         )
         assert response.media_type == "image/png"
+        content_disposition = response.headers["content-disposition"]
+        assert "filename=\"asset.png\"" in content_disposition
+        assert "filename*=UTF-8''%E6%B5%B7%E7%9A%84%E5%A5%B3%E5%84%BF.png" in content_disposition
         with pytest.raises(HTTPException) as exc_info:
             await routes_assets.preview_asset_library_file(
                 project_id="project-1",

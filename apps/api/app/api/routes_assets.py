@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import mimetypes
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -18,8 +19,11 @@ router = APIRouter()
 
 
 def _inline_content_disposition(filename: str) -> str:
-    safe_name = filename.replace("\\", "_").replace('"', "_")
-    return f'inline; filename="{safe_name}"'
+    cleaned = filename.replace("\\", "_").replace("/", "_").replace('"', "_")
+    fallback = cleaned.encode("ascii", "ignore").decode("ascii").strip()
+    if not fallback or fallback.startswith(".") or not Path(fallback).stem:
+        fallback = f"asset{Path(filename).suffix}"
+    return f"inline; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename)}"
 
 
 @router.get("/{project_id}")
