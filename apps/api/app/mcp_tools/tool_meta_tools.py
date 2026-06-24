@@ -30,9 +30,7 @@ _CATEGORIES: dict[str, set[str]] = {
     "delete": set(),
     "query": {
         "project.list",
-        "media.describe_image",
         "events.query", "events.tail",
-        "reference.manage",
     },
     "assets": {
         "assets.get_library_path",
@@ -41,17 +39,16 @@ _CATEGORIES: dict[str, set[str]] = {
         "assets.list_project",
         "assets.list_shared",
         "assets.read_asset",
-        "reference.manage",
     },
     "system": {"system.status", "system.models", "feature.list", "feature.is_enabled"},
-    "memory": {"memory.save_fact", "memory.save_user_fact", "memory.compact_context", "memory.recall", "reference.manage"},
+    "memory": {"memory.save_fact", "memory.save_user_fact", "memory.compact_context", "memory.recall"},
     "task": {"task.create", "task.delete"},
     "collab": {
         "agent.review",
         "agent.map_reduce", "agent.pipeline",
         "agent.hierarchical",
     },
-    "attach": {"file.extract_text_from_upload", "drama.parse_uploaded_script", "media.describe_image", "reference.manage"},
+    "attach": {"file.extract_text_from_upload", "drama.parse_uploaded_script"},
     "control": {"media.cancel_image_generation"},
     "file": {
         "file.list_dir",
@@ -123,7 +120,6 @@ _STATIC_SEARCH_HINTS: dict[str, str] = {
         "review_skill custom_checklist skills/review 检查 审查 提示词 图片一致性 分镜连续性 "
         "视频提示词 分镜一致 影视设计 爆点 钩子 自定义检查 skill"
     ),
-    "reference.manage": "reference image @图 @图片 style visual asset analyze visual analysis alias bind blueprint memory asset library register asset_id source_path 参考图 风格图 视觉分析 图片识别 别名 蓝图绑定 资产库 长期风格记忆",
     "assets.get_library_path": "asset library path configured project shared assets 资产库路径 项目素材库 共享素材库",
     "assets.save_to_project": "save generated node output to project asset library 保存到资产库 保存到项目资产库 加入资产库 节点图片 视频 剧本",
     "assets.save_to_shared": "save reusable character scene to shared asset library 保存到资产库 保存到共享资产库 公用素材库 人物 场景",

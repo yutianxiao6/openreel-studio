@@ -7,13 +7,9 @@ logic again.
 from __future__ import annotations
 
 import json
-import re
-from pathlib import Path
-from urllib.parse import urlsplit
 
 from app.db.models import Asset
 from app.db.session import session_scope
-from app.mcp_tools.file_tools import _safe_path
 from app.services import media_generation
 
 
@@ -150,150 +146,6 @@ async def get_media_status(asset_id: str) -> dict:
             "url": asset.url,
             "metadata": meta,
         }
-
-
-_NODE_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}$")
-
-
-def _url_path(value: str) -> str:
-    text = str(value or "").strip()
-    if text.startswith(("http://", "https://")):
-        return urlsplit(text).path
-    return text
-
-
-def _media_rel_path(project_id: str, value: str) -> str | None:
-    path = _url_path(value)
-    prefix = f"/api/media/{project_id}/"
-    if not path.startswith(prefix):
-        return None
-    rel = path[len(prefix):].lstrip("/")
-    if rel.startswith(("generated_images/", "generated_videos/")):
-        return rel
-    return f"generated_images/{rel}"
-
-
-def _upload_rel_path(project_id: str, value: str) -> str | None:
-    path = _url_path(value)
-    prefix = f"/api/uploads/{project_id}/file/"
-    if path.startswith(prefix):
-        return path[len(prefix):].lstrip("/")
-    return None
-
-
-def _existing_rel_path(project_id: str, value: str) -> str | None:
-    text = str(value or "").strip().lstrip("/")
-    if not text or text.startswith(("http://", "https://", "data:")):
-        return None
-    if text.startswith(("/api/media/", "/api/uploads/")):
-        return None
-    if text.startswith(("uploads/", "generated_images/")):
-        return text
-    try:
-        target = _safe_path(project_id, text)
-    except ValueError:
-        return None
-    return text if target.exists() and target.is_file() else None
-
-
-async def describe_image(
-    project_id: str,
-    rel_path: str = "",
-    node_id: str | None = None,
-    source_path: str | None = None,
-    url: str | None = None,
-    user_context: str | None = None,
-    force: bool = False,
-) -> dict:
-    """Analyze an uploaded or generated image and persist it as a reference asset."""
-    from app.mcp_tools.reference_tools import reference_manage
-
-    raw_source = str(source_path or url or rel_path or "").strip()
-    node_ref = str(node_id or "").strip()
-    register_input: dict[str, object] = {
-        "project_id": project_id,
-        "action": "register",
-    }
-    resolved_path = ""
-    if node_ref:
-        register_input["node_id"] = node_ref[5:].strip() if node_ref.startswith("node:") else node_ref
-    elif raw_source.startswith("node:"):
-        register_input["node_id"] = raw_source[5:].strip()
-    elif _NODE_ID_RE.match(raw_source):
-        register_input["node_id"] = raw_source
-    else:
-        rel = (
-            _media_rel_path(project_id, raw_source)
-            or _upload_rel_path(project_id, raw_source)
-            or _existing_rel_path(project_id, raw_source)
-        )
-        if rel:
-            register_input["rel_path"] = rel
-            resolved_path = rel
-        elif raw_source.startswith(("http://", "https://")):
-            register_input["url"] = raw_source
-            resolved_path = raw_source
-        else:
-            raw_path = Path(raw_source).expanduser()
-            if raw_path.is_absolute() and raw_path.exists() and raw_path.is_file():
-                register_input["source_path"] = str(raw_path.resolve())
-                resolved_path = str(raw_path.resolve())
-            else:
-                return {
-                    "ok": False,
-                    "error": "File not found",
-                    "error_kind": "file_not_found",
-                    "source": raw_source,
-                    "hint": (
-                        "media.describe_image 支持 uploads/...、generated_images/...、"
-                        "/api/uploads/...、/api/media/...、node_id/node:<id>、本地绝对路径或 http(s) URL。"
-                    ),
-                }
-
-    registered = await reference_manage(**register_input)
-    if not isinstance(registered, dict) or not registered.get("ok"):
-        return registered
-    asset = registered.get("asset") if isinstance(registered.get("asset"), dict) else {}
-    analyze_input: dict[str, object] = {
-        "project_id": project_id,
-        "action": "analyze",
-        "include_analysis": True,
-        "force": force,
-    }
-    if asset.get("ref_id"):
-        analyze_input["ref_id"] = asset["ref_id"]
-    elif register_input.get("node_id"):
-        analyze_input["node_id"] = register_input["node_id"]
-    elif register_input.get("rel_path"):
-        analyze_input["rel_path"] = register_input["rel_path"]
-    elif register_input.get("source_path"):
-        analyze_input["source_path"] = register_input["source_path"]
-    elif register_input.get("url"):
-        analyze_input["url"] = register_input["url"]
-    if user_context:
-        analyze_input["user_context"] = user_context
-
-    result = await reference_manage(**analyze_input)
-    asset = result.get("asset") if isinstance(result, dict) else None
-    analysis = asset.get("analysis") if isinstance(asset, dict) and isinstance(asset.get("analysis"), dict) else {}
-    reference_input = asset.get("reference_input") if isinstance(asset, dict) else None
-    path = str(reference_input or resolved_path or raw_source)
-    size = asset.get("size") if isinstance(asset, dict) else None
-    if not isinstance(size, int):
-        try:
-            local_rel = asset.get("rel_path") if isinstance(asset, dict) else ""
-            target = _safe_path(project_id, str(local_rel or ""))
-            size = target.stat().st_size if target.exists() and target.is_file() else None
-        except Exception:
-            size = None
-    return {
-        **result,
-        "path": path,
-        "description": analysis.get("summary") or analysis.get("prompt_fragment") or "",
-        "style_tags": analysis.get("style_tags") or [],
-        "prompt_fragment": analysis.get("prompt_fragment") or "",
-        **({"size": size} if isinstance(size, int) else {}),
-    }
 
 
 async def generate_panorama(

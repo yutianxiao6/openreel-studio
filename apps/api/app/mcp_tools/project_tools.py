@@ -134,7 +134,6 @@ async def project_get_state(project_id: str) -> dict[str, Any]:
                     ),
                     "suggested_next": result["suggested_next"],
                 }
-        result["reference_assets_summary"] = _reference_assets_summary(result)
         result["agent_token_usage_summary"] = _agent_token_usage_summary(result)
         return result
 
@@ -157,33 +156,6 @@ def _project_state_for_status_display(state: dict[str, Any]) -> dict[str, Any]:
             metadata.pop("episode_count", None)
         result["metadata"] = metadata
     return result
-
-
-def _reference_assets_summary(state: dict[str, Any]) -> dict[str, Any]:
-    store = state.get("reference_assets")
-    if not isinstance(store, dict):
-        return {"count": 0, "assets": []}
-    assets = store.get("assets") if isinstance(store.get("assets"), list) else []
-    items: list[dict[str, Any]] = []
-    for asset in assets[:20]:
-        if not isinstance(asset, dict):
-            continue
-        analysis = asset.get("analysis") if isinstance(asset.get("analysis"), dict) else {}
-        items.append({
-            "ref_id": asset.get("ref_id"),
-            "mention": asset.get("mention"),
-            "aliases": asset.get("aliases") if isinstance(asset.get("aliases"), list) else [],
-            "status": asset.get("status"),
-            "roles": asset.get("roles") if isinstance(asset.get("roles"), list) else [],
-            "filename": asset.get("filename"),
-            "style_tags": analysis.get("style_tags") if isinstance(analysis.get("style_tags"), list) else [],
-            "analysis_available": asset.get("status") == "analyzed",
-        })
-    return {
-        "count": len(assets),
-        "assets": items,
-        "bindings_count": len(store.get("bindings") if isinstance(store.get("bindings"), list) else []),
-    }
 
 
 def _percent(value: Any) -> float | None:

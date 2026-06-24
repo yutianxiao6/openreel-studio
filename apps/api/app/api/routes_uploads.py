@@ -7,7 +7,7 @@ POST /api/uploads/{project_id}  (multipart/form-data with `file` field)
 
 Files land under `data/storage/<project_id>/uploads/<uuid>-<filename>`.
 The agent then sees `rel_path` and can use `file.extract_text_from_upload`,
-`drama.parse_uploaded_script`, or `media.describe_image` as appropriate.
+`drama.parse_uploaded_script`, or `upload:<rel_path>` inside `fields.references`.
 """
 from __future__ import annotations
 

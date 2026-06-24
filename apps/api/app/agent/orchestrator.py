@@ -748,8 +748,8 @@ def _attachments_block(attachments: list[dict] | None) -> str:
         "",
         "---",
         "📎 附件:",
-        "这些附件来自用户本轮消息。图片注册为项目参考图时，优先调用 `reference.manage(action='ingest_attachments')`，"
-        "把下面的对象按顺序放入 `attachments`；不要猜本地绝对路径。",
+        "这些附件来自用户本轮消息。图片需要进入节点时，把下面的 reference 写入 `fields.references`；"
+        "参考生成使用 role=visual_reference，直接采用图片作为 image 输出使用 role=source_image。",
     ]
     image_index = 0
     for index, a in enumerate(attachments, start=1):
@@ -762,8 +762,9 @@ def _attachments_block(attachments: list[dict] | None) -> str:
         label = _KIND_LABEL.get(kind, "文件")
         filename = a.get("filename", "")
         rel_path = a.get("rel_path", "")
+        reference = f"upload:{rel_path}" if kind == "image" and rel_path else rel_path
         size_str = _format_size(a.get("size"))
-        meta = f"ref={mention}, rel_path={rel_path}"
+        meta = f"ref={mention}, reference={reference}, rel_path={rel_path}"
         if size_str:
             meta += f", size={size_str}"
         lines.append(f"- {mention} [{label}] {filename} ({meta})")
@@ -782,6 +783,72 @@ def _attachments_block(attachments: list[dict] | None) -> str:
             + json.dumps(attach_obj, ensure_ascii=False, separators=(",", ":"))
         )
     return "\n".join(lines)
+
+
+def _attachment_reference_lookup(attachments: list[dict] | None) -> dict[str, str]:
+    if not attachments:
+        return {}
+    lookup: dict[str, str] = {}
+    image_index = 0
+    for index, attachment in enumerate(attachments, start=1):
+        if not isinstance(attachment, dict) or attachment.get("kind") != "image":
+            continue
+        rel_path = str(attachment.get("rel_path") or "").strip()
+        if not rel_path:
+            continue
+        image_index += 1
+        reference = f"upload:{rel_path}"
+        labels = {
+            _attachment_mention(attachment, index=index, image_index=max(1, image_index)),
+            str(attachment.get("mention") or "").strip(),
+            str(attachment.get("ref_label") or "").strip(),
+            str(attachment.get("reference_label") or "").strip(),
+            str(attachment.get("display_label") or "").strip(),
+        }
+        for label in labels:
+            if not label:
+                continue
+            lookup[label] = reference
+            lookup[label.lstrip("@")] = reference
+            lookup[f"@{label.lstrip('@')}"] = reference
+    return lookup
+
+
+def _replace_attachment_reference_values(value: Any, lookup: dict[str, str]) -> Any:
+    if isinstance(value, str):
+        text = value.strip()
+        return lookup.get(text) or lookup.get(text.lstrip("@")) or value
+    if isinstance(value, list):
+        return [_replace_attachment_reference_values(item, lookup) for item in value]
+    if isinstance(value, dict):
+        result = {
+            key: _replace_attachment_reference_values(item, lookup)
+            for key, item in value.items()
+        }
+        if "ref" not in result:
+            for key in ("mention", "ref_label", "reference_label", "display_label"):
+                mapped = lookup.get(str(value.get(key) or "").strip())
+                if mapped:
+                    result["ref"] = mapped
+                    break
+        return result
+    return value
+
+
+def _normalize_attachment_references_in_tool_args(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    attachments: list[dict] | None,
+) -> dict[str, Any]:
+    if tool_name not in {"node.create", "node.update"}:
+        return tool_args
+    lookup = _attachment_reference_lookup(attachments)
+    if not lookup:
+        return tool_args
+    return {
+        key: _replace_attachment_reference_values(value, lookup)
+        for key, value in tool_args.items()
+    }
 
 
 def _message_with_attachments(message: str, attachments: list[dict] | None) -> str:
@@ -2611,13 +2678,7 @@ class AgentOrchestrator:
                     tool_args["_state"] = state
                     tool_args["_user_message"] = message
                     tool_args["_requires_plan"] = _requires_plan
-                if (
-                    tool_name == "reference.manage"
-                    and str(tool_args.get("action") or "").strip() == "ingest_attachments"
-                    and not tool_args.get("attachments")
-                    and attachments
-                ):
-                    tool_args["attachments"] = attachments
+                tool_args = _normalize_attachment_references_in_tool_args(tool_name, tool_args, attachments)
                 round_tools.append(tool_name)
                 round_tool_calls.append((tool_call, tool_name, tool_args))
                 planned_actions.append(tool_name)

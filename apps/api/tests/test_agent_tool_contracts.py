@@ -232,7 +232,6 @@ def test_agent_tool_surface_matches_node_first_contract() -> None:
         "memory.recall",
         "project.create",
         "media.cancel_image_generation",
-        "media.describe_image",
         "task.delete",
     }
     for name in deferred_control:
@@ -703,6 +702,8 @@ def test_low_frequency_tools_are_deferred_and_reset_is_core() -> None:
     assert "project.create" not in visible
     assert "project.reset" in visible
     assert "media.describe_image" not in visible
+    assert registry.get("media.describe_image") is None
+    assert registry.get("reference.manage") is None
     assert "tool.search" in visible
     assert "tool.describe" in visible
     assert "tool.execute" in visible

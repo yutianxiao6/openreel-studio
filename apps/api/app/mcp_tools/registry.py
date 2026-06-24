@@ -416,7 +416,7 @@ def _node_create_field_properties() -> dict[str, Any]:
         "production_path": {"type": "string"},
         "purpose": {"type": "string"},
         "references": _node_reference_array_schema(
-            description="上游引用；字符串或 {ref, role} 对象。"
+            description="上游引用；字符串或 {ref, role} 对象。节点用 node:<编号>，上传图用 upload:<rel_path>，资产用 asset:<id> 或资产路径。"
         ),
     }
     return properties
@@ -427,10 +427,10 @@ def _node_update_input_properties() -> dict[str, Any]:
     return {
         **_node_media_field_properties(),
         "references": _node_reference_array_schema(
-            description="局部更新上游引用；字符串或 {ref, role} 对象。"
+            description="局部更新上游引用；节点用 node:<编号>，上传图用 upload:<rel_path>，资产用 asset:<id> 或资产路径。"
         ),
         "depends_on": _node_reference_array_schema(
-            description="局部更新拓扑依赖；字符串或 {ref, role} 对象。"
+            description="局部更新拓扑依赖；节点用 node:<编号>，上传图用 upload:<rel_path>，资产用 asset:<id> 或资产路径。"
         ),
         "prompt_source": {"type": "string"},
     }
@@ -665,7 +665,7 @@ class ToolRegistry:
     # directly; attachment ingestion uses the deferred tool loader.
     _LAYER1_EXTRA: set[str] = {"drama.parse_uploaded_script"}
     # Layer 2 namespaces: injected with full schema but lower priority
-    _LAYER2_NS = {"project", "memory", "reference", "plan", "task", "agent", "canvas", "scene", "shot",
+    _LAYER2_NS = {"project", "memory", "plan", "task", "agent", "canvas", "scene", "shot",
                   "asset", "media", "file", "skill"}
     # Hidden from Agent Loop —— Agent 不能直接调,统一走 node primitive protocol。
     # 旧的 drama.* / canvas CRUD / media.generate_* /
@@ -682,7 +682,8 @@ class ToolRegistry:
         # Legacy drama destructive wrappers are unregistered. canvas.delete is
         # the single agent-facing destructive canvas primitive.
         # Deprecated aliases have been unregistered.
-        # media.describe_image 不藏 —— 识图(用户上传/参考图分析)
+        # Image inspection uses core vision.view_image. Legacy reference asset
+        # registration helpers are not part of the Agent tool surface.
         # media.get_status is unregistered; node/run state and debug/trace APIs
         # are the media progress surface.
         # media provider writes/active reads are unregistered; settings/config
@@ -926,11 +927,9 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "image.inpaint_region": "对图片或宫格 cell 的局部 mask 区域发起重绘",
     "interaction.request_input": "用通用问题卡向用户提出最多 6 个短问题并等待提交",
     "media.cancel_image_generation": "取消当前项目正在进行或排队的图片生成步骤",
-    "media.describe_image": "识别上传图或已生成图片并返回视觉描述",
     "media.get_presets": "读取图片 provider 推荐参数预设",
     "media.list_providers": "读取已配置的媒体 provider 列表",
     "media.test_provider": "向指定媒体 provider 发送最小真实请求并返回测试结果",
-    "reference.manage": "管理项目参考图资产：注册上传图、解析 @图、视觉分析、别名和显式长期保存",
     "memory.compact_context": "压缩当前会话上下文，保存摘要和长期事实",
     "memory.recall": "检索当前项目的相关记忆",
     "memory.recall_user": "检索跨项目用户偏好记忆",
@@ -999,7 +998,6 @@ _STANDARD_CANNOT_BY_NAMESPACE: dict[str, str] = {
     "interaction": "不能执行创作、审批或状态变更；只负责把模型的问题渲染成用户输入卡片",
     "media": "不能直接生成正式图片/视频；生成走 node.run 和媒体 service",
     "memory": "不能把不稳定推测写成长期事实，不能替代任务或节点状态",
-    "reference": "不能替代节点执行；长期用户记忆必须有用户明确要求才保存",
     "scene": "不能创建或修改场景；场景创作走 node.*",
     "shot": "不能创建或修改镜头；镜头创作走 node.*",
     "skill": "不能越过项目工具、权限策略或节点规则直接改状态",
@@ -1020,7 +1018,6 @@ _STANDARD_USAGE_BY_NAME: dict[str, str] = {
     "skill.search": "制作流程/提示词写法先搜；用户本地 skill 优先。",
     "skill.get": "读取 search 选中项；用户 skill 覆盖默认指南。",
     "skill.video_production": "补全/创建/修复图片/视频生产节点前读取；summary 用于轻量判断，full 用于实际制作。",
-    "reference.manage": "处理上传参考图、@图、别名、视觉分析和长期保存时调用。",
     "task.create": "复杂多步用 subject 或 items 建 checklist；简单任务跳过。",
     "task.complete": "任务真实完成并有结果摘要后调用。",
     "task.list": "需要恢复进度、找可执行/失败/阻塞任务或清理残留前调用。",
@@ -1048,7 +1045,6 @@ _STANDARD_LIMIT_BY_NAME: dict[str, str] = {
     "skill.get": "只读取 skill 内容",
     "skill.search": "只搜索 skill 索引",
     "skill.video_production": "只读取制作指南，不创建、修改、运行或审批内容",
-    "reference.manage": "管理参考图资产，不替代节点执行",
     "task.complete": "只标记真实完成的任务",
     "task.list": "只读取任务列表",
     "task.update": "只更新任务状态和元数据",
@@ -1256,7 +1252,6 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         memory_tools,
         node_universal,
         project_tools,
-        reference_tools,
         shot_tools,
         skill_tools,
         system_tools,
@@ -1721,67 +1716,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         "停止当前项目正在进行的图片生成或后续图片生成步骤。"
         "当用户说停止、取消、中止图片生成时调用。"
       ))
-    R("media.describe_image", media_tools.describe_image, tags=["media", "vision"])
     R("media.get_presets", media_tools.get_presets, tags=["media", "read"])
-
-    R("reference.manage", reference_tools.reference_manage,
-      tags=["reference", "vision", "memory"],
-      schema={
-          "type": "object",
-          "properties": {
-              "project_id": {"type": "string", "description": "项目 ID"},
-              "action": {
-                  "type": "string",
-                  "description": "register|ingest_attachments|list|resolve|get|alias|analyze|bind_to_blueprint|save_to_user_memory",
-              },
-              "rel_path": {"type": "string", "description": "上传相对路径"},
-              "source_path": {"type": "string", "description": "本地文件路径"},
-              "library_path": {"type": "string", "description": "资产库路径"},
-              "url": {"type": "string", "description": "图片 URL"},
-              "asset_id": {"type": "string", "description": "资产 ID"},
-              "node_id": {"type": "string", "description": "图片节点 ID"},
-              "mention": {"type": "string", "description": "@引用名"},
-              "ref_id": {"type": "string", "description": "参考资产 ID"},
-              "query": {"type": "string", "description": "按别名/标题/风格检索"},
-              "attachments": {
-                  "type": "array",
-                  "items": {"type": "object", "additionalProperties": True},
-                  "description": "上传附件",
-              },
-              "attachment_aliases": {
-                  "type": "array",
-                  "items": {"type": "string"},
-                  "description": "附件 @别名",
-              },
-              "attachment_roles": {
-                  "type": "array",
-                  "items": {"type": "string"},
-                  "description": "附件用途",
-              },
-              "role": {"type": "string", "description": "style_reference|character_reference|scene_reference|composition_reference|visual_reference"},
-              "roles": {
-                  "type": "array",
-                  "items": {"type": "string"},
-                  "description": "多个用途",
-              },
-              "alias": {"type": "string", "description": "新 @别名"},
-              "apply_to": {
-                  "type": "array",
-                  "items": {"type": "string"},
-                  "description": "绑定范围",
-              },
-              "user_context": {"type": "string", "description": "用途上下文"},
-              "include_analysis": {"type": "boolean", "description": "返回分析"},
-              "save_user_memory": {"type": "boolean", "description": "保存长期记忆"},
-              "force": {"type": "boolean", "description": "强制重分析"},
-          },
-          "required": ["project_id", "action"],
-      },
-      description=(
-          "管理参考图资产、@别名、视觉分析和长期保存。上传附件用 ingest_attachments，"
-          "已有图片用 register/alias/resolve/get；写节点时使用返回的 reference_input。"
-          "该工具不生成媒体，也不会在未请求时写长期记忆。"
-      ))
 
     # file.*
     R("file.list_dir", file_tools.list_dir, tags=["file", "read"])

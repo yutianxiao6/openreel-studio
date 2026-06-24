@@ -625,7 +625,7 @@ async def test_media_status_wrapper_is_unregistered_after_node_state_extraction(
     control = await tool_meta_tools.tool_search(query="cancel image", category="control")
     assert "media.cancel_image_generation" in {item["name"] for item in control["tools"]}
     query = await tool_meta_tools.tool_search(query="describe image", category="query")
-    assert "media.describe_image" in {item["name"] for item in query["tools"]}
+    assert "media.describe_image" not in {item["name"] for item in query["tools"]}
 
 @pytest.mark.asyncio
 async def test_model_config_wrappers_are_unregistered_and_system_models_remains() -> None:
@@ -1386,10 +1386,18 @@ async def test_generic_skill_management_tools_are_unregistered_but_concrete_skil
         assert result["error_kind"] == "unknown_deferred_tool"
 
 @pytest.mark.asyncio
-async def test_media_query_and_control_tools_remain_deferred() -> None:
+async def test_media_control_tool_remains_deferred_and_legacy_image_describe_is_removed() -> None:
     result = await tool_meta_tools.tool_search(query="describe image", category="query")
     names = {item["name"] for item in result["tools"]}
-    assert "media.describe_image" in names
+    assert "media.describe_image" not in names
+    assert "reference.manage" not in names
+
+    described = await tool_meta_tools.tool_describe(["media.describe_image", "reference.manage"])
+    assert described["tools"] == []
+    assert set(described["not_found"]) == {"media.describe_image", "reference.manage"}
+    for name in ("media.describe_image", "reference.manage"):
+        executed = await tool_meta_tools.tool_execute(project_id="test", name=name, input={})
+        assert executed["error_kind"] == "unknown_deferred_tool"
 
     result = await tool_meta_tools.tool_search(query="cancel image", category="control")
     names = {item["name"] for item in result["tools"]}

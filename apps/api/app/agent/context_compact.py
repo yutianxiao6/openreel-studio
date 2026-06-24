@@ -194,10 +194,6 @@ def _summarize_project_state(result: dict[str, Any]) -> dict[str, Any]:
     token_summary = result.get("agent_token_usage_summary")
     if not isinstance(token_summary, dict):
         token_summary = {}
-    reference_summary = result.get("reference_assets_summary")
-    if not isinstance(reference_summary, dict):
-        reference_summary = {}
-
     return {
         "status": "error" if result.get("error") or result.get("ok") is False else "ok",
         "title": result.get("title"),
@@ -212,7 +208,6 @@ def _summarize_project_state(result: dict[str, Any]) -> dict[str, Any]:
             "pending_blueprint_review": bool(result.get("pending_blueprint_review")),
             "pending_blueprint_section_review": bool(result.get("pending_blueprint_section_review")),
         },
-        "reference_assets_summary": reference_summary,
         "agent_token_usage_summary": token_summary,
     }
 
@@ -269,35 +264,6 @@ def _context_payload_policy(tool_name: str, result: Any) -> str:
     if isinstance(result, dict) and _allows_full_result_context(tool_name, result):
         return "full_result"
     return "summary"
-
-
-def _summarize_reference_result(result: dict[str, Any]) -> dict[str, Any]:
-    refs = result.get("refs") or result.get("assets") or result.get("matches") or result.get("candidates") or []
-    compact_refs: list[dict[str, Any]] = []
-    if isinstance(refs, list):
-        for item in refs[:12]:
-            if not isinstance(item, dict):
-                continue
-            compact_refs.append({
-                "ref_id": item.get("ref_id"),
-                "mention": item.get("mention"),
-                "label": item.get("label"),
-                "reference_input": item.get("reference_input") or item.get("rel_path") or item.get("url"),
-                "node_id": item.get("node_id"),
-                "status": item.get("status"),
-                "roles": item.get("roles"),
-            })
-    return {
-        "status": "error" if result.get("error") or result.get("ok") is False else "ok",
-        "action": result.get("action"),
-        "ref_id": result.get("ref_id"),
-        "mention": result.get("mention"),
-        "reference_input": result.get("reference_input"),
-        "error": result.get("error"),
-        "error_kind": result.get("error_kind"),
-        "refs": compact_refs,
-        "next_action": result.get("next_action") or result.get("hint"),
-    }
 
 
 def _copy_present(source: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -661,8 +627,6 @@ def _context_summary_payload(tool_name: str, result: Any) -> Any:
             return _summarize_project_state(result)
         if tool_name == "tool.execute" and result.get("_deferred_tool") == "skill.project_mentor":
             return _summarize_deferred_guide(result)
-        if tool_name == "reference.manage":
-            return _summarize_reference_result(result)
         if tool_name in {"node.create", "node.update"}:
             return _summarize_node_mutation_result(result)
         if tool_name == "node.list":

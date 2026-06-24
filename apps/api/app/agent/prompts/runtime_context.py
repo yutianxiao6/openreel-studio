@@ -363,44 +363,6 @@ def _memory_index_block(title: str, facts: list[dict]) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _reference_assets_index(state: dict) -> str:
-    store = state.get("reference_assets")
-    if not isinstance(store, dict):
-        return ""
-    assets = store.get("assets") if isinstance(store.get("assets"), list) else []
-    bindings = store.get("bindings") if isinstance(store.get("bindings"), list) else []
-    refs: list[dict[str, object]] = []
-    for asset in assets[:12]:
-        if not isinstance(asset, dict):
-            continue
-        analysis = asset.get("analysis") if isinstance(asset.get("analysis"), dict) else {}
-        refs.append({
-            "ref_id": asset.get("ref_id"),
-            "mention": asset.get("mention"),
-            "label": asset.get("label"),
-            "reference_input": (
-                asset.get("rel_path")
-                or asset.get("source_path")
-                or (f"asset:{asset.get('asset_id')}" if asset.get("asset_id") else None)
-                or (f"node:{asset.get('node_id')}" if asset.get("node_id") else None)
-                or asset.get("url")
-            ),
-            "status": asset.get("status"),
-            "roles": asset.get("roles") if isinstance(asset.get("roles"), list) else [],
-            "has_analysis": isinstance(asset.get("analysis"), dict),
-            "style_tags": analysis.get("style_tags") if isinstance(analysis.get("style_tags"), list) else [],
-        })
-    if not refs:
-        return ""
-    payload = {
-        "available_count": len(assets),
-        "refs": refs,
-        "bindings_count": len(bindings),
-        "body_policy": "reference analysis bodies are not auto-injected; preserve usable refs in node fields or ask the user when visual details are missing",
-    }
-    return json.dumps(payload, ensure_ascii=False)
-
-
 def build(
     state: dict,
     model_configs: list[dict] | None = None,

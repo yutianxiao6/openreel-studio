@@ -400,6 +400,9 @@ async def _resolve_reference_images(
             errors.append(f"参考图引用为空: {raw!r}")
             continue
         ref = raw.strip()
+        if ref.startswith("upload:"):
+            rel = ref[len("upload:"):].strip().lstrip("/")
+            ref = rel if rel.startswith("uploads/") else f"uploads/{rel}"
 
         if ref.startswith("http://") or ref.startswith("https://"):
             resolved.append(ref)

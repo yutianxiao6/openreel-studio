@@ -41,7 +41,6 @@ import {
 import { ProposedPlanCard } from "./ProposedPlanCard"
 import { PendingActionCard } from "./PendingActionCard"
 import { InteractionInputCard } from "@/components/interaction/InteractionInputCard"
-import { ReferenceAssetsPanel } from "@/components/assets/ReferenceAssetsPanel"
 import { ChecklistPanel } from "./ChecklistPanel"
 import { ChangeCard } from "./ChangeCard"
 import { SlashMenu, filterSlashCommands, type SlashCommandDef } from "./SlashMenu"
@@ -545,10 +544,8 @@ const TOOL_LABEL: Record<string, string> = {
   "file.extract_text_from_upload": "提取文本",
   // media
   "media.cancel_image_generation": "停止图片生成",
-  "media.describe_image": "识别图片",
   "media.list_providers": "媒体源列表",
   "media.test_provider": "测试媒体源",
-  "reference.manage": "管理参考图",
   // config
   "config.read": "读取配置",
   "config.read_file": "读取配置文件",
@@ -706,7 +703,7 @@ function WorkingIndicator({ label = "正在工作" }: { label?: string }) {
   )
 }
 
-type AssetPickerSource = "reference" | "generated" | "project_library" | "shared_library"
+type AssetPickerSource = "generated" | "project_library" | "shared_library"
 
 interface AssetPickerItem {
   key: string
@@ -724,24 +721,6 @@ interface AssetLibraryListResult {
     episode?: string
     category?: string
     size?: number
-  }>
-  error?: string
-}
-
-interface ReferenceAssetListResult {
-  assets?: Array<{
-    ref_id?: string
-    mention?: string
-    label?: string
-    filename?: string
-    rel_path?: string
-    source_path?: string
-    url?: string
-    status?: string
-    analysis_summary?: {
-      summary?: string
-      style_name?: string
-    }
   }>
   error?: string
 }
@@ -791,25 +770,7 @@ function AssetReferencePicker({
     setError(null)
     try {
       const next: AssetPickerItem[] = []
-      const [generated, references] = await Promise.all([
-        listProjectAssets(projectId),
-        callTool<ReferenceAssetListResult>("reference.manage", {
-          project_id: projectId,
-          action: "list",
-        }),
-      ])
-      ;(references.assets ?? []).filter((asset) => asset.ref_id).slice(0, 80).forEach((asset, index) => {
-        const mention = asset.mention || `@图${index + 1}`
-        const title = `${mention} ${asset.filename || asset.label || ""}`.trim()
-        next.push({
-          key: `reference:${asset.ref_id}`,
-          source: "reference",
-          title,
-          subtitle: asset.analysis_summary?.style_name || asset.status || "项目参考图",
-          previewUrl: asset.url ? resolveMediaUrl(asset.url) : resolveMediaUrl(`/api/uploads/${projectId}/reference/${asset.ref_id}`),
-          insertText: `请使用 ${mention} 作为参考图。`,
-        })
-      })
+      const generated = await listProjectAssets(projectId)
       generated.assets.filter(isImageLikeAsset).slice(0, 80).forEach((asset, index) => {
         const title = asset.name || asset.type || `生成资产 ${index + 1}`
         next.push({
@@ -818,7 +779,7 @@ function AssetReferencePicker({
           title,
           subtitle: asset.type || "生成图片",
           previewUrl: generatedAssetPreview(asset),
-          insertText: `请把 @资产图${index + 1} 作为参考图使用（asset_id: ${asset.id}，名称：${title}）。`,
+          insertText: `请把这张生成图片写入需要使用它的节点 fields.references：{"ref":"asset:${asset.id}","role":"visual_reference"}（名称：${title}）。`,
         })
       })
 
@@ -841,7 +802,7 @@ function AssetReferencePicker({
             title,
             subtitle: item.category || item.episode || item.kind || label,
             previewUrl: resolveAssetLibraryPreviewUrl(projectId, path),
-            insertText: `请把 @资产库图${index + 1} 作为参考图使用（source_path: ${path}，来源：${label}，名称：${title}）。`,
+            insertText: `请把这张资产库图片写入需要使用它的节点 fields.references：{"ref":"${path}","role":"visual_reference"}（来源：${label}，名称：${title}）。`,
           })
         })
       })
@@ -880,7 +841,7 @@ function AssetReferencePicker({
             <div className="flex items-center justify-between gap-2">
               <div>
                 <div className="text-sm font-medium text-zinc-100">引用资产图片</div>
-                <div className="mt-0.5 text-[11px] text-zinc-500">选择后会写入输入框，由 Agent 决定如何登记和分析</div>
+                <div className="mt-0.5 text-[11px] text-zinc-500">选择后会写入输入框，由 Agent 写入 fields.references</div>
               </div>
               <button
                 type="button"
@@ -927,13 +888,11 @@ function AssetReferencePicker({
                     <div className="px-2 py-1.5">
                       <div className="truncate text-xs font-medium text-zinc-200">{item.title}</div>
                       <div className="mt-0.5 truncate text-[10px] text-zinc-500">
-                        {item.source === "reference"
-                          ? "项目参考图"
-                          : item.source === "generated"
-                            ? "生成资产"
-                            : item.source === "project_library"
-                              ? "项目资产库"
-                              : "共享资产库"} · {item.subtitle}
+                        {item.source === "generated"
+                          ? "生成资产"
+                          : item.source === "project_library"
+                            ? "项目资产库"
+                            : "共享资产库"} · {item.subtitle}
                       </div>
                     </div>
                   </button>
@@ -1017,7 +976,6 @@ export function ChatPanel() {
   const [stopping, setStopping] = useState(false)
   const [slashRunStatus, setSlashRunStatus] = useState<SlashRunStatus | null>(null)
   const [showTokenMonitor, setShowTokenMonitor] = useState(true)
-  const [referencePanelOpen, setReferencePanelOpen] = useState(false)
 
   // 细粒度订阅:setInput 重渲只触发 input 相关 UI,不会让 messages / 各 action 引起的 setState
   // 把整个 ChatPanel 重渲一次。整体 useChatStore() 解构会让任意 store 字段变都重渲所有订阅者,
@@ -2221,12 +2179,6 @@ export function ChatPanel() {
           松开以上传文件
         </div>
       )}
-      <ReferenceAssetsPanel
-        open={referencePanelOpen}
-        projectId={currentProject?.id}
-        onClose={() => setReferencePanelOpen(false)}
-        onInsertReference={insertAssetReference}
-      />
       <ChecklistPanel />
       <div
         ref={messagesScrollRef}
@@ -2405,15 +2357,6 @@ export function ChatPanel() {
               disabled={Boolean(pendingInputRequestId) || Boolean(pendingActionRequestId)}
               onInsert={insertAssetReference}
             />
-            <button
-              type="button"
-              onClick={() => setReferencePanelOpen(true)}
-              disabled={!currentProject || Boolean(pendingInputRequestId) || Boolean(pendingActionRequestId)}
-              title="管理参考图"
-              className="h-8 rounded-md border border-white/10 bg-white/[0.04] px-2.5 text-xs font-medium text-zinc-300 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              参考
-            </button>
           </div>
           {lastFailedMessage && !streaming && (
             <button

@@ -854,47 +854,29 @@ async def _normalize_reference_images_for_render(
     project_id: str,
     refs: Any,
 ) -> tuple[list[str], list[str]]:
-    """Accept common reference asset identifiers and turn them into renderable inputs.
+    """Accept node, upload, asset, URL, and path references as renderable inputs.
 
     The provider layer accepts local storage-relative paths, absolute paths,
-    URLs, asset:<id>, and node:<image_id>. Agents often hold @mentions/ref_id from
-    reference.manage, so normalize those here instead of letting the render
-    fail before the image provider is reached.
+    URLs, upload:<rel_path>, asset:<id>, and node:<image_id>. Node references are
+    normalized to internal node ids; upload references are normalized to storage
+    relative paths.
     """
     if not isinstance(refs, list):
         return [], []
-    state = await _read_project_state(project_id)
-    store = state.get("reference_assets") if isinstance(state, dict) else None
-    assets = store.get("assets") if isinstance(store, dict) and isinstance(store.get("assets"), list) else []
-    lookup: dict[str, str] = {}
-    for asset in assets:
-        if not isinstance(asset, dict):
-            continue
-        reference_input = _reference_input_for_state_asset(asset)
-        if not reference_input:
-            continue
-        for key in (
-            asset.get("ref_id"),
-            asset.get("mention"),
-            asset.get("label"),
-            asset.get("filename"),
-            *(
-                asset.get("aliases")
-                if isinstance(asset.get("aliases"), list)
-                else []
-            ),
-        ):
-            _add_reference_lookup(lookup, key, reference_input)
 
     normalized: list[str] = []
     warnings: list[str] = []
     for raw in refs:
         if isinstance(raw, dict):
             candidate = (
-                raw.get("reference_input")
+                raw.get("ref")
+                or raw.get("reference")
+                or raw.get("reference_input")
                 or raw.get("rel_path")
                 or raw.get("source_path")
                 or raw.get("url")
+                or raw.get("path")
+                or raw.get("local_path")
                 or (f"asset:{raw.get('asset_id')}" if raw.get("asset_id") else "")
                 or (f"node:{raw.get('node_id')}" if raw.get("node_id") else "")
                 or raw.get("ref_id")
@@ -907,13 +889,11 @@ async def _normalize_reference_images_for_render(
             continue
         if text.startswith("ref:"):
             text = text[len("ref:"):].strip()
-        replacement = lookup.get(text) or lookup.get(text.lstrip("@"))
-        if replacement:
-            if replacement != text:
-                warnings.append(f"reference_images 已将 {text} 解析为 {replacement}")
-            text = replacement
-        elif text.startswith("ref_") or text.startswith("@"):
-            warnings.append(f"reference_images 未能解析 {text};请使用 reference.manage(action='resolve') 返回的 reference_input")
+        if text.startswith("upload:"):
+            text = _storage_relative_upload_reference(text)
+        if text.startswith("ref_") or text.startswith("@"):
+            warnings.append(f"reference_images 未能解析 {text};请改用 node:<编号>、upload:<rel_path>、asset:<id> 或图片路径")
+            continue
         else:
             node_ref, node_warning, handled_node_ref = await _normalize_node_reference_image_for_render(project_id, text)
             if handled_node_ref and not node_ref:
@@ -1090,7 +1070,13 @@ async def _image_node_reference_images_for_video(
         text = str(ref or "").strip()
         if not text:
             continue
-        if text.startswith(("http://", "https://", "asset:")):
+        if text.startswith("upload:"):
+            text = _storage_relative_upload_reference(text)
+        if (
+            text.startswith(("http://", "https://", "asset:", "uploads/", "generated_images/", "/api/media/", "/api/uploads/"))
+            or "/" in text
+            or "\\" in text
+        ):
             if text not in resolved:
                 resolved.append(text)
             continue
@@ -1158,6 +1144,16 @@ def _storage_root() -> Path:
     return Path(getattr(settings, "STORAGE_PATH", "./storage")).resolve()
 
 
+def _storage_relative_upload_reference(value: str) -> str:
+    text = str(value or "").strip()
+    if not text.startswith("upload:"):
+        return text
+    rel = text[len("upload:"):].strip().lstrip("/")
+    if rel and not rel.startswith("uploads/"):
+        rel = f"uploads/{rel}"
+    return rel
+
+
 def _local_url_for_storage_path(project_id: str, path: Path) -> str | None:
     try:
         resolved = path.resolve()
@@ -1182,6 +1178,8 @@ def _image_output_from_source_value(project_id: str, value: str) -> dict[str, An
     text = str(value or "").strip()
     if not text:
         return None
+    if text.startswith("upload:"):
+        text = _storage_relative_upload_reference(text)
     if text.startswith(("http://", "https://")):
         return {"url": text, "remote_url": text}
     if text.startswith(("/api/media/", "/api/uploads/")):
