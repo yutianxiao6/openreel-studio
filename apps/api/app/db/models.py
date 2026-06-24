@@ -252,6 +252,7 @@ NODE_STATUSES = ["idle", "queued", "running", "completed", "failed", "waiting_co
 
 class WorkflowNodeBase(SQLModel):
     project_id: str = Field(foreign_key="projects.id", index=True)
+    display_id: Optional[int] = Field(default=None, index=True)
     type: str
     title: str
     status: str = "idle"

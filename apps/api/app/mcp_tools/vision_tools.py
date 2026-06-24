@@ -20,6 +20,7 @@ from app.agent.vision_context import (
 )
 from app.db.models import WorkflowNode
 from app.db.session import session_scope
+from app.services.node_public_ids import public_node_id_from_model, resolve_internal_node_id
 
 
 def _error(
@@ -109,18 +110,19 @@ def _model_text(images: list[VisionImage], *, omitted_count: int, errors: list[d
 
 async def _node_image_source(project_id: str, node_id: str) -> tuple[WorkflowNode | None, str, dict[str, Any] | None]:
     async with session_scope() as session:
+        node_id = await resolve_internal_node_id(session, project_id, node_id)
         node = await session.get(WorkflowNode, node_id)
         if node is None or node.project_id != project_id:
             return None, "", None
         if node.type != "image":
             return node, "", {
-                "error": f"节点 {node_id} 不是 image 节点。",
+                "error": f"节点 {public_node_id_from_model(node)} 不是 image 节点。",
                 "error_kind": "invalid_node_type",
-                "hint": "先用 node.list(type='image') 找到要查看的图片节点，再用真实 node_id 调用。",
+                "hint": "先用 node.list(type='image') 找到要查看的图片节点，再用节点编号调用。",
             }
         if node.status != "completed":
             return node, "", {
-                "error": f"图片节点 {node_id} 还不是 completed 状态。",
+                "error": f"图片节点 {public_node_id_from_model(node)} 还不是 completed 状态。",
                 "error_kind": "image_node_not_completed",
                 "hint": "需要先运行或修复该 image 节点；只有已完成并有输出的图片才能进入视觉上下文。",
             }
@@ -129,7 +131,7 @@ async def _node_image_source(project_id: str, node_id: str) -> tuple[WorkflowNod
         source = next((item for item in sources if item), "")
         if not source:
             return node, "", {
-                "error": f"图片节点 {node_id} 没有可读取的图片输出。",
+                "error": f"图片节点 {public_node_id_from_model(node)} 没有可读取的图片输出。",
                 "error_kind": "image_source_missing",
                 "hint": "先用 node.get 读取节点输出；如果节点未生成图片，运行或修复原节点后再查看。",
             }
@@ -228,7 +230,7 @@ async def view_image(
             image_url=image_url,
             source_kind="node" if kind == "node" else "source",
             source=resolved_source,
-            node_id=value if kind == "node" else None,
+            node_id=public_node_id_from_model(node) if node is not None else None,
             title=node.title if node is not None else None,
             mime_type=meta.get("mime_type"),
             bytes=meta.get("bytes"),

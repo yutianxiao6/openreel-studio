@@ -10,6 +10,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.db.models import WorkflowNode, WorkflowEdge
+from app.services.node_ids import next_node_display_id
 
 
 def _as_json_str(value: Any) -> str | None:
@@ -200,6 +201,7 @@ class NodeService:
         node = WorkflowNode(
             id=str(uuid.uuid4()),
             project_id=project_id,
+            display_id=await next_node_display_id(self.db, project_id),
             type=payload.get("type", "script_generation"),
             title=payload.get("title", ""),
             status=payload.get("status", "idle"),

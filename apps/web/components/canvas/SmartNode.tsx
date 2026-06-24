@@ -114,6 +114,7 @@ interface NodeData {
   version?: number
   superseded?: boolean
   supersedes_id?: string
+  publicId?: number | string | null
   // Identifiers and metadata for the detail modal:
   nodeId?: string
   createdAt?: string
@@ -696,6 +697,9 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const updateNodeInternals = useUpdateNodeInternals()
   const style = getNodeStyle(data.type)
   const status = data.status ?? "idle"
+  const publicIdText = data.publicId !== undefined && data.publicId !== null && String(data.publicId).trim()
+    ? `#${String(data.publicId).trim()}`
+    : ""
   const isRunning = status === "running"
   const isSuperseded = !!data.superseded
   const isMediaNode = data.type === "image" || data.type === "video" || data.type === "audio"
@@ -1046,6 +1050,11 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
             <div className="flex h-full w-full flex-col justify-between bg-[radial-gradient(circle_at_18%_12%,rgba(245,158,11,0.24),transparent_32%),linear-gradient(135deg,#111827,#18181b)] px-4 py-4">
               <div>
                 <div className="flex items-center gap-2">
+                  {publicIdText && (
+                    <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-50/85 ring-1 ring-white/10">
+                      {publicIdText}
+                    </span>
+                  )}
                   <span className="h-2.5 w-2.5 rounded-full" style={{ background: style.color }} />
                   <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-100/80">Audio</span>
                 </div>
@@ -1249,8 +1258,15 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
 
           {!(data.type === "audio" && audio?.src) && (
             <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent px-3 pb-2.5 pt-8">
-              <div className="line-clamp-2 text-[13px] font-medium leading-4 text-white" title={data.title}>
-                {data.title || "未命名"}
+              <div className="flex min-w-0 items-start gap-1.5">
+                {publicIdText && (
+                  <span className="mt-0.5 shrink-0 rounded bg-white/12 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white/85 ring-1 ring-white/10">
+                    {publicIdText}
+                  </span>
+                )}
+                <div className="line-clamp-2 min-w-0 text-[13px] font-medium leading-4 text-white" title={data.title}>
+                  {data.title || "未命名"}
+                </div>
               </div>
             </div>
           )}
@@ -1263,6 +1279,11 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
       ) : (
         <div className="flex h-full flex-col p-3">
           <div className="mb-2 flex items-center gap-2">
+            {publicIdText && (
+              <span className="shrink-0 rounded bg-white/8 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-zinc-300 ring-1 ring-white/10">
+                {publicIdText}
+              </span>
+            )}
             <span className="h-2 w-2 rounded-full" style={{ background: style.color }} />
             <div className="min-w-0 flex-1 truncate text-[13px] font-semibold text-zinc-100" title={data.title}>
               {data.title || "未命名"}

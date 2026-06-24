@@ -11,6 +11,11 @@ from app.db.session import session_scope
 from app.agent.blueprint_tree import summarize_blueprint_for_state
 from app.mcp_tools import canvas_tools
 from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
+from app.services.node_public_ids import (
+    internal_to_public_id_map,
+    model_visible_edge_payload,
+    model_visible_node_payload,
+)
 from app.services.project_service import DEFAULT_EPISODE_COUNT, ProjectService
 from app.services.version_service import VersionService
 
@@ -100,10 +105,17 @@ async def project_get_state(project_id: str) -> dict[str, Any]:
         state = await svc.get_project_state(project_id)
         if state is None:
             return {"error": f"Project {project_id} not found"}
+        id_map = await internal_to_public_id_map(session, project_id)
         result = _project_state_for_status_display(state)
         result["workflow"] = {
-            "nodes": await canvas_tools.list_nodes(project_id),
-            "edges": await canvas_tools.list_edges(project_id),
+            "nodes": [
+                model_visible_node_payload(node, id_map)
+                for node in await canvas_tools.list_nodes(project_id)
+            ],
+            "edges": [
+                model_visible_edge_payload(edge, id_map)
+                for edge in await canvas_tools.list_edges(project_id)
+            ],
         }
         semantic_blueprint = summarize_blueprint_for_state(project_id)
         if semantic_blueprint:

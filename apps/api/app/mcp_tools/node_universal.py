@@ -24,6 +24,15 @@ from app.db.session import session_scope
 from app.mcp_tools import canvas_tools
 from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
 from app.services import media_generation, media_history
+from app.services.node_public_ids import (
+    internal_to_public_id_map,
+    looks_like_public_node_id,
+    model_visible_node_payload,
+    public_node_id_from_dict,
+    publicize_node_refs,
+    resolve_internal_node_id,
+    strip_node_id_marker,
+)
 from sqlmodel import select
 
 logger = logging.getLogger(__name__)
@@ -48,6 +57,40 @@ NODE_LIST_MAX_LIMIT = 800
 NODE_SURFACE_PROJECT_PANEL = "project_panel"
 NODE_SURFACE_DRAFT_CANVAS = "draft_canvas"
 _VALID_NODE_SURFACES = {NODE_SURFACE_PROJECT_PANEL, NODE_SURFACE_DRAFT_CANVAS}
+
+
+async def _node_public_id_map(project_id: str) -> dict[str, str]:
+    if not project_id:
+        return {}
+    async with session_scope() as session:
+        return await internal_to_public_id_map(session, project_id)
+
+
+async def _resolve_agent_node_id(project_id: str, node_id: Any) -> str:
+    if not project_id:
+        raw = strip_node_id_marker(node_id)
+        if looks_like_public_node_id(raw):
+            return ""
+        return raw
+    async with session_scope() as session:
+        return await resolve_internal_node_id(session, project_id, node_id)
+
+
+async def _model_visible_node(node: dict[str, Any], project_id: str = "") -> dict[str, Any]:
+    id_map = await _node_public_id_map(project_id or str(node.get("project_id") or ""))
+    payload = model_visible_node_payload(node, id_map)
+    internal_id = str(node.get("id") or "")
+    if internal_id:
+        payload["_canvas_id"] = internal_id
+        payload["_canvas_node_id"] = internal_id
+    if node.get("display_id") is not None:
+        payload["_canvas_display_id"] = node.get("display_id")
+    return payload
+
+
+async def _model_visible_result(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    id_map = await _node_public_id_map(project_id)
+    return publicize_node_refs(payload, id_map)
 
 
 _NODE_DEPENDENCIES: dict[str, list[str]] = {
@@ -787,7 +830,10 @@ async def _normalize_node_reference_image_for_render(project_id: str, text: str)
     raw_node_id = text[len("node:"):].strip() if prefixed else text
     if not raw_node_id:
         return "", "", False
-    if not prefixed and not _looks_like_bare_workflow_node_id(raw_node_id):
+    if not prefixed and not _looks_like_bare_workflow_node_id(raw_node_id) and not looks_like_public_node_id(raw_node_id):
+        return "", "", False
+    raw_node_id = await _resolve_agent_node_id(project_id, raw_node_id)
+    if not raw_node_id:
         return "", "", False
     node = await canvas_tools.get_node(raw_node_id)
     if not isinstance(node, dict) or node.get("error"):
@@ -800,7 +846,7 @@ async def _normalize_node_reference_image_for_render(project_id: str, text: str)
     if node.get("type") != "image":
         title = str(node.get("title") or node_id)
         return "", f"reference_images 已跳过非图片节点 {title}", True
-    warning = "" if prefixed else f"reference_images 已将裸节点 ID {text} 规范化为 node:{node_id}"
+    warning = "" if prefixed else f"reference_images 已将裸节点 ID/节点编号 {text} 规范化为 node:{public_node_id_from_dict(node)}"
     return f"node:{node_id}", warning, True
 
 
@@ -1025,8 +1071,11 @@ async def _image_node_reference_images_for_video(
     lookup: dict[str, WorkflowNode] = {}
     for node in rows:
         data = _json_object(node.input_json)
+        display_id = getattr(node, "display_id", None)
         for key in (
             node.id,
+            display_id,
+            f"#{display_id}" if display_id is not None else None,
             node.title,
             data.get("id"),
             data.get("title"),
@@ -1160,6 +1209,7 @@ def _image_output_from_source_value(project_id: str, value: str) -> dict[str, An
 
 async def _image_output_from_node_reference(project_id: str, node_ref: str) -> tuple[dict[str, Any] | None, str | None]:
     node_id = node_ref[len("node:"):].strip() if node_ref.startswith("node:") else node_ref.strip()
+    node_id = await _resolve_agent_node_id(project_id, node_id)
     node = await canvas_tools.get_node(node_id)
     if not isinstance(node, dict) or node.get("error"):
         return None, f"source_image 节点不存在: {node_ref}"
@@ -1714,6 +1764,15 @@ async def _node_create_one(
     fields, parent_node_id, ref_error = _resolve_batch_create_refs(fields, parent_node_id, client_node_ids)
     if ref_error is not None:
         return ref_error
+    if parent_node_id:
+        parent_node_id = await _resolve_agent_node_id(project_id, parent_node_id)
+        if not parent_node_id:
+            return {
+                "ok": False,
+                "error": "parent_node_id 无法解析",
+                "error_kind": "node_not_found",
+                "hint": "parent_node_id 使用 node.list 返回的编号 id，或省略该字段。",
+            }
 
     # Gate 1 + 2:模式守卫。业务流程由 skill.video_production 承接。
     # 后端自动推断节点归属模式,不再强制旧 node.get_creation_guide 前置。
@@ -1797,7 +1856,7 @@ async def _node_create_one(
     except Exception as exc:
         node.setdefault("edge_warning", f"自动连边失败:{exc}")
 
-    return node
+    return await _model_visible_node(node, project_id)
 
 
 async def node_create(
@@ -1834,6 +1893,7 @@ async def node_create(
     created: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     client_node_ids: dict[str, str] = {}
+    client_public_node_ids: dict[str, str] = {}
     for index, item in enumerate(nodes):
         if not isinstance(item, dict):
             errors.append({
@@ -1873,8 +1933,10 @@ async def node_create(
         node["index"] = index
         if client_ref:
             node["client_ref"] = client_ref
-            if node.get("id"):
-                client_node_ids[client_ref] = str(node["id"])
+            internal_node_id = str(node.get("_canvas_id") or node.get("_canvas_node_id") or "")
+            if internal_node_id:
+                client_node_ids[client_ref] = internal_node_id
+                client_public_node_ids[client_ref] = str(node.get("id") or "")
         created.append(node)
 
     if not created:
@@ -1899,7 +1961,7 @@ async def node_create(
         "failed_count": len(errors),
         "nodes": created,
         "errors": errors,
-        "client_node_ids": client_node_ids,
+        "client_node_ids": client_public_node_ids,
         "next_action": "需要生成产物时按依赖顺序调用 node.run；需要修字段时批量或单个调用 node.update。",
     }
 
@@ -1910,6 +1972,14 @@ async def _auto_connect_topology(project_id: str, node_id: str, node_type: str, 
     if not isinstance(nodes, list):
         return
     node_by_id = {str(n.get("id")): n for n in nodes if isinstance(n, dict) and n.get("id")}
+    public_to_internal: dict[str, str] = {}
+    for n in nodes:
+        if not isinstance(n, dict) or not n.get("id"):
+            continue
+        public_id = public_node_id_from_dict(n)
+        if public_id:
+            public_to_internal[public_id] = str(n.get("id"))
+            public_to_internal[f"#{public_id}"] = str(n.get("id"))
 
     async def _link(src: str | None) -> None:
         if not src or src == node_id:
@@ -1936,10 +2006,13 @@ async def _auto_connect_topology(project_id: str, node_id: str, node_type: str, 
             text = text[1:]
         if text.startswith("node:"):
             text = text[5:]
+        if text.startswith("#"):
+            text = text[1:]
         if "/" in text or text.startswith(("asset:", "upload:", "http://", "https://")):
             continue
-        if text in node_by_id:
-            await _link(text)
+        src = text if text in node_by_id else public_to_internal.get(text)
+        if src:
+            await _link(src)
 
 
 async def _emit_edge_created(project_id: str, edge: dict | None) -> None:
@@ -1987,20 +2060,31 @@ def _normalize_node_id_list(node_id: str | None = "", node_ids: list[str] | str 
             text = text[1:]
         if text.startswith("node:"):
             text = text[5:]
+        if text.startswith("#"):
+            text = text[1:]
         if text and text not in normalized:
             normalized.append(text)
     return normalized
 
 
 async def _node_get_one(node_id: str, project_id: str = "") -> dict:
-    node = await canvas_tools.get_node(node_id)
+    resolved_node_id = await _resolve_agent_node_id(project_id, node_id)
+    if not resolved_node_id:
+        return {
+            "ok": False,
+            "error": "Current project context is missing; backend could not resolve the node number",
+            "error_kind": "missing_project_context",
+            "node_id": node_id,
+            "hint": "节点编号由后端按当前项目自动解析；请检查 chat stream 是否注入了当前项目上下文。",
+        }
+    node = await canvas_tools.get_node(resolved_node_id)
     if isinstance(node, dict) and node.get("error") == "Node not found":
         return {
             "ok": False,
             "error": "Node not found",
             "error_kind": "node_not_found",
             "node_id": node_id,
-            "hint": "node_id 必须是 node.create 返回的真实节点 id，不是 shot_id、segment_id、标题或别名。新任务没有节点时先创建合适的 text/image/video/audio 节点。",
+            "hint": "node_id 使用 node.list/node.create 返回的节点编号，不是 shot_id、segment_id、标题或别名。新任务没有节点时先创建合适的 text/image/video/audio 节点。",
         }
     if project_id and isinstance(node, dict) and str(node.get("project_id") or "") != project_id:
         return {
@@ -2010,7 +2094,7 @@ async def _node_get_one(node_id: str, project_id: str = "") -> dict:
             "node_id": node_id,
             "project_id": project_id,
         }
-    return node
+    return await _model_visible_node(node, project_id or str(node.get("project_id") or ""))
 
 
 async def node_get(
@@ -2038,7 +2122,7 @@ async def node_get(
             "ok": False,
             "error": "node_id/node_ids or query/regex is required",
             "error_kind": "missing_node_id",
-            "hint": "先用 node.list(query=... 或 regex=...) 获取候选真实节点 id；需要多个详情时一次传 node_ids。",
+            "hint": "先用 node.list(query=... 或 regex=...) 获取候选节点编号；需要多个详情时一次传 node_ids。",
         }
     if node_ids is None and len(ids) == 1:
         result = await _node_get_one(ids[0], project_id=project_id)
@@ -2078,7 +2162,7 @@ async def node_get(
             "requested": len(ids),
             "returned": 0,
             "errors": errors,
-            "hint": "node_ids 必须来自 node.list 返回的真实 id；如果只记得标题或描述，用 node.get(query=...) 或 node.list(regex=...) 先找候选。",
+            "hint": "node_ids 必须来自 node.list 返回的节点编号；如果只记得标题或描述，用 node.get(query=...) 或 node.list(regex=...) 先找候选。",
         }
     return {
         "ok": True,
@@ -2106,8 +2190,9 @@ async def _node_query_candidates(
     if not project_id:
         return {
             "ok": False,
-            "error": "project_id is required for query lookup",
-            "error_kind": "missing_project_id",
+            "error": "Current project context is missing; backend could not search project nodes",
+            "error_kind": "missing_project_context",
+            "hint": "节点搜索由后端在当前项目内执行；请检查 chat stream 是否注入了当前项目上下文。",
         }
     nodes = await canvas_tools.list_nodes(project_id)
     matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -2401,7 +2486,7 @@ def _normalize_node_update_patch(node: dict, patch: dict) -> tuple[dict, dict | 
     return next_patch, None
 
 
-async def _node_update_one(node_id: str, patch: dict | str | None) -> dict:
+async def _node_update_one(node_id: str, patch: dict | str | None, project_id: str = "") -> dict:
     """局部修改节点。
 
     - 通用字段(title / status / position / prompt 等)直接落 WorkflowNode 表
@@ -2419,9 +2504,20 @@ async def _node_update_one(node_id: str, patch: dict | str | None) -> dict:
     if not isinstance(patch, dict):
         return {"error": "patch 必须是 dict"}
 
-    node = await canvas_tools.get_node(node_id)
+    resolved_node_id = await _resolve_agent_node_id(project_id, node_id)
+    if not resolved_node_id:
+        return {
+            "ok": False,
+            "error": "Current project context is missing; backend could not resolve the node number",
+            "error_kind": "missing_project_context",
+            "node_id": node_id,
+            "hint": "节点编号由后端按当前项目自动解析；请检查 chat stream 是否注入了当前项目上下文。",
+        }
+    node = await canvas_tools.get_node(resolved_node_id)
     if node.get("error"):
         return node
+    node_id = resolved_node_id
+    project_id = project_id or str(node.get("project_id") or "")
 
     # Snapshot old values before modification for diff
     _old_input = dict(node.get("input") or {})
@@ -2552,11 +2648,12 @@ async def _node_update_one(node_id: str, patch: dict | str | None) -> dict:
             "请继续对这个节点调用 node.run(action='render') 重新生成。生成完成后 render_state 会变为 fresh。"
         )
 
-    return canvas_result
+    return await _model_visible_node(canvas_result, project_id)
 
 
 async def node_update(
     node_id: str = "",
+    project_id: str = "",
     patch: dict | str | None = None,
     updates: list[dict] | None = None,
     node_ids: list[str] | str | None = None,
@@ -2567,7 +2664,7 @@ async def node_update(
         updates = [{"node_id": item_id, "patch": patch} for item_id in ids]
 
     if updates is None:
-        return await _node_update_one(node_id, patch)
+        return await _node_update_one(node_id, patch, project_id=project_id)
 
     if not isinstance(updates, list) or not updates:
         return {
@@ -2590,7 +2687,7 @@ async def node_update(
             continue
         item_node_id = str(item.get("node_id") or "").strip()
         item_patch = item.get("patch")
-        result = await _node_update_one(item_node_id, item_patch)
+        result = await _node_update_one(item_node_id, item_patch, project_id=project_id)
         if _node_tool_error(result):
             error = dict(result)
             error["index"] = index
@@ -2600,7 +2697,7 @@ async def node_update(
             continue
         updated = dict(result)
         updated["index"] = index
-        updated.setdefault("node_id", item_node_id or updated.get("id"))
+        updated.setdefault("node_id", updated.get("id") or item_node_id)
         results.append(updated)
 
     if not results:
@@ -2627,18 +2724,29 @@ async def node_update(
     }
 
 
-async def node_delete(node_id: str, cascade: bool = True) -> dict:
+async def node_delete(node_id: str, cascade: bool = True, project_id: str = "") -> dict:
     """删除通用节点。cascade 参数仅保留为工具入参，不触发业务类型级联。"""
-    node = await canvas_tools.get_node(node_id)
+    resolved_node_id = await _resolve_agent_node_id(project_id, node_id)
+    if not resolved_node_id:
+        return {
+            "ok": False,
+            "error": "Current project context is missing; backend could not resolve the node number",
+            "error_kind": "missing_project_context",
+            "node_id": node_id,
+            "hint": "节点编号由后端按当前项目自动解析；请检查 chat stream 是否注入了当前项目上下文。",
+        }
+    node = await canvas_tools.get_node(resolved_node_id)
     if node.get("error"):
         return node
 
-    return await canvas_tools.delete_node(node_id)
+    return await canvas_tools.delete_node(resolved_node_id)
 
 
 def _node_search_blob(node: dict[str, Any]) -> str:
     return search_blob(
         node.get("id"),
+        public_node_id_from_dict(node),
+        f"#{public_node_id_from_dict(node)}",
         node.get("title"),
         node.get("type"),
         node.get("status"),
@@ -2656,9 +2764,10 @@ def _node_list_index_item(
     match_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     prompt_text = str(node.get("prompt") or "")
+    public_id = public_node_id_from_dict(node)
     item: dict[str, Any] = {
-        "id": node.get("id"),
-        "node_id": node.get("id"),
+        "id": public_id,
+        "node_id": public_id,
         "type": node.get("type"),
         "title": node.get("title"),
         "status": node.get("status"),
@@ -2687,7 +2796,7 @@ def _node_list_index_item(
             if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
         }
     if match_hint:
-        item["match_hint"] = "这是 query 匹配到的候选节点；后续 node.get/node.run 必须使用 id 字段。"
+        item["match_hint"] = "这是 query 匹配到的候选节点；后续 node.get/node.run 使用 id 字段。"
     return item
 
 
@@ -3355,15 +3464,39 @@ async def node_run(
       "force":       忽略已 completed 状态强制重跑准备阶段
     extra_fields:    临时补字段(不写回 input),render 时可临时替换 prompt 等
     """
+    requested_node_id = node_id
+    node_id = await _resolve_agent_node_id(project_id, node_id)
+    if not node_id:
+        return {
+            "ok": False,
+            "error": "Current project context is missing; backend could not resolve the node number",
+            "error_kind": "missing_project_context",
+            "node_id": requested_node_id,
+            "hint": "节点编号由后端按当前项目自动解析；请检查 chat stream 是否注入了当前项目上下文。",
+        }
     node = await canvas_tools.get_node(node_id)
     if node.get("error"):
         return {
             "ok": False,
             "error": node.get("error") or "Node not found",
             "error_kind": "node_not_found",
-            "node_id": node_id,
-                "hint": "node.run 的 node_id 必须来自已存在节点。不要把 shot_id/segment_id/标题当 node_id；如果是新任务，先 node.create 创建合适节点，再 node.run。",
+            "node_id": requested_node_id,
+            "hint": "node.run 的 node_id 必须来自已存在节点。不要把 shot_id/segment_id/标题当 node_id；如果是新任务，先 node.create 创建合适节点，再 node.run。",
         }
+    model_node_id = public_node_id_from_dict(node)
+    project_node_id_map = await _node_public_id_map(project_id)
+
+    def _run_response(payload: dict[str, Any]) -> dict[str, Any]:
+        mapped = publicize_node_refs(payload, {**project_node_id_map, node_id: model_node_id})
+        if isinstance(mapped, dict):
+            mapped["node_id"] = model_node_id
+            mapped["_canvas_node_id"] = node_id
+            mapped["_canvas_id"] = node_id
+            if node.get("display_id") is not None:
+                mapped["_canvas_display_id"] = node.get("display_id")
+            return mapped
+        return payload
+
     node_type = node.get("type")
     if (
         node_type == "image"
@@ -3383,16 +3516,15 @@ async def node_run(
                     "input_data": _with_image_render_state(node.get("input") if isinstance(node.get("input"), dict) else {}, "fresh"),
                 },
             )
-            return {
+            return _run_response({
                 "ok": True,
-                "node_id": node_id,
                 "type": node_type,
                 "status": "completed",
                 "render_state": "fresh",
                 "url": recovered_url,
                 "result": node.get("output"),
                 "recovered_from_running_output": True,
-            }
+            })
 
     # 通用字段拼装
     fields: dict = dict(node.get("input") or {})
@@ -3413,25 +3545,23 @@ async def node_run(
         except Exception as exc:
             err_text = f"image operation failed: {exc}"
             await canvas_tools.update_node(node_id, {"status": "failed", "error_message": err_text})
-            return {
+            return _run_response({
                 "ok": False,
                 "error": err_text,
                 "error_kind": exc.__class__.__name__,
-                "node_id": node_id,
                 "node_type": node_type,
-            }
+            })
         if isinstance(result, dict) and result.get("error"):
             await canvas_tools.update_node(
                 node_id,
                 {"status": "failed", "error_message": result.get("error")},
             )
-            return {
+            return _run_response({
                 "ok": False,
                 "error": result.get("error"),
-                "node_id": node_id,
                 "node_type": node_type,
                 **{k: v for k, v in result.items() if k not in {"ok", "error"}},
-            }
+            })
         if isinstance(result, dict):
             result = media_history.preserve_media_history(result, archived_output)
         await canvas_tools.update_node(
@@ -3450,15 +3580,14 @@ async def node_run(
             render_state="fresh",
             project_id=project_id,
         )
-        return {
+        return _run_response({
             "ok": True,
-            "node_id": node_id,
             "type": node_type,
             "action": _image_operation_name(fields),
             "status": "completed",
             "render_state": "fresh",
             "result": result,
-        }
+        })
 
     if node_type == "image" and action in {None, "run", "force"}:
         action = "render"
@@ -3478,10 +3607,9 @@ async def node_run(
     if action == "render":
         if node_type not in _RENDERABLE:
             _alt = "node.run(action=None) 让默认 runner 处理"
-            return {
+            return _run_response({
                 "ok": False,
                 "error": f"action='render' 不支持 type={node_type!r}",
-                "node_id": node_id,
                 "node_type": node_type,
                 "hint": (
                     f"render 仅用于 image 节点。"
@@ -3489,7 +3617,7 @@ async def node_run(
                 ),
                 "renderable_types": sorted(_RENDERABLE),
                 "suggested_next": _alt,
-            }
+            })
 
         # 先把节点状态改 running,**同时**在 output_json 里写一个 running 的图片 stage,
         # 这样前端 SmartNode 的 StageImage 能渲染 skeleton(spinner + shimmer)占位,
@@ -3518,11 +3646,10 @@ async def node_run(
                 node_id, status="failed",
                 error=err_text, preview=fusion, project_id=project_id,
             )
-            return {
+            return _run_response({
                 "ok": False,
                 "error": err_text,
                 "error_kind": "invalid_resolution",
-                "node_id": node_id,
                 "node_type": node_type,
                 "hint": (
                     "用 node.update 修改原节点 fields.resolution 为精确像素尺寸后重试；"
@@ -3530,7 +3657,7 @@ async def node_run(
                     "后端不会把 2k/4k 自动换算成像素，也不会自动重试。"
                 ),
                 "suggested_next": "repair_resolution_then_rerun_original_node",
-            }
+            })
         running_output = await _merge_stage_into_fusion(
             node_id, node_type,
             status="running",
@@ -3597,10 +3724,9 @@ async def node_run(
                 node_id, status="failed",
                 error=result["error"], preview=fusion, project_id=project_id,
             )
-            return {
+            return _run_response({
                 "ok": False,
                 "error": result["error"],
-                "node_id": node_id,
                 "type": node_type,
 	                "hint": (
 	                    "图片服务配置或鉴权错误，修改 provider 配置后再在原节点 render；不要原地重复调用。"
@@ -3621,7 +3747,7 @@ async def node_run(
                     )
                     if result.get(key) is not None
                 },
-            }
+            })
 
         # 关键修复:不再 output_data=result 整段覆盖。只 upsert "参考图/场景图/..."这一阶段,
         # 之前的"人物设定 / 提示词"等阶段保留在 fusion stages 里,刷新页面也不丢。
@@ -3679,24 +3805,22 @@ async def node_run(
         }
         if review_recommendation:
             response.update(review_recommendation)
-        return response
+        return _run_response(response)
 
     # action=review:旧固定剧本类型已移除。
     if action == "review":
-        return {
+        return _run_response({
             "ok": False,
             "error": "action='review' 已移除。需要审稿时由模型创建/更新 text 节点或调用合适的只读 guide。",
             "error_kind": "unsupported_action",
-            "node_id": node_id,
             "node_type": node_type,
-        }
+        })
 
     runner = _RUNNERS.get(node_type)
     if runner is None:
-        return {
+        return _run_response({
             "ok": False,
             "error": f"节点类型 {node_type!r} 没有 runner",
-            "node_id": node_id,
             "node_type": node_type,
             "hint": (
                 f"该类型节点没注册 runner,不能用 node.run 触发。"
@@ -3704,7 +3828,7 @@ async def node_run(
                 "如果只是想改字段,用 node.update;如果要删,用 canvas.delete。"
             ),
             "available_runners": sorted(_RUNNERS.keys()),
-        }
+        })
 
     archived_output = None
     if node_type in {"image", "video", "audio"}:
@@ -3731,14 +3855,13 @@ async def node_run(
         await canvas_tools.update_node(
             node_id, {"status": "failed", "error_message": err_text},
         )
-        return {
+        return _run_response({
             "ok": False,
             "error": err_text,
             "error_kind": "timeout",
-            "node_id": node_id,
             "node_type": node_type,
             "hint": "外部模型响应超时。直接对原节点调用 node.run(force) 重试，不要新建节点。",
-        }
+        })
     except Exception as exc:
         err_text = f"{node_type} runner 异常: {exc}"
         exc_name = exc.__class__.__name__
@@ -3751,13 +3874,12 @@ async def node_run(
         }
         _is_transient = exc_name in _transient_names
         _is_value = exc_name in {"ValueError", "TypeError", "KeyError", "AttributeError"}
-        return {
+        return _run_response({
             "ok": False,
             "error": err_text,
             "error_kind": "server_error" if _is_transient else (
                 "invalid_field" if _is_value else "runner_exception"
             ),
-            "node_id": node_id,
             "node_type": node_type,
             "exception_type": exc_name,
             "diagnosis": {
@@ -3785,7 +3907,7 @@ async def node_run(
                 "先用 node.get 看当前节点 fields/output,缺啥先补啥再重试。"
                 "不要原地反复 node.run 同一个节点。"
             ),
-        }
+        })
 
     if node_type in {"video", "audio"} and isinstance(result, dict) and result.get("status") in {"queued", "running"}:
         result = media_history.preserve_media_history(result, archived_output)
@@ -3810,36 +3932,34 @@ async def node_run(
             )
         except Exception:
             logger.exception("emit media queued canvas event failed for node %s", node_id)
-        return {
+        return _run_response({
             "ok": True,
-            "node_id": node_id,
             "type": node_type,
             "status": result.get("status"),
             "async": True,
             "job_id": result.get("job_id"),
             "result": result,
-        }
+        })
 
     if isinstance(result, dict) and result.get("error"):
         err_text = result["error"]
         await canvas_tools.update_node(
             node_id, {"status": "failed", "error_message": err_text},
         )
-        return {
+        return _run_response({
             "ok": False,
             "error": err_text,
-            "node_id": node_id,
             "node_type": node_type,
             "hint": result.get("hint") or (
                 "runner 返回业务错误。检查节点 input 字段是否完整、依赖产物是否生成。"
                 "用 node.get 看完整 input,node.list 看同 episode/segment 是否缺前置节点。"
             ),
             **{k: v for k, v in result.items() if k not in ("error", "hint", "ok")},
-        }
+        })
 
     if node_type in {"image", "video", "audio"} and isinstance(result, dict):
         result = media_history.preserve_media_history(result, archived_output)
     await canvas_tools.update_node(
         node_id, {"status": "completed", "output_data": result},
     )
-    return {"node_id": node_id, "type": node_type, "result": result}
+    return _run_response({"node_id": node_id, "type": node_type, "result": result})

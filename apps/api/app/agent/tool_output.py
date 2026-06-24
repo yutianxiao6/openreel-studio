@@ -30,7 +30,7 @@ def build_tool_output_envelope(
     budget_chars: int = context_compact.TOOL_RESULT_CONTEXT_BUDGET_CHARS,
 ) -> dict[str, Any]:
     model_content_parts = _model_content_parts(result)
-    result_for_context = _strip_model_content(result)
+    result_for_context = _strip_model_private_fields(_strip_model_content(result))
     raw_json = json.dumps(result_for_context, ensure_ascii=False, default=str)
     model_content = context_compact.prepare_tool_result_for_context(
         result_for_context,
@@ -304,6 +304,19 @@ def _strip_model_content(result: Any) -> Any:
     return redact_image_data_urls(stripped)
 
 
+def _strip_model_private_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        stripped: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"display_id", "project_id"} or key.startswith("_canvas"):
+                continue
+            stripped[key] = _strip_model_private_fields(item)
+        return stripped
+    if isinstance(value, list):
+        return [_strip_model_private_fields(item) for item in value]
+    return value
+
+
 def _ui_result(
     result: Any,
     *,
@@ -334,7 +347,6 @@ def _ui_result(
             "assistant_text",
             "id",
             "node_id",
-            "project_id",
             "_deferred_tool",
         ):
             value = result.get(key)

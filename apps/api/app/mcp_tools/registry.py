@@ -312,6 +312,38 @@ def _compact_agent_schema(schema: Any) -> Any:
     return schema
 
 
+_RUNTIME_CONTEXT_SCHEMA_KEYS = {
+    "project_id",
+    "_state",
+    "_user_message",
+    "_requires_plan",
+}
+
+
+def _hide_runtime_context_schema(schema: Any) -> Any:
+    """Hide parameters that the chat harness injects deterministically."""
+    if isinstance(schema, dict):
+        normalized = {
+            key: _hide_runtime_context_schema(value)
+            for key, value in schema.items()
+        }
+        properties = normalized.get("properties")
+        if isinstance(properties, dict):
+            for key in _RUNTIME_CONTEXT_SCHEMA_KEYS:
+                properties.pop(key, None)
+        required = normalized.get("required")
+        if isinstance(required, list):
+            required = [item for item in required if item not in _RUNTIME_CONTEXT_SCHEMA_KEYS]
+            if required:
+                normalized["required"] = required
+            else:
+                normalized.pop("required", None)
+        return normalized
+    if isinstance(schema, list):
+        return [_hide_runtime_context_schema(item) for item in schema]
+    return schema
+
+
 def _llm_compatible_schema(schema: Any) -> Any:
     """Return a provider-safe JSON Schema copy for function declarations."""
     if isinstance(schema, dict):
@@ -613,6 +645,7 @@ class ToolRegistry:
         result: list[dict[str, Any]] = []
         for spec in specs:
             params = spec.schema if spec.schema else _schema_from_handler(spec.handler)
+            params = _hide_runtime_context_schema(params)
             params = _llm_compatible_schema(params)
             result.append({
                 "type": "function",
@@ -776,6 +809,7 @@ class ToolRegistry:
             for spec in specs:
                 params = spec.schema if spec.schema else _schema_from_handler(spec.handler)
                 params = _compact_agent_schema(params)
+                params = _hide_runtime_context_schema(params)
                 params = _llm_compatible_schema(params)
                 result.append({
                     "type": "function",
@@ -830,6 +864,7 @@ class ToolRegistry:
         # Tier 1: 完整 schema
         for spec in tier1_specs:
             params = spec.schema if spec.schema else _schema_from_handler(spec.handler)
+            params = _hide_runtime_context_schema(params)
             params = _llm_compatible_schema(params)
             result.append({
                 "type": "function",
@@ -1466,7 +1501,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
     R("node.get", node_universal.node_get, tags=["node", "read"],
       description=(
           "读取节点完整信息(input / output / prompt / status / surface / links)。"
-          "已知真实 id 时传 node_id/node_ids；只记得标题/描述/错误时传 query 或 regex 先取候选详情。"
+          "已知节点编号 id 时传 node_id/node_ids；只记得标题/描述/错误时传 query 或 regex 先取候选详情。"
       ),
       schema={
           "type": "object",
@@ -1509,6 +1544,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
       schema={
           "type": "object",
           "properties": {
+              "project_id": {"type": "string"},
               "node_id": {"type": "string"},
               "node_ids": {
                   "type": "array",
@@ -1542,7 +1578,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
     R("node.list", node_universal.node_list, tags=["node", "read"],
       description=(
           "列出项目画布节点索引，默认返回 20 个节点的 id/title/status/prompt_preview。"
-          "支持 query/regex 模糊找候选；需要更多索引时传 limit；limit=0 返回全部匹配节点；详情用 node.get(node_ids=[...]) 批量读取。"
+          "id 是项目内从 0 开始的节点编号。支持 query/regex 模糊找候选；需要更多索引时传 limit；limit=0 返回全部匹配节点；详情用 node.get(node_ids=[...]) 批量读取。"
       ),
       schema={
           "type": "object",
@@ -1572,7 +1608,6 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
                   "description": "默认 20；可传更大值，最大 800；传 0 返回全部匹配节点索引。",
               },
           },
-          "required": ["project_id"],
       })
     R("vision.view_image", vision_tools.view_image, tags=["vision", "read"],
       description=(
@@ -1582,6 +1617,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
       schema={
           "type": "object",
           "properties": {
+              "project_id": {"type": "string"},
               "node_id": {"type": "string", "description": "已完成 image 节点 id；优先使用"},
               "node_ids": {
                   "type": "array",

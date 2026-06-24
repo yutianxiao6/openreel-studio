@@ -17,6 +17,7 @@ from app.db.session import get_session
 from app.mcp_tools import canvas_tools, panel_tools
 from app.services import media_history
 from app.services.node_service import NodeService, workflow_node_payload
+from app.services.node_ids import next_node_display_id
 from app.services.project_service import DEFAULT_EPISODE_COUNT, ProjectService
 
 router = APIRouter()
@@ -214,6 +215,7 @@ def _node_creator(node: WorkflowNode) -> str:
 def _node_detail_payload(node: WorkflowNode) -> dict[str, Any]:
     return {
         "id": node.id,
+        "display_id": node.display_id,
         "project_id": node.project_id,
         "type": node.type,
         "title": node.title,
@@ -835,6 +837,8 @@ async def restore_project_canvas_snapshot(
         if existing and existing.project_id != project_id:
             continue
         node = existing or WorkflowNode(id=item.id, project_id=project_id, created_at=now)
+        if node.display_id is None:
+            node.display_id = await next_node_display_id(db, project_id)
         node.type = node_type
         node.title = item.title or {
             "text": "文本节点",

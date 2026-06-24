@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from "react"
@@ -112,7 +113,18 @@ function nodeTitle(node: Node): string {
   return String(nodeData(node).title || node.id)
 }
 
+function nodePublicSortValue(node: Node): number | null {
+  const raw = nodeData(node).publicId
+  const value = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN
+  return Number.isFinite(value) ? value : null
+}
+
 function nodeSort(a: Node, b: Node): number {
+  const publicA = nodePublicSortValue(a)
+  const publicB = nodePublicSortValue(b)
+  if (publicA !== null && publicB !== null && publicA !== publicB) return publicA - publicB
+  if (publicA !== null && publicB === null) return -1
+  if (publicA === null && publicB !== null) return 1
   const ay = Number.isFinite(a.position?.y) ? a.position.y : 0
   const by = Number.isFinite(b.position?.y) ? b.position.y : 0
   if (Math.abs(ay - by) > 1) return ay - by
@@ -551,6 +563,26 @@ export default function CanvasGroupLayer({
     })
   }, [applyPositions, edges, nodeById, persistPositions, registerUndo])
 
+  const applySelectionLayout = useCallback((strategy: GroupLayoutStrategy, event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (selectedNodes.length < 2) return
+    const previous = positionsFromNodes(selectedNodes)
+    const next = layoutGroupNodes(selectedNodes, edges, strategy)
+    if (!hasMoved(previous, next)) return
+    applyPositions(next)
+    void persistPositions(next).catch((error) => {
+      console.warn("Failed to persist selection layout", error)
+    })
+    registerUndo({
+      label: "选择布局",
+      undo: async () => {
+        applyPositions(previous)
+        await persistPositions(previous)
+      },
+    })
+  }, [applyPositions, edges, persistPositions, registerUndo, selectedNodes])
+
   const beginGroupDrag = useCallback((group: CanvasNodeGroup, clientX: number, clientY: number) => {
     const groupNodes = group.nodeIds.map((id) => nodeById.get(id)).filter(Boolean) as Node[]
     if (groupNodes.length < 2) return
@@ -751,18 +783,40 @@ export default function CanvasGroupLayer({
       })}
 
       {selectionBounds && (
-        <button
-          type="button"
-          className="pointer-events-auto absolute z-50 h-8 rounded-md border border-cyan-200/55 bg-cyan-300 px-3 text-xs font-semibold text-zinc-950 shadow-2xl shadow-cyan-950/30 transition-colors hover:bg-cyan-200"
+        <div
+          data-openreel-group-toolbar="true"
+          className="pointer-events-auto absolute z-50 flex h-[34px] items-center gap-1 rounded-md border border-white/10 bg-[#11151d]/95 px-1.5 shadow-2xl shadow-black/35 backdrop-blur"
           style={{
             left: selectionBounds.left + selectionBounds.width - 8,
             top: Math.max(8, selectionBounds.top - 42),
             transform: "translateX(-100%)",
           }}
-          onPointerDown={createGroupFromSelection}
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
         >
-          打组
-        </button>
+          <div className="flex h-7 items-center rounded px-2 text-[11px] font-medium text-cyan-100">
+            选择
+          </div>
+          <div className="mx-1 h-4 w-px bg-white/10" />
+          {GROUP_LAYOUTS.map((layout) => (
+            <button
+              key={layout.id}
+              type="button"
+              className={buttonClass(false)}
+              onClick={(event) => applySelectionLayout(layout.id, event)}
+            >
+              {layout.label}
+            </button>
+          ))}
+          <div className="mx-1 h-4 w-px bg-white/10" />
+          <button
+            type="button"
+            className="h-7 rounded bg-cyan-300 px-2.5 text-[11px] font-semibold text-zinc-950 transition-colors hover:bg-cyan-200"
+            onPointerDown={createGroupFromSelection}
+          >
+            打组
+          </button>
+        </div>
       )}
     </div>
   )

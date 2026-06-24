@@ -58,6 +58,10 @@ async def init_db() -> None:
             conn, "workflow_nodes", "supersedes_id", "VARCHAR"
         )
         await _ensure_column(
+            conn, "workflow_nodes", "display_id", "INTEGER"
+        )
+        await _backfill_workflow_node_display_ids(conn)
+        await _ensure_column(
             conn, "model_configs", "llm_provider_name", "VARCHAR"
         )
         await _ensure_column(
@@ -79,3 +83,47 @@ async def _ensure_column(conn, table: str, column: str, ddl_type: str) -> None:
     if column in existing:
         return
     await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
+
+
+async def _backfill_workflow_node_display_ids(conn) -> None:
+    from sqlalchemy import text
+
+    projects = (await conn.execute(text(
+        "SELECT DISTINCT project_id FROM workflow_nodes WHERE display_id IS NULL"
+    ))).all()
+    for (project_id,) in projects:
+        rows = (await conn.execute(
+            text(
+                "SELECT id FROM workflow_nodes "
+                "WHERE project_id = :project_id "
+                "ORDER BY created_at, id"
+            ),
+            {"project_id": project_id},
+        )).all()
+        used_rows = (await conn.execute(
+            text(
+                "SELECT display_id FROM workflow_nodes "
+                "WHERE project_id = :project_id AND display_id IS NOT NULL"
+            ),
+            {"project_id": project_id},
+        )).all()
+        used = {int(value) for (value,) in used_rows if value is not None}
+        next_display_id = 0
+        for _, (node_id,) in enumerate(rows):
+            current = (await conn.execute(
+                text("SELECT display_id FROM workflow_nodes WHERE id = :node_id"),
+                {"node_id": node_id},
+            )).scalar_one_or_none()
+            if current is not None:
+                continue
+            while next_display_id in used:
+                next_display_id += 1
+            await conn.execute(
+                text(
+                    "UPDATE workflow_nodes SET display_id = :display_id "
+                    "WHERE id = :node_id AND display_id IS NULL"
+                ),
+                {"display_id": next_display_id, "node_id": node_id},
+            )
+            used.add(next_display_id)
+            next_display_id += 1

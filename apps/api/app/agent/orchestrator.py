@@ -3329,10 +3329,16 @@ class AgentOrchestrator:
                         for nid in result.get("deleted_node_ids") or []:
                             if nid:
                                 yield {"type": "canvas_action", "action": "delete_node", "payload": {"id": nid}}
-                elif event_tool_name == "node.create" and isinstance(result, dict) and result.get("id"):
-                    yield {"type": "canvas_action", "action": "create_node", "payload": result}
-                elif event_tool_name == "node.update" and isinstance(result, dict) and result.get("id"):
-                    yield {"type": "canvas_action", "action": "update_node", "payload": result}
+                elif event_tool_name == "node.create" and isinstance(result, dict) and (result.get("_canvas_id") or result.get("id")):
+                    payload = dict(result)
+                    if result.get("_canvas_id"):
+                        payload["id"] = result.get("_canvas_id")
+                    yield {"type": "canvas_action", "action": "create_node", "payload": payload}
+                elif event_tool_name == "node.update" and isinstance(result, dict) and (result.get("_canvas_id") or result.get("id")):
+                    payload = dict(result)
+                    if result.get("_canvas_id"):
+                        payload["id"] = result.get("_canvas_id")
+                    yield {"type": "canvas_action", "action": "update_node", "payload": payload}
                 # Task tool events: emit checklist update so frontend panel refreshes
                 if event_tool_name in {"task.create", "task.update", "task.complete", "task.delete"} and isinstance(result, dict):
                     try:
@@ -3363,13 +3369,14 @@ class AgentOrchestrator:
                     except Exception as exc:
                         logger.exception("task checklist emission failed")
 
-                elif event_tool_name == "node.run" and isinstance(result, dict) and result.get("node_id") \
+                elif event_tool_name == "node.run" and isinstance(result, dict) and (result.get("_canvas_node_id") or result.get("node_id")) \
                         and tool_args.get("action") != "render" and node is None and not result_error_kind(result):
                     # node.run 非 render 路径(默认 runner / review 等)完成后构造画布预览
                     # render 路径由 node.run 内部 _emit_fusion_canvas_event 推完整 fusion preview
                     inner = result.get("result") or {}
+                    event_node_id = result.get("_canvas_node_id") or result.get("_canvas_id") or result.get("node_id")
                     payload: dict[str, Any] = {
-                        "id": result["node_id"],
+                        "id": event_node_id,
                         "status": "completed",
                     }
                     if isinstance(inner, dict):

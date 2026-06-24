@@ -42,6 +42,7 @@ interface CanvasState {
   loadNodes: (
     rawNodes: {
       id: string
+      display_id?: number | null
       type: string
       title: string
       status: string
@@ -179,6 +180,11 @@ function rankNodes(nodes: Node[], edges: Edge[]): Map<string, number> {
 }
 
 function nodeSort(a: Node, b: Node): number {
+  const publicA = nodePublicSortValue(a)
+  const publicB = nodePublicSortValue(b)
+  if (publicA !== null && publicB !== null && publicA !== publicB) return publicA - publicB
+  if (publicA !== null && publicB === null) return -1
+  if (publicA === null && publicB !== null) return 1
   const typeDiff = getNodeTier((a.data as { type?: string })?.type) - getNodeTier((b.data as { type?: string })?.type)
   if (typeDiff !== 0) return typeDiff
   const ay = Number.isFinite(a.position?.y) ? a.position.y : 0
@@ -188,6 +194,12 @@ function nodeSort(a: Node, b: Node): number {
     String((b.data as { title?: string })?.title || b.id),
     "zh-CN",
   )
+}
+
+function nodePublicSortValue(node: Node): number | null {
+  const raw = (node.data as { publicId?: unknown })?.publicId
+  const value = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN
+  return Number.isFinite(value) ? value : null
 }
 
 function isAutoSizedMediaType(type: unknown): boolean {
@@ -1310,6 +1322,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
               data: {
                 ...n.data,
                 type: payload.type ?? n.data.type,
+                publicId: payload.display_id ?? payload._canvas_display_id ?? n.data.publicId,
                 title: payload.title ?? n.data.title,
                 status: payload.status ?? n.data.status,
                 surface: payload.surface ?? n.data.surface,
@@ -1386,6 +1399,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 	        position: explicitPosition ?? (preserveExistingLayout || get().manualLayout ? nextManualNodePosition(mutatedNodes) : { x: CANVAS_ORIGIN_X, y: CANVAS_ORIGIN_Y }),
         data: {
           nodeId: id,
+          publicId: payload.display_id ?? payload._canvas_display_id,
           type: payload.type,
           title: payload.title,
           status: payload.status ?? "running",
@@ -1628,6 +1642,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         position,
         data: {
           nodeId: n.id,
+          publicId: n.display_id ?? undefined,
           type: n.type,
           title: n.title,
           status: n.status,

@@ -12,6 +12,7 @@ from sqlmodel import select
 from app.config import settings
 from app.db.models import Asset, WorkflowEdge, WorkflowNode
 from app.db.session import session_scope
+from app.services.node_ids import next_node_display_id
 
 
 def _as_json_str(value) -> str | None:
@@ -59,7 +60,11 @@ def _reference_value(item: Any) -> str:
     return str(item or "").strip()
 
 
-def _dependency_node_ids(input_data: dict[str, Any], node_ids: set[str]) -> list[str]:
+def _dependency_node_ids(
+    input_data: dict[str, Any],
+    node_ids: set[str],
+    node_id_aliases: dict[str, str] | None = None,
+) -> list[str]:
     raw_items: list[Any] = []
     containers = [input_data]
     fields = input_data.get("fields")
@@ -81,12 +86,17 @@ def _dependency_node_ids(input_data: dict[str, Any], node_ids: set[str]) -> list
             text = text[1:]
         if text.startswith("node:"):
             text = text[5:]
+        if text.startswith("#"):
+            text = text[1:]
         if (
             not text
             or text.startswith(("asset:", "upload:", "http://", "https://"))
             or "/" in text
-            or text not in node_ids
         ):
+            continue
+        if text not in node_ids:
+            text = (node_id_aliases or {}).get(text) or text
+        if text not in node_ids:
             continue
         if text not in deps:
             deps.append(text)
@@ -130,6 +140,7 @@ async def create_node(
         node = WorkflowNode(
             id=str(uuid.uuid4()),
             project_id=project_id,
+            display_id=await next_node_display_id(session, project_id),
             type=node_type,
             title=title,
             status="idle",
@@ -147,6 +158,7 @@ async def create_node(
         await session.refresh(node)
         return {
             "id": node.id,
+            "display_id": node.display_id,
             "type": node.type,
             "title": node.title,
             "status": node.status,
@@ -199,6 +211,7 @@ async def update_node(node_id: str, patch: dict | str) -> dict:
         await session.refresh(node)
         return {
             "id": node.id,
+            "display_id": node.display_id,
             "status": node.status,
             "title": node.title,
             "prompt": node.prompt,
@@ -261,11 +274,18 @@ async def sync_dependency_edges(
             return {"ok": False, "changed": False, "error": "target node not found"}
 
         node_rows = (await session.exec(
-            select(WorkflowNode.id).where(WorkflowNode.project_id == project_id)
+            select(WorkflowNode.id, WorkflowNode.display_id).where(WorkflowNode.project_id == project_id)
         )).all()
-        node_ids = {str(node_id) for node_id in node_rows}
+        node_ids = {str(node_id) for node_id, _display_id in node_rows}
+        node_id_aliases: dict[str, str] = {}
+        for row_node_id, display_id in node_rows:
+            if display_id is None:
+                continue
+            text = str(display_id)
+            node_id_aliases[text] = str(row_node_id)
+            node_id_aliases[f"#{text}"] = str(row_node_id)
         desired_sources = [
-            source_id for source_id in _dependency_node_ids(data, node_ids)
+            source_id for source_id in _dependency_node_ids(data, node_ids, node_id_aliases)
             if source_id != target_node_id
         ]
         desired_set = set(desired_sources)
@@ -534,6 +554,7 @@ async def list_nodes(project_id: str) -> list[dict]:
         return [
             {
                 "id": n.id,
+                "display_id": n.display_id,
                 "type": n.type,
                 "title": n.title,
                 "status": n.status,
@@ -562,6 +583,7 @@ async def get_node(node_id: str) -> dict:
             return {"error": "Node not found"}
         return {
             "id": node.id,
+            "display_id": node.display_id,
             "project_id": node.project_id,
             "type": node.type,
             "title": node.title,

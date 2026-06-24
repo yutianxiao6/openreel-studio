@@ -297,6 +297,7 @@ export async function deleteProjectEdge(
 
 export interface CanvasNodeSnapshot {
   id: string
+  display_id?: number | null
   type: string
   title?: string | null
   status?: string | null
