@@ -118,8 +118,6 @@ AGENT_HIDDEN_MEDIA_PROVIDER_READ_TOOL_NAMES: tuple[str, ...] = (
 
 UNREGISTERED_ASSET_WRITE_TOOL_NAMES: tuple[str, ...] = (
     "assets.set_library_path",
-    "assets.save_to_project",
-    "assets.save_to_shared",
 )
 
 UNREGISTERED_CONFIG_WRITE_TOOL_NAMES: tuple[str, ...] = (
@@ -743,7 +741,7 @@ class ToolRegistry:
         # panel layout is a frontend REST API, not an Agent tool.
         # file write/delete wrappers are unregistered; file read/extract stays
         # available for readonly/debug and attachment paths.
-        # assets 库路径配置仍由设置/资产面板处理；读取和显式保存走 deferred。
+        # assets 库路径配置仍由设置/资产面板处理；显式保存走 deferred。
         "assets.set_library_path",
         # task.create/delete remain registered for explicit deferred cleanup and
         # backend compatibility, but are no longer part of the default core
@@ -996,7 +994,7 @@ _STANDARD_CANNOT_BY_NAME: dict[str, str] = {
 
 _STANDARD_CANNOT_BY_NAMESPACE: dict[str, str] = {
     "agent": "不能授权写入、删除、重置或生成媒体；协作子任务仍受只读/权限边界约束",
-    "assets": "不能写入、删除或移动资产；资产写入走明确 API 或内部服务",
+    "assets": "不能配置、删除或移动资产；保存资产必须来自当前用户明确要求并走 assets.save_to_project/assets.save_to_shared",
     "asset": "不能注册、写入或附加资产；创作资产走节点或资产服务",
     "canvas": "不能创建、删除或修改节点内容；节点 CRUD 走 node.*",
     "config": "不能写配置；配置写入走 REST 控制面",
@@ -1959,6 +1957,24 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
 
     # assets.* — user-designated asset library (project + shared roots)
     R("assets.get_library_path", asset_library_tools.assets_get_library_path, tags=["assets", "read"])
+    R(
+        "assets.save_to_project",
+        asset_library_tools.assets_save_to_project,
+        tags=["assets", "write"],
+        description="把节点、资产记录或本地文件显式保存到当前项目资产库。",
+        usage_hints=[
+            "tool.execute(name='assets.save_to_project', input={'episode': 1, 'kind': 'scene', 'source': 'node:12', 'name': '场景名'})",
+        ],
+    )
+    R(
+        "assets.save_to_shared",
+        asset_library_tools.assets_save_to_shared,
+        tags=["assets", "write"],
+        description="把人物或场景素材显式保存到共享资产库。",
+        usage_hints=[
+            "tool.execute(name='assets.save_to_shared', input={'kind': 'character', 'category': 'female_young', 'source': 'node:12', 'name': '角色名'})",
+        ],
+    )
     R("assets.list_project", asset_library_tools.assets_list_project, tags=["assets", "read"])
     R("assets.list_shared", asset_library_tools.assets_list_shared, tags=["assets", "read"])
     R("assets.read_asset", asset_library_tools.assets_read_asset, tags=["assets", "read"])

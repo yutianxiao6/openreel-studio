@@ -1272,15 +1272,22 @@ async def test_asset_library_path_config_is_unregistered_but_library_tools_are_d
         )
         assert result["error_kind"] == "unknown_deferred_tool"
 
-    for name in ("assets.get_library_path", "assets.list_project", "assets.list_shared", "assets.read_asset"):
+    for name in (
+        "assets.get_library_path",
+        "assets.save_to_project",
+        "assets.save_to_shared",
+        "assets.list_project",
+        "assets.list_shared",
+        "assets.read_asset",
+    ):
         assert registry.get(name) is not None, name
         assert name not in visible
         assert name in listed_names
 
     search = await tool_meta_tools.tool_search(query="保存到资产库", category="assets")
     names = {item["name"] for item in search["tools"]}
-    assert "assets.save_to_project" not in names
-    assert "assets.save_to_shared" not in names
+    assert "assets.save_to_project" in names
+    assert "assets.save_to_shared" in names
 
 @pytest.mark.asyncio
 async def test_media_provider_write_tools_are_unregistered_but_provider_test_remains() -> None:

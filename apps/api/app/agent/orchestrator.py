@@ -2081,6 +2081,7 @@ class AgentOrchestrator:
         tool_errors: list[dict[str, Any]] = []
         tool_error_counts: dict[tuple[str, str], int] = {}
         terminal_loop_error: dict[str, Any] | None = None
+        no_text_fallback_used = False
         max_iter = agent_prefs["max_iterations"]
         EXTRACT_EVERY = 10  # 每 N 个 iteration 周期抽取一次关键事实
         for iteration in range(max_iter):
@@ -2497,7 +2498,20 @@ class AgentOrchestrator:
                 duration_ms=elapsed_ms(llm_started_at),
                 tool_call_count=len(msg.tool_calls or []),
                 has_text=bool(msg.content),
+                finish_reason=str(getattr(choice, "finish_reason", "") or ""),
+                model=usage_snapshot.get("model"),
             )
+            if not msg.tool_calls and not msg.content:
+                trace.emit(
+                    "llm_empty_response",
+                    iteration=iteration,
+                    transition_reason="empty_text_response",
+                    duration_ms=elapsed_ms(llm_started_at),
+                    finish_reason=str(getattr(choice, "finish_reason", "") or ""),
+                    model=usage_snapshot.get("model"),
+                    prompt_tokens=usage_snapshot.get("prompt_tokens"),
+                    completion_tokens=usage_snapshot.get("completion_tokens"),
+                )
             trace.emit(
                 "llm_usage",
                 iteration=iteration,
@@ -3693,6 +3707,7 @@ class AgentOrchestrator:
             )
             fallback_text = _sanitize_user_visible_text(fallback_text)
             if fallback_text:
+                no_text_fallback_used = True
                 full_response = fallback_text
                 yield {"type": "text_delta", "content": fallback_text}
 
@@ -3746,6 +3761,10 @@ class AgentOrchestrator:
 
         if not full_reset_completed and (full_response or _pending_meta):
             meta_to_save = dict(_pending_meta) if _pending_meta else None
+            if no_text_fallback_used:
+                meta_to_save = dict(meta_to_save or {})
+                meta_to_save.setdefault("source", "llm_empty_response_fallback")
+                meta_to_save.setdefault("model_visible", False)
             await self._save_message(project_id, "assistant", full_response or "(tool calls)", meta_to_save)
 
         # 归档已完成的任务到历史，删除任务文件

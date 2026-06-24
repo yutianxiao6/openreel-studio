@@ -36,6 +36,8 @@ _CATEGORIES: dict[str, set[str]] = {
     },
     "assets": {
         "assets.get_library_path",
+        "assets.save_to_project",
+        "assets.save_to_shared",
         "assets.list_project",
         "assets.list_shared",
         "assets.read_asset",
@@ -123,6 +125,8 @@ _STATIC_SEARCH_HINTS: dict[str, str] = {
     ),
     "reference.manage": "reference image @图 @图片 style visual asset analyze visual analysis alias bind blueprint memory asset library register asset_id source_path 参考图 风格图 视觉分析 图片识别 别名 蓝图绑定 资产库 长期风格记忆",
     "assets.get_library_path": "asset library path configured project shared assets 资产库路径 项目素材库 共享素材库",
+    "assets.save_to_project": "save generated node output to project asset library 保存到资产库 保存到项目资产库 加入资产库 节点图片 视频 剧本",
+    "assets.save_to_shared": "save reusable character scene to shared asset library 保存到资产库 保存到共享资产库 公用素材库 人物 场景",
     "assets.list_project": "list project asset library generated saved image video script 资产库 检索 项目素材 图片 视频 剧本",
     "assets.list_shared": "list shared reusable asset library character scene style 共享素材库 可复用 人物 场景 风格",
     "assets.read_asset": "read asset library file metadata image path text content 读取资产库 图片 文件 元信息",
