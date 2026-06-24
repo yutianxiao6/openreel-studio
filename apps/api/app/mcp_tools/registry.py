@@ -1904,7 +1904,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         tags=["assets", "write"],
         description="把素材显式保存到单一本地资产库；kind/category 根据内容和用户用语判断，分类名跟随用户语言。",
         usage_hints=[
-            "优先判断人物、场景、分镜等 kind，再选择合适 category。",
+            "kind 只使用 character、scene、storyboard，对应人物、场景、分镜；再选择合适 category。",
             "tool.execute(name='assets.save_to_shared', input={'kind': 'character', 'category': '主要角色', 'source': 'node:12', 'name': '角色名'})",
         ],
     )

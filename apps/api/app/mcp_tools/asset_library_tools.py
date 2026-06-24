@@ -35,28 +35,19 @@ from sqlmodel import select
 
 
 _PROJECT_KINDS = {
-    "script", "character", "scene", "first_frame", "last_frame",
-    "storyboard", "story_template",
+    "character", "scene", "storyboard",
 }
 _LIBRARY_KINDS = set(_PROJECT_KINDS)
 _SHARED_KINDS = _LIBRARY_KINDS
 _PROJECT_KIND_DIR = {
-    "script": "剧本",
     "character": "人物",
     "scene": "场景",
-    "first_frame": "首帧",
-    "last_frame": "尾帧",
     "storyboard": "分镜",
-    "story_template": "故事模板",
 }
 _LEGACY_KIND_DIRS = {
-    "script": ["scripts"],
     "character": ["characters"],
     "scene": ["scenes"],
-    "first_frame": ["first_frames"],
-    "last_frame": ["last_frames"],
     "storyboard": ["storyboards"],
-    "story_template": ["story_templates"],
 }
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"}
@@ -542,14 +533,8 @@ async def assets_save_to_project(
 
     src = await _resolve_source(project_id, source)
     source_metadata = await _metadata_for_source(project_id, source, src)
-    suffix = src.suffix
-    if kind == "script":
-        target = _target_path_without_overwrite(target_dir / f"{_slug(name or '剧本')}.txt")
-    elif kind == "story_template":
-        target = _target_path_without_overwrite(target_dir / f"{_slug(name or '故事模板')}.md")
-    else:
-        stem = _slug(name or str(source_metadata.get("title") or "") or src.stem)
-        target = _target_path_without_overwrite(target_dir / f"{stem}{suffix}")
+    stem = _slug(name or str(source_metadata.get("title") or "") or src.stem)
+    target = _target_path_without_overwrite(target_dir / f"{stem}{src.suffix}")
 
     shutil.copy2(src, target)
     _write_asset_sidecar(target, {

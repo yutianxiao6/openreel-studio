@@ -778,7 +778,12 @@ const ASSET_IMAGE_SUFFIX_RE = /\.(png|jpe?g|webp|gif|bmp)$/i
 const ASSET_VIDEO_SUFFIX_RE = /\.(mp4|webm|mov|m4v)$/i
 const ASSET_AUDIO_SUFFIX_RE = /\.(mp3|wav|m4a|aac|ogg|flac)$/i
 const ASSET_TEXT_SUFFIX_RE = /\.(txt|md|markdown|json|csv|ya?ml)$/i
-const ASSET_LIBRARY_KINDS = ["script", "character", "scene", "first_frame", "last_frame", "storyboard", "story_template"]
+const ASSET_LIBRARY_KINDS = ["character", "scene", "storyboard"]
+const ASSET_LIBRARY_KIND_LABEL: Record<string, string> = {
+  character: "人物",
+  scene: "场景",
+  storyboard: "分镜",
+}
 
 function assetMediaKind(text: string, mimeType?: string | null, type?: string | null): AssetInfoItem["mediaKind"] {
   const raw = `${text || ""} ${type || ""}`.toLowerCase()
@@ -1250,7 +1255,7 @@ function AssetInfoPanel({
                           className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
                         >
                           {ASSET_LIBRARY_KINDS.map((kind) => (
-                            <option key={kind} value={kind}>{kind}</option>
+                            <option key={kind} value={kind}>{ASSET_LIBRARY_KIND_LABEL[kind] ?? kind}</option>
                           ))}
                         </select>
                       </label>
@@ -1807,7 +1812,7 @@ function AssetLibraryActionDialog({
               className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
             >
               {ASSET_LIBRARY_KINDS.map((kind) => (
-                <option key={kind} value={kind}>{kind}</option>
+                <option key={kind} value={kind}>{ASSET_LIBRARY_KIND_LABEL[kind] ?? kind}</option>
               ))}
             </select>
           </label>

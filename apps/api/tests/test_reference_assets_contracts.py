@@ -349,6 +349,11 @@ async def test_asset_library_categories_move_and_add_to_canvas(monkeypatch, tmp_
         kind="storyboard",
         episode=2,
     )
+    invalid_category = await asset_library_tools.assets_create_category(
+        project_id="project-1",
+        kind="first_frame",
+        category="old_kind",
+    )
 
     assert shared_category["ok"] is True
     assert Path(shared_category["path"]).exists()
@@ -356,6 +361,7 @@ async def test_asset_library_categories_move_and_add_to_canvas(monkeypatch, tmp_
     assert Path(project_category["path"]).exists()
     assert project_category["library"] == "asset"
     assert project_category["category"] == "第2集"
+    assert "error" in invalid_category
 
     legacy_items = await asset_library_tools.assets_list_shared(
         project_id="project-1",
@@ -380,6 +386,7 @@ async def test_asset_library_categories_move_and_add_to_canvas(monkeypatch, tmp_
     assert moved_path.parent.name == "city_night"
 
     categories = await asset_library_tools.assets_list_categories(project_id="project-1")
+    assert categories["kinds"] == ["character", "scene", "storyboard"]
     assert any(item["category"] == "city_night" and item["count"] == 1 for item in categories["shared"])
     assert categories["project"] == []
 

@@ -130,10 +130,10 @@ _STATIC_SEARCH_HINTS: dict[str, str] = {
         "视频提示词 分镜一致 影视设计 爆点 钩子 自定义检查 skill"
     ),
     "assets.get_library_path": "asset library path configured single local assets 资产库路径 本地素材库",
-    "assets.save_to_project": "save generated node output to single local asset library 保存到资产库 加入资产库 节点图片 视频 剧本",
+    "assets.save_to_project": "save generated node output to single local asset library 保存到资产库 加入资产库 人物 场景 分镜",
     "assets.save_to_shared": "save reusable asset to single local asset library 保存到资产库 素材库 人物 场景 分镜",
-    "assets.list_project": "list single local asset library generated saved image video script 资产库 检索 素材 图片 视频 剧本",
-    "assets.list_shared": "list single local reusable asset library character scene style 素材库 可复用 人物 场景 风格",
+    "assets.list_project": "list single local asset library generated saved character scene storyboard 资产库 检索 素材 人物 场景 分镜",
+    "assets.list_shared": "list single local reusable asset library character scene storyboard style 素材库 可复用 人物 场景 分镜 风格",
     "assets.read_asset": "read asset library file metadata image path text content 读取资产库 图片 文件 元信息",
     "assets.list_categories": "list asset library categories 分类目录 资产分类 整理素材",
     "assets.create_category": "create asset library category 新建分类 创建分类 素材分类 资产库整理",

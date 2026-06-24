@@ -112,7 +112,12 @@ interface LongPressState {
 
 const LONG_PRESS_MS = 560
 const LONG_PRESS_MOVE_TOLERANCE = 28
-const ASSET_LIBRARY_KINDS = ["character", "scene", "first_frame", "last_frame", "storyboard", "story_template"]
+const ASSET_LIBRARY_KINDS = ["character", "scene", "storyboard"]
+const ASSET_LIBRARY_KIND_LABEL: Record<string, string> = {
+  character: "人物",
+  scene: "场景",
+  storyboard: "分镜",
+}
 const GENERIC_IMAGE_TITLES = new Set(["", "未命名", "未命名图片", "图片节点"])
 
 function menuPositionStyle(x: number, y: number, width: number, height: number) {
@@ -1337,7 +1342,7 @@ export default function WorkflowCanvas() {
                   className="mt-1 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100"
                 >
                   {ASSET_LIBRARY_KINDS.map((kind) => (
-                    <option key={kind} value={kind}>{kind}</option>
+                    <option key={kind} value={kind}>{ASSET_LIBRARY_KIND_LABEL[kind] ?? kind}</option>
                   ))}
                 </select>
               </label>
