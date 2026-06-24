@@ -156,4 +156,12 @@ def model_visible_edge_payload(
         payload["source"] = publicize_node_refs(payload["source"], mapping)
     if "target" in payload:
         payload["target"] = publicize_node_refs(payload["target"], mapping)
+    edge_id = str(payload.get("id") or "").strip()
+    if looks_like_internal_node_id(edge_id):
+        source = payload.get("source_node_id") or payload.get("source") or ""
+        target = payload.get("target_node_id") or payload.get("target") or ""
+        if source and target:
+            payload["id"] = f"edge:{source}->{target}"
+        else:
+            payload.pop("id", None)
     return payload
