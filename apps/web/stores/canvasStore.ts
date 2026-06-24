@@ -948,7 +948,7 @@ function normalizePreviewForNode(
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function parseOutputPreview(outputJson: string | null | undefined): Record<string, unknown> | undefined {
+function parseOutputPreview(outputJson: unknown): Record<string, unknown> | undefined {
   if (!outputJson) return undefined
   try {
     const data = typeof outputJson === "string" ? JSON.parse(outputJson) : outputJson
@@ -1043,6 +1043,24 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         remote_url: data.remote_url as string | undefined,
         poster: data.poster as string | undefined,
         thumbnail_url: data.thumbnail_url as string | undefined,
+        status: data.status,
+        progress: data.progress,
+        poll_status: data.poll_status,
+        poll_count: data.poll_count,
+        ...mediaPreviewHints(data),
+      }
+    }
+    if (
+      data.type === "video" &&
+      (data.status === "queued" || data.status === "running" || data.progress != null || data.poll_status != null)
+    ) {
+      return {
+        type: "video_prompt",
+        prompt: typeof data.prompt === "string" ? data.prompt : undefined,
+        status: data.status,
+        progress: data.progress,
+        poll_status: data.poll_status,
+        poll_count: data.poll_count,
         ...mediaPreviewHints(data),
       }
     }
@@ -1054,6 +1072,23 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         remote_url: data.remote_url as string | undefined,
         format: data.format,
         duration_seconds: data.duration_seconds,
+        status: data.status,
+        progress: data.progress,
+        poll_status: data.poll_status,
+        poll_count: data.poll_count,
+      }
+    }
+    if (
+      data.type === "audio" &&
+      (data.status === "queued" || data.status === "running" || data.progress != null || data.poll_status != null)
+    ) {
+      return {
+        type: "audio_prompt",
+        prompt: typeof data.prompt === "string" ? data.prompt : undefined,
+        status: data.status,
+        progress: data.progress,
+        poll_status: data.poll_status,
+        poll_count: data.poll_count,
       }
     }
     if (data.type === "image_grid" && (data.local_url || data.url || data.composite_url)) {
@@ -1088,6 +1123,10 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         remote_url: video.remote_url as string | undefined,
         poster: video.poster as string | undefined,
         thumbnail_url: video.thumbnail_url as string | undefined,
+        status: video.status,
+        progress: video.progress,
+        poll_status: video.poll_status,
+        poll_count: video.poll_count,
         ...mediaPreviewHints(video),
       }
     }
@@ -1100,6 +1139,10 @@ function parseOutputPreview(outputJson: string | null | undefined): Record<strin
         remote_url: audio.remote_url as string | undefined,
         format: audio.format,
         duration_seconds: audio.duration_seconds,
+        status: audio.status,
+        progress: audio.progress,
+        poll_status: audio.poll_status,
+        poll_count: audio.poll_count,
       }
     }
     // Bare {url|local_url} pointing at an image extension
@@ -1489,7 +1532,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           }
           const prevPreview = prevData.preview
           const nextPreview = nextPayload.preview
-          let mergedPreview: unknown = nextPreview
+          const outputPreview = parseOutputPreview((payload as Record<string, unknown>).output)
+          let mergedPreview: unknown = nextPreview ?? outputPreview
           if (
             prevPreview?.type === "fusion" &&
             nextPreview?.type === "image" &&

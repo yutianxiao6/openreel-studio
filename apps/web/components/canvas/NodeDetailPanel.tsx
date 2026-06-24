@@ -302,6 +302,63 @@ function numericDimension(value: unknown): number | undefined {
   return Number.isFinite(n) && n > 0 ? Math.round(n) : undefined
 }
 
+interface MediaProgressInfo {
+  percent: number | null
+  label: string
+  pollCount?: number
+}
+
+function progressPercent(value: unknown): number | null {
+  if (value == null || value === "") return null
+  const raw = typeof value === "string" ? value.trim().replace(/%$/, "") : value
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return null
+  const percent = parsed > 0 && parsed < 1 ? parsed * 100 : parsed
+  return Math.max(0, Math.min(100, Math.round(percent)))
+}
+
+function progressStatusLabel(status: unknown): string {
+  const text = String(status || "").trim().toLowerCase()
+  if (text === "queued" || text === "pending" || text === "not_start") return "排队中"
+  if (text === "processing" || text === "in_progress" || text === "running") return "生成中"
+  if (text === "done" || text === "success" || text === "completed" || text === "succeeded") return "收尾中"
+  return "生成中"
+}
+
+function mediaProgressFromOutput(output: unknown, fallbackStatus: string): MediaProgressInfo | null {
+  const obj = asObj(output)
+  const percent = progressPercent(obj?.progress)
+  const status = obj?.poll_status ?? obj?.status ?? fallbackStatus
+  const pollCount = Number(obj?.poll_count)
+  if (percent == null && !["queued", "running"].includes(fallbackStatus) && obj?.poll_status == null) {
+    return null
+  }
+  return {
+    percent,
+    label: percent != null ? `${percent}%` : progressStatusLabel(status),
+    pollCount: Number.isFinite(pollCount) ? pollCount : undefined,
+  }
+}
+
+function MediaProgressBar({ progress }: { progress: MediaProgressInfo }) {
+  return (
+    <div className="mt-2 w-full max-w-[260px] space-y-1">
+      <div className="flex items-center justify-between gap-2 text-[10px] font-medium text-blue-200">
+        <span>{progress.label}</span>
+        {progress.pollCount ? <span className="text-blue-200/55">{progress.pollCount}次轮询</span> : null}
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+        <div
+          className={`h-full rounded-full bg-blue-300 shadow-[0_0_10px_rgba(147,197,253,0.55)] ${
+            progress.percent == null ? "w-1/2 animate-pulse" : ""
+          }`}
+          style={progress.percent != null ? { width: `${progress.percent}%` } : undefined}
+        />
+      </div>
+    </div>
+  )
+}
+
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value))
 }
@@ -3952,6 +4009,7 @@ export default function NodeDetailPanel({
   const statusBadge = STATUS_LABELS[status] ?? STATUS_LABELS.idle
   const renderState = renderStateFromNode(data)
   const displayError = data ? nodeDisplayError(data) : ""
+  const mediaProgress = data ? mediaProgressFromOutput(data.output, status) : null
 
   const media = data ? collectMedia(data.output) : []
 
@@ -4130,6 +4188,7 @@ export default function NodeDetailPanel({
                 </span>
               )}
             </div>
+            {mediaProgress && <MediaProgressBar progress={mediaProgress} />}
           </div>
           {canEdit && !editing && (
             <button

@@ -297,6 +297,83 @@ def _video_display_url(result: dict[str, Any]) -> str | None:
     return result.get("local_url") or result.get("remote_url") or result.get("url")
 
 
+def _merge_progress_output(
+    *,
+    current_output: Any,
+    base_output: dict[str, Any],
+    update: dict[str, Any],
+) -> dict[str, Any]:
+    output = dict(current_output) if isinstance(current_output, dict) else dict(base_output)
+    if output.get("type") != base_output.get("type"):
+        output = {**base_output, **output}
+    output.setdefault("type", base_output.get("type"))
+    output.setdefault("job_id", base_output.get("job_id") or update.get("job_id"))
+    output.setdefault("provider", base_output.get("provider"))
+    output.setdefault("model", base_output.get("model"))
+    output.setdefault("prompt", base_output.get("prompt"))
+    output["status"] = "running"
+    output["async"] = True
+    poll_status = str(update.get("status") or "").strip()
+    if poll_status:
+        output["poll_status"] = poll_status
+    if update.get("progress") is not None:
+        output["progress"] = update.get("progress")
+    if update.get("poll_count") is not None:
+        output["poll_count"] = update.get("poll_count")
+    last_poll = {
+        key: update.get(key)
+        for key in ("status", "progress", "poll_count", "updated_at")
+        if update.get(key) is not None
+    }
+    if last_poll:
+        output["last_poll"] = last_poll
+    return output
+
+
+async def _emit_media_progress_update(
+    *,
+    project_id: str,
+    node_id: str | None,
+    base_output: dict[str, Any],
+    update: dict[str, Any],
+) -> None:
+    if not node_id:
+        return
+    from app.agent.orchestrator import emit_canvas_event
+    from app.mcp_tools import canvas_tools
+
+    try:
+        current_node = await canvas_tools.get_node(node_id)
+        current_output = current_node.get("output") if isinstance(current_node, dict) else None
+        output = _merge_progress_output(
+            current_output=current_output,
+            base_output=base_output,
+            update=update,
+        )
+        await canvas_tools.update_node(
+            node_id,
+            {"status": "running", "error_message": None, "output_data": output},
+        )
+        await emit_canvas_event(
+            {
+                "type": "canvas_action",
+                "action": "update_node",
+                "payload": {
+                    "id": node_id,
+                    "status": "running",
+                    "output": output,
+                    "job_id": output.get("job_id"),
+                    "progress": output.get("progress"),
+                    "poll_status": output.get("poll_status"),
+                    "poll_count": output.get("poll_count"),
+                },
+            },
+            project_id=project_id,
+        )
+    except Exception:
+        logger.exception("media progress update failed node_id=%s job_id=%s", node_id, update.get("job_id"))
+
+
 def _video_output(
     result: dict[str, Any],
     *,
@@ -421,12 +498,32 @@ async def _background_video_poll(
     job_id = str(queued_result.get("job_id") or "").strip()
     if not job_id:
         return
+    base_output = _video_output(
+        queued_result,
+        asset_id=None,
+        asset_ids=[],
+        duration_seconds=duration_seconds,
+        aspect_ratio=aspect_ratio,
+        resolution=resolution,
+        reference_images=refs_provided,
+    )
+    base_output["prompt"] = prompt
+
+    async def progress_callback(update: dict[str, Any]) -> None:
+        await _emit_media_progress_update(
+            project_id=project_id,
+            node_id=node_id,
+            base_output=base_output,
+            update=update,
+        )
+
     result = await poll_video_with_provider(
         project_id=project_id,
         job_id=job_id,
         model_name=queued_result.get("provider") or model,
         extra=provider_extra,
         save_locally=True,
+        progress_callback=progress_callback,
     )
     result["reference_images"] = refs_provided
     result["resolved_reference_images"] = queued_result.get("resolved_reference_images") or []
@@ -758,12 +855,33 @@ async def _background_audio_poll(
     job_id = str(queued_result.get("job_id") or "").strip()
     if not job_id:
         return
+    base_output = _audio_output(
+        queued_result,
+        asset_id=None,
+        asset_ids=[],
+        prompt=prompt,
+        title=title,
+        style=style,
+        instrumental=instrumental,
+        duration_seconds=duration_seconds,
+        audio_format=audio_format,
+    )
+
+    async def progress_callback(update: dict[str, Any]) -> None:
+        await _emit_media_progress_update(
+            project_id=project_id,
+            node_id=node_id,
+            base_output=base_output,
+            update=update,
+        )
+
     result = await poll_audio_with_provider(
         project_id=project_id,
         job_id=job_id,
         model_name=queued_result.get("provider") or model,
         extra=provider_extra,
         save_locally=True,
+        progress_callback=progress_callback,
     )
 
     asset_id = None

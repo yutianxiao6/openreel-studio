@@ -20,6 +20,9 @@ export interface StageErrorDetail {
 export interface StageData {
   name: string
   status?: "running" | "completed" | "failed" | string
+  progress?: unknown
+  poll_status?: unknown
+  poll_count?: unknown
   prompt?: string
   url?: string
   local_url?: string
@@ -60,6 +63,10 @@ interface ImageGridPreviewCell {
 
 interface PreviewData {
   type?: string
+  status?: unknown
+  progress?: unknown
+  poll_status?: unknown
+  poll_count?: unknown
   subject?: string
   stages?: StageData[]
   items?: { name: string; role_type?: string; identity?: string }[]
@@ -103,7 +110,7 @@ interface NodeData {
   status?: string
   model?: string
   error?: string
-  output?: string
+  output?: unknown
   prompt?: string
   renderState?: string
   preview?: PreviewData
@@ -371,6 +378,76 @@ function RunningDots() {
       <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
       <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
       <span className="text-xs text-blue-400 ml-1">生成中…</span>
+    </div>
+  )
+}
+
+interface MediaProgressInfo {
+  percent: number | null
+  label: string
+  pollCount?: number
+}
+
+function progressPercent(value: unknown): number | null {
+  if (value == null || value === "") return null
+  const raw = typeof value === "string" ? value.trim().replace(/%$/, "") : value
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return null
+  const percent = parsed > 0 && parsed < 1 ? parsed * 100 : parsed
+  return Math.max(0, Math.min(100, Math.round(percent)))
+}
+
+function progressStatusLabel(status: unknown): string {
+  const text = String(status || "").trim().toLowerCase()
+  if (text === "queued" || text === "pending" || text === "not_start") return "排队中"
+  if (text === "processing" || text === "in_progress" || text === "running") return "生成中"
+  if (text === "done" || text === "success" || text === "completed" || text === "succeeded") return "收尾中"
+  return "生成中"
+}
+
+function mediaProgressFromPreview(preview: PreviewData | undefined, fallbackStatus: string): MediaProgressInfo | null {
+  const directStatus = preview?.poll_status ?? preview?.status ?? fallbackStatus
+  const directPercent = progressPercent(preview?.progress)
+  const directPollCount = Number(preview?.poll_count)
+  if (directPercent != null || ["queued", "running"].includes(fallbackStatus) || preview?.poll_status != null) {
+    return {
+      percent: directPercent,
+      label: directPercent != null ? `${directPercent}%` : progressStatusLabel(directStatus),
+      pollCount: Number.isFinite(directPollCount) ? directPollCount : undefined,
+    }
+  }
+  if (Array.isArray(preview?.stages)) {
+    const stage = preview.stages.find((item) => item.status === "running" || item.progress != null || item.poll_status != null)
+    if (stage) {
+      const percent = progressPercent(stage.progress)
+      const pollCount = Number(stage.poll_count)
+      return {
+        percent,
+        label: percent != null ? `${percent}%` : progressStatusLabel(stage.poll_status ?? stage.status ?? fallbackStatus),
+        pollCount: Number.isFinite(pollCount) ? pollCount : undefined,
+      }
+    }
+  }
+  return null
+}
+
+function MediaProgressBar({ progress }: { progress: MediaProgressInfo | null }) {
+  if (!progress) return null
+  return (
+    <div className="min-w-[112px] space-y-1">
+      <div className="flex items-center justify-between gap-2 text-[10px] font-medium text-blue-100">
+        <span>{progress.label}</span>
+        {progress.pollCount ? <span className="text-blue-200/60">{progress.pollCount}次</span> : null}
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-white/12">
+        <div
+          className={cn(
+            "h-full rounded-full bg-blue-300 shadow-[0_0_10px_rgba(147,197,253,0.55)]",
+            progress.percent == null && "w-1/2 animate-pulse",
+          )}
+          style={progress.percent != null ? { width: `${progress.percent}%` } : undefined}
+        />
+      </div>
     </div>
   )
 }
@@ -706,6 +783,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const image = imageFromPreview(data.preview)
   const video = videoFromPreview(data.preview)
   const audio = audioFromPreview(data.preview)
+  const mediaProgress = mediaProgressFromPreview(data.preview, status)
   const [naturalImage, setNaturalImage] = useState<{ src: string; width: number; height: number } | null>(null)
   const [naturalVideo, setNaturalVideo] = useState<{ src: string; width: number; height: number } | null>(null)
   const imageForSize = image?.width && image?.height
@@ -1096,9 +1174,9 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
               </div>
               {isRunning && (
                 <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/38 backdrop-blur-[1px]">
-                  <div className="flex items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">
+                  <div className="flex min-w-[150px] items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">
                     <span className="h-3.5 w-3.5 rounded-full border-2 border-blue-200 border-t-transparent animate-spin" />
-                    生成中...
+                    <MediaProgressBar progress={mediaProgress} />
                   </div>
                 </div>
               )}
@@ -1149,9 +1227,9 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
               </button>
               {isRunning && (
                 <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/38 backdrop-blur-[1px]">
-                  <div className="flex items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">
+                  <div className="flex min-w-[150px] items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">
                     <span className="h-3.5 w-3.5 rounded-full border-2 border-blue-200 border-t-transparent animate-spin" />
-                    生成中...
+                    <MediaProgressBar progress={mediaProgress} />
                   </div>
                 </div>
               )}
@@ -1176,9 +1254,9 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
               />
               {isRunning && (
                 <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/38 backdrop-blur-[1px]">
-                  <div className="flex items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">
+                  <div className="flex min-w-[150px] items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">
                     <span className="h-3.5 w-3.5 rounded-full border-2 border-blue-200 border-t-transparent animate-spin" />
-                    生成中...
+                    <MediaProgressBar progress={mediaProgress} />
                   </div>
                 </div>
               )}
@@ -1191,7 +1269,11 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 ) : (
                   <span className="text-[11px] font-semibold tracking-[0.18em] text-zinc-600">{style.icon}</span>
                 )}
-	                <span className="text-xs">{isRunning ? "生成中..." : data.type === "video" ? "待生成视频" : data.type === "audio" ? "待生成音频" : "待生成图片"}</span>
+	                {isRunning ? (
+                  <MediaProgressBar progress={mediaProgress} />
+                ) : (
+                  <span className="text-xs">{data.type === "video" ? "待生成视频" : data.type === "audio" ? "待生成音频" : "待生成图片"}</span>
+                )}
               </div>
             </div>
           )}

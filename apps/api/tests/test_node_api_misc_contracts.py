@@ -1183,6 +1183,90 @@ async def test_media_generation_video_queues_background_poll(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_background_video_poll_updates_node_progress(monkeypatch):
+    updates: list[dict] = []
+    events: list[tuple[dict, str | None]] = []
+
+    async def fake_poll_video_with_provider(**kwargs):
+        callback = kwargs.get("progress_callback")
+        assert callback is not None
+        await callback({
+            "job_id": "ark-task-1",
+            "status": "running",
+            "progress": 42,
+            "poll_count": 2,
+        })
+        return {
+            "ok": True,
+            "provider": "ark-video",
+            "model": "doubao-seedance-2-0-260128",
+            "status": "completed",
+            "job_id": "ark-task-1",
+            "local_url": "/api/media/proj-1/generated_videos/video.mp4",
+            "progress": 100,
+        }
+
+    async def fake_get_node(node_id: str):
+        return {
+            "id": node_id,
+            "output": {
+                "type": "video",
+                "status": "running",
+                "job_id": "ark-task-1",
+                "history": [{"id": "history-1"}],
+            },
+        }
+
+    async def fake_update_node(node_id: str, patch: dict):
+        updates.append(patch)
+        return {"id": node_id, **patch}
+
+    async def fake_emit_canvas_event(event: dict, project_id: str | None = None):
+        events.append((event, project_id))
+
+    from app.agent import orchestrator
+    from app.mcp_tools import canvas_tools
+
+    monkeypatch.setattr(media_generation, "poll_video_with_provider", fake_poll_video_with_provider)
+    monkeypatch.setattr(canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(canvas_tools, "update_node", fake_update_node)
+    monkeypatch.setattr(orchestrator, "emit_canvas_event", fake_emit_canvas_event)
+
+    await media_generation._background_video_poll(
+        project_id="proj-1",
+        prompt="video prompt",
+        shot_id=None,
+        node_id="video-1",
+        model="doubao-seedance-2-0-260128",
+        queued_result={
+            "ok": True,
+            "provider": "ark-video",
+            "model": "doubao-seedance-2-0-260128",
+            "status": "queued",
+            "job_id": "ark-task-1",
+        },
+        refs_provided=[],
+        first_frame_asset_id=None,
+        last_frame_asset_id=None,
+        duration_seconds=15,
+        aspect_ratio="16:9",
+        resolution="720p",
+        provider_extra={},
+        record_asset=False,
+    )
+
+    progress_patch = updates[0]
+    assert progress_patch["status"] == "running"
+    assert progress_patch["output_data"]["progress"] == 42
+    assert progress_patch["output_data"]["poll_status"] == "running"
+    assert progress_patch["output_data"]["poll_count"] == 2
+    assert progress_patch["output_data"]["history"] == [{"id": "history-1"}]
+    assert events[0][0]["payload"]["progress"] == 42
+    assert events[0][1] == "proj-1"
+    assert updates[-1]["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_media_generation_audio_queues_background_poll(monkeypatch):
     captured: dict = {}
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import mimetypes
 import os
@@ -16,6 +17,7 @@ import struct
 import time
 import uuid
 from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -26,6 +28,22 @@ from sqlmodel import select
 from app.config import settings
 from app.db.models import Asset, MediaProvider, WorkflowNode
 from app.db.session import session_scope
+
+
+ProgressCallback = Callable[[dict[str, Any]], Any]
+
+
+async def _notify_progress(callback: ProgressCallback | None, payload: dict[str, Any]) -> None:
+    if callback is None:
+        return
+    try:
+        result = callback(payload)
+        if inspect.isawaitable(result):
+            await result
+    except Exception:
+        # Progress reporting is observational; never fail the provider poll because
+        # a UI update callback failed.
+        return
 
 
 @dataclass(frozen=True)
@@ -2188,6 +2206,7 @@ async def _poll_suno_compatible_audio_task(
     task_id: str,
     extra_override: dict[str, Any] | None,
     save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     if not provider.api_key:
         return {"error": "Suno-compatible audio provider 缺少 API Key", "error_kind": "bad_config"}
@@ -2230,6 +2249,15 @@ async def _poll_suno_compatible_audio_task(
                 polls.append({
                     "status": status,
                     "progress": payload.get("progress") if isinstance(payload, dict) else None,
+                })
+                await _notify_progress(progress_callback, {
+                    "job_id": task_id,
+                    "status": status,
+                    "progress": payload.get("progress") if isinstance(payload, dict) else None,
+                    "poll_count": len(polls),
+                    "provider": provider.name,
+                    "model": provider.model_name,
+                    "endpoint": query_endpoint,
                 })
 
                 if not _suno_response_success(query_data):
@@ -2441,6 +2469,7 @@ async def _poll_volcengine_ark_video_task(
     task_id: str,
     extra_override: dict[str, Any] | None,
     save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     if not provider.api_key:
         return {"error": "Volcengine Ark video provider 缺少 API Key", "error_kind": "bad_config"}
@@ -2474,6 +2503,16 @@ async def _poll_volcengine_ark_video_task(
                 status = str(query_data.get("status") or status or "unknown").lower()
                 polls.append({
                     "status": status,
+                    "updated_at": query_data.get("updated_at"),
+                })
+                await _notify_progress(progress_callback, {
+                    "job_id": task_id,
+                    "status": status,
+                    "progress": query_data.get("progress"),
+                    "poll_count": len(polls),
+                    "provider": provider.name,
+                    "model": provider.model_name,
+                    "endpoint": query_endpoint,
                     "updated_at": query_data.get("updated_at"),
                 })
 
@@ -2780,6 +2819,7 @@ async def _poll_grok_1_5_video_task(
     request_id: str,
     extra_override: dict[str, Any] | None,
     save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     if not provider.api_key:
         return {"error": "Grok 1.5 video provider 缺少 API Key", "error_kind": "bad_config"}
@@ -2812,6 +2852,15 @@ async def _poll_grok_1_5_video_task(
                 polls.append({
                     "status": status,
                     "progress": query_data.get("progress"),
+                })
+                await _notify_progress(progress_callback, {
+                    "job_id": request_id,
+                    "status": status,
+                    "progress": query_data.get("progress"),
+                    "poll_count": len(polls),
+                    "provider": provider.name,
+                    "model": provider.model_name,
+                    "endpoint": query_endpoint,
                 })
 
                 remote_url = _video_url_from_response(query_data)
@@ -3051,6 +3100,7 @@ async def _poll_json_video_task(
     task_id: str,
     extra_override: dict[str, Any] | None,
     save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     if not provider.api_key:
         return {"error": f"{spec.display_name} provider 缺少 API Key", "error_kind": "bad_config"}
@@ -3087,6 +3137,15 @@ async def _poll_json_video_task(
                 polls.append({
                     "status": status,
                     "progress": progress,
+                })
+                await _notify_progress(progress_callback, {
+                    "job_id": task_id,
+                    "status": status,
+                    "progress": progress,
+                    "poll_count": len(polls),
+                    "provider": provider.name,
+                    "model": provider.model_name,
+                    "endpoint": query_endpoint,
                 })
 
                 remote_url = _first_path_text(latest_data, spec.result_url_paths) or _video_url_from_response(latest_data)
@@ -3184,6 +3243,7 @@ async def _poll_t8_grok_video_3_task(
     task_id: str,
     extra_override: dict[str, Any] | None,
     save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     return await _poll_json_video_task(
         spec=_T8_GROK_VIDEO_3_SPEC,
@@ -3192,6 +3252,7 @@ async def _poll_t8_grok_video_3_task(
         task_id=task_id,
         extra_override=extra_override,
         save_locally=save_locally,
+        progress_callback=progress_callback,
     )
 
 
@@ -3201,6 +3262,7 @@ async def _poll_xai_video_task(
     request_id: str,
     extra_override: dict[str, Any] | None,
     save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     if not provider.api_key:
         return {"error": "xAI video provider 缺少 API Key", "error_kind": "bad_config"}
@@ -3231,6 +3293,15 @@ async def _poll_xai_video_task(
                 polls.append({
                     "status": status,
                     "progress": query_data.get("progress"),
+                })
+                await _notify_progress(progress_callback, {
+                    "job_id": request_id,
+                    "status": status,
+                    "progress": query_data.get("progress"),
+                    "poll_count": len(polls),
+                    "provider": provider.name,
+                    "model": query_data.get("model") or provider.model_name,
+                    "endpoint": query_endpoint,
                 })
 
                 if status in _XAI_DONE_STATUSES:
@@ -3317,6 +3388,7 @@ async def _poll_volcengine_ark_video_adapter(
     job_id: str,
     extra_override: dict[str, Any] | None,
     save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     return await _poll_volcengine_ark_video_task(
         provider=provider,
@@ -3324,6 +3396,7 @@ async def _poll_volcengine_ark_video_adapter(
         task_id=job_id,
         extra_override=extra_override,
         save_locally=save_locally,
+        progress_callback=progress_callback,
     )
 
 
@@ -3333,6 +3406,7 @@ async def _poll_grok_1_5_video_adapter(
     job_id: str,
     extra_override: dict[str, Any] | None,
     save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     return await _poll_grok_1_5_video_task(
         provider=provider,
@@ -3340,6 +3414,7 @@ async def _poll_grok_1_5_video_adapter(
         request_id=job_id,
         extra_override=extra_override,
         save_locally=save_locally,
+        progress_callback=progress_callback,
     )
 
 
@@ -3349,6 +3424,7 @@ async def _poll_xai_video_adapter(
     job_id: str,
     extra_override: dict[str, Any] | None,
     save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     return await _poll_xai_video_task(
         provider=provider,
@@ -3356,6 +3432,7 @@ async def _poll_xai_video_adapter(
         request_id=job_id,
         extra_override=extra_override,
         save_locally=save_locally,
+        progress_callback=progress_callback,
     )
 
 
@@ -3365,6 +3442,7 @@ async def _poll_t8_grok_video_3_adapter(
     job_id: str,
     extra_override: dict[str, Any] | None,
     save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     return await _poll_t8_grok_video_3_task(
         provider=provider,
@@ -3372,6 +3450,7 @@ async def _poll_t8_grok_video_3_adapter(
         task_id=job_id,
         extra_override=extra_override,
         save_locally=save_locally,
+        progress_callback=progress_callback,
     )
 
 
@@ -4102,6 +4181,7 @@ async def poll_audio_with_provider(
     model_name: str | None = None,
     extra: dict[str, Any] | None = None,
     save_locally: bool = True,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     if model_name:
         provider = await _get_provider_by_name_or_model("audio", model_name)
@@ -4124,6 +4204,7 @@ async def poll_audio_with_provider(
             task_id=job_id,
             extra_override=extra or {},
             save_locally=save_locally,
+            progress_callback=progress_callback,
         )
     elif _is_openai_tts_audio_provider(provider):
         result = {
@@ -4350,6 +4431,7 @@ async def poll_video_with_provider(
     model_name: str | None = None,
     extra: dict[str, Any] | None = None,
     save_locally: bool = True,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     if model_name:
         provider = await _get_provider_by_name_or_model("video", model_name)
@@ -4373,6 +4455,7 @@ async def poll_video_with_provider(
             job_id=job_id,
             extra_override=extra or {},
             save_locally=save_locally,
+            progress_callback=progress_callback,
         )
     else:
         result = _with_video_model_doc_hint({
