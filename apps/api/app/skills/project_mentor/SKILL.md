@@ -43,6 +43,8 @@ maintain separate canvas/panel state before work appears.
   backend-created edges appear automatically. Use `{ref, role}` when needed:
   `visual_reference` for generation reference, `source_image` when an image node
   directly adopts an existing image as output.
+- Project-local node numbers such as `#0` / `0` resolve directly with
+  `node.get(node_id)`; titles or unclear references use `node.list(query|regex)`.
 - Use `interaction.request_input(questions=[...])` only for blocking missing
   facts, up to 6 concise questions.
 - Use `canvas.delete` only when the latest user message explicitly asks to

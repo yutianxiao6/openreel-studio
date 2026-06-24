@@ -5,15 +5,13 @@ ORDER = 70
 PROMPT = """\
 # Node Contract
 
-Shared nodes: `text`, `image`, `video`, `audio`.
+Shared nodes: `text`/`image`/`video`/`audio`; methods from `skill.search -> skill.get`.
 
-- Existing/draft nodes are targets; update before duplicates.
-- Active/user skill controls method; image/video default uses `skill.search -> skill.get`.
-- Put content in title/prompt/fields; upstream inputs in `fields.references`.
-- Batch small/low-risk creates/updates; split many nodes, rich prompts, or uncertain edits.
+- Existing/draft targets update before duplicates.
+- Content in title/prompt/fields; upstream in `fields.references`.
+- Batch small/low-risk edits; split many nodes.
 - `node.create` writes fields; `node.run` saves/generates. Text needs `fields.content`; media need prompt.
-- `parent_node_id` groups UI; `fields.references` drives edges. Visual refs feed media.
-- Text refs are context; `visual_reference` feeds generation; `source_image` adopts image.
-- Resolve with `node.list(query|regex)` before broad list; details with `node.get(node_ids=[...])`; use real `node_id`.
-- For `dependency_missing`/missing prompt/refs, update original/upstream node, then rerun.
+- `parent_node_id` groups UI; `fields.references` drives edges with roles `context`, `visual_reference`, `source_image`.
+- Numbered targets use `node.get`; named/unclear use `node.list(query|regex)`; details use `node.get(node_ids)`.
+- `dependency_missing`/missing prompt/refs update original/upstream, then rerun.
 """

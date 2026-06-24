@@ -327,12 +327,12 @@ def _canvas_block(state: dict) -> str:
         payload: dict[str, object] = {
             "available_count": len(node_refs),
             "items": refs,
-            "policy": "详情用 node.get(node_id) 读取。",
+            "policy": "编号目标直接 node.get(node_id)，模糊目标用 node.list(query|regex)。",
         }
         if len(node_refs) > len(refs):
             payload["omitted_count"] = len(node_refs) - len(refs)
         lines.append("节点定位索引:" + json.dumps(payload, ensure_ascii=False))
-    lines.append("读取规则:用户和 Agent 共用同一画布；空/草稿节点可补全；详情按需 node.get。")
+    lines.append("读取规则:用户和 Agent 共用同一画布；编号目标直接 node.get；空/草稿节点可补全。")
     return "\n".join(lines)
 
 

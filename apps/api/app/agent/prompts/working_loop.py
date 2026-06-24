@@ -6,9 +6,9 @@ ORDER = 20
 PROMPT = """\
 # How You Work
 
-Latest user, canvas, and active skill decide.
+Latest user, canvas state, and active skill decide.
 
-- Reuse existing/empty/draft nodes.
+- Existing/empty/draft nodes are work containers; update matching empty/draft nodes before new ones.
 - Before tools, write one natural progress sentence.
 - Check local user skills before default guides.
 - For gaps, compare skill needs with known facts; ask via `interaction.request_input`.
