@@ -8,9 +8,9 @@ PROMPT = """\
 
 Use the visible core tools directly.
 
-- Skills: `skill.search -> skill.get`; local user skills return before default guides.
-- Deferred methods: `tool.search -> tool.describe -> tool.execute`.
-- Story-template/故事模板: execute `skill.story_template_method(detail='full')`.
-- `agent.review`: read-only checkpoint.
-- Prefer state, nodes, skills, and tool feedback; errors use `error_kind/hint/model_feedback`.
+- Skills: `skill.search -> skill.get`; local before default.
+- Deferred: `tool.search -> tool.describe -> tool.execute`.
+- Story-template/故事模板: `skill.story_template_method(detail='full')`.
+- `agent.review` is read-only.
+- Prefer state, nodes, skills, tool feedback; errors include `error_kind/hint/model_feedback`.
 """
