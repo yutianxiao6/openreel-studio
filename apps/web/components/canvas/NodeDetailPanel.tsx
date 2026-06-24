@@ -77,6 +77,58 @@ type AudioProviderMode = "tts" | "music" | "unknown"
 
 const EDITABLE_NODE_TYPES = new Set(["text", "image", "video", "audio"])
 
+type ImageResolutionPreset = {
+  label: string
+  value: string
+  tier: "1080p" | "2k" | "4k"
+}
+
+const CUSTOM_IMAGE_RESOLUTION_VALUE = "__custom__"
+
+const IMAGE_RESOLUTION_PRESETS: Record<string, ImageResolutionPreset[]> = {
+  "16:9": [
+    { label: "1080p · 1920x1080", value: "1920x1080", tier: "1080p" },
+    { label: "2K · 2560x1440", value: "2560x1440", tier: "2k" },
+    { label: "4K · 3840x2160", value: "3840x2160", tier: "4k" },
+  ],
+  "9:16": [
+    { label: "1080p · 1080x1920", value: "1080x1920", tier: "1080p" },
+    { label: "2K · 1440x2560", value: "1440x2560", tier: "2k" },
+    { label: "4K · 2160x3840", value: "2160x3840", tier: "4k" },
+  ],
+  "1:1": [
+    { label: "1080p · 1080x1080", value: "1080x1080", tier: "1080p" },
+    { label: "2K · 2048x2048", value: "2048x2048", tier: "2k" },
+  ],
+}
+
+function normalizeImageAspectRatio(value: string): string {
+  return Object.prototype.hasOwnProperty.call(IMAGE_RESOLUTION_PRESETS, value) ? value : "16:9"
+}
+
+function imageResolutionTier(value: string): ImageResolutionPreset["tier"] {
+  for (const presets of Object.values(IMAGE_RESOLUTION_PRESETS)) {
+    const match = presets.find((item) => item.value === value)
+    if (match) return match.tier
+  }
+  return "2k"
+}
+
+function defaultImageResolutionForAspect(aspectRatio: string, preferredTier: ImageResolutionPreset["tier"] = "2k"): string {
+  const presets = IMAGE_RESOLUTION_PRESETS[normalizeImageAspectRatio(aspectRatio)]
+  return presets.find((item) => item.tier === preferredTier)?.value || presets[0]?.value || "2560x1440"
+}
+
+function parseImageResolution(value: string): { width: string; height: string } | null {
+  const match = value.trim().match(/^(\d+)\s*[xX×]\s*(\d+)$/)
+  if (!match) return null
+  return { width: match[1], height: match[2] }
+}
+
+function sanitizePixelInput(value: string): string {
+  return value.replace(/[^\d]/g, "").slice(0, 5)
+}
+
 const EMPTY_DRAFT: EditableNodeDraft = {
   title: "",
   content: "",
@@ -1590,7 +1642,7 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
       ? normalizeVideoAspectRatio(firstText(input.aspect_ratio, output.aspect_ratio))
       : firstText(input.aspect_ratio, output.aspect_ratio) || (node.type === "image" ? "16:9" : ""),
     resolution: firstText(input.resolution, input.size, output.resolution, output.size)
-      || (node.type === "image" ? "2560x1440" : node.type === "video" ? "720p" : ""),
+      || (node.type === "image" ? defaultImageResolutionForAspect(firstText(input.aspect_ratio, output.aspect_ratio) || "16:9") : node.type === "video" ? "720p" : ""),
     quality: firstText(input.quality, output.quality) || (node.type === "image" ? "high" : ""),
     duration_seconds: firstText(input.duration_seconds, input.duration, output.duration_seconds, output.duration) || (node.type === "video" ? "5" : ""),
     instrumental: firstBool(true, input.instrumental, output.instrumental),
@@ -1940,6 +1992,85 @@ function SelectControl({
   )
 }
 
+function ImageResolutionControl({
+  aspectRatio,
+  resolution,
+  onChange,
+}: {
+  aspectRatio: string
+  resolution: string
+  onChange: (value: string) => void
+}) {
+  const normalizedAspect = normalizeImageAspectRatio(aspectRatio)
+  const presets = IMAGE_RESOLUTION_PRESETS[normalizedAspect]
+  const defaultResolution = defaultImageResolutionForAspect(normalizedAspect, imageResolutionTier(resolution))
+  const parsed = parseImageResolution(resolution) || parseImageResolution(defaultResolution) || { width: "", height: "" }
+  const [width, setWidth] = useState(parsed.width)
+  const [height, setHeight] = useState(parsed.height)
+
+  useEffect(() => {
+    const next = parseImageResolution(resolution) || parseImageResolution(defaultResolution) || { width: "", height: "" }
+    setWidth(next.width)
+    setHeight(next.height)
+  }, [defaultResolution, resolution])
+
+  const selectedPreset = presets.some((item) => item.value === resolution)
+    ? resolution
+    : CUSTOM_IMAGE_RESOLUTION_VALUE
+
+  const updateDimension = (key: "width" | "height", rawValue: string) => {
+    const nextValue = sanitizePixelInput(rawValue)
+    const nextWidth = key === "width" ? nextValue : width
+    const nextHeight = key === "height" ? nextValue : height
+    if (key === "width") setWidth(nextValue)
+    else setHeight(nextValue)
+    if (nextWidth && nextHeight) onChange(`${nextWidth}x${nextHeight}`)
+  }
+
+  return (
+    <div className="space-y-2">
+      <SelectControl
+        label="常用分辨率"
+        value={selectedPreset}
+        options={[
+          ...presets.map((item) => ({ label: item.label, value: item.value })),
+          { label: "自定义", value: CUSTOM_IMAGE_RESOLUTION_VALUE },
+        ]}
+        onChange={(value) => {
+          if (value === CUSTOM_IMAGE_RESOLUTION_VALUE) return
+          onChange(value)
+        }}
+        hint="预设会写入精确像素值；自定义时直接改下面的宽和高。"
+      />
+      <div className="grid grid-cols-2 gap-2">
+        <DraftField label="宽(px)">
+          <input
+            type="number"
+            min={8}
+            step={8}
+            inputMode="numeric"
+            value={width}
+            onChange={(event) => updateDimension("width", event.target.value)}
+            className={inputClass}
+          />
+        </DraftField>
+        <DraftField label="高(px)">
+          <input
+            type="number"
+            min={8}
+            step={8}
+            inputMode="numeric"
+            value={height}
+            onChange={(event) => updateDimension("height", event.target.value)}
+            className={inputClass}
+          />
+        </DraftField>
+      </div>
+      <div className="text-[10px] text-zinc-600">保存值：{width && height ? `${width}x${height}` : "请输入宽和高"}</div>
+    </div>
+  )
+}
+
 function ToggleControl({
   label,
   checked,
@@ -2140,6 +2271,12 @@ function NodeEditView({
       }
     }),
   ]
+  const imageAspectRatio = normalizeImageAspectRatio(draft.aspect_ratio)
+  const updateImageAspectRatio = (aspect_ratio: string) => {
+    const nextAspectRatio = normalizeImageAspectRatio(aspect_ratio)
+    const resolution = defaultImageResolutionForAspect(nextAspectRatio, imageResolutionTier(draft.resolution))
+    onChange({ aspect_ratio: nextAspectRatio, resolution })
+  }
   const updateVideoModel = (model: string) => {
     const supported = videoSupportedResolutionsForModel(model)
     const resolution = supported.includes(draft.resolution) ? draft.resolution : defaultVideoResolutionForModel(model)
@@ -2303,20 +2440,22 @@ function NodeEditView({
                   onChange={(aspect_ratio) => onChange({ aspect_ratio })}
                 />
               ) : (
-                <ChipControl
+                <SelectControl
                   label="画幅"
-                  value={draft.aspect_ratio}
-                  options={["16:9", "9:16", "1:1"]}
-                  onChange={(aspect_ratio) => onChange({ aspect_ratio })}
+                  value={imageAspectRatio}
+                  options={[
+                    { label: "16:9", value: "16:9" },
+                    { label: "9:16", value: "9:16" },
+                    { label: "1:1", value: "1:1" },
+                  ]}
+                  onChange={updateImageAspectRatio}
                 />
               )}
               {isImage && (
                 <>
-                  <ChipControl
-                    label="分辨率"
-                    value={draft.resolution}
-                    options={draft.aspect_ratio === "9:16" ? ["1440x2560", "2160x3840"] : ["2560x1440", "3840x2160"]}
-                    placeholder="宽x高"
+                  <ImageResolutionControl
+                    aspectRatio={imageAspectRatio}
+                    resolution={draft.resolution}
                     onChange={(resolution) => onChange({ resolution })}
                   />
                   <ChipControl
