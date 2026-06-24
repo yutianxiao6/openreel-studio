@@ -14,6 +14,7 @@ services:
     volumes:
       - ./data:/workspace/data
       - ./storage:/workspace/storage
+      - ./assets:/workspace/assets
       - ./config:/workspace/config
       - ./skills:/workspace/skills
     restart: unless-stopped

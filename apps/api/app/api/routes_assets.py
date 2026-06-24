@@ -12,6 +12,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.db.models import Asset, Project
 from app.db.session import get_session
+from app.services.asset_library_paths import asset_library_roots
 
 router = APIRouter()
 
@@ -44,13 +45,7 @@ async def preview_asset_library_file(
     except json.JSONDecodeError:
         state = {}
     library = state.get("asset_library") if isinstance(state.get("asset_library"), dict) else {}
-    allowed_roots = [
-        Path(str(root)).expanduser().resolve()
-        for root in (library.get("project_root"), library.get("shared_root"))
-        if root
-    ]
-    if not allowed_roots:
-        raise HTTPException(status_code=404, detail="Asset library is not configured")
+    allowed_roots = asset_library_roots(library)
 
     target = Path(path).expanduser().resolve()
     if not target.exists() or not target.is_file():

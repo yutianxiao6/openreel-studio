@@ -59,6 +59,7 @@ data/wechat_openreel_sessions.json
 data/wechat_openreel_media/
 apps/api/data/
 apps/api/storage/
+assets/
 storage/
 storage/assets/*
 storage/exports/*

@@ -272,6 +272,7 @@ function desktopDirs() {
     userData: path.join(root, "data", "electron"),
     data: path.join(root, "data"),
     storage: path.join(root, "storage"),
+    assets: path.join(root, "assets"),
     config: path.join(root, "config"),
     logs: path.join(root, "logs"),
     skills,

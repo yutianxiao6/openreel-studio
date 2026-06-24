@@ -37,6 +37,7 @@ from app.config import settings
 from app.db.models import Asset, Project, WorkflowNode
 from app.db.session import session_scope
 from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
+from app.services.asset_library_paths import effective_asset_library
 from app.services.node_ids import next_node_display_id
 from app.services.node_public_ids import (
     looks_like_internal_node_id,
@@ -470,7 +471,7 @@ async def assets_set_library_path(
     shared_root: str | None = None,
 ) -> dict[str, Any]:
     state = await _get_state(project_id)
-    lib = state.get("asset_library") or {}
+    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
     if project_root:
         p = Path(project_root).expanduser().resolve()
         p.mkdir(parents=True, exist_ok=True)
@@ -486,19 +487,15 @@ async def assets_set_library_path(
 
 async def assets_get_library_path(project_id: str) -> dict[str, Any]:
     state = await _get_state(project_id)
-    lib = state.get("asset_library") or {}
-    if not lib.get("project_root") and not lib.get("shared_root"):
-        return {
-            "configured": False,
-            "error": "资产库尚未配置。请先告诉我项目库和公用素材库的本地路径。",
-        }
-    return {"configured": True, **lib}
+    raw_lib = state.get("asset_library")
+    lib = effective_asset_library(raw_lib, ensure_dirs=True)
+    return {"configured": True, "using_default": not bool(raw_lib), **lib}
 
 
 def _project_episode_dir(lib: dict[str, Any], project_title: str, episode: int) -> Path:
     root = lib.get("project_root")
     if not root:
-        raise ValueError("project_root 未设置,请先通过项目设置或资产库 API 配置")
+        root = effective_asset_library({}, ensure_dirs=True)["project_root"]
     base = Path(root) / _slug(project_title) / "episodes" / f"ep{int(episode):02d}"
     base.mkdir(parents=True, exist_ok=True)
     return base
@@ -515,9 +512,7 @@ async def assets_save_to_project(
         return {"error": f"kind 必须是 {sorted(_PROJECT_KINDS)} 之一"}
 
     state = await _get_state(project_id)
-    lib = state.get("asset_library") or {}
-    if not lib.get("project_root"):
-        return {"error": "project_root 未配置。请告诉我项目资产库的本地路径。"}
+    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
 
     title = (state.get("metadata") or {}).get("title") or project_id
     ep_dir = _project_episode_dir(lib, title, episode)
@@ -548,7 +543,7 @@ async def assets_save_to_project(
 def _shared_category_dir(lib: dict[str, Any], kind: str, category: str) -> Path:
     root = lib.get("shared_root")
     if not root:
-        raise ValueError("shared_root 未设置,请先通过项目设置或资产库 API 配置")
+        root = effective_asset_library({}, ensure_dirs=True)["shared_root"]
     base = Path(root) / f"{kind}s" / _slug(category)
     base.mkdir(parents=True, exist_ok=True)
     return base
@@ -567,9 +562,7 @@ async def assets_save_to_shared(
         return {"error": "保存到共享资产库需要 category 分类"}
 
     state = await _get_state(project_id)
-    lib = state.get("asset_library") or {}
-    if not lib.get("shared_root"):
-        return {"error": "shared_root 未配置。请告诉我公用素材库的本地路径。"}
+    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
 
     target_dir = _shared_category_dir(lib, kind, category)
     src = await _resolve_source(project_id, source)
@@ -595,7 +588,7 @@ async def assets_list_categories(
 ) -> dict[str, Any]:
     """List project and shared asset-library categories."""
     state = await _get_state(project_id)
-    lib = state.get("asset_library") or {}
+    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
     library_key = str(library or "all").strip().lower()
     if library_key not in {"all", "project", "shared"}:
         return {"error": "library 必须是 all、project 或 shared"}
@@ -664,7 +657,7 @@ async def assets_create_category(
 ) -> dict[str, Any]:
     """Create an asset-library classification bucket."""
     state = await _get_state(project_id)
-    lib = state.get("asset_library") or {}
+    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
     library_key = str(library or "").strip().lower()
     item_kind = str(kind or "").strip().lower()
     if library_key == "shared":
@@ -672,8 +665,6 @@ async def assets_create_category(
             return {"error": f"kind 必须是 {sorted(_SHARED_KINDS)} 之一"}
         if not str(category or "").strip():
             return {"error": "共享资产库分类需要 category"}
-        if not lib.get("shared_root"):
-            return {"error": "shared_root 未配置。请先在设置或资产面板配置公用素材库路径。"}
         target_dir = _shared_category_dir(lib, item_kind, str(category))
         return {
             "ok": True,
@@ -687,8 +678,6 @@ async def assets_create_category(
             return {"error": f"kind 必须是 {sorted(_PROJECT_KINDS)} 之一"}
         if episode is None:
             return {"error": "项目资产库分类需要 episode"}
-        if not lib.get("project_root"):
-            return {"error": "project_root 未配置。请先在设置或资产面板配置项目资产库路径。"}
         title = (state.get("metadata") or {}).get("title") or project_id
         target_dir = _project_target_dir(lib, title, int(episode), item_kind)
         return {
@@ -713,7 +702,7 @@ async def assets_move_asset(
 ) -> dict[str, Any]:
     """Move an existing asset-library file to another classification bucket."""
     state = await _get_state(project_id)
-    lib = state.get("asset_library") or {}
+    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
     source = Path(path).expanduser().resolve()
     if not source.exists() or not source.is_file():
         return {"error": f"文件不存在: {path}"}
@@ -781,7 +770,7 @@ async def assets_add_to_canvas(
 ) -> dict[str, Any]:
     """Create a completed canvas node from a generated asset or library file."""
     state = await _get_state(project_id)
-    lib = state.get("asset_library") or {}
+    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
     try:
         src = await _resolve_source(project_id, source)
     except FileNotFoundError as exc:
@@ -876,10 +865,8 @@ async def assets_list_project(
     if invalid is not None:
         return invalid
     state = await _get_state(project_id)
-    lib = state.get("asset_library") or {}
+    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
     root = lib.get("project_root")
-    if not root:
-        return {"error": "project_root 未配置"}
 
     title = (state.get("metadata") or {}).get("title") or project_id
     proj_dir = Path(root) / _slug(title) / "episodes"
@@ -946,10 +933,8 @@ async def assets_list_shared(
     if invalid is not None:
         return invalid
     state = await _get_state(project_id)
-    lib = state.get("asset_library") or {}
+    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
     root = lib.get("shared_root")
-    if not root:
-        return {"error": "shared_root 未配置"}
 
     base = Path(root)
     if not base.exists():
@@ -992,7 +977,7 @@ async def assets_list_shared(
 
 async def assets_read_asset(project_id: str, path: str) -> dict[str, Any]:
     state = await _get_state(project_id)
-    lib = state.get("asset_library") or {}
+    lib = effective_asset_library(state.get("asset_library"), ensure_dirs=True)
     project_root = lib.get("project_root")
     shared_root = lib.get("shared_root")
 

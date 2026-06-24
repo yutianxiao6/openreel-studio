@@ -109,6 +109,50 @@ async def test_asset_library_save_accepts_generated_asset_reference(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_asset_library_defaults_to_project_root_assets(monkeypatch, tmp_path) -> None:
+    await _setup_asset_db(monkeypatch, tmp_path)
+    generated_dir = tmp_path / "storage" / "project-1" / "generated_images"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    generated_path = generated_dir / "default-gen.png"
+    generated_path.write_bytes(
+        base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+    )
+    async with db_session.session_scope() as session:
+        project = await session.get(Project, "project-1")
+        project.state_json = json.dumps({"metadata": {"title": "默认资产库项目"}}, ensure_ascii=False)
+        session.add(Asset(
+            id="asset-default-library",
+            project_id="project-1",
+            type="scene_image",
+            name="默认目录测试图",
+            path=str(generated_path),
+            metadata_json=json.dumps({"local_path": str(generated_path)}, ensure_ascii=False),
+        ))
+        session.add(project)
+        await session.commit()
+
+    path_info = await asset_library_tools.assets_get_library_path(project_id="project-1")
+    assert path_info["configured"] is True
+    assert path_info["using_default"] is True
+    assert Path(path_info["project_root"]) == tmp_path / "assets" / "projects"
+    assert Path(path_info["shared_root"]) == tmp_path / "assets" / "shared"
+
+    result = await asset_library_tools.assets_save_to_project(
+        project_id="project-1",
+        episode=1,
+        kind="scene",
+        source="asset:asset-default-library",
+        name="默认保存场景",
+    )
+
+    saved_path = Path(result["path"])
+    assert result["ok"] is True
+    assert saved_path.exists()
+    assert saved_path.is_relative_to(tmp_path / "assets" / "projects")
+    assert saved_path.name == "默认保存场景.png"
+
+
+@pytest.mark.asyncio
 async def test_asset_library_save_accepts_generated_node_public_id(monkeypatch, tmp_path) -> None:
     await _setup_asset_db(monkeypatch, tmp_path)
     generated_dir = tmp_path / "storage" / "project-1" / "generated_images"
@@ -235,6 +279,34 @@ async def test_asset_library_preview_route_is_scoped_to_configured_roots(monkeyp
                 path=str(outside_path),
                 db=session,
         )
+        assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_asset_library_preview_route_allows_default_project_root_assets(monkeypatch, tmp_path) -> None:
+    await _setup_asset_db(monkeypatch, tmp_path)
+    library_dir = tmp_path / "assets" / "shared" / "scenes" / "city"
+    library_dir.mkdir(parents=True, exist_ok=True)
+    library_path = library_dir / "street.png"
+    library_path.write_bytes(
+        base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+    )
+    outside_path = tmp_path / "outside.png"
+    outside_path.write_bytes(library_path.read_bytes())
+
+    async with db_session.session_scope() as session:
+        response = await routes_assets.preview_asset_library_file(
+            project_id="project-1",
+            path=str(library_path),
+            db=session,
+        )
+        assert response.media_type == "image/png"
+        with pytest.raises(HTTPException) as exc_info:
+            await routes_assets.preview_asset_library_file(
+                project_id="project-1",
+                path=str(outside_path),
+                db=session,
+            )
         assert exc_info.value.status_code == 403
 
 
