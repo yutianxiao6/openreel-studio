@@ -988,7 +988,7 @@ _STANDARD_CANNOT_BY_NAME: dict[str, str] = {
 
 _STANDARD_CANNOT_BY_NAMESPACE: dict[str, str] = {
     "agent": "不能授权写入、删除、重置或生成媒体；协作子任务仍受只读/权限边界约束",
-    "assets": "不能配置、删除或移动资产；保存资产必须来自当前用户明确要求并走 assets.save_to_project/assets.save_to_shared",
+    "assets": "不能配置资产库根路径或删除资产；保存、分类、移动和加入画布必须来自当前用户明确要求",
     "asset": "不能注册、写入或附加资产；创作资产走节点或资产服务",
     "canvas": "不能创建、删除或修改节点内容；节点 CRUD 走 node.*",
     "config": "不能写配置；配置写入走 REST 控制面",
@@ -1910,6 +1910,36 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
     R("assets.list_project", asset_library_tools.assets_list_project, tags=["assets", "read"])
     R("assets.list_shared", asset_library_tools.assets_list_shared, tags=["assets", "read"])
     R("assets.read_asset", asset_library_tools.assets_read_asset, tags=["assets", "read"])
+    R("assets.list_categories", asset_library_tools.assets_list_categories, tags=["assets", "read"])
+    R(
+        "assets.create_category",
+        asset_library_tools.assets_create_category,
+        tags=["assets", "write"],
+        description="在项目资产库或共享资产库创建分类目录。",
+        usage_hints=[
+            "tool.execute(name='assets.create_category', input={'library': 'shared', 'kind': 'character', 'category': 'main_roles'})",
+            "tool.execute(name='assets.create_category', input={'library': 'project', 'episode': 1, 'kind': 'storyboard'})",
+        ],
+    )
+    R(
+        "assets.move_asset",
+        asset_library_tools.assets_move_asset,
+        tags=["assets", "write"],
+        description="把资产库文件移动到另一个项目或共享分类。",
+        usage_hints=[
+            "tool.execute(name='assets.move_asset', input={'path': '/assets/shared/characters/a.png', 'library': 'shared', 'kind': 'character', 'category': 'main_roles'})",
+        ],
+    )
+    R(
+        "assets.add_to_canvas",
+        asset_library_tools.assets_add_to_canvas,
+        tags=["assets", "write"],
+        description="把生成资产或资产库文件加入画布为可预览节点。",
+        usage_hints=[
+            "tool.execute(name='assets.add_to_canvas', input={'source': 'asset:asset-id', 'title': '主角参考图'})",
+            "tool.execute(name='assets.add_to_canvas', input={'source': '/assets/shared/characters/a.png', 'node_type': 'image'})",
+        ],
+    )
 
     # Legacy generic skill management wrappers are intentionally unregistered,
     # keeping registry focused on concrete skill primitives.

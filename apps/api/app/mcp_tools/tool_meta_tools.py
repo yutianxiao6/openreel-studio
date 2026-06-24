@@ -39,6 +39,10 @@ _CATEGORIES: dict[str, set[str]] = {
         "assets.list_project",
         "assets.list_shared",
         "assets.read_asset",
+        "assets.list_categories",
+        "assets.create_category",
+        "assets.move_asset",
+        "assets.add_to_canvas",
     },
     "system": {"system.status", "system.models", "feature.list", "feature.is_enabled"},
     "memory": {"memory.save_fact", "memory.save_user_fact", "memory.compact_context", "memory.recall"},
@@ -131,6 +135,10 @@ _STATIC_SEARCH_HINTS: dict[str, str] = {
     "assets.list_project": "list project asset library generated saved image video script 资产库 检索 项目素材 图片 视频 剧本",
     "assets.list_shared": "list shared reusable asset library character scene style 共享素材库 可复用 人物 场景 风格",
     "assets.read_asset": "read asset library file metadata image path text content 读取资产库 图片 文件 元信息",
+    "assets.list_categories": "list asset library categories 分类目录 项目资产分类 共享资产分类 整理素材",
+    "assets.create_category": "create asset library category 新建分类 创建分类 素材分类 资产库整理",
+    "assets.move_asset": "move asset between categories 移动资产 移动素材 分类整理 改分类",
+    "assets.add_to_canvas": "add asset file to canvas as node 加入画布 资产生成节点 图片 视频 音频 文本",
 }
 
 _DEFERRED_CONFIRMATION_TOOLS: set[str] = set()

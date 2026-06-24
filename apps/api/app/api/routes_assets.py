@@ -16,6 +16,11 @@ from app.db.session import get_session
 router = APIRouter()
 
 
+def _inline_content_disposition(filename: str) -> str:
+    safe_name = filename.replace("\\", "_").replace('"', "_")
+    return f'inline; filename="{safe_name}"'
+
+
 @router.get("/{project_id}")
 async def list_assets(project_id: str, db: AsyncSession = Depends(get_session)):
     result = await db.exec(
@@ -65,5 +70,9 @@ async def preview_asset_library_file(
     return FileResponse(
         str(target),
         media_type=mime_type,
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Content-Disposition": _inline_content_disposition(target.name),
+            "Accept-Ranges": "bytes",
+        },
     )

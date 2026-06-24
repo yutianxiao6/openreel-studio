@@ -51,12 +51,14 @@ const NODE_TYPE_LABEL: Record<string, string> = {
   text: "文本",
   image: "图片",
   video: "视频",
+  audio: "音频",
 }
 
 const NODE_TYPE_ICON: Record<string, string> = {
   text: "TX",
   image: "IM",
   video: "VD",
+  audio: "AU",
 }
 
 const APP_BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? ""
@@ -577,6 +579,10 @@ const TOOL_LABEL: Record<string, string> = {
   "assets.list_project": "项目资产列表",
   "assets.list_shared": "公用资产列表",
   "assets.read_asset": "读取资产",
+  "assets.list_categories": "资产分类",
+  "assets.create_category": "创建资产分类",
+  "assets.move_asset": "移动资产",
+  "assets.add_to_canvas": "资产加入画布",
   // task
   "task.create": "创建任务",
   "task.list": "任务列表",
@@ -703,18 +709,26 @@ function WorkingIndicator({ label = "正在工作" }: { label?: string }) {
   )
 }
 
-type AssetPickerSource = "generated" | "project_library" | "shared_library"
+type AssetInfoSource = "generated" | "project_library" | "shared_library"
 
-interface AssetPickerItem {
+type AssetInfoItem = {
   key: string
-  source: AssetPickerSource
+  source: AssetInfoSource
   title: string
   subtitle: string
-  previewUrl: string
-  insertText: string
+  path: string
+  sourceRef: string
+  mediaKind: "image" | "video" | "audio" | "text" | "file"
+  kind?: string
+  category?: string
+  episode?: string
+  size?: number | null
+  mimeType?: string | null
+  previewUrl?: string
+  prompt?: string | null
 }
 
-interface AssetLibraryListResult {
+type AssetLibraryListResult = {
   items?: Array<{
     path?: string
     kind?: string
@@ -725,84 +739,202 @@ interface AssetLibraryListResult {
   error?: string
 }
 
-const IMAGE_SUFFIX_RE = /\.(png|jpe?g|webp|gif|bmp)$/i
-
-function isImageLikeAsset(asset: ProjectAsset): boolean {
-  const type = String(asset.type || "").toLowerCase()
-  const mime = String(asset.mime_type || "").toLowerCase()
-  const path = `${asset.url || ""} ${asset.path || ""}`.toLowerCase()
-  return type.includes("image") || mime.startsWith("image/") || IMAGE_SUFFIX_RE.test(path)
+type AssetCategoryResult = {
+  project?: Array<{ library?: string; episode?: string; kind?: string; path?: string; count?: number }>
+  shared?: Array<{ library?: string; kind?: string; category?: string; path?: string; count?: number }>
+  project_kinds?: string[]
+  shared_kinds?: string[]
+  error?: string
 }
 
-function basename(path: string): string {
+type AssetAction =
+  | { type: "preview"; item: AssetInfoItem }
+  | { type: "save"; item: AssetInfoItem }
+  | { type: "move"; item: AssetInfoItem }
+  | { type: "category" }
+  | null
+
+type AssetTargetForm = {
+  library: "shared" | "project"
+  kind: string
+  category: string
+  episode: string
+  name: string
+}
+
+const ASSET_IMAGE_SUFFIX_RE = /\.(png|jpe?g|webp|gif|bmp)$/i
+const ASSET_VIDEO_SUFFIX_RE = /\.(mp4|webm|mov|m4v)$/i
+const ASSET_AUDIO_SUFFIX_RE = /\.(mp3|wav|m4a|aac|ogg|flac)$/i
+const ASSET_TEXT_SUFFIX_RE = /\.(txt|md|markdown|json|csv|ya?ml)$/i
+const PROJECT_ASSET_KINDS = ["script", "character", "scene", "first_frame", "last_frame", "storyboard", "story_template"]
+const SHARED_ASSET_KINDS = ["character", "scene"]
+
+function assetMediaKind(text: string, mimeType?: string | null, type?: string | null): AssetInfoItem["mediaKind"] {
+  const raw = `${text || ""} ${type || ""}`.toLowerCase()
+  const mime = String(mimeType || "").toLowerCase()
+  if (mime.startsWith("image/") || raw.includes("image") || ASSET_IMAGE_SUFFIX_RE.test(raw)) return "image"
+  if (mime.startsWith("video/") || raw.includes("video") || ASSET_VIDEO_SUFFIX_RE.test(raw)) return "video"
+  if (mime.startsWith("audio/") || raw.includes("audio") || ASSET_AUDIO_SUFFIX_RE.test(raw)) return "audio"
+  if (mime.startsWith("text/") || ASSET_TEXT_SUFFIX_RE.test(raw)) return "text"
+  return "file"
+}
+
+function assetBasename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
 
-function generatedAssetPreview(asset: ProjectAsset): string {
+function assetSourceLabel(source: AssetInfoSource): string {
+  if (source === "generated") return "生成资产"
+  if (source === "project_library") return "项目资产库"
+  return "共享资产库"
+}
+
+function assetKindLabel(kind: AssetInfoItem["mediaKind"]): string {
+  if (kind === "image") return "图片"
+  if (kind === "video") return "视频"
+  if (kind === "audio") return "音频"
+  if (kind === "text") return "文本"
+  return "文件"
+}
+
+function episodeNumberText(value?: string): string {
+  const match = String(value || "").match(/\d+/)
+  return match ? String(Number(match[0])) : "1"
+}
+
+function formatAssetSize(size?: number | null): string {
+  if (!Number.isFinite(size || 0) || !size) return ""
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function generatedAssetUrl(asset: ProjectAsset): string {
   if (asset.url) return resolveMediaUrl(asset.url)
   const path = asset.path || ""
-  const marker = "/generated_images/"
-  const index = path.indexOf(marker)
-  if (index >= 0 && asset.project_id) {
-    return resolveMediaUrl(`/api/media/${asset.project_id}/${path.slice(index + marker.length)}`)
+  const match = path.match(/(?:^|\/)(generated_images|generated_videos|generated_audio)\/(.+)$/)
+  if (match && asset.project_id) {
+    return resolveMediaUrl(`/api/media/${asset.project_id}/${match[1]}/${match[2]}`)
   }
   return ""
 }
 
-function AssetReferencePicker({
+function AssetInfoPanel({
   projectId,
   disabled,
-  onInsert,
 }: {
   projectId?: string | null
   disabled?: boolean
-  onInsert: (text: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [items, setItems] = useState<AssetPickerItem[]>([])
+  const [items, setItems] = useState<AssetInfoItem[]>([])
+  const [categories, setCategories] = useState<AssetCategoryResult>({})
   const [query, setQuery] = useState("")
+  const [action, setAction] = useState<AssetAction>(null)
+  const [form, setForm] = useState<AssetTargetForm>({
+    library: "shared",
+    kind: "character",
+    category: "",
+    episode: "1",
+    name: "",
+  })
+  const [operationLoading, setOperationLoading] = useState(false)
+  const [operationError, setOperationError] = useState<string | null>(null)
+  const [operationMessage, setOperationMessage] = useState<string | null>(null)
+  const canvasNodeCount = useCanvasStore((state) => state.nodes.length)
+
+  const itemUrl = useCallback((item: AssetInfoItem): string => {
+    if (item.previewUrl) return item.previewUrl
+    if (item.source !== "generated" && item.path) return resolveAssetLibraryPreviewUrl(projectId || "", item.path)
+    return ""
+  }, [projectId])
+
+  const resetOperationState = useCallback(() => {
+    setOperationError(null)
+    setOperationMessage(null)
+  }, [])
+
+  const defaultForm = useCallback((item?: AssetInfoItem): AssetTargetForm => {
+    const sourceIsProject = item?.source === "project_library"
+    const sourceIsShared = item?.source === "shared_library"
+    const library: AssetTargetForm["library"] = sourceIsProject ? "project" : "shared"
+    const kind = item?.kind || (library === "project" ? "scene" : "character")
+    return {
+      library,
+      kind,
+      category: sourceIsShared ? (item?.category || "") : "",
+      episode: sourceIsProject ? episodeNumberText(item?.episode) : "1",
+      name: "",
+    }
+  }, [])
+
+  const openAction = useCallback((nextAction: AssetAction) => {
+    resetOperationState()
+    if (nextAction && nextAction.type !== "preview" && "item" in nextAction) {
+      setForm(defaultForm(nextAction.item))
+    } else if (nextAction?.type === "category") {
+      setForm({ library: "shared", kind: "character", category: "", episode: "1", name: "" })
+    }
+    setAction(nextAction)
+  }, [defaultForm, resetOperationState])
 
   const loadAssets = useCallback(async () => {
     if (!projectId) return
     setLoading(true)
     setError(null)
     try {
-      const next: AssetPickerItem[] = []
+      const next: AssetInfoItem[] = []
       const generated = await listProjectAssets(projectId)
-      generated.assets.filter(isImageLikeAsset).slice(0, 80).forEach((asset, index) => {
-        const title = asset.name || asset.type || `生成资产 ${index + 1}`
+      generated.assets.slice(0, 120).forEach((asset, index) => {
+        const title = asset.name || asset.type || assetBasename(asset.path || "") || `生成资产 ${index + 1}`
+        const pathText = asset.path || asset.url || asset.id
+        const mediaKind = assetMediaKind(`${asset.url || ""} ${asset.path || ""}`, asset.mime_type, asset.type)
         next.push({
           key: `generated:${asset.id}`,
           source: "generated",
           title,
-          subtitle: asset.type || "生成图片",
-          previewUrl: generatedAssetPreview(asset),
-          insertText: `请把这张生成图片写入需要使用它的节点 fields.references：{"ref":"asset:${asset.id}","role":"visual_reference"}（名称：${title}）。`,
+          subtitle: asset.type || asset.mime_type || "生成资产",
+          path: pathText,
+          sourceRef: `asset:${asset.id}`,
+          mediaKind,
+          mimeType: asset.mime_type,
+          previewUrl: mediaKind === "image" || mediaKind === "video" || mediaKind === "audio" ? generatedAssetUrl(asset) : "",
+          prompt: asset.prompt,
         })
       })
 
-      const [projectLibrary, sharedLibrary] = await Promise.all([
+      const [projectLibrary, sharedLibrary, categoryResult] = await Promise.all([
         callTool<AssetLibraryListResult>("assets.list_project", { project_id: projectId }),
         callTool<AssetLibraryListResult>("assets.list_shared", { project_id: projectId }),
+        callTool<AssetCategoryResult>("assets.list_categories", { project_id: projectId }),
       ])
+      if (!categoryResult?.error) setCategories(categoryResult)
       ;[
-        { source: "project_library" as const, label: "项目资产库", result: projectLibrary },
-        { source: "shared_library" as const, label: "共享资产库", result: sharedLibrary },
-      ].forEach(({ source, label, result }) => {
+        { source: "project_library" as const, result: projectLibrary },
+        { source: "shared_library" as const, result: sharedLibrary },
+      ].forEach(({ source, result }) => {
         if (result?.error) return
-        const imageItems = (result?.items ?? []).filter((item) => item.path && IMAGE_SUFFIX_RE.test(item.path))
-        imageItems.slice(0, 80).forEach((item, index) => {
+        ;(result?.items ?? []).slice(0, 120).forEach((item, index) => {
           const path = String(item.path || "")
-          const title = basename(path)
+          if (!path) return
+          const mediaKind = assetMediaKind(path)
           next.push({
-            key: `${source}:${path}`,
+            key: `${source}:${path}:${index}`,
             source,
-            title,
-            subtitle: item.category || item.episode || item.kind || label,
-            previewUrl: resolveAssetLibraryPreviewUrl(projectId, path),
-            insertText: `请把这张资产库图片写入需要使用它的节点 fields.references：{"ref":"${path}","role":"visual_reference"}（来源：${label}，名称：${title}）。`,
+            title: assetBasename(path),
+            subtitle: item.category || item.episode || item.kind || assetSourceLabel(source),
+            path,
+            sourceRef: path,
+            mediaKind,
+            kind: item.kind,
+            category: item.category,
+            episode: item.episode,
+            size: item.size,
+            previewUrl: mediaKind === "image" || mediaKind === "video" || mediaKind === "audio"
+              ? resolveAssetLibraryPreviewUrl(projectId, path)
+              : "",
           })
         })
       })
@@ -818,11 +950,122 @@ function AssetReferencePicker({
     if (open) void loadAssets()
   }, [open, loadAssets])
 
+  const sharedCategoryOptions = useMemo(() => {
+    const targetKind = form.kind.trim()
+    return (categories.shared ?? [])
+      .filter((item) => !targetKind || item.kind === targetKind)
+      .map((item) => item.category)
+      .filter((item): item is string => Boolean(item))
+  }, [categories.shared, form.kind])
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return items
-    return items.filter((item) => `${item.title} ${item.subtitle} ${item.insertText}`.toLowerCase().includes(q))
+    return items.filter((item) =>
+      `${item.title} ${item.subtitle} ${item.path} ${item.mimeType || ""} ${assetSourceLabel(item.source)} ${item.category || ""} ${item.kind || ""}`
+        .toLowerCase()
+        .includes(q),
+    )
   }, [items, query])
+
+  const assertToolOk = (result: Record<string, unknown>) => {
+    if (result?.error) throw new Error(String(result.error))
+    if (result?.ok === false) throw new Error(String(result.error || "操作失败"))
+  }
+
+  const handleDownload = useCallback((item: AssetInfoItem) => {
+    const url = itemUrl(item)
+    if (!url) {
+      setOperationError("这个资产没有可下载地址")
+      return
+    }
+    const anchor = document.createElement("a")
+    anchor.href = url
+    anchor.download = assetBasename(item.path || item.title)
+    anchor.rel = "noopener"
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+  }, [itemUrl])
+
+  const handleAddToCanvas = useCallback(async (item: AssetInfoItem) => {
+    if (!projectId) return
+    resetOperationState()
+    setOperationLoading(true)
+    try {
+      const result = await callTool<Record<string, unknown>>("assets.add_to_canvas", {
+        project_id: projectId,
+        source: item.sourceRef,
+        title: item.title,
+        node_type: item.mediaKind === "file" ? undefined : item.mediaKind,
+        x: 120 + (canvasNodeCount % 4) * 300,
+        y: 90 + Math.floor(canvasNodeCount / 4) * 220,
+      })
+      assertToolOk(result)
+      setOperationMessage("已加入画布")
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setOperationLoading(false)
+    }
+  }, [canvasNodeCount, projectId, resetOperationState])
+
+  const submitAssetAction = useCallback(async () => {
+    if (!projectId || !action || action.type === "preview") return
+    resetOperationState()
+    setOperationLoading(true)
+    try {
+      if (action.type === "category") {
+        const result = await callTool<Record<string, unknown>>("assets.create_category", {
+          project_id: projectId,
+          library: form.library,
+          kind: form.kind,
+          category: form.library === "shared" ? form.category : undefined,
+          episode: form.library === "project" ? Number(form.episode || 1) : undefined,
+        })
+        assertToolOk(result)
+        setOperationMessage("分类已创建")
+      } else if (action.type === "save") {
+        const item = action.item
+        const result = form.library === "shared"
+          ? await callTool<Record<string, unknown>>("assets.save_to_shared", {
+              project_id: projectId,
+              source: item.sourceRef,
+              kind: form.kind,
+              category: form.category,
+              name: form.name || undefined,
+            })
+          : await callTool<Record<string, unknown>>("assets.save_to_project", {
+              project_id: projectId,
+              source: item.sourceRef,
+              kind: form.kind,
+              episode: Number(form.episode || 1),
+              name: form.name || undefined,
+            })
+        assertToolOk(result)
+        setOperationMessage("已加入资产库")
+      } else if (action.type === "move") {
+        const item = action.item
+        const result = await callTool<Record<string, unknown>>("assets.move_asset", {
+          project_id: projectId,
+          path: item.path,
+          library: form.library,
+          kind: form.kind,
+          category: form.library === "shared" ? form.category : undefined,
+          episode: form.library === "project" ? Number(form.episode || 1) : undefined,
+          name: form.name || undefined,
+        })
+        assertToolOk(result)
+        setOperationMessage("资产已移动")
+      }
+      await loadAssets()
+      setAction(null)
+    } catch (err) {
+      setOperationError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setOperationLoading(false)
+    }
+  }, [action, form, loadAssets, projectId, resetOperationState])
 
   return (
     <div className="relative">
@@ -830,76 +1073,273 @@ function AssetReferencePicker({
         type="button"
         onClick={() => setOpen((value) => !value)}
         disabled={!projectId || disabled}
-        title="从资产库引用图片"
+        title="查看资产信息"
         className="h-8 rounded-md border border-white/10 bg-white/[0.04] px-2.5 text-xs font-medium text-zinc-300 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
       >
         资产
       </button>
       {open ? (
-        <div className="fixed inset-x-3 bottom-20 z-30 max-h-[70dvh] overflow-hidden rounded-lg border border-white/10 bg-[var(--studio-panel)] shadow-2xl shadow-black/50 sm:absolute sm:bottom-10 sm:left-0 sm:right-auto sm:max-h-none sm:w-[360px]">
+        <div className="fixed inset-x-3 bottom-20 z-30 max-h-[70dvh] overflow-hidden rounded-lg border border-white/10 bg-[var(--studio-panel)] shadow-2xl shadow-black/50 sm:absolute sm:bottom-10 sm:left-0 sm:right-auto sm:max-h-none sm:w-[420px]">
           <div className="border-b border-white/10 px-3 py-2.5">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <div className="text-sm font-medium text-zinc-100">引用资产图片</div>
-                <div className="mt-0.5 text-[11px] text-zinc-500">选择后会写入输入框，由 Agent 写入 fields.references</div>
+                <div className="text-sm font-medium text-zinc-100">资产信息</div>
+                <div className="mt-0.5 text-[11px] text-zinc-500">预览、下载、入库、分类整理和加入画布</div>
               </div>
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                className="rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06]"
-              >
-                关闭
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => openAction({ type: "category" })}
+                  className="rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06]"
+                >
+                  新分类
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void loadAssets()}
+                  disabled={loading}
+                  className="rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06] disabled:opacity-50"
+                >
+                  刷新
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="rounded-md border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06]"
+                >
+                  关闭
+                </button>
+              </div>
             </div>
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索名称、来源或路径"
+              placeholder="搜索名称、类型或路径"
               className="mt-2 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2.5 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-zinc-200/60"
             />
           </div>
-          <div className="max-h-[calc(70dvh-88px)] overflow-y-auto p-2 sm:max-h-[360px]">
+          <div className="max-h-[calc(70dvh-88px)] overflow-y-auto p-2 sm:max-h-[420px]">
+            {operationError ? (
+              <div className="mb-2 rounded-md border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">{operationError}</div>
+            ) : null}
+            {operationMessage ? (
+              <div className="mb-2 rounded-md border border-emerald-400/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">{operationMessage}</div>
+            ) : null}
             {loading ? (
               <div className="flex h-24 items-center justify-center text-xs text-zinc-500">正在读取资产…</div>
             ) : error ? (
               <div className="rounded-md border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</div>
             ) : filtered.length === 0 ? (
-              <div className="flex h-24 items-center justify-center text-xs text-zinc-500">没有可引用的图片资产</div>
+              <div className="flex h-24 items-center justify-center text-xs text-zinc-500">没有资产</div>
             ) : (
-              <div className="grid grid-cols-2 gap-2">
-                {filtered.map((item) => (
-                  <button
-                    key={item.key}
-                    type="button"
-                    onClick={() => {
-                      onInsert(item.insertText)
-                      setOpen(false)
-                    }}
-                    className="group overflow-hidden rounded-md border border-white/10 bg-white/[0.035] text-left transition-colors hover:bg-white/[0.07]"
-                  >
-                    <div className="aspect-[4/3] bg-black/25">
-                      {item.previewUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={item.previewUrl} alt={item.title} className="h-full w-full object-cover" />
-                      ) : (
-                        <div className="flex h-full items-center justify-center text-[11px] text-zinc-600">无预览</div>
-                      )}
-                    </div>
-                    <div className="px-2 py-1.5">
-                      <div className="truncate text-xs font-medium text-zinc-200">{item.title}</div>
-                      <div className="mt-0.5 truncate text-[10px] text-zinc-500">
-                        {item.source === "generated"
-                          ? "生成资产"
-                          : item.source === "project_library"
-                            ? "项目资产库"
-                            : "共享资产库"} · {item.subtitle}
+              <div className="space-y-2">
+                {filtered.map((item) => {
+                  const sizeText = formatAssetSize(item.size)
+                  return (
+                    <div key={item.key} className="flex gap-2 rounded-md border border-white/10 bg-white/[0.035] p-2">
+                      <div className="h-16 w-20 shrink-0 overflow-hidden rounded bg-black/25">
+                        {item.previewUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={item.previewUrl} alt={item.title} className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-[10px] text-zinc-600">资产</div>
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-xs font-medium text-zinc-200">{item.title}</span>
+                          <span className="shrink-0 rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-zinc-500">
+                            {assetSourceLabel(item.source)}
+                          </span>
+                        </div>
+                        <div className="mt-1 truncate text-[11px] text-zinc-500">{item.subtitle}</div>
+                        <div className="mt-1 truncate font-mono text-[10px] text-zinc-500">{item.path}</div>
+                        {(sizeText || item.mimeType || item.prompt) ? (
+                          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-zinc-600">
+                            <span>{assetKindLabel(item.mediaKind)}</span>
+                            {sizeText ? <span>{sizeText}</span> : null}
+                            {item.mimeType ? <span>{item.mimeType}</span> : null}
+                            {item.prompt ? <span className="max-w-full truncate">prompt: {item.prompt}</span> : null}
+                          </div>
+                        ) : null}
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openAction({ type: "preview", item })}
+                            className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-white/[0.06]"
+                          >
+                            预览
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDownload(item)}
+                            className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-white/[0.06]"
+                          >
+                            下载
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleAddToCanvas(item)}
+                            disabled={operationLoading}
+                            className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-white/[0.06] disabled:opacity-50"
+                          >
+                            加入画布
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openAction({ type: "save", item })}
+                            className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-white/[0.06]"
+                          >
+                            入库
+                          </button>
+                          {item.source !== "generated" ? (
+                            <button
+                              type="button"
+                              onClick={() => openAction({ type: "move", item })}
+                              className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-white/[0.06]"
+                            >
+                              移动
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
-                  </button>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>
+          {action ? (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/55 p-3">
+              <div className="w-full max-w-[360px] rounded-lg border border-white/10 bg-[var(--studio-panel)] p-3 shadow-xl">
+                {action.type === "preview" ? (
+                  <>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-zinc-100">{action.item.title}</div>
+                        <div className="mt-0.5 text-[11px] text-zinc-500">{assetSourceLabel(action.item.source)} · {assetKindLabel(action.item.mediaKind)}</div>
+                      </div>
+                      <button type="button" onClick={() => setAction(null)} className="rounded border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06]">关闭</button>
+                    </div>
+                    <div className="mt-3 overflow-hidden rounded-md border border-white/10 bg-black/30">
+                      {action.item.mediaKind === "image" && itemUrl(action.item) ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={itemUrl(action.item)} alt={action.item.title} className="max-h-[48dvh] w-full object-contain" />
+                      ) : action.item.mediaKind === "video" && itemUrl(action.item) ? (
+                        <video controls preload="metadata" className="max-h-[48dvh] w-full">
+                          <source src={itemUrl(action.item)} />
+                        </video>
+                      ) : action.item.mediaKind === "audio" && itemUrl(action.item) ? (
+                        <div className="p-3">
+                          <audio controls preload="metadata" className="w-full">
+                            <source src={itemUrl(action.item)} />
+                          </audio>
+                        </div>
+                      ) : (
+                        <div className="p-3 text-xs text-zinc-400">
+                          <div className="font-medium text-zinc-200">{assetKindLabel(action.item.mediaKind)}</div>
+                          <div className="mt-1 break-all font-mono text-[11px] text-zinc-500">{action.item.path}</div>
+                          {action.item.prompt ? <div className="mt-2 text-zinc-500">{action.item.prompt}</div> : null}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-zinc-100">
+                          {action.type === "category" ? "创建分类" : action.type === "move" ? "移动资产" : "加入资产库"}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-zinc-500">
+                          {action.type === "category" ? "创建项目或共享资产分类" : "选择目标库和分类"}
+                        </div>
+                      </div>
+                      <button type="button" onClick={() => setAction(null)} className="rounded border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/[0.06]">关闭</button>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      <label className="block text-[11px] text-zinc-500">
+                        目标库
+                        <select
+                          value={form.library}
+                          onChange={(event) => setForm((current) => ({
+                            ...current,
+                            library: event.target.value as AssetTargetForm["library"],
+                            kind: event.target.value === "project" ? "scene" : "character",
+                          }))}
+                          className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
+                        >
+                          <option value="shared">共享资产库</option>
+                          <option value="project">项目资产库</option>
+                        </select>
+                      </label>
+                      <label className="block text-[11px] text-zinc-500">
+                        类型
+                        <select
+                          value={form.kind}
+                          onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value }))}
+                          className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
+                        >
+                          {(form.library === "shared" ? SHARED_ASSET_KINDS : PROJECT_ASSET_KINDS).map((kind) => (
+                            <option key={kind} value={kind}>{kind}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {form.library === "shared" ? (
+                        <label className="block text-[11px] text-zinc-500">
+                          分类
+                          <input
+                            value={form.category}
+                            list="asset-shared-category-options"
+                            onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
+                            placeholder="例如 main_roles / city_night"
+                            className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100 placeholder-zinc-600"
+                          />
+                          <datalist id="asset-shared-category-options">
+                            {sharedCategoryOptions.map((category) => <option key={category} value={category} />)}
+                          </datalist>
+                        </label>
+                      ) : (
+                        <label className="block text-[11px] text-zinc-500">
+                          集数
+                          <input
+                            value={form.episode}
+                            type="number"
+                            min="1"
+                            onChange={(event) => setForm((current) => ({ ...current, episode: event.target.value }))}
+                            className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100"
+                          />
+                        </label>
+                      )}
+                      {action.type !== "category" ? (
+                        <label className="block text-[11px] text-zinc-500">
+                          新名称
+                          <input
+                            value={form.name}
+                            onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+                            placeholder="选填，默认沿用原文件名"
+                            className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100 placeholder-zinc-600"
+                          />
+                        </label>
+                      ) : null}
+                    </div>
+                    {operationError ? <div className="mt-3 rounded-md border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">{operationError}</div> : null}
+                    <div className="mt-3 flex justify-end gap-2">
+                      <button type="button" onClick={() => setAction(null)} className="rounded-md border border-white/10 px-3 py-1.5 text-xs text-zinc-400 hover:bg-white/[0.06]">取消</button>
+                      <button
+                        type="button"
+                        onClick={() => void submitAssetAction()}
+                        disabled={operationLoading || (form.library === "shared" && !form.category.trim())}
+                        className="rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {operationLoading ? "处理中" : "确认"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -1233,15 +1673,6 @@ export function ChatPanel() {
     setInput((prev) => {
       const needsSpace = prev.trim().length > 0 && !prev.endsWith(" ") && !prev.endsWith("\n")
       return `${prev}${needsSpace ? " " : ""}${mention} `
-    })
-    requestAnimationFrame(() => textareaRef.current?.focus())
-  }
-
-  const insertAssetReference = (text: string) => {
-    if (!text || pendingInputRequestId || pendingActionRequestId) return
-    setInput((prev) => {
-      const needsBreak = prev.trim().length > 0 && !prev.endsWith("\n")
-      return `${prev}${needsBreak ? "\n" : ""}${text}`
     })
     requestAnimationFrame(() => textareaRef.current?.focus())
   }
@@ -2352,10 +2783,9 @@ export function ChatPanel() {
             >
               上传
             </button>
-            <AssetReferencePicker
+            <AssetInfoPanel
               projectId={currentProject?.id}
-              disabled={Boolean(pendingInputRequestId) || Boolean(pendingActionRequestId)}
-              onInsert={insertAssetReference}
+              disabled={false}
             />
           </div>
           {lastFailedMessage && !streaming && (

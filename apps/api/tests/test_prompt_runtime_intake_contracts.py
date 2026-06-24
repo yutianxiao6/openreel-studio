@@ -280,7 +280,7 @@ def test_template_and_audit_prompt_sections_are_runtime_principles_not_manuals()
 
 def test_low_frequency_prompt_sections_are_runtime_principles_not_manuals() -> None:
     sections = {
-        "assets_rule": (assets_rule.PROMPT, ("资产面板", "assets.list_project", "REST API", "fields.references")),
+        "assets_rule": (assets_rule.PROMPT, ("assets.list_project", "assets.list_categories", "assets.add_to_canvas", "fields.references")),
         "attachment_rule": (attachment_rule.PROMPT, ("runtime state", "fields.references", "source_image")),
         "single_image_rule": (single_image_rule.PROMPT, ("fields.references", "node.create", "node.run")),
         "node_contract": (node_contract.PROMPT, ("skill.search", "node.create", "dependency_missing")),

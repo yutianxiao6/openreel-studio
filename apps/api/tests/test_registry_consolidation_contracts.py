@@ -59,6 +59,10 @@ async def test_tool_search_empty_category_lists_deferred_category_catalog() -> N
         "assets.list_project",
         "assets.list_shared",
         "assets.read_asset",
+        "assets.list_categories",
+        "assets.create_category",
+        "assets.move_asset",
+        "assets.add_to_canvas",
     } <= names
     assert "assets.set_library_path" not in names
 
@@ -1294,15 +1298,31 @@ async def test_asset_library_path_config_is_unregistered_but_library_tools_are_d
         "assets.list_project",
         "assets.list_shared",
         "assets.read_asset",
+        "assets.list_categories",
+        "assets.create_category",
+        "assets.move_asset",
+        "assets.add_to_canvas",
     ):
         assert registry.get(name) is not None, name
         assert name not in visible
         assert name in listed_names
 
-    search = await tool_meta_tools.tool_search(query="保存到资产库", category="assets")
-    names = {item["name"] for item in search["tools"]}
-    assert "assets.save_to_project" in names
-    assert "assets.save_to_shared" in names
+    save_search = await tool_meta_tools.tool_search(query="保存到资产库", category="assets")
+    save_names = {item["name"] for item in save_search["tools"]}
+    assert "assets.save_to_project" in save_names
+    assert "assets.save_to_shared" in save_names
+
+    category_search = await tool_meta_tools.tool_search(query="创建分类", category="assets")
+    category_names = {item["name"] for item in category_search["tools"]}
+    assert "assets.create_category" in category_names
+
+    move_search = await tool_meta_tools.tool_search(query="移动资产", category="assets")
+    move_names = {item["name"] for item in move_search["tools"]}
+    assert "assets.move_asset" in move_names
+
+    canvas_search = await tool_meta_tools.tool_search(query="加入画布", category="assets")
+    canvas_names = {item["name"] for item in canvas_search["tools"]}
+    assert "assets.add_to_canvas" in canvas_names
 
 @pytest.mark.asyncio
 async def test_media_provider_write_tools_are_unregistered_but_provider_test_remains() -> None:

@@ -4,6 +4,7 @@ import base64
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import routes_assets
@@ -223,5 +224,83 @@ async def test_asset_library_preview_route_is_scoped_to_configured_roots(monkeyp
                 project_id="project-1",
                 path=str(outside_path),
                 db=session,
-            )
+        )
         assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_asset_library_categories_move_and_add_to_canvas(monkeypatch, tmp_path) -> None:
+    await _setup_asset_db(monkeypatch, tmp_path)
+    project_root = tmp_path / "project-library"
+    shared_root = tmp_path / "shared-library"
+    source_dir = shared_root / "characters" / "unsorted"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    source_path = source_dir / "hero.png"
+    source_path.write_bytes(
+        base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+    )
+    async with db_session.session_scope() as session:
+        project = await session.get(Project, "project-1")
+        project.state_json = json.dumps({
+            "metadata": {"title": "测试短剧"},
+            "asset_library": {
+                "project_root": str(project_root),
+                "shared_root": str(shared_root),
+            },
+        }, ensure_ascii=False)
+        session.add(project)
+        await session.commit()
+
+    shared_category = await asset_library_tools.assets_create_category(
+        project_id="project-1",
+        library="shared",
+        kind="scene",
+        category="city_night",
+    )
+    project_category = await asset_library_tools.assets_create_category(
+        project_id="project-1",
+        library="project",
+        kind="storyboard",
+        episode=2,
+    )
+
+    assert shared_category["ok"] is True
+    assert Path(shared_category["path"]).exists()
+    assert project_category["ok"] is True
+    assert Path(project_category["path"]).exists()
+
+    moved = await asset_library_tools.assets_move_asset(
+        project_id="project-1",
+        path=str(source_path),
+        library="shared",
+        kind="scene",
+        category="city_night",
+    )
+
+    moved_path = Path(moved["path"])
+    assert moved["ok"] is True
+    assert moved_path.exists()
+    assert not source_path.exists()
+    assert moved_path.parent.name == "city_night"
+
+    categories = await asset_library_tools.assets_list_categories(project_id="project-1")
+    assert any(item["category"] == "city_night" and item["count"] == 1 for item in categories["shared"])
+    assert any(item["episode"] == "ep02" and item["kind"] == "storyboard" for item in categories["project"])
+
+    added = await asset_library_tools.assets_add_to_canvas(
+        project_id="project-1",
+        source=str(moved_path),
+        title="资产主角图",
+        node_type="image",
+    )
+
+    assert added["ok"] is True
+    assert added["node_id"] == "0"
+    async with db_session.session_scope() as session:
+        node = (await session.exec(select(WorkflowNode).where(WorkflowNode.project_id == "project-1"))).first()
+    assert node is not None
+    assert node.type == "image"
+    assert node.status == "completed"
+    output = json.loads(node.output_json or "{}")
+    assert output["type"] == "image"
+    assert output["local_url"].startswith("/api/assets/project-1/preview?")
