@@ -1902,9 +1902,10 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         "assets.save_to_shared",
         asset_library_tools.assets_save_to_shared,
         tags=["assets", "write"],
-        description="把人物或场景素材显式保存到共享资产库。",
+        description="把人物或场景素材显式保存到共享资产库，分类目录名跟随用户语言。",
         usage_hints=[
-            "tool.execute(name='assets.save_to_shared', input={'kind': 'character', 'category': 'female_young', 'source': 'node:12', 'name': '角色名'})",
+            "category 使用用户消息语言的自然文件夹名，例如英文请求用 'main characters'，中文请求用 '主要角色'。",
+            "tool.execute(name='assets.save_to_shared', input={'kind': 'character', 'category': '主要角色', 'source': 'node:12', 'name': '角色名'})",
         ],
     )
     R("assets.list_project", asset_library_tools.assets_list_project, tags=["assets", "read"])
@@ -1917,7 +1918,8 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         tags=["assets", "write"],
         description="在项目资产库或共享资产库创建分类目录。",
         usage_hints=[
-            "tool.execute(name='assets.create_category', input={'library': 'shared', 'kind': 'character', 'category': 'main_roles'})",
+            "category 使用用户消息语言的自然文件夹名。",
+            "tool.execute(name='assets.create_category', input={'library': 'shared', 'kind': 'character', 'category': '主要角色'})",
             "tool.execute(name='assets.create_category', input={'library': 'project', 'episode': 1, 'kind': 'storyboard'})",
         ],
     )
@@ -1927,7 +1929,8 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         tags=["assets", "write"],
         description="把资产库文件移动到另一个项目或共享分类。",
         usage_hints=[
-            "tool.execute(name='assets.move_asset', input={'path': '/assets/shared/characters/a.png', 'library': 'shared', 'kind': 'character', 'category': 'main_roles'})",
+            "category 使用用户消息语言的自然文件夹名。",
+            "tool.execute(name='assets.move_asset', input={'path': '/assets/shared/characters/a.png', 'library': 'shared', 'kind': 'character', 'category': '主要角色'})",
         ],
     )
     R(

@@ -1304,7 +1304,7 @@ function AssetInfoPanel({
                             value={form.category}
                             list="asset-shared-category-options"
                             onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
-                            placeholder="例如 main_roles / city_night"
+                            placeholder="输入分类名，跟随当前用户语言"
                             className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100 placeholder-zinc-600"
                           />
                           <datalist id="asset-shared-category-options">
@@ -1916,7 +1916,7 @@ function AssetLibraryActionDialog({
                 value={form.category}
                 list="asset-library-shared-categories"
                 onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
-                placeholder="例如 main_roles / city_night"
+                placeholder="输入分类名，跟随当前用户语言"
                 className="mt-1 h-8 w-full rounded-md border border-white/10 bg-[var(--studio-control)] px-2 text-xs text-zinc-100 placeholder-zinc-600"
               />
               <datalist id="asset-library-shared-categories">
