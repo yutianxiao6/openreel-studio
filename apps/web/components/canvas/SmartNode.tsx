@@ -383,9 +383,8 @@ function RunningDots() {
 }
 
 interface MediaProgressInfo {
-  percent: number | null
+  percent: number
   label: string
-  pollCount?: number
 }
 
 function progressPercent(value: unknown): number | null {
@@ -397,35 +396,19 @@ function progressPercent(value: unknown): number | null {
   return Math.max(0, Math.min(100, Math.round(percent)))
 }
 
-function progressStatusLabel(status: unknown): string {
-  const text = String(status || "").trim().toLowerCase()
-  if (text === "queued" || text === "pending" || text === "not_start") return "排队中"
-  if (text === "processing" || text === "in_progress" || text === "running") return "生成中"
-  if (text === "done" || text === "success" || text === "completed" || text === "succeeded") return "收尾中"
-  return "生成中"
-}
-
-function mediaProgressFromPreview(preview: PreviewData | undefined, fallbackStatus: string): MediaProgressInfo | null {
-  const directStatus = preview?.poll_status ?? preview?.status ?? fallbackStatus
+function mediaProgressFromPreview(preview: PreviewData | undefined): MediaProgressInfo | null {
   const directPercent = progressPercent(preview?.progress)
-  const directPollCount = Number(preview?.poll_count)
-  if (directPercent != null || ["queued", "running"].includes(fallbackStatus) || preview?.poll_status != null) {
+  if (directPercent != null) {
     return {
       percent: directPercent,
-      label: directPercent != null ? `${directPercent}%` : progressStatusLabel(directStatus),
-      pollCount: Number.isFinite(directPollCount) ? directPollCount : undefined,
+      label: `${directPercent}%`,
     }
   }
   if (Array.isArray(preview?.stages)) {
     const stage = preview.stages.find((item) => item.status === "running" || item.progress != null || item.poll_status != null)
     if (stage) {
       const percent = progressPercent(stage.progress)
-      const pollCount = Number(stage.poll_count)
-      return {
-        percent,
-        label: percent != null ? `${percent}%` : progressStatusLabel(stage.poll_status ?? stage.status ?? fallbackStatus),
-        pollCount: Number.isFinite(pollCount) ? pollCount : undefined,
-      }
+      if (percent != null) return { percent, label: `${percent}%` }
     }
   }
   return null
@@ -436,7 +419,6 @@ function MediaProgressText({ progress }: { progress: MediaProgressInfo | null })
   return (
     <span className="whitespace-nowrap text-xs font-semibold tabular-nums text-blue-100">
       {progress.label}
-      {progress.pollCount ? <span className="ml-1 text-[10px] font-medium text-blue-200/60">{progress.pollCount}次</span> : null}
     </span>
   )
 }
@@ -772,7 +754,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const image = imageFromPreview(data.preview)
   const video = videoFromPreview(data.preview)
   const audio = audioFromPreview(data.preview)
-  const mediaProgress = mediaProgressFromPreview(data.preview, status)
+  const mediaProgress = mediaProgressFromPreview(data.preview)
   const [naturalImage, setNaturalImage] = useState<{ src: string; width: number; height: number } | null>(null)
   const [naturalVideo, setNaturalVideo] = useState<{ src: string; width: number; height: number } | null>(null)
   const imageForSize = image?.width && image?.height

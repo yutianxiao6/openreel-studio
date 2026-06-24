@@ -303,9 +303,8 @@ function numericDimension(value: unknown): number | undefined {
 }
 
 interface MediaProgressInfo {
-  percent: number | null
+  percent: number
   label: string
-  pollCount?: number
 }
 
 function progressPercent(value: unknown): number | null {
@@ -317,26 +316,13 @@ function progressPercent(value: unknown): number | null {
   return Math.max(0, Math.min(100, Math.round(percent)))
 }
 
-function progressStatusLabel(status: unknown): string {
-  const text = String(status || "").trim().toLowerCase()
-  if (text === "queued" || text === "pending" || text === "not_start") return "排队中"
-  if (text === "processing" || text === "in_progress" || text === "running") return "生成中"
-  if (text === "done" || text === "success" || text === "completed" || text === "succeeded") return "收尾中"
-  return "生成中"
-}
-
-function mediaProgressFromOutput(output: unknown, fallbackStatus: string): MediaProgressInfo | null {
+function mediaProgressFromOutput(output: unknown): MediaProgressInfo | null {
   const obj = asObj(output)
   const percent = progressPercent(obj?.progress)
-  const status = obj?.poll_status ?? obj?.status ?? fallbackStatus
-  const pollCount = Number(obj?.poll_count)
-  if (percent == null && !["queued", "running"].includes(fallbackStatus) && obj?.poll_status == null) {
-    return null
-  }
+  if (percent == null) return null
   return {
     percent,
-    label: percent != null ? `${percent}%` : progressStatusLabel(status),
-    pollCount: Number.isFinite(pollCount) ? pollCount : undefined,
+    label: `${percent}%`,
   }
 }
 
@@ -345,7 +331,6 @@ function MediaProgressText({ progress }: { progress: MediaProgressInfo }) {
     <div className="mt-2 inline-flex items-center gap-1.5 rounded bg-blue-950/45 px-2 py-1 text-[11px] font-semibold text-blue-200 ring-1 ring-blue-300/15">
       <span>进度</span>
       <span className="tabular-nums">{progress.label}</span>
-      {progress.pollCount ? <span className="text-[10px] font-medium text-blue-200/55">{progress.pollCount}次轮询</span> : null}
     </div>
   )
 }
@@ -4000,7 +3985,7 @@ export default function NodeDetailPanel({
   const statusBadge = STATUS_LABELS[status] ?? STATUS_LABELS.idle
   const renderState = renderStateFromNode(data)
   const displayError = data ? nodeDisplayError(data) : ""
-  const mediaProgress = data ? mediaProgressFromOutput(data.output, status) : null
+  const mediaProgress = data ? mediaProgressFromOutput(data.output) : null
 
   const media = data ? collectMedia(data.output) : []
 
