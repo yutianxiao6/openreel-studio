@@ -412,7 +412,7 @@ def test_runtime_context_omits_node_refs_and_prompt_body() -> None:
     assert "LEAK_PROMPT_BODY" not in context
 
 
-def test_session_clear_state_patch_keeps_artifacts_but_drops_unpinned_memory() -> None:
+def test_session_clear_state_patch_keeps_artifacts_but_drops_runtime_context() -> None:
     pinned = {
         "id": "fact-keep",
         "kind": "preference",
@@ -422,6 +422,9 @@ def test_session_clear_state_patch_keeps_artifacts_but_drops_unpinned_memory() -
     state = {
         "project_blueprint": {"id": "bp-1"},
         "active_plan_checklist": [{"title": "保留任务"}],
+        "active_workflow": {"kind": "template", "template_id": "old"},
+        "workflow_runtime": {"instances": {"old": {"steps": {"script": {"status": "completed"}}}}},
+        "workflow_input_values": {"plot": "旧剧情"},
         "workflow": {"nodes": [{"id": "node-1"}]},
         "session": {"focus": "old"},
         "guide_loaded": {"node": True},
@@ -472,6 +475,9 @@ def test_session_clear_state_patch_keeps_artifacts_but_drops_unpinned_memory() -
         "_skills_loaded": {},
         "_last_template_lookup": None,
         "_last_agent_review": None,
+        "active_workflow": None,
+        "workflow_runtime": {},
+        "workflow_input_values": {},
         "memory": {"facts": [pinned]},
         "agent_token_usage": None,
         "context_cleared_at": "2026-06-05T00:00:00",
@@ -568,7 +574,7 @@ def test_runtime_context_shows_loaded_skill_marker_without_summary_body() -> Non
         "_skills_loaded": {
             "video_production": {
                 "skill": "video_production",
-                "tool": "skill.video_production",
+                "tool": "skill.get",
                 "detail": "summary",
                 "summary": "视频制作先写剧本，再做人设、场景、分镜和视频节点。",
                 "guidance_hash": "skill123",
@@ -890,6 +896,32 @@ async def test_memory_compact_context_persists_summary_not_sliding_tail(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_message_queue_removes_queued_message_by_client_id() -> None:
+    project_id = "project-remove-queued"
+    await mq.pop_all(project_id)
+    try:
+        await mq.enqueue(
+            project_id,
+            "保留",
+            user_metadata={"clientUserMessageId": "keep"},
+        )
+        await mq.enqueue(
+            project_id,
+            "删除",
+            user_metadata={"clientUserMessageId": "remove"},
+        )
+
+        removed = await mq.remove_queued(project_id, "remove")
+        remaining = await mq.pop_all(project_id)
+
+        assert removed == {"ok": True, "removed": True, "queued_count": 1}
+        assert [item["message"] for item in remaining] == ["保留"]
+    finally:
+        await mq.pop_all(project_id)
+        await mq.clear_cancel(project_id)
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_stream_drains_queued_messages_before_final_done(monkeypatch) -> None:
     project_id = "project-queued-stream"
     await mq.pop_all(project_id)
@@ -922,7 +954,10 @@ async def test_orchestrator_stream_drains_queued_messages_before_final_done(monk
                 "追加消息一",
                 [{"filename": "ref.png"}],
                 referenced_node_ids=["node-queued-1"],
-                user_metadata={"decisionInputs": {"kind": "interaction_input", "values": {"topic": "雨夜"}}},
+                user_metadata={
+                    "clientUserMessageId": "client-1",
+                    "decisionInputs": {"kind": "interaction_input", "values": {"topic": "雨夜"}},
+                },
             )
             await mq.enqueue(
                 project_id_arg,
@@ -965,6 +1000,7 @@ async def test_orchestrator_stream_drains_queued_messages_before_final_done(monk
     assert calls[1]["referenced_node_ids"] == ["node-queued-1"]
     assert calls[1]["display_message"] is None
     assert calls[1]["user_metadata"] == {
+        "clientUserMessageId": "client-1",
         "decisionInputs": {"kind": "interaction_input", "values": {"topic": "雨夜"}},
     }
     assert calls[2]["attachments"] == [{"filename": "second.png"}]
@@ -975,6 +1011,21 @@ async def test_orchestrator_stream_drains_queued_messages_before_final_done(monk
     merged = next(event for event in events if event.get("type") == "merged_messages")
     assert merged["mode"] == "sequential_turn_inputs"
     assert "用户在我处理上一条期间又发了" not in str(merged)
+    queued_starts = [event for event in events if event.get("type") == "queued_turn_started"]
+    assert queued_starts == [
+        {
+            "type": "queued_turn_started",
+            "client_user_message_id": "client-1",
+            "message": "追加消息一",
+            "queued_remaining": 1,
+        },
+        {
+            "type": "queued_turn_started",
+            "client_user_message_id": "client-2",
+            "message": "追加消息二",
+            "queued_remaining": 0,
+        },
+    ]
     assert events[-1] == {"type": "done", "status": "completed"}
 
 

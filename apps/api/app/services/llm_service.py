@@ -25,6 +25,9 @@ from app.db.session import session_scope
 
 _TASK_DEFAULTS = {
     "agent_loop": "DEFAULT_FAST_MODEL",
+    "agent_review": "DEFAULT_REVIEW_MODEL",
+    "agent_compact": "DEFAULT_FAST_MODEL",
+    "agent_aux": "DEFAULT_FAST_MODEL",
     # Legacy compatibility only. Runtime code should call agent_loop.
     "intent_parse": "DEFAULT_FAST_MODEL",
     "planning": "DEFAULT_FAST_MODEL",
@@ -36,6 +39,16 @@ _TASK_DEFAULTS = {
     "image_understanding": "DEFAULT_TEXT_MODEL",
     "image_prompt_generation": "DEFAULT_TEXT_MODEL",
     "video_prompt_generation": "DEFAULT_TEXT_MODEL",
+    "subagent_node_producer": "DEFAULT_TEXT_MODEL",
+    "subagent_image_editor": "DEFAULT_FAST_MODEL",
+    "subagent_workflow_spec": "DEFAULT_TEXT_MODEL",
+}
+_TASK_CONFIG_FALLBACKS = {
+    "agent_review": "agent_loop",
+    "agent_compact": "agent_loop",
+    "subagent_node_producer": "agent_loop",
+    "subagent_image_editor": "agent_loop",
+    "subagent_workflow_spec": "agent_loop",
 }
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504, 529}
@@ -65,25 +78,15 @@ def _default_model_for(task_type: str) -> str:
     return getattr(settings, attr)
 
 
-async def _lookup_llm_provider(provider_name: str | None):
-    """从 llm_providers 表读一行；name=None 时找 is_default=True。"""
+async def _lookup_llm_provider(provider_name: str):
+    """从 llm_providers 表按名称读取一行。"""
     from app.db.models import LlmProvider
     async with session_scope() as session:
-        if provider_name:
-            r = await session.exec(
-                select(LlmProvider).where(LlmProvider.name == provider_name)
-            )
-            row = r.first()
-            if row and row.enabled:
-                return row
-        # fallback to is_default
         r = await session.exec(
-            select(LlmProvider).where(
-                LlmProvider.is_default == True,  # noqa: E712
-                LlmProvider.enabled == True,  # noqa: E712
-            )
+            select(LlmProvider).where(LlmProvider.name == provider_name)
         )
-        return r.first()
+        row = r.first()
+        return row if row and row.enabled else None
 
 
 def _llm_provider_metadata(provider_row: Any | None) -> dict[str, Any]:
@@ -106,6 +109,7 @@ def _llm_provider_metadata(provider_row: Any | None) -> dict[str, Any]:
         "supports_prompt_cache": getattr(provider_row, "supports_prompt_cache", None),
         "supports_vision": getattr(provider_row, "supports_vision", None),
         "tokenizer": getattr(provider_row, "tokenizer", None),
+        "tier": getattr(provider_row, "tier", None),
         "params": params,
     }
 
@@ -126,7 +130,7 @@ async def _resolve_config(
     db: AsyncSession | None,
     node_override: str | None,
 ) -> dict[str, Any]:
-    """优先级：node_override > model_configs.llm_provider_name > is_default > settings 默认。"""
+    """优先级：node_override > model_configs.llm_provider_name > settings 默认。"""
     if node_override:
         return {
             "model": node_override,
@@ -161,10 +165,20 @@ async def _resolve_config(
                 .limit(1)
             )
             cfg_row = legacy_result.first()
+        fallback_task = _TASK_CONFIG_FALLBACKS.get(task_type)
+        if cfg_row is None and fallback_task:
+            fallback_result = await db.exec(
+                select(ModelConfig)
+                .where(
+                    ModelConfig.task_type == fallback_task,
+                    ModelConfig.enabled == True,  # noqa: E712
+                )
+                .order_by(ModelConfig.created_at.desc())
+                .limit(1)
+            )
+            cfg_row = fallback_result.first()
 
-    provider_row = await _lookup_llm_provider(
-        cfg_row.llm_provider_name if cfg_row else None
-    )
+    provider_row = await _lookup_llm_provider(cfg_row.llm_provider_name) if cfg_row else None
 
     if provider_row is not None:
         provider = provider_row.provider
@@ -243,14 +257,6 @@ def _resolve_env_key_for_default(model: str) -> str | None:
                     continue
                 _p_name = _p.get("provider", "")
                 if _p_name == _provider:
-                    _key = _p.get("api_key")
-                    if _key:
-                        return _resolve_key_reference(_key)
-            # 如果没有 provider 匹配，用 default provider 的 key
-            for _p in _providers:
-                if not isinstance(_p, dict):
-                    continue
-                if _p.get("is_default") and _p.get("enabled", True):
                     _key = _p.get("api_key")
                     if _key:
                         return _resolve_key_reference(_key)
@@ -420,7 +426,17 @@ async def _acompletion_with_retries(
         call_kwargs["model"] = model
         for attempt in range(max_attempts):
             try:
-                return await litellm.acompletion(**call_kwargs)
+                response = await litellm.acompletion(**call_kwargs)
+                try:
+                    setattr(response, "_openreel_requested_model", kwargs["model"])
+                    setattr(response, "_openreel_actual_model", model)
+                    setattr(response, "_openreel_fallback_used", model != kwargs["model"])
+                except Exception:
+                    if isinstance(response, dict):
+                        response["_openreel_requested_model"] = kwargs["model"]
+                        response["_openreel_actual_model"] = model
+                        response["_openreel_fallback_used"] = model != kwargs["model"]
+                return response
             except Exception as exc:
                 last_exc = exc
                 if is_context_length_error(exc):
@@ -526,13 +542,14 @@ class LLMService:
         )
         response = _attach_model_metadata(response, cfg.get("model_metadata") or {})
         content = response.choices[0].message.content or ""
+        actual_model = str(getattr(response, "_openreel_actual_model", "") or kwargs["model"])
         return {
             "content": content,
-            "model": kwargs["model"],
+            "model": actual_model,
             "usage": build_usage_snapshot(
                 response,
                 messages=kwargs["messages"],
-                model=kwargs["model"],
+                model=actual_model,
                 model_metadata=cfg.get("model_metadata") or {},
             ),
         }
@@ -604,10 +621,13 @@ class LLMService:
         system: str | None = None,
         project_id: str | None = None,
         node_override: str | None = None,
+        max_tokens: int | None = None,
     ) -> Any:
         """LLM call with function-calling tools. Returns the full response object."""
         cfg = await _resolve_config(task_type, self.db, node_override)
         kwargs = _completion_kwargs(cfg, with_tools=tools)
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max(1, int(max_tokens))
         kwargs["messages"] = _build_messages(
             messages,
             system,

@@ -6,11 +6,13 @@ ORDER = 30
 PROMPT = """\
 # Project Rules
 
-- The shared canvas is creative truth; user and Agent nodes have equal authority.
-- Numbered targets (`#0`/`0`) use `node.get(node_id)`; named/unclear use `node.list(query|regex)`; broad uses `node.list(limit=0)`; details use `node.get(node_ids)`.
-- Draft fields carry tmp/purpose/stage; ask only for fact gaps/conflicts.
-- Work uses active skill, `task.*`, `node.*`; dependencies use `parent_node_id`/`fields.references`.
-- Before run/report, check latest user+skill; `agent.review` can verify; fix same node.
-- State/retry uses state and `error_kind/hint/model_feedback`.
-- Destructive actions need current request plus structured confirmation.
+- Canvas is creative truth; user and Agent nodes have equal authority.
+- Node types are `text`/`image`/`video`/`audio`.
+- Targets: `#0`/`0` -> `node.get`; named/unclear -> `node.list`; index -> `node.list(limit=0)`.
+- Draft fields carry tmp/purpose/stage; ask only blocking gaps/conflicts.
+- General video uses selected workflow; explicit node edits use `node.*`.
+- Single-node work uses `task.*` + `node.*` when tracking helps.
+- UI group: `parent_node_id`; production edges: `fields.references`.
+- Check latest user+skill before run/report; use `agent.review` for big checks.
+- State/retry uses `error_kind/hint`; destructive actions need current request + structured confirmation.
 """

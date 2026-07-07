@@ -106,6 +106,76 @@ def test_task_create_can_create_sequential_checklist_in_one_call(tmp_path: Path,
     assert tasks[2]["blocked_by"] == [tasks[1]["id"]]
 
 
+def test_task_create_preserves_model_item_ids_for_update(tmp_path: Path, monkeypatch) -> None:
+    local_graph = TaskGraph(tmp_path / "tasks")
+    monkeypatch.setattr(task_tools, "task_graph", local_graph)
+
+    import asyncio
+    created = asyncio.run(task_tools.task_create(
+        project_id="project-1",
+        mode="sequential",
+        items=[
+            {"id": "1", "label": "初始化草稿"},
+            {"id": "2", "label": "提交草稿"},
+        ],
+    ))
+
+    assert created["tasks"][0]["client_id"] == "1"
+    assert created["tasks"][1]["client_id"] == "2"
+    assert created["tasks"][0]["subject"] == "初始化草稿"
+    updated = asyncio.run(task_tools.task_update(
+        task_id="1",
+        project_id="project-1",
+        status="in_progress",
+    ))
+
+    assert updated["ok"] is True
+    assert updated["id"] == created["tasks"][0]["id"]
+    assert updated["client_id"] == "1"
+    assert updated["status"] == "in_progress"
+    assert updated["resolved_from_client_task_id"] == "1"
+
+
+def test_task_complete_resolves_model_item_id(tmp_path: Path, monkeypatch) -> None:
+    local_graph = TaskGraph(tmp_path / "tasks")
+    monkeypatch.setattr(task_tools, "task_graph", local_graph)
+
+    import asyncio
+    created = asyncio.run(task_tools.task_create(
+        project_id="project-1",
+        items=[
+            {"id": "draft", "subject": "提交草稿"},
+        ],
+    ))
+
+    completed = asyncio.run(task_tools.task_complete(
+        task_id="draft",
+        project_id="project-1",
+        result_summary="已提交",
+    ))
+
+    assert completed["ok"] is True
+    assert completed["id"] == created["tasks"][0]["id"]
+    assert completed["client_id"] == "draft"
+    assert completed["status"] == "completed"
+    assert completed["resolved_from_client_task_id"] == "draft"
+
+
+def test_task_delete_all_alias_clears_project_tasks(tmp_path: Path, monkeypatch) -> None:
+    local_graph = TaskGraph(tmp_path / "tasks")
+    monkeypatch.setattr(task_tools, "task_graph", local_graph)
+    local_graph.create(subject="one", project_id="project-1")
+    local_graph.create(subject="two", project_id="project-1")
+    local_graph.create(subject="other", project_id="project-2")
+
+    import asyncio
+    result = asyncio.run(task_tools.task_delete(task_id="__all__", project_id="project-1"))
+
+    assert result == {"ok": True, "deleted_count": 2, "task_id": "__all__"}
+    assert [task.subject for task in local_graph.list_all("project-1")] == []
+    assert [task.subject for task in local_graph.list_all("project-2")] == ["other"]
+
+
 def test_retry_fail_policy_retries_then_fails(tmp_path: Path) -> None:
     task_graph = TaskGraph(tmp_path / "tasks")
     root = task_graph.create(subject="retry", failure_action="retry", max_retries=1)
@@ -183,6 +253,34 @@ def test_task_update_result_does_not_surface_task_error_as_tool_error(tmp_path: 
     assert result["status"] == "in_progress"
     assert "error" not in result
     assert result["task"]["error"] is None
+
+    envelope = build_tool_output_envelope(
+        result,
+        project_id="project-1",
+        run_id="run",
+        iteration=1,
+        tool_name="task.update",
+    )
+    assert envelope["success"] is True
+    assert envelope["outcome"] == "success"
+
+
+def test_task_update_resolves_single_project_task_when_id_is_stale(tmp_path: Path, monkeypatch) -> None:
+    local_graph = TaskGraph(tmp_path / "tasks")
+    monkeypatch.setattr(task_tools, "task_graph", local_graph)
+    task = local_graph.create(subject="materialize workflow", project_id="project-1")
+
+    import asyncio
+    result = asyncio.run(task_tools.task_update(
+        task_id="stale-task-id",
+        project_id="project-1",
+        status="completed",
+    ))
+
+    assert result["ok"] is True
+    assert result["id"] == task.id
+    assert result["status"] == "completed"
+    assert result["resolved_from_missing_task_id"] == "stale-task-id"
 
     envelope = build_tool_output_envelope(
         result,

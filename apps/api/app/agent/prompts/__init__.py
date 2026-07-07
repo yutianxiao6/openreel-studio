@@ -2,7 +2,7 @@
 
 每个 section 文件需声明:
   NAME    : str            # 唯一名
-  TRIGGER : str            # 加载条件,只支持 always/plan_mode/attachments/failure/factory
+  TRIGGER : str            # 加载条件,只支持 always/plan_mode/workflow_build_mode/attachments/factory
   ORDER   : int            # 拼接顺序(小在前)
   TIER    : str            # 分层:'s'(system,每次必发) / 'h'(history,首轮注入)
                            # 默认 'h'(节省 token)。未知 trigger 不会自动注入。

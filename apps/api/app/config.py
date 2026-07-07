@@ -58,7 +58,10 @@ class Settings(BaseSettings):
 
     @property
     def storage_path_resolved(self) -> Path:
-        return Path(self.STORAGE_PATH)
+        path = Path(self.STORAGE_PATH).expanduser()
+        if not path.is_absolute():
+            path = Path(self.PROJECT_ROOT).expanduser().resolve() / path
+        return path.resolve()
 
     class Config:
         # Only load env files that actually exist (.env mechanism is deprecated;

@@ -24,7 +24,7 @@ from app.db.models import Asset, Project, WorkflowNode
 from app.db.session import session_scope
 from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
 from app.services.asset_library_paths import effective_asset_library
-from app.services.node_ids import next_node_display_id
+from app.services.node_ids import next_node_display_id, node_display_id_allocation
 from app.services.node_public_ids import (
     looks_like_internal_node_id,
     looks_like_public_node_id,
@@ -840,66 +840,67 @@ async def assets_add_to_canvas(
         return {"error": "该资产不在项目存储或配置的资产库范围内，无法加入画布预览"}
 
     node_title = (title or src.stem or "资产节点").strip()
-    async with session_scope() as session:
-        existing_count = len((await session.exec(
-            select(WorkflowNode.id).where(WorkflowNode.project_id == project_id)
-        )).all())
-        now = datetime.utcnow()
-        pos_x = float(x) if x is not None else 120.0 + float(existing_count % 4) * 300.0
-        pos_y = float(y) if y is not None else 90.0 + float(existing_count // 4) * 220.0
-        fields: dict[str, Any] = {
-            "source_asset": source,
-            "source_path": str(src),
-            "mime_type": mime_type,
-        }
-        if resolved_type == "image":
-            fields["references"] = [{"ref": str(src), "role": "source_image"}]
-        input_data: dict[str, Any] = {
-            "surface": "draft_canvas",
-            "title": node_title,
-            "fields": fields,
-        }
-        output: dict[str, Any]
-        text_preview = ""
-        if resolved_type in {"image", "video", "audio"}:
-            output = {
-                "type": resolved_type,
-                "url": web_url,
-                "local_url": web_url,
-                "path": str(src),
+    async with node_display_id_allocation(project_id):
+        async with session_scope() as session:
+            existing_count = len((await session.exec(
+                select(WorkflowNode.id).where(WorkflowNode.project_id == project_id)
+            )).all())
+            now = datetime.utcnow()
+            pos_x = float(x) if x is not None else 120.0 + float(existing_count % 4) * 300.0
+            pos_y = float(y) if y is not None else 90.0 + float(existing_count // 4) * 220.0
+            fields: dict[str, Any] = {
+                "source_asset": source,
+                "source_path": str(src),
                 "mime_type": mime_type,
-                "source": "asset_library",
             }
-        else:
-            if src.suffix.lower() in _TEXT_SUFFIXES:
-                text_preview = src.read_text(encoding="utf-8", errors="replace")[:4000]
-            input_data["content"] = text_preview
-            output = {
-                "type": "text",
-                "path": str(src),
-                "mime_type": mime_type,
-                "source": "asset_library",
-                "text_preview": text_preview[:1000],
+            if resolved_type == "image":
+                fields["references"] = [{"ref": str(src), "role": "source_image"}]
+            input_data: dict[str, Any] = {
+                "surface": "draft_canvas",
+                "title": node_title,
+                "fields": fields,
             }
-        node = WorkflowNode(
-            project_id=project_id,
-            display_id=await next_node_display_id(session, project_id),
-            type=resolved_type,
-            title=node_title,
-            status="completed",
-            position_x=pos_x,
-            position_y=pos_y,
-            input_json=json.dumps(input_data, ensure_ascii=False),
-            output_json=json.dumps(output, ensure_ascii=False),
-            model_config_json=json.dumps({"surface": "draft_canvas", "_ui_creator": "user"}, ensure_ascii=False),
-            prompt=text_preview if resolved_type == "text" and text_preview else None,
-            version=1,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(node)
-        await session.commit()
-        await session.refresh(node)
+            output: dict[str, Any]
+            text_preview = ""
+            if resolved_type in {"image", "video", "audio"}:
+                output = {
+                    "type": resolved_type,
+                    "url": web_url,
+                    "local_url": web_url,
+                    "path": str(src),
+                    "mime_type": mime_type,
+                    "source": "asset_library",
+                }
+            else:
+                if src.suffix.lower() in _TEXT_SUFFIXES:
+                    text_preview = src.read_text(encoding="utf-8", errors="replace")[:4000]
+                input_data["content"] = text_preview
+                output = {
+                    "type": "text",
+                    "path": str(src),
+                    "mime_type": mime_type,
+                    "source": "asset_library",
+                    "text_preview": text_preview[:1000],
+                }
+            node = WorkflowNode(
+                project_id=project_id,
+                display_id=await next_node_display_id(session, project_id),
+                type=resolved_type,
+                title=node_title,
+                status="completed",
+                position_x=pos_x,
+                position_y=pos_y,
+                input_json=json.dumps(input_data, ensure_ascii=False),
+                output_json=json.dumps(output, ensure_ascii=False),
+                model_config_json=json.dumps({"surface": "draft_canvas", "_ui_creator": "user"}, ensure_ascii=False),
+                prompt=text_preview if resolved_type == "text" and text_preview else None,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(node)
+            await session.commit()
+            await session.refresh(node)
     return {
         "ok": True,
         "node_id": public_node_id_from_model(node),

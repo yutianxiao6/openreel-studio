@@ -60,6 +60,34 @@ async def enqueue(
         return {"ok": True, "queued_count": len(q)}
 
 
+async def remove_queued(project_id: str, client_user_message_id: str) -> dict:
+    client_user_message_id = str(client_user_message_id or "").strip()
+    if not client_user_message_id:
+        return {
+            "ok": False,
+            "removed": False,
+            "error": "missing_client_user_message_id",
+            "queued_count": await peek_count(project_id),
+        }
+    async with _lock:
+        q = _queues.get(project_id) or []
+        for index, item in enumerate(q):
+            metadata = item.get("user_metadata") if isinstance(item, dict) else None
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("clientUserMessageId") != client_user_message_id:
+                continue
+            del q[index]
+            _queues[project_id] = q
+            return {"ok": True, "removed": True, "queued_count": len(q)}
+        return {
+            "ok": False,
+            "removed": False,
+            "error": "queued_message_not_found_or_already_processing",
+            "queued_count": len(q),
+        }
+
+
 async def request_cancel(project_id: str, reason: str = "") -> dict:
     """Ask the active stream for this project to stop at the next safe point."""
     async with _lock:

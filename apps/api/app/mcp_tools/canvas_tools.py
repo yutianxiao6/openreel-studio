@@ -12,7 +12,8 @@ from sqlmodel import select
 from app.config import settings
 from app.db.models import Asset, WorkflowEdge, WorkflowNode
 from app.db.session import session_scope
-from app.services.node_ids import next_node_display_id
+from app.services import project_media_history
+from app.services.node_ids import next_node_display_id, node_display_id_allocation
 from app.services.node_public_ids import public_node_id_from_model, resolve_internal_node_id
 
 
@@ -46,6 +47,109 @@ def _agent_visible_dict(raw) -> dict | None:
     return {key: value for key, value in data.items() if key not in _UI_PRIVATE_KEYS}
 
 
+_WORKFLOW_SUMMARY_KEYS = (
+    "template_id",
+    "template_name",
+    "instance_id",
+    "step_id",
+    "step_index",
+    "mode",
+    "foreach",
+    "bindings",
+    "source_node_id",
+    "source_label",
+    "source_category",
+    "source_behavior",
+    "primary_skill",
+    "skill_category",
+    "role",
+    "start_action",
+    "execution_state",
+    "instance_scope",
+    "item_source",
+    "branch",
+    "template_step_id",
+    "expand_when",
+    "repeat_group_id",
+    "repeat_group_label",
+    "repeat_group_index",
+    "prompt_ref",
+    "runner",
+)
+
+
+def _compact_workflow_dict(value: Any, keys: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: value.get(key)
+        for key in keys
+        if value.get(key) not in (None, "", [], {})
+    }
+
+
+def _compact_workflow_summary(input_json: str | dict | None) -> dict[str, Any] | None:
+    input_data = _as_dict(input_json)
+    workflow = input_data.get("workflow")
+    if not isinstance(workflow, dict):
+        fields = input_data.get("fields")
+        workflow = fields.get("workflow") if isinstance(fields, dict) else None
+    if not isinstance(workflow, dict):
+        return None
+
+    summary: dict[str, Any] = {}
+    for key in _WORKFLOW_SUMMARY_KEYS:
+        value = workflow.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, str):
+            summary[key] = value[:180]
+        else:
+            summary[key] = value
+
+    repeat = workflow.get("repeat")
+    if isinstance(repeat, dict):
+        compact_repeat = _compact_workflow_dict(repeat, ("mode", "source", "label"))
+        if compact_repeat:
+            summary["repeat"] = compact_repeat
+
+    expansion = _compact_workflow_dict(
+        workflow.get("expansion"),
+        ("mode", "source", "label", "count_field", "item_id_pattern"),
+    )
+    if expansion:
+        summary["expansion"] = expansion
+
+    collection = _compact_workflow_dict(
+        workflow.get("collection"),
+        ("kind", "source", "items_source", "output_schema", "label"),
+    )
+    if collection:
+        summary["collection"] = collection
+
+    expands_to = workflow.get("expands_to")
+    if isinstance(expands_to, list):
+        compact_items = [str(item).strip() for item in expands_to if str(item).strip()]
+        if compact_items:
+            summary["expands_to"] = compact_items[:12]
+
+    prompt_spec = workflow.get("prompt_spec")
+    if isinstance(prompt_spec, dict):
+        compact_prompt_spec = _compact_workflow_dict(
+            prompt_spec,
+            ("goal", "inputs", "output", "notes", "section"),
+        )
+        if compact_prompt_spec:
+            summary["prompt_spec"] = compact_prompt_spec
+
+    for key in ("optional", "manual_only"):
+        value = workflow.get(key)
+        if isinstance(value, bool):
+            summary[key] = value
+
+    return summary or None
+
+
 def _reference_value(item: Any) -> str:
     if isinstance(item, dict):
         for key in ("ref", "reference", "reference_input", "node_id", "nodeId", "source_node_id", "sourceNodeId", "id", "value"):
@@ -73,12 +177,22 @@ def _dependency_node_ids(
         containers.append(fields)
 
     for container in containers:
-        for key in ("depends_on", "references", "reference_images"):
+        explicit_found = False
+        for key in ("depends_on", "references"):
             value = container.get(key)
             if isinstance(value, list):
                 raw_items.extend(value)
+                explicit_found = True
             elif value:
                 raw_items.append(value)
+                explicit_found = True
+        if explicit_found:
+            continue
+        value = container.get("reference_images")
+        if isinstance(value, list):
+            raw_items.extend(value)
+        elif value:
+            raw_items.append(value)
 
     deps: list[str] = []
     for raw in raw_items:
@@ -114,12 +228,12 @@ def _has_dependency_keys(input_data: dict[str, Any]) -> bool:
 def _extract_surface(model_config_json: str | None, input_json: str | None = None) -> str:
     model_config = _as_dict(model_config_json)
     surface = model_config.get("surface") or model_config.get("_surface")
-    if surface in {"project_panel", "draft_canvas"}:
+    if surface in {"project_panel", "draft_canvas", "workflow_runtime"}:
         return surface
     # Compatibility for any early experimental writes that used input metadata.
     input_data = _as_dict(input_json)
     surface = input_data.get("surface") or input_data.get("_surface")
-    if surface in {"project_panel", "draft_canvas"}:
+    if surface in {"project_panel", "draft_canvas", "workflow_runtime"}:
         return surface
     return "draft_canvas"
 
@@ -134,39 +248,41 @@ async def create_node(
     model_config: dict | None = None,
     prompt: str | None = None,
 ) -> dict:
-    async with session_scope() as session:
-        now = datetime.utcnow()
-        model_config = dict(model_config or {})
-        model_config.setdefault("_ui_creator", "agent")
-        node = WorkflowNode(
-            id=str(uuid.uuid4()),
-            project_id=project_id,
-            display_id=await next_node_display_id(session, project_id),
-            type=node_type,
-            title=title,
-            status="idle",
-            position_x=position_x,
-            position_y=position_y,
-            input_json=_as_json_str(input_data),
-            model_config_json=_as_json_str(model_config),
-            prompt=prompt,
-            version=1,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(node)
-        await session.commit()
-        await session.refresh(node)
-        return {
-            "id": node.id,
-            "display_id": node.display_id,
-            "type": node.type,
-            "title": node.title,
-            "status": node.status,
-            "position": {"x": node.position_x, "y": node.position_y},
-            "surface": _extract_surface(node.model_config_json, node.input_json),
-            "prompt": node.prompt,
-        }
+    async with node_display_id_allocation(project_id):
+        async with session_scope() as session:
+            now = datetime.utcnow()
+            model_config = dict(model_config or {})
+            model_config.setdefault("_ui_creator", "agent")
+            surface = model_config.get("surface") or model_config.get("_surface")
+            node = WorkflowNode(
+                id=str(uuid.uuid4()),
+                project_id=project_id,
+                display_id=None if surface == "workflow_runtime" else await next_node_display_id(session, project_id),
+                type=node_type,
+                title=title,
+                status="idle",
+                position_x=position_x,
+                position_y=position_y,
+                input_json=_as_json_str(input_data),
+                model_config_json=_as_json_str(model_config),
+                prompt=prompt,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(node)
+            await session.commit()
+            await session.refresh(node)
+            return {
+                "id": node.id,
+                "display_id": node.display_id,
+                "type": node.type,
+                "title": node.title,
+                "status": node.status,
+                "position": {"x": node.position_x, "y": node.position_y},
+                "surface": _extract_surface(node.model_config_json, node.input_json),
+                "prompt": node.prompt,
+            }
 
 
 async def update_node(node_id: str, patch: dict | str) -> dict:
@@ -566,6 +682,7 @@ async def list_nodes(project_id: str) -> list[dict]:
                 "links": _extract_links(n.input_json),
                 "surface": _extract_surface(n.model_config_json, n.input_json),
                 "model_config": _agent_visible_dict(n.model_config_json),
+                "workflow": _compact_workflow_summary(n.input_json),
                 "render_state": _render_state(n.type, n.input_json, n.output_json, n.status),
                 "output_summary": _summarize_output(n.output_json),
                 "output": json.loads(n.output_json) if n.output_json else None,
@@ -593,6 +710,7 @@ async def get_node(node_id: str) -> dict:
             "input": _agent_visible_dict(node.input_json),
             "output": json.loads(node.output_json) if node.output_json else None,
             "model_config": _agent_visible_dict(node.model_config_json),
+            "workflow": _compact_workflow_summary(node.input_json),
             "surface": _extract_surface(node.model_config_json, node.input_json),
             "render_state": _render_state(node.type, node.input_json, node.output_json, node.status),
             "prompt": node.prompt,
@@ -609,7 +727,7 @@ async def delete_nodes(
     project_id: str,
     node_ids: list[str],
     *,
-    delete_local_files: bool = True,
+    delete_local_files: bool = False,
 ) -> dict:
     ids = [str(node_id).strip() for node_id in node_ids if str(node_id).strip()]
     ids = list(dict.fromkeys(ids))
@@ -638,6 +756,10 @@ async def delete_nodes(
             }
         found_ids = [node.id for node in node_rows]
         public_ids = [public_node_id_from_model(node) for node in node_rows]
+        try:
+            project_media_history.register_nodes_outputs(project_id, list(node_rows))
+        except Exception:
+            pass
         asset_rows = (await session.exec(
             select(Asset).where(
                 Asset.project_id == project_id,

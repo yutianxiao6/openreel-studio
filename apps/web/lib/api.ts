@@ -1,11 +1,16 @@
 let _cachedApiBase: string | null = null
 export const CANVAS_REFRESH_EVENT = "openreel:canvas-refresh"
+export const WORKFLOW_REFRESH_EVENT = "openreel:workflow-refresh"
 
 export interface CanvasRefreshOptions {
   projectId?: string
   preserveOnEmpty?: boolean
   preserveLayout?: boolean
   fitView?: boolean
+}
+
+export interface WorkflowRefreshOptions {
+  projectId?: string
 }
 
 declare global {
@@ -70,6 +75,13 @@ export function requestCanvasRefresh(options: CanvasRefreshOptions = {}) {
       preserveLayout: true,
       ...options,
     },
+  }))
+}
+
+export function requestWorkflowRefresh(options: WorkflowRefreshOptions = {}) {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(new CustomEvent<WorkflowRefreshOptions>(WORKFLOW_REFRESH_EVENT, {
+    detail: options,
   }))
 }
 
@@ -161,6 +173,7 @@ export async function clearProjectSession(projectId: string) {
     project_id: string
     cleared: string[]
     archived_messages?: number
+    cleared_tasks?: number
     removed_memory_facts?: number
     context_cleared_at?: string
   }>(res)
@@ -170,6 +183,533 @@ export async function getProjectNodes(projectId: string) {
   const base = await getApiBase()
   const res = await fetch(`${base}/api/projects/${projectId}/nodes`)
   return asJson<{ nodes: unknown[]; edges: unknown[] }>(res)
+}
+
+export interface WorkflowTemplateStepSummary {
+  id: string
+  title: string
+  node_type: CanvasNodeType
+  purpose?: string
+  depends_on?: string[]
+  primary_skill?: string
+  skill_category?: string
+  acceptance?: string
+  phase?: string
+  group?: string
+  kind?: string
+  ui?: Record<string, unknown>
+  output?: Record<string, unknown>
+  authoring?: Record<string, unknown>
+  source_node_id?: string
+  source_label?: string
+  source_category?: string
+  source_ui?: string
+  source_behavior?: string
+  mode?: string
+  repeat?: Record<string, unknown>
+  foreach?: Record<string, unknown> | Record<string, unknown>[]
+  bindings?: Record<string, unknown>
+  role?: string
+  start_action?: string
+  execution_state?: string
+  status?: string
+  stale?: boolean
+  inputs_schema?: Record<string, unknown> | Record<string, unknown>[]
+  expansion?: Record<string, unknown>
+  collection?: Record<string, unknown>
+  instance_scope?: Record<string, unknown>
+  item_source?: string
+  item_name?: string
+  branch?: string
+  template_step_id?: string
+  expand_when?: string
+  expands_to?: string[]
+  repeat_group_id?: string
+  repeat_group_label?: string
+  repeat_group_index?: number
+  prompt_ref?: string
+  prompt?: string | Record<string, unknown>
+  prompt_spec?: Record<string, unknown>
+  prompt_template?: string
+  reads_from?: string[]
+  context_refs?: unknown
+  layout_after?: string[]
+  shape?: string
+  child_scope_id?: string
+  has_children?: boolean
+  surface?: "draft_canvas" | "workflow_runtime" | string
+  visibility?: "canvas" | "flow_only" | "workflow_runtime" | string
+  canvas_output?: boolean
+  runtime_only?: boolean
+  runner?: string
+  fields?: Record<string, unknown>
+  references?: unknown
+  reference_selectors?: Array<Record<string, unknown>>
+  optional?: boolean
+  manual_only?: boolean
+  auto_skip_when?: string
+  output_mode?: string
+  output_schema?: Record<string, unknown>
+  extension?: string
+  extension_config?: Record<string, unknown>
+  capability?: string
+  completion?: Record<string, unknown>
+  settings?: Record<string, unknown>
+  io?: Record<string, unknown>
+  x?: unknown
+  "x-openreel"?: unknown
+  plugin?: string
+  plugin_node_type?: string
+  plugin_inputs?: Record<string, unknown>
+  plugin_settings?: Record<string, unknown>
+  operation?: string
+  runtime_hidden?: boolean
+  virtual?: boolean
+}
+
+export interface WorkflowNodeTypeDefinition {
+  id: string
+  type: string
+  kind?: string
+  title: string
+  name?: string
+  description?: string
+  category?: string
+  plugin_id?: string
+  plugin_name?: string
+  plugin_version?: string
+  inputs?: Array<Record<string, unknown>>
+  outputs?: Array<Record<string, unknown>>
+  settings?: Array<Record<string, unknown>>
+  ui?: Record<string, unknown>
+  runtime?: Record<string, unknown>
+}
+
+export interface WorkflowNodeTypesResponse {
+  ok: boolean
+  node_types: WorkflowNodeTypeDefinition[]
+  plugins?: Array<Record<string, unknown>>
+  errors?: Array<Record<string, unknown>>
+  total: number
+}
+
+export interface WorkflowTemplateGraphScope {
+  id: string
+  title?: string
+  nodes?: WorkflowTemplateStepSummary[]
+  edges?: Array<Record<string, unknown>>
+}
+
+export interface WorkflowTemplateGraph {
+  root_scope_id?: string
+  scopes?: Record<string, WorkflowTemplateGraphScope>
+}
+
+export interface WorkflowTemplateSummary {
+  id: string
+  name: string
+  description?: string
+  category?: string
+  applies_to?: string
+  version?: string
+  scope?: 'builtin' | 'user' | string
+  source?: string
+  downloadable?: boolean
+  active_version_id?: string
+  versions?: Array<Record<string, unknown>>
+  inputs?: string[]
+  inputs_schema?: Record<string, unknown>
+  required_inputs?: string[]
+  steps: WorkflowTemplateStepSummary[]
+  template_graph?: WorkflowTemplateGraph
+}
+
+export interface ProjectActiveWorkflow {
+  kind: 'template' | 'artifact' | 'imported'
+  template_id?: string
+  artifact_ref?: string
+  workflow?: Record<string, unknown>
+  preview?: Record<string, unknown>
+  name?: string
+  description?: string
+  updated_at?: string
+  error?: string
+}
+
+export interface ProjectWorkflowRuntimeStep {
+  id: string
+  title?: string
+  type?: string
+  status?: string
+  execution_state?: string
+  ready?: boolean
+  waiting_on?: string[]
+  node_id?: string
+  error?: string
+  updated_at?: string
+  surface?: string
+  visibility?: string
+  canvas_output?: boolean
+  runtime_only?: boolean
+  template_step_id?: string
+  repeat_group_id?: string
+  repeat_group_label?: string
+  repeat_group_index?: number
+  phase?: string
+  group?: string
+  kind?: string
+  role?: string
+  purpose?: string
+  acceptance?: string
+  primary_skill?: string
+  prompt_ref?: string
+  depends_on?: string[]
+  ui?: Record<string, unknown>
+  output?: unknown
+  outputs?: Array<Record<string, unknown>>
+  artifacts?: Array<Record<string, unknown>>
+  resolved_inputs?: Array<Record<string, unknown>>
+  authoring?: Record<string, unknown>
+  instance_scope?: Record<string, unknown>
+  collection?: Record<string, unknown>
+  expansion?: Record<string, unknown>
+  stale?: boolean
+  run_count?: number
+  resolved_input_count?: number
+  output_count?: number
+  output_preview?: string
+  artifact_count?: number
+  artifact_node_ids?: string[]
+  virtual?: boolean
+}
+
+export interface ProjectWorkflowRuntime {
+  instance_id?: string
+  template_id?: string
+  template_name?: string
+  input_values?: Record<string, unknown>
+  status?: string
+  pause_requested?: boolean
+  pause_requested_at?: string
+  pause_reason?: string
+  paused_at?: string
+  current_step_id?: string
+  progress?: {
+    total?: number
+    completed?: number
+    running?: number
+    failed?: number
+    pending?: number
+    ready?: number
+    waiting?: number
+  }
+  updated_at?: string
+  steps?: ProjectWorkflowRuntimeStep[]
+  local_draft?: boolean
+}
+
+export interface WorkflowTemplateListResponse {
+  ok: boolean
+  project_id: string
+  templates: WorkflowTemplateSummary[]
+  total: number
+  active_workflow?: ProjectActiveWorkflow | null
+  active_workflow_runtime?: ProjectWorkflowRuntime | null
+  active_workflow_runtimes?: ProjectWorkflowRuntime[]
+  workflow_input_values?: Record<string, unknown>
+}
+
+export interface MaterializeProjectWorkflowInput {
+  template_id?: string
+  artifact_ref?: string
+  workflow?: Record<string, unknown>
+  title?: string
+  inputs?: Record<string, unknown>
+  context?: Record<string, unknown>
+  origin_x?: number
+  origin_y?: number
+  spacing_x?: number
+  spacing_y?: number
+}
+
+export interface RunProjectWorkflowStepInput extends MaterializeProjectWorkflowInput {
+  step_id: string
+  instance_id?: string
+}
+
+export interface RunProjectWorkflowNextInput extends MaterializeProjectWorkflowInput {
+  instance_id?: string
+}
+
+export interface RunProjectWorkflowAllInput extends RunProjectWorkflowNextInput {
+  max_steps?: number
+}
+
+export interface PauseProjectWorkflowRunInput {
+  instance_id: string
+  template_id?: string
+  reason?: string
+}
+
+export interface PreviewProjectWorkflowInput {
+  template_id?: string
+  artifact_ref?: string
+  workflow?: Record<string, unknown>
+  instance_id?: string
+  inputs?: Record<string, unknown>
+  context?: Record<string, unknown>
+}
+
+export interface PreviewProjectWorkflowResponse {
+  ok: boolean
+  project_id: string
+  template_id?: string
+  name?: string
+  description?: string
+  inputs?: string[]
+  required_inputs?: string[]
+  steps: WorkflowTemplateStepSummary[]
+  step_count?: number
+  deferred_groups?: Array<Record<string, unknown>>
+}
+
+export async function listWorkflowTemplates(projectId: string): Promise<WorkflowTemplateListResponse> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/workflow/templates`)
+  return asJson<WorkflowTemplateListResponse>(res)
+}
+
+export async function saveWorkflowTemplate(
+  projectId: string,
+  input: {
+    workflow: Record<string, unknown>
+    template_id?: string
+    name?: string
+    description?: string
+    category?: string
+    applies_to?: string
+    version?: string
+    replace_existing?: boolean
+    inputs?: Record<string, unknown>
+  },
+): Promise<{
+  ok: boolean
+  project_id: string
+  template_id: string
+  version_id?: string
+  summary?: WorkflowTemplateSummary
+  preview?: Record<string, unknown>
+  storage_path?: string
+}> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/workflow/templates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  return asJson<{
+    ok: boolean
+    project_id: string
+    template_id: string
+    version_id?: string
+    summary?: WorkflowTemplateSummary
+    preview?: Record<string, unknown>
+    storage_path?: string
+  }>(res)
+}
+
+export async function downloadWorkflowTemplatePackage(
+  projectId: string,
+  templateId: string,
+  versionId = '',
+): Promise<{
+  ok: boolean
+  project_id: string
+  template_id: string
+  version_id?: string
+  filename?: string
+  package: Record<string, unknown>
+}> {
+  const base = await getApiBase()
+  const params = versionId ? `?version_id=${encodeURIComponent(versionId)}` : ''
+  const res = await fetch(`${base}/api/projects/${projectId}/workflow/templates/${encodeURIComponent(templateId)}/download${params}`)
+  return asJson<{
+    ok: boolean
+    project_id: string
+    template_id: string
+    version_id?: string
+    filename?: string
+    package: Record<string, unknown>
+  }>(res)
+}
+
+export async function listWorkflowNodeTypes(): Promise<WorkflowNodeTypesResponse> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/workflow/node-types`)
+  return asJson<WorkflowNodeTypesResponse>(res)
+}
+
+export async function setProjectActiveWorkflow(
+  projectId: string,
+  input: ProjectActiveWorkflow,
+): Promise<{
+  ok: boolean
+  project_id: string
+  active_workflow?: ProjectActiveWorkflow | null
+  active_workflow_runtime?: ProjectWorkflowRuntime | null
+  active_workflow_runtimes?: ProjectWorkflowRuntime[]
+}> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/workflow/active`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  return asJson<{
+    ok: boolean
+    project_id: string
+    active_workflow?: ProjectActiveWorkflow | null
+    active_workflow_runtime?: ProjectWorkflowRuntime | null
+    active_workflow_runtimes?: ProjectWorkflowRuntime[]
+  }>(res)
+}
+
+export async function deleteProjectWorkflowRuntime(
+  projectId: string,
+  instanceId: string,
+): Promise<{
+  ok: boolean
+  project_id: string
+  instance_id: string
+  deleted: boolean
+  active_workflow_runtime?: ProjectWorkflowRuntime | null
+  active_workflow_runtimes?: ProjectWorkflowRuntime[]
+}> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/workflow/runtime/${encodeURIComponent(instanceId)}`, {
+    method: 'DELETE',
+  })
+  return asJson<{
+    ok: boolean
+    project_id: string
+    instance_id: string
+    deleted: boolean
+    active_workflow_runtime?: ProjectWorkflowRuntime | null
+    active_workflow_runtimes?: ProjectWorkflowRuntime[]
+  }>(res)
+}
+
+export async function pauseProjectWorkflowRun(
+  projectId: string,
+  input: PauseProjectWorkflowRunInput,
+): Promise<{
+  ok: boolean
+  project_id: string
+  instance_id: string
+  template_id?: string
+  pause_requested?: boolean
+  runtime?: ProjectWorkflowRuntime | null
+  active_workflow_runtime?: ProjectWorkflowRuntime | null
+  active_workflow_runtimes?: ProjectWorkflowRuntime[]
+}> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/workflow/runtime/${encodeURIComponent(input.instance_id)}/pause`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      template_id: input.template_id || '',
+      reason: input.reason || '',
+    }),
+  })
+  const result = await asJson<{
+    ok: boolean
+    project_id: string
+    instance_id: string
+    template_id?: string
+    pause_requested?: boolean
+    runtime?: ProjectWorkflowRuntime | null
+    active_workflow_runtime?: ProjectWorkflowRuntime | null
+    active_workflow_runtimes?: ProjectWorkflowRuntime[]
+  }>(res)
+  requestWorkflowRefresh({ projectId })
+  return result
+}
+
+export async function previewProjectWorkflow(
+  projectId: string,
+  input: PreviewProjectWorkflowInput,
+): Promise<PreviewProjectWorkflowResponse> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/workflow/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  return asJson<PreviewProjectWorkflowResponse>(res)
+}
+
+export async function materializeProjectWorkflow<T = Record<string, unknown>>(
+  projectId: string,
+  input: MaterializeProjectWorkflowInput,
+): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/workflow/materialize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const result = await asJson<T>(res)
+  requestCanvasRefresh({ projectId, preserveOnEmpty: true, preserveLayout: true, fitView: true })
+  requestWorkflowRefresh({ projectId })
+  return result
+}
+
+export async function runProjectWorkflowStep<T = Record<string, unknown>>(
+  projectId: string,
+  input: RunProjectWorkflowStepInput,
+): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/workflow/run-step`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const result = await asJson<T>(res)
+  requestCanvasRefresh({ projectId, preserveOnEmpty: true, preserveLayout: true, fitView: true })
+  requestWorkflowRefresh({ projectId })
+  return result
+}
+
+export async function runProjectWorkflowNextStep<T = Record<string, unknown>>(
+  projectId: string,
+  input: RunProjectWorkflowNextInput,
+): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/workflow/run-next`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const result = await asJson<T>(res)
+  requestCanvasRefresh({ projectId, preserveOnEmpty: true, preserveLayout: true, fitView: true })
+  requestWorkflowRefresh({ projectId })
+  return result
+}
+
+export async function runProjectWorkflowAllSteps<T = Record<string, unknown>>(
+  projectId: string,
+  input: RunProjectWorkflowAllInput,
+): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/workflow/run-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const result = await asJson<T>(res)
+  requestCanvasRefresh({ projectId, preserveOnEmpty: true, preserveLayout: true, fitView: true })
+  requestWorkflowRefresh({ projectId })
+  return result
 }
 
 export type CanvasNodeType = 'text' | 'image' | 'video' | 'audio'
@@ -198,13 +738,30 @@ export async function getProjectNodeDetails<T = Record<string, unknown>>(project
 export async function updateProjectNodeDetails<T = Record<string, unknown>>(
   projectId: string,
   nodeId: string,
-  input: { title?: string; prompt?: string | null; input?: Record<string, unknown> },
+  input: { title?: string; prompt?: string | null; input?: Record<string, unknown>; output?: unknown },
 ): Promise<T> {
   const base = await getApiBase()
   const res = await fetch(`${base}/api/projects/${projectId}/nodes/${nodeId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
+  })
+  const result = await asJson<T>(res)
+  requestCanvasRefresh({ projectId })
+  return result
+}
+
+export async function uploadProjectNodeMedia<T = Record<string, unknown>>(
+  projectId: string,
+  nodeId: string,
+  file: File,
+): Promise<T> {
+  const base = await getApiBase()
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${base}/api/projects/${projectId}/nodes/${nodeId}/media`, {
+    method: 'POST',
+    body: form,
   })
   const result = await asJson<T>(res)
   requestCanvasRefresh({ projectId })
@@ -227,12 +784,163 @@ export async function switchProjectNodeHistory<T = Record<string, unknown>>(
   return result
 }
 
+export interface ProjectMediaHistoryItem {
+  id: string
+  project_id: string
+  kind: 'image' | 'video' | 'audio'
+  rel_path: string
+  url: string
+  filename: string
+  title?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+  size?: number | null
+  mime_type?: string | null
+  source?: string | null
+  source_node_id?: string | null
+  source_node_title?: string | null
+  prompt?: string | null
+}
+
+export async function listProjectMediaHistory(projectId: string): Promise<{ items: ProjectMediaHistoryItem[] }> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/media-history`)
+  return asJson<{ items: ProjectMediaHistoryItem[] }>(res)
+}
+
+export async function restoreProjectMediaHistoryItem<T = Record<string, unknown>>(
+  projectId: string,
+  itemId: string,
+  input: { x?: number; y?: number; title?: string | null },
+): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/media-history/${encodeURIComponent(itemId)}/restore`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const result = await asJson<T>(res)
+  requestCanvasRefresh({ projectId })
+  return result
+}
+
+export async function deleteProjectMediaHistoryItem(
+  projectId: string,
+  itemId: string,
+): Promise<{ ok: boolean; id: string; rel_path?: string; deleted?: boolean }> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/media-history/${encodeURIComponent(itemId)}`, {
+    method: 'DELETE',
+  })
+  return asJson<{ ok: boolean; id: string; rel_path?: string; deleted?: boolean }>(res)
+}
+
+export interface ImageEditOperation {
+  type: 'crop' | 'brush' | 'fill' | 'mask' | 'selection' | 'segment' | 'text' | 'arrow'
+  unit?: 'normalized' | 'pixel'
+  [key: string]: unknown
+}
+
+export async function editProjectNodeImage<T = Record<string, unknown>>(
+  projectId: string,
+  nodeId: string,
+  input: {
+    action?: 'preview' | 'commit'
+    source_ref?: string | null
+    candidate_ref?: string | null
+    operations?: ImageEditOperation[]
+  },
+): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/nodes/${nodeId}/image/edit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const result = await asJson<T>(res)
+  if (input.action === 'commit') requestCanvasRefresh({ projectId })
+  return result
+}
+
+export async function cleanupProjectNodeImageEdit(
+  projectId: string,
+  nodeId: string,
+): Promise<{ ok: boolean; node_id?: string; deleted_temp_files?: string[]; cleanup_errors?: Array<Record<string, string>> }> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/nodes/${nodeId}/image/edit/cleanup`, {
+    method: 'POST',
+  })
+  return asJson<{ ok: boolean; node_id?: string; deleted_temp_files?: string[]; cleanup_errors?: Array<Record<string, string>> }>(res)
+}
+
+export async function previewProjectNodeImageCurve<T = Record<string, unknown>>(
+  projectId: string,
+  nodeId: string,
+  input: {
+    source_ref?: string | null
+    color?: string
+    detail?: number
+    line_strength?: number
+    base_visibility?: number
+  },
+): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/nodes/${nodeId}/image/curve-preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  return asJson<T>(res)
+}
+
+export async function createPanoramaCapture<T = Record<string, unknown>>(
+  projectId: string,
+  input: {
+    title?: string
+    data_url: string
+    x: number
+    y: number
+    source_node_id?: string | null
+    mode: 'single' | 'four' | 'eight'
+  },
+): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/panorama/captures`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const result = await asJson<T>(res)
+  requestCanvasRefresh({ projectId })
+  return result
+}
+
 export async function deleteProjectNode(projectId: string, nodeId: string) {
   const base = await getApiBase()
   const res = await fetch(`${base}/api/projects/${projectId}/nodes/${nodeId}`, {
     method: 'DELETE',
   })
   const result = await asJson<{ ok: boolean; id: string; deleted_edges?: number }>(res)
+  requestCanvasRefresh({ projectId })
+  return result
+}
+
+export async function deleteProjectNodes(projectId: string, nodeIds: string[]) {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/nodes/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_ids: nodeIds }),
+  })
+  const result = await asJson<{
+    ok: boolean
+    id?: string | null
+    deleted_node_ids?: string[]
+    deleted_nodes?: number
+    deleted_edges?: number
+    deleted_asset_records?: number
+    cleaned_dependency_nodes?: number
+  }>(res)
   requestCanvasRefresh({ projectId })
   return result
 }
@@ -393,7 +1101,7 @@ export interface UploadedAttachment {
   filename: string
   size: number
   mime_type: string | null
-  kind: 'image' | 'script' | 'document' | 'other'
+  kind: 'image' | 'video' | 'script' | 'document' | 'other'
   url?: string
   base64_rel_path?: string
   base64_size?: number
@@ -471,8 +1179,9 @@ export type InteractionStreamEvent = {
 
 export type ChatStreamEvent =
   | { type: 'text_delta'; content: string }
-  | { type: 'agent_round'; round: number; content: string; source: 'model' | 'action_summary'; tools: string[] }
+  | { type: 'agent_round'; round: number; content: string; source: 'model' | 'action_summary'; tools: string[]; tool_agents?: string[] }
   | { type: 'agent_round_done'; round: number }
+  | { type: 'subagent_round'; agent: string; step: number; content: string; tool?: string | null; status?: 'running' | 'completed' | 'failed'; source?: 'model' | null }
   | {
       type: 'token_usage'
       project_id: string
@@ -489,8 +1198,8 @@ export type ChatStreamEvent =
 	      run_context_peak?: Record<string, unknown> | null
 	      session_context_peak?: Record<string, unknown> | null
 	    }
-  | { type: 'tool_start'; tool: string; round?: number; content?: string }
-  | { type: 'tool_done'; tool: string; round?: number; result?: unknown; tool_output?: Record<string, unknown> | null }
+  | { type: 'tool_start'; tool: string; round?: number; content?: string; agent?: string | null }
+  | { type: 'tool_done'; tool: string; round?: number; result?: unknown; tool_output?: Record<string, unknown> | null; agent?: string | null }
   | { type: 'step_start'; step_index: number; total: number; tool: string; title: string }
   | { type: 'step_done'; step_index: number; tool: string; status: string }
   | { type: 'canvas_action'; action: string; payload: Record<string, unknown> }
@@ -506,6 +1215,7 @@ export type ChatStreamEvent =
   | { type: 'confirm_required'; action: string; scope?: string; reason?: string; [k: string]: unknown }
   | { type: 'queued'; ok?: boolean; queued_count?: number; error?: string }
   | { type: 'merged_messages'; count: number }
+  | { type: 'queued_turn_started'; client_user_message_id?: string | null; message?: string | null; queued_remaining?: number | null }
   | { type: 'parallel_start'; total_steps: number; waves: number; project_id: string }
   | { type: 'step_failed'; error: string; step_index?: number | null; tool?: string | null }
   | { type: 'step_completed'; step_index: number; tool: string; title?: string; result?: unknown; progress?: string }
@@ -869,6 +1579,22 @@ export async function enqueueChat(
   return asJson(res)
 }
 
+export async function dequeueChat(
+  projectId: string,
+  clientUserMessageId: string,
+): Promise<{ ok?: boolean; removed?: boolean; queued_count?: number; error?: string }> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/chat/dequeue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      project_id: projectId,
+      client_user_message_id: clientUserMessageId,
+    }),
+  })
+  return asJson(res)
+}
+
 export async function cancelChat(
   projectId: string,
   reason = '',
@@ -879,6 +1605,14 @@ export async function cancelChat(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ project_id: projectId, reason }),
   })
+  return asJson(res)
+}
+
+export async function getChatQueueStatus(
+  projectId: string,
+): Promise<{ queued?: number; streaming?: boolean; queue_streaming?: boolean; running?: boolean; error?: string }> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/chat/queue/${encodeURIComponent(projectId)}`)
   return asJson(res)
 }
 
@@ -1199,7 +1933,14 @@ export const api = {
   createProjectNode,
   getProjectNodeDetails,
   updateProjectNodeDetails,
+  uploadProjectNodeMedia,
+  createPanoramaCapture,
+  listProjectMediaHistory,
+  restoreProjectMediaHistoryItem,
+  deleteProjectMediaHistoryItem,
+  cleanupProjectNodeImageEdit,
   deleteProjectNode,
+  deleteProjectNodes,
   updateNodePosition,
   createProjectEdge,
   deleteProjectEdge,
@@ -1212,7 +1953,9 @@ export const api = {
   chatStream,
   chatStreamAsync,
   enqueueChat,
+  dequeueChat,
   cancelChat,
+  getChatQueueStatus,
   getAgentDoctor,
   listAgentTraces,
   getAgentTrace,

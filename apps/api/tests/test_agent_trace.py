@@ -3,6 +3,7 @@ import json
 import pytest
 
 from app.api import routes_agent_debug
+from app.agent import orchestrator
 from app.agent import agent_trace
 from app.agent import prompt_dump
 from app.agent import trace_store
@@ -47,6 +48,54 @@ def test_agent_trace_writes_sanitized_jsonl(tmp_path, monkeypatch) -> None:
     assert record["payload"]["usage"]["prompt_tokens"] == 100
     assert record["payload"]["usage"]["total_tokens"] == 120
     assert record["payload"]["usage"]["cache_read_tokens"] == 25
+
+
+def test_orchestrator_tool_call_trace_keeps_delegation_task_without_runtime_state() -> None:
+    image_data_url = "data:image/png;base64," + "a" * 100
+    summary = orchestrator._traceable_tool_call_input(
+        "tool.execute",
+        {
+            "name": "agent.run",
+            "input": {
+                "agent": "image_editor",
+                "task": "修复节点12的软件图标边角和外框；成品要主体完整、安全边距稳定。",
+                "inputs": {"node_id": "12", "preview": image_data_url},
+                "max_steps": 24,
+            },
+            "_state": {"messages": ["huge"]},
+            "_user_message": "用户原话",
+            "_requires_plan": False,
+            "project_id": "project-1",
+        },
+    )
+
+    rendered = json.dumps(summary, ensure_ascii=False)
+    assert summary["deferred_tool_name"] == "agent.run"
+    assert summary["input"]["input"]["task"].startswith("修复节点12")
+    assert '"_state"' not in rendered
+    assert '"project_id"' not in rendered
+    assert "data:image/png;base64" not in rendered
+    assert "<image data URL omitted" in rendered
+
+
+def test_orchestrator_extracts_subagent_usage_and_trace_records() -> None:
+    result = {
+        "_subagent_usage": [
+            {"agent": "image_editor", "step": 1, "usage": {"total_tokens": 42}},
+            {"agent": "image_editor", "step": 2, "usage": "bad"},
+        ],
+        "_subagent_trace": [
+            {"agent": "image_editor", "step": 1, "event": "model_response"},
+            "bad",
+        ],
+    }
+
+    assert orchestrator._subagent_usage_records(result) == [
+        {"agent": "image_editor", "step": 1, "usage": {"total_tokens": 42}},
+    ]
+    assert orchestrator._subagent_trace_records(result) == [
+        {"agent": "image_editor", "step": 1, "event": "model_response"},
+    ]
 
 
 def test_prompt_dump_writes_prompt_assembly_metadata(tmp_path, monkeypatch) -> None:

@@ -12,6 +12,7 @@ from app.api.routes_nodes import router as nodes_router
 from app.api.routes_projects import router as projects_router
 from app.api.routes_tools import router as tools_router
 from app.api.routes_uploads import router as uploads_router
+from app.api.routes_workflow import router as workflow_router
 from app.config import settings
 from app.db.session import init_db
 
@@ -19,6 +20,15 @@ from app.db.session import init_db
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    from app.services.node_recovery import cleanup_interrupted_media_nodes
+    try:
+        await cleanup_interrupted_media_nodes(
+            stale_after_seconds=None,
+            reason="api_startup_interrupted_media",
+        )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Interrupted media node recovery failed")
     # ConfigStore：bootstrap (首启自动 seed .env keys 到 runtime.jsonc) + 启动 watcher
     from app.config_store import get_store
     store = get_store()
@@ -43,20 +53,6 @@ async def lifespan(app: FastAPI):
             logging.getLogger(__name__).info("MCP external servers: %s", connected)
     except Exception:
         pass
-    # 清理历史孤儿/失败节点（status=failed 且 output_json 为空）
-    try:
-        from app.mcp_tools.canvas_tools import cleanup_test_nodes
-        cleanup_result = await cleanup_test_nodes()
-        if cleanup_result.get("deleted_nodes"):
-            import logging
-            logging.getLogger(__name__).info(
-                "启动清理：删除 %d 个孤儿节点 + %d 条孤儿边",
-                cleanup_result["deleted_nodes"],
-                cleanup_result.get("deleted_edges", 0),
-            )
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("启动清理失败: %s", exc)
     yield
     # Cleanup
     try:
@@ -92,6 +88,7 @@ app.include_router(media_router, prefix="/api/media", tags=["media"])
 app.include_router(models_router, prefix="/api/models", tags=["models"])
 app.include_router(tools_router, prefix="/api/tools", tags=["tools"])
 app.include_router(uploads_router, prefix="/api/uploads", tags=["uploads"])
+app.include_router(workflow_router, prefix="/api/workflow", tags=["workflow"])
 
 
 @app.get("/api/health")

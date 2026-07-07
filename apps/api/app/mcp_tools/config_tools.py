@@ -14,7 +14,7 @@ async def config_read(*, mask_secrets: bool = True) -> dict[str, Any]:
     """读取当前 runtime 配置（结构化）。
 
     默认 mask api_key（Agent 视角）。UI 拉密文要显式传 mask_secrets=False。
-    返回: {$schema_version, llm_providers, media_providers, model_assignments, app_settings}
+    返回: {$schema_version, llm_providers, media_providers, model_tier_defaults, model_assignments, app_settings}
     """
     store = get_store()
     return await store.read(mask_secrets=mask_secrets)
@@ -129,8 +129,9 @@ async def config_list_all() -> dict[str, Any]:
                 "supports_prompt_cache": p.supports_prompt_cache,
                 "supports_vision": p.supports_vision,
                 "tokenizer": p.tokenizer,
+                "tier": getattr(p, "tier", "balanced") or "balanced",
                 "params": params,
-                "is_default": p.is_default, "enabled": p.enabled,
+                "enabled": p.enabled,
                 "notes": p.notes,
             })
         for m in (await session.exec(select(MediaProvider))).all():
@@ -158,6 +159,7 @@ async def config_list_all() -> dict[str, Any]:
         "llm_providers": llm_list,
         "image": image_list,
         "video": video_list,
+        "model_tier_defaults": dict(cfg.model_tier_defaults),
         "model_assignments": task_map,
         "app_settings": settings_dict,
         "summary": {

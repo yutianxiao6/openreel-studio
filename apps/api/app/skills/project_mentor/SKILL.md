@@ -10,7 +10,7 @@ source: skill
 # project_mentor
 
 This skill explains OpenReel Studio project rules and points to the right local
-guide when the model needs more than `skill.video_production`.
+guide when the model needs more than workflow/prompt skills.
 
 Default production is node-first: the model works on one visible canvas with
 `text`, `image`, `video`, and `audio` nodes. It does not create a separate blueprint or
@@ -33,9 +33,18 @@ maintain separate canvas/panel state before work appears.
 
 ## Current Rules
 
-- Ordinary image/video work starts with `skill.video_production`, then creates
+- Ordinary image/video work starts by searching user workflow skills, then reads
+  the builtin `video_production` markdown skill through `skill.search` / `skill.get`
+  when no user workflow matches. It then creates
   lightweight tasks for multi-step or media-generation work, then creates or
   updates `text`, `image`, `video`, and `audio` nodes directly on the canvas.
+- Main Agent plans the node graph and dependency order. Each node is an
+  independent task. Script, character image, scene image, shot grid image, and
+  final video prompt are produced by `node.run` with one module prompt skill
+  at a time.
+- Reusable graph workflows are executed by deferred `workflow.run_step`,
+  `workflow.run_next`, or `workflow.run_all` with `inputs`; the workflow runner
+  calls `node.run` internally for visible product nodes.
 - Canvas state is the creative truth source visible to the model. Drafts,
   grouping, method choice, review notes, and assumptions are node fields or text
   nodes, not a separate blueprint object.
@@ -60,7 +69,7 @@ maintain separate canvas/panel state before work appears.
 
 ## Core Tools
 
-`project.get_state`, `interaction.request_input`, `skill.video_production`,
+`project.get_state`, `interaction.request_input`, `skill.search`, `skill.get`,
 `task.create`, `task.list`, `task.update`, `task.complete`, `agent.review`,
 `node.list`, `node.get`, `node.create`, `node.update`, `node.run`, and
 `canvas.delete`. `tool.search`, `tool.describe`, and `tool.execute` are core
@@ -72,7 +81,8 @@ meta tools for discovering and running low-frequency deferred capabilities.
 - `apps/api/app/agent/prompts/`: short always-loaded prompt sections.
 - `apps/api/app/mcp_tools/registry.py`: tool exposure and core/deferred surface.
 - `apps/api/app/agent/orchestrator.py`: Agent loop and confirmation handling.
-- `apps/api/app/skills/video_production/`: default node-first production guide.
+- `apps/api/app/skills/video_production/`: default node-first workflow index.
+- `apps/api/app/skills/*_prompt/` and `script_writing/`: builtin prompt modules.
 
 ## Output
 

@@ -73,6 +73,7 @@ async def init_db() -> None:
         await _ensure_column(conn, "llm_providers", "supports_prompt_cache", "BOOLEAN")
         await _ensure_column(conn, "llm_providers", "supports_vision", "BOOLEAN")
         await _ensure_column(conn, "llm_providers", "tokenizer", "VARCHAR")
+        await _ensure_column(conn, "llm_providers", "tier", "VARCHAR")
         await _ensure_column(conn, "llm_providers", "params_json", "VARCHAR")
 
 

@@ -1,22 +1,303 @@
 import json
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlmodel import SQLModel
+from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api import routes_projects
+from app.api import routes_projects, routes_uploads
 from app.config_store.schema import MediaProviderEntry
-from app.db.models import WorkflowNode
-from app.mcp_tools import node_universal
+from app.db.models import Asset, Project, WorkflowNode
+from app.mcp_tools import canvas_tools, node_universal
 from app.services import media_generation
 from app.services import media_history
+from app.services import node_recovery
 from app.services import media_provider
 from app.services.node_service import canvas_edge_payloads
+
+
+@pytest.fixture(autouse=True)
+def isolate_node_project_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_project_state(project_id: str) -> dict[str, Any]:
+        return {}
+
+    monkeypatch.setattr(node_universal, "_read_project_state", fake_project_state)
 
 
 def test_public_node_types_are_generic_only():
     assert node_universal.NODE_TYPES == ("text", "image", "video", "audio")
     assert set(node_universal._RUNNERS) == {"text", "image", "video", "audio"}
     assert set(node_universal._NODE_FIELD_SCHEMA) == {"text", "image", "video", "audio"}
+
+
+def test_project_active_workflow_template_state_round_trips():
+    template_id = routes_projects.canvas_workflow_templates.list_template_summaries()[0]["id"]
+
+    state = routes_projects._active_workflow_state_from_request(
+        routes_projects.ProjectWorkflowActiveRequest(kind="template", template_id=template_id)
+    )
+    payload = routes_projects._project_active_workflow_payload(
+        "project-1",
+        {routes_projects.ACTIVE_WORKFLOW_STATE_KEY: state},
+    )
+
+    assert state["kind"] == "template"
+    assert payload == {
+        "kind": "template",
+        "template_id": template_id,
+        "updated_at": state["updated_at"],
+    }
+
+
+def test_project_active_workflow_imported_state_restores_preview():
+    workflow = {
+        "id": "grid_storyboard_workflow",
+        "name": "宫格分镜流程",
+        "inputs": ["plot"],
+        "required_inputs": ["plot"],
+        "steps": [
+            {"id": "input", "title": "输入", "node_type": "text"},
+            {"id": "storyboard", "title": "宫格分镜", "node_type": "image", "depends_on": ["input"]},
+        ],
+    }
+
+    state = routes_projects._active_workflow_state_from_request(
+        routes_projects.ProjectWorkflowActiveRequest(
+            kind="imported",
+            workflow=workflow,
+            name="宫格分镜流程",
+        )
+    )
+    payload = routes_projects._project_active_workflow_payload(
+        "project-1",
+        {routes_projects.ACTIVE_WORKFLOW_STATE_KEY: state},
+    )
+
+    assert payload is not None
+    assert payload["kind"] == "imported"
+    assert payload["workflow"] == workflow
+    assert payload["preview"]["step_count"] == 2
+    assert payload["preview"]["input_ids"] == ["plot"]
+    assert payload["preview"]["first_steps"][1]["id"] == "storyboard"
+
+
+def test_project_active_workflow_imported_authoring_spec_returns_compiled_preview():
+    workflow = {
+        "schema": "openreel.workflow.authoring.v1",
+        "id": "grid_storyboard_authoring",
+        "title": "宫格分镜作者层流程",
+        "inputs": {"plot": {"type": "long_text", "required": True}},
+        "steps": [
+            {
+                "id": "script",
+                "title": "剧本",
+                "kind": "text",
+                "output": {"canvas": True},
+                "prompt": {"role": "编剧", "task": "写剧本。"},
+            },
+            {
+                "id": "storyboard",
+                "title": "宫格分镜",
+                "kind": "image",
+                "needs": ["script"],
+                "prompt": {"role": "分镜导演", "task": "写分镜图提示词。"},
+            },
+        ],
+    }
+
+    state = routes_projects._active_workflow_state_from_request(
+        routes_projects.ProjectWorkflowActiveRequest(
+            kind="imported",
+            workflow=workflow,
+            name="宫格分镜作者层流程",
+        )
+    )
+    payload = routes_projects._project_active_workflow_payload(
+        "project-1",
+        {routes_projects.ACTIVE_WORKFLOW_STATE_KEY: state},
+    )
+
+    assert payload is not None
+    assert payload["workflow"] == workflow
+    assert payload["preview"]["workflow_spec_version"] == "openreel.workflow.v1"
+    assert payload["preview"]["input_ids"] == ["plot"]
+    assert payload["preview"]["required_inputs"] == ["plot"]
+    assert payload["preview"]["first_steps"][0]["node_type"] == "text"
+    assert payload["preview"]["first_steps"][0]["surface"] == "workflow_runtime"
+    assert payload["preview"]["first_steps"][1]["id"] == "storyboard_prompt"
+    assert payload["preview"]["first_steps"][1]["surface"] == "workflow_runtime"
+    assert payload["preview"]["first_steps"][2]["node_type"] == "image"
+    assert payload["preview"]["first_steps"][2]["surface"] == "draft_canvas"
+
+
+def test_project_workflow_runtime_payload_restores_latest_matching_instance():
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_old": {
+                    "template_id": "other_workflow",
+                    "template_name": "其他流程",
+                    "steps": {"input": {"title": "输入", "status": "completed"}},
+                },
+                "wf_current": {
+                    "template_id": "grid_storyboard_workflow",
+                    "template_name": "宫格分镜流程",
+                    "updated_at": "2026-06-29T01:02:03Z",
+                    "steps": {
+                        "input": {"title": "输入", "type": "text", "status": "completed"},
+                        "storyboard": {
+                            "title": "宫格分镜",
+                            "type": "image",
+                            "status": "running",
+                            "node_id": "node-1",
+                            "workflow": {
+                                "template_step_id": "storyboard",
+                                "repeat_group_id": "episode_segments",
+                                "repeat_group_label": "每集每段流程",
+                                "repeat_group_index": 1,
+                                "phase": "storyboard",
+                                "kind": "image",
+                                "depends_on": ["scene_reference", "plan_frames"],
+                                "output": {"canvas": True},
+                            },
+                        },
+                    },
+                },
+            }
+        }
+    }
+
+    payload = routes_projects._project_workflow_runtime_payload(state, "grid_storyboard_workflow")
+
+    assert payload["instance_id"] == "wf_current"
+    assert payload["template_id"] == "grid_storyboard_workflow"
+    assert payload["template_name"] == "宫格分镜流程"
+    assert payload["updated_at"] == "2026-06-29T01:02:03Z"
+    assert [(step["id"], step["status"], step["node_id"]) for step in payload["steps"]] == [
+        ("input", "completed", ""),
+        ("storyboard", "running", "node-1"),
+    ]
+    assert payload["steps"][0]["run_count"] == 0
+    assert payload["steps"][0]["stale"] is False
+    assert payload["steps"][0]["canvas_output"] is False
+    assert payload["steps"][0]["runtime_only"] is True
+    assert payload["steps"][1]["artifact_node_ids"] == []
+    assert payload["steps"][1]["canvas_output"] is True
+    assert payload["steps"][1]["runtime_only"] is False
+    assert payload["steps"][1]["template_step_id"] == "storyboard"
+    assert payload["steps"][1]["repeat_group_id"] == "episode_segments"
+    assert payload["steps"][1]["repeat_group_label"] == "每集每段流程"
+    assert payload["steps"][1]["phase"] == "storyboard"
+    assert payload["steps"][1]["kind"] == "image"
+    assert payload["steps"][1]["depends_on"] == ["scene_reference", "plan_frames"]
+    assert payload["steps"][1]["output"] is None
+
+
+def test_workflow_runtime_payload_with_missing_explicit_instance_does_not_fallback():
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_history": {
+                    "template_id": "grid_storyboard_workflow",
+                    "template_name": "历史流程",
+                    "steps": {"script": {"title": "旧剧本", "status": "completed"}},
+                },
+            }
+        }
+    }
+
+    payload = routes_projects.workflow_tools.workflow_runtime_public_payload(
+        state,
+        template_id="grid_storyboard_workflow",
+        instance_id="wf_new",
+    )
+
+    assert payload == {
+        "instance_id": "wf_new",
+        "template_id": "grid_storyboard_workflow",
+        "steps": [],
+    }
+
+
+def test_project_workflow_runtime_payloads_report_dependency_state():
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_ready": {
+                    "template_id": "dependency_flow",
+                    "template_name": "依赖流程",
+                    "updated_at": "2026-07-01T01:00:00Z",
+                    "steps": {
+                        "script": {"title": "剧本", "status": "completed"},
+                        "image": {
+                            "title": "图片",
+                            "status": "draft",
+                            "workflow": {"depends_on": ["script"]},
+                        },
+                    },
+                },
+                "wf_blocked": {
+                    "template_id": "dependency_flow",
+                    "template_name": "依赖流程",
+                    "updated_at": "2026-07-01T02:00:00Z",
+                    "steps": {
+                        "script": {"title": "剧本", "status": "draft"},
+                        "image": {
+                            "title": "图片",
+                            "status": "draft",
+                            "workflow": {"depends_on": ["script"]},
+                        },
+                    },
+                },
+            }
+        }
+    }
+
+    payloads = routes_projects._project_workflow_runtime_payloads(state, "dependency_flow")
+
+    assert [payload["instance_id"] for payload in payloads] == ["wf_blocked", "wf_ready"]
+    by_id = {payload["instance_id"]: payload for payload in payloads}
+    ready_steps = {step["id"]: step for step in by_id["wf_ready"]["steps"]}
+    blocked_steps = {step["id"]: step for step in by_id["wf_blocked"]["steps"]}
+    assert ready_steps["image"]["ready"] is True
+    assert ready_steps["image"]["execution_state"] == "ready"
+    assert blocked_steps["image"]["waiting_on"] == ["script"]
+    assert blocked_steps["image"]["execution_state"] == "blocked"
+
+
+def test_project_workflow_runtime_payloads_can_return_all_templates():
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_old": {
+                    "template_id": "archive_flow",
+                    "template_name": "归档流程",
+                    "updated_at": "2026-07-01T01:00:00Z",
+                    "steps": {"full_script": {"title": "剧本", "status": "completed"}},
+                },
+                "wf_new": {
+                    "template_id": "current_flow",
+                    "template_name": "当前流程",
+                    "updated_at": "2026-07-01T02:00:00Z",
+                    "steps": {"extract_keyframes": {"title": "提取关键帧", "status": "completed"}},
+                },
+            }
+        }
+    }
+
+    all_payloads = routes_projects._project_workflow_runtime_payloads(state)
+    filtered_payloads = routes_projects._project_workflow_runtime_payloads(state, "current_flow")
+
+    assert [payload["instance_id"] for payload in all_payloads] == ["wf_new", "wf_old"]
+    assert [payload["template_id"] for payload in all_payloads] == [
+        "current_flow",
+        "archive_flow",
+    ]
+    assert [payload["instance_id"] for payload in filtered_payloads] == ["wf_new"]
 
 
 @pytest.mark.asyncio
@@ -85,6 +366,58 @@ def test_image_resolution_requires_exact_pixels_matching_aspect_ratio():
         node_universal._resolve_size("7680x4320", "16:9")
 
 
+def test_canvas_workflow_summary_keeps_reviewable_metadata():
+    summary = canvas_tools._compact_workflow_summary({
+            "workflow": {
+                "template_id": "model_authored_workflow",
+                "instance_id": "wf_test",
+                "step_id": "single_storyboard",
+                "step_index": 13,
+                "mode": "single",
+                "role": "template_step",
+                "expansion": {"mode": "per_segment", "source": "script.episodes[].segments[]", "label": "按段展开", "extra": "hidden"},
+                "collection": {"kind": "segments", "items_source": "script.episodes[].segments[]", "label": "段落", "extra": "hidden"},
+                "instance_scope": {"episode": 1, "segment": 2},
+                "template_step_id": "storyboard",
+                "expand_when": "after_script_segments",
+                "prompt_ref": "shot_grid_prompt#grid_storyboard",
+                "prompt_spec": {"goal": "生成宫格分镜", "output": "image prompt", "private": "hidden"},
+                "runner": "node_producer",
+                "source_node_id": "singleStoryboard",
+                "source_label": "单分镜帧",
+                "source_category": "segment",
+            "repeat": {"mode": "per_segment", "source": "script.segments", "label": "每段", "extra": "hidden"},
+            "optional": True,
+            "manual_only": True,
+            "source_behavior": "手动添加，最多10张",
+        }
+    })
+
+    assert summary == {
+        "template_id": "model_authored_workflow",
+        "instance_id": "wf_test",
+        "step_id": "single_storyboard",
+        "step_index": 13,
+        "mode": "single",
+        "role": "template_step",
+        "expansion": {"mode": "per_segment", "source": "script.episodes[].segments[]", "label": "按段展开"},
+        "collection": {"kind": "segments", "items_source": "script.episodes[].segments[]", "label": "段落"},
+        "instance_scope": {"episode": 1, "segment": 2},
+        "template_step_id": "storyboard",
+        "expand_when": "after_script_segments",
+        "prompt_ref": "shot_grid_prompt#grid_storyboard",
+        "prompt_spec": {"goal": "生成宫格分镜", "output": "image prompt"},
+        "runner": "node_producer",
+        "source_node_id": "singleStoryboard",
+        "source_label": "单分镜帧",
+        "source_category": "segment",
+        "source_behavior": "手动添加，最多10张",
+        "repeat": {"mode": "per_segment", "source": "script.segments", "label": "每段"},
+        "optional": True,
+        "manual_only": True,
+    }
+
+
 def test_canvas_edge_payloads_prefer_node_authored_dependencies():
     script = SimpleNamespace(
         id="script-1",
@@ -145,6 +478,99 @@ def test_canvas_edge_payloads_prefer_node_authored_dependencies():
     assert len(payloads) == 3
 
 
+def test_canvas_edge_payloads_resolve_public_node_reference_ids():
+    source = SimpleNamespace(
+        id="source-internal-id",
+        display_id=12,
+        project_id="proj-1",
+        input_json=json.dumps({"content": "参考图"}, ensure_ascii=False),
+    )
+    panorama = SimpleNamespace(
+        id="panorama-internal-id",
+        display_id=13,
+        project_id="proj-1",
+        input_json=json.dumps({"references": [{"ref": "node:12", "role": "visual_reference"}]}, ensure_ascii=False),
+    )
+
+    payloads = canvas_edge_payloads([source, panorama], [])
+
+    assert payloads == [{
+        "id": "dep-source-internal-id-panorama-internal-id",
+        "project_id": "proj-1",
+        "source_node_id": "source-internal-id",
+        "target_node_id": "panorama-internal-id",
+        "label": None,
+        "created_at": None,
+        "_derived": "node_dependencies",
+    }]
+
+
+def test_canvas_edge_payloads_resolve_display_id_zero_reference():
+    source = SimpleNamespace(
+        id="source-internal-id",
+        display_id=0,
+        project_id="proj-1",
+        input_json=json.dumps({"content": "根节点"}, ensure_ascii=False),
+    )
+    target = SimpleNamespace(
+        id="target-internal-id",
+        display_id=1,
+        project_id="proj-1",
+        input_json=json.dumps({"depends_on": ["node:0"]}, ensure_ascii=False),
+    )
+
+    payloads = canvas_edge_payloads([source, target], [])
+
+    assert payloads == [{
+        "id": "dep-source-internal-id-target-internal-id",
+        "project_id": "proj-1",
+        "source_node_id": "source-internal-id",
+        "target_node_id": "target-internal-id",
+        "label": None,
+        "created_at": None,
+        "_derived": "node_dependencies",
+    }]
+
+
+def test_canvas_edge_payloads_ignore_reference_image_cache_when_refs_exist():
+    character = SimpleNamespace(
+        id="character-node",
+        display_id=1,
+        project_id="proj-1",
+        input_json=json.dumps({"content": "人物"}, ensure_ascii=False),
+    )
+    current_storyboard = SimpleNamespace(
+        id="storyboard-current",
+        display_id=6,
+        project_id="proj-1",
+        input_json=json.dumps({"content": "当前段分镜"}, ensure_ascii=False),
+    )
+    stale_storyboard = SimpleNamespace(
+        id="storyboard-stale",
+        display_id=4,
+        project_id="proj-1",
+        input_json=json.dumps({"content": "旧分镜"}, ensure_ascii=False),
+    )
+    target = SimpleNamespace(
+        id="video-node",
+        display_id=9,
+        project_id="proj-1",
+        input_json=json.dumps(
+            {
+                "references": [{"ref": "node:6", "role": "visual_reference"}],
+                "depends_on": ["node:6"],
+                "reference_images": ["node:1", "node:4"],
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    payloads = canvas_edge_payloads([character, current_storyboard, stale_storyboard, target], [])
+
+    pairs = {(edge["source_node_id"], edge["target_node_id"]) for edge in payloads}
+    assert pairs == {("storyboard-current", "video-node")}
+
+
 @pytest.mark.asyncio
 async def test_node_get_accepts_batch_node_ids(monkeypatch):
     async def fake_get_node(node_id: str):
@@ -179,6 +605,7 @@ async def test_node_list_defaults_to_twenty_index_items_and_limit_zero_returns_a
             "title": f"节点 {index}",
             "status": "idle",
             "prompt": f"12345678901234567890 extra {index}",
+            "workflow": {"step_id": f"step_{index}", "mode": "grid"} if index == 0 else None,
             "output": {"large": "not returned by node.list"},
         }
         for index in range(25)
@@ -204,10 +631,91 @@ async def test_node_list_defaults_to_twenty_index_items_and_limit_zero_returns_a
     assert first["title"] == "节点 0"
     assert first["status"] == "idle"
     assert first["prompt_preview"] == "12345678901234567890"
+    assert first["workflow"] == {"step_id": "step_0", "mode": "grid"}
     assert "output" not in first
     assert all_result["returned"] == 25
     assert all_result["truncated"] is False
     assert all_result["filters"]["unlimited"] is True
+
+
+@pytest.mark.asyncio
+async def test_node_list_omits_workflow_runtime_nodes_by_default(monkeypatch):
+    nodes = [
+        {
+            "id": "runtime-1",
+            "type": "text",
+            "title": "人物集合",
+            "status": "completed",
+            "surface": "workflow_runtime",
+            "input": {"surface": "workflow_runtime"},
+        },
+        {
+            "id": "image-1",
+            "type": "image",
+            "title": "主要人物图",
+            "status": "completed",
+            "surface": "draft_canvas",
+            "input": {"surface": "draft_canvas"},
+        },
+    ]
+
+    async def fake_list_nodes(project_id: str):
+        assert project_id == "proj-1"
+        return list(nodes)
+
+    monkeypatch.setattr(node_universal.canvas_tools, "list_nodes", fake_list_nodes)
+
+    result = await node_universal.node_list("proj-1", limit=0)
+
+    assert result["returned"] == 1
+    assert result["total"] == 1
+    assert [node["node_id"] for node in result["nodes"]] == ["image-1"]
+
+
+@pytest.mark.asyncio
+async def test_node_run_rejects_workflow_runtime_node(monkeypatch):
+    async def fake_resolve(project_id: str, node_id: str):
+        assert project_id == "proj-1"
+        assert node_id == "runtime-1"
+        return "runtime-1"
+
+    async def fake_public_id_map(project_id: str):
+        assert project_id == "proj-1"
+        return {"runtime-1": "0"}
+
+    async def fake_get_node(node_id: str):
+        assert node_id == "runtime-1"
+        return {
+            "id": "runtime-1",
+            "display_id": 0,
+            "project_id": "proj-1",
+            "type": "text",
+            "title": "Script",
+            "status": "failed",
+            "surface": "workflow_runtime",
+            "input": {
+                "surface": "workflow_runtime",
+                "workflow": {
+                    "step_id": "script",
+                    "visibility": "flow_only",
+                },
+            },
+            "prompt": "",
+        }
+
+    async def unexpected_update_node(*args, **kwargs):
+        raise AssertionError("workflow runtime node must not be updated by node.run")
+
+    monkeypatch.setattr(node_universal, "_resolve_agent_node_id", fake_resolve)
+    monkeypatch.setattr(node_universal, "_node_public_id_map", fake_public_id_map)
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", unexpected_update_node)
+
+    result = await node_universal.node_run(project_id="proj-1", node_id="runtime-1")
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "workflow_runtime_node_not_runnable"
+    assert result["node_id"] == "0"
 
 
 @pytest.mark.asyncio
@@ -221,6 +729,11 @@ async def test_node_list_and_get_support_fuzzy_query_and_regex(monkeypatch):
             "status": "completed",
             "prompt": "雨夜里红衣女孩回头的电影分镜图",
             "input": {"purpose": "storyboard"},
+            "workflow": {
+                "step_id": "grid_storyboard",
+                "mode": "grid",
+                "repeat": {"mode": "per_segment", "source": "script.segments", "label": "每段"},
+            },
         },
         {
             "id": "video-1",
@@ -255,6 +768,8 @@ async def test_node_list_and_get_support_fuzzy_query_and_regex(monkeypatch):
     assert detail["ok"] is True
     assert detail["mode"] == "query"
     assert [node["id"] for node in detail["nodes"]] == ["image-1"]
+    assert detail["nodes"][0]["workflow"]["step_id"] == "grid_storyboard"
+    assert detail["nodes"][0]["workflow"]["repeat"]["mode"] == "per_segment"
 
 
 @pytest.mark.asyncio
@@ -375,8 +890,63 @@ async def test_node_update_accepts_batch_updates(monkeypatch):
     assert result["results"][1]["node_id"] == "image-2"
 
 
+@pytest.mark.asyncio
+async def test_node_update_prompt_reopens_failed_video_node(monkeypatch):
+    updates: list[dict] = []
+
+    async def fake_get_node(node_id: str):
+        assert node_id == "video-1"
+        return {
+            "id": node_id,
+            "project_id": "proj-1",
+            "type": "video",
+            "status": "failed",
+            "title": "视频提示词",
+            "prompt": "old prompt",
+            "error_message": "参数验证失败",
+            "input": {
+                "title": "视频提示词",
+                "prompt": "old prompt",
+                "duration_seconds": 15,
+            },
+        }
+
+    async def fake_update_node(node_id: str, patch: dict):
+        updates.append(patch)
+        return {"id": node_id, "type": "video", **patch}
+
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+
+    result = await node_universal.node_update(
+        project_id="proj-1",
+        node_id="video-1",
+        patch={
+            "prompt": "new video prompt",
+            "input_json": {"prompt_status": "final_prompt"},
+        },
+    )
+
+    assert updates == [
+        {
+            "prompt": "new video prompt",
+            "input_json": {
+                "title": "视频提示词",
+                "prompt": "new video prompt",
+                "prompt_preview": "new video prompt",
+                "duration_seconds": 15,
+                "prompt_status": "final_prompt",
+            },
+            "status": "idle",
+            "error_message": None,
+        }
+    ]
+    assert result["status"] == "idle"
+    assert result["error_message"] is None
+
+
 def test_manual_image_edge_writes_visual_reference_for_text_and_image_targets():
-    source = WorkflowNode(id="image-source", project_id="proj-1", type="image", title="参考图")
+    source = WorkflowNode(id="image-source", project_id="proj-1", display_id=7, type="image", title="参考图")
     text_target = WorkflowNode(id="text-target", project_id="proj-1", type="text", title="文字")
     image_target = WorkflowNode(
         id="image-target",
@@ -395,30 +965,30 @@ def test_manual_image_edge_writes_visual_reference_for_text_and_image_targets():
 
     text_input = json.loads(text_target.input_json or "{}")
     image_input = json.loads(image_target.input_json or "{}")
-    expected_ref = {"ref": "node:image-source", "role": "visual_reference"}
-    assert text_input["depends_on"] == ["node:image-source"]
+    expected_ref = {"ref": "node:7", "role": "visual_reference"}
+    assert text_input["depends_on"] == ["node:7"]
     assert text_input["references"] == [expected_ref]
-    assert text_input["reference_images"] == ["node:image-source"]
-    assert image_input["depends_on"] == ["node:image-source"]
+    assert text_input["reference_images"] == ["node:7"]
+    assert image_input["depends_on"] == ["node:7"]
     assert image_input["references"] == [expected_ref]
-    assert image_input["reference_images"] == ["node:image-source"]
-    assert image_input["fields"]["depends_on"] == ["node:image-source"]
+    assert image_input["reference_images"] == ["node:7"]
+    assert image_input["fields"]["depends_on"] == ["node:7"]
     assert image_input["fields"]["references"] == [expected_ref]
-    assert image_input["fields"]["reference_images"] == ["node:image-source"]
+    assert image_input["fields"]["reference_images"] == ["node:7"]
     assert image_input["render_state"] == "stale"
 
-    image_input["references"].append({"ref": "node:image-source", "role": "source_image"})
-    image_input["reference_images"] = ["node:image-source"]
+    image_input["references"].append({"ref": "node:7", "role": "source_image"})
+    image_input["reference_images"] = ["node:7"]
     image_input["fields"] = {
-        "depends_on": ["node:image-source"],
+        "depends_on": ["node:7"],
         "references": [
-            {"ref": "node:image-source", "role": "visual_reference"},
-            {"ref": "node:image-source", "role": "source_image"},
+            {"ref": "node:7", "role": "visual_reference"},
+            {"ref": "node:7", "role": "source_image"},
         ],
-        "reference_images": ["node:image-source"],
+        "reference_images": ["node:7"],
     }
     image_target.input_json = json.dumps(image_input, ensure_ascii=False)
-    assert routes_projects._remove_edge_dependency(image_target, source.id) is True
+    assert routes_projects._remove_edge_dependency(image_target, source) is True
     image_input = json.loads(image_target.input_json or "{}")
     assert image_input["depends_on"] == []
     assert image_input["references"] == []
@@ -440,12 +1010,138 @@ def test_manual_image_edge_writes_visual_reference_for_text_and_image_targets():
         include_roles=node_universal._MEDIA_REFERENCE_ROLES,
         exclude_roles=node_universal._DIRECT_IMAGE_SOURCE_ROLES,
     ) == []
+
+    legacy_target = WorkflowNode(
+        id="legacy-target",
+        project_id="proj-1",
+        type="image",
+        title="旧引用",
+        input_json=json.dumps({
+            "depends_on": ["node:image-source"],
+            "references": [{"ref": "node:image-source", "role": "visual_reference"}],
+            "reference_images": ["node:image-source"],
+        }, ensure_ascii=False),
+    )
+    assert routes_projects._remove_edge_dependency(legacy_target, source) is True
+    legacy_input = json.loads(legacy_target.input_json or "{}")
+    assert legacy_input["depends_on"] == []
+    assert legacy_input["references"] == []
+    assert legacy_input["reference_images"] == []
     assert node_universal._coerce_reference_values(
         image_input.get("references"),
         image_input["fields"].get("references"),
         include_roles=node_universal._DIRECT_IMAGE_SOURCE_ROLES,
     ) == []
     assert image_input["render_state"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_batch_delete_nodes_cleans_derived_dependencies_without_edges(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'delete-nodes.db'}", echo=False, future=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    session_local = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(routes_projects.project_media_history, "register_nodes_outputs", lambda *_args, **_kwargs: [])
+
+    try:
+        async with session_local() as session:
+            session.add(Project(id="proj-delete", title="删除测试", state_json="{}"))
+            session.add(WorkflowNode(
+                id="source-node",
+                project_id="proj-delete",
+                display_id=1,
+                type="image",
+                title="源图",
+            ))
+            session.add(WorkflowNode(
+                id="second-source",
+                project_id="proj-delete",
+                display_id=2,
+                type="text",
+                title="源文本",
+            ))
+            session.add(WorkflowNode(
+                id="target-node",
+                project_id="proj-delete",
+                display_id=3,
+                type="video",
+                title="下游视频",
+                input_json=json.dumps({
+                    "depends_on": ["node:1", "node:2", "node:external"],
+                    "references": [
+                        {"ref": "node:1", "role": "visual_reference"},
+                        {"ref": "node:2", "role": "context"},
+                        {"ref": "node:external", "role": "context"},
+                    ],
+                    "reference_images": ["node:1", "node:external"],
+                    "fields": {
+                        "depends_on": ["node:1", "node:2"],
+                        "references": [{"ref": "node:1", "role": "visual_reference"}],
+                        "reference_images": ["node:1"],
+                    },
+                }, ensure_ascii=False),
+            ))
+            session.add(Asset(
+                id="asset-source",
+                project_id="proj-delete",
+                node_id="source-node",
+                type="video",
+                name="源资产",
+            ))
+            await session.commit()
+
+            result = await routes_projects._delete_project_canvas_nodes(
+                "proj-delete",
+                ["1", "second-source"],
+                session,
+            )
+
+            assert result["deleted_nodes"] == 2
+            assert result["deleted_asset_records"] == 1
+            assert result["cleaned_dependency_nodes"] == 1
+            assert await session.get(WorkflowNode, "source-node") is None
+            assert await session.get(WorkflowNode, "second-source") is None
+            assert await session.get(Asset, "asset-source") is None
+            target = await session.get(WorkflowNode, "target-node")
+            assert target is not None
+            target_input = json.loads(target.input_json or "{}")
+            assert target_input["depends_on"] == ["node:external"]
+            assert target_input["references"] == [{"ref": "node:external", "role": "context"}]
+            assert target_input["reference_images"] == ["node:external"]
+            assert target_input["fields"]["depends_on"] == []
+            assert target_input["fields"]["references"] == []
+            assert target_input["fields"]["reference_images"] == []
+    finally:
+        await engine.dispose()
+
+
+def test_project_node_detail_payload_publicizes_reference_node_ids():
+    source_id = "11111111-1111-4111-8111-111111111111"
+    node = WorkflowNode(
+        id="22222222-2222-4222-8222-222222222222",
+        project_id="proj-1",
+        display_id=8,
+        type="image",
+        title="目标图",
+        status="idle",
+        input_json=json.dumps({
+            "depends_on": [f"node:{source_id}"],
+            "references": [{"ref": f"node:{source_id}", "role": "visual_reference"}],
+            "reference_images": [f"node:{source_id}"],
+            "fields": {
+                "references": [{"ref": f"node:{source_id}", "role": "visual_reference"}],
+            },
+        }, ensure_ascii=False),
+        output_json=json.dumps({"source_node_id": source_id}, ensure_ascii=False),
+    )
+
+    payload = routes_projects._node_detail_payload(node, {source_id: "7"})
+
+    assert payload["input"]["depends_on"] == ["node:7"]
+    assert payload["input"]["references"] == [{"ref": "node:7", "role": "visual_reference"}]
+    assert payload["input"]["reference_images"] == ["node:7"]
+    assert payload["input"]["fields"]["references"] == [{"ref": "node:7", "role": "visual_reference"}]
+    assert payload["output"]["source_node_id"] == "7"
 
 
 @pytest.mark.asyncio
@@ -628,6 +1324,62 @@ def test_media_history_switch_returns_selected_output_and_state_snapshot():
     assert next_output["history"][0]["input"]["resolution"] == "1080p"
 
 
+def test_node_media_upload_classifier_matches_node_kind():
+    assert routes_projects._classify_node_media_upload("frame.png", "image/png") == "image"
+    assert routes_projects._classify_node_media_upload("clip.mp4", "video/mp4") == "video"
+    assert routes_projects._classify_node_media_upload("clip.bin", "video/mp4") == "video"
+    assert routes_projects._classify_node_media_upload("notes.txt", "text/plain") is None
+    assert routes_uploads._classify("clip.mp4", "video/mp4") == "video"
+    node = WorkflowNode(id="node-1", project_id="project-1", display_id=7, type="video", title="视频节点")
+    assert routes_projects._safe_node_media_upload_filename(
+        "clip",
+        node=node,
+        kind="video",
+        mime_type="video/webm",
+    ).endswith(".webm")
+
+
+def test_uploaded_node_media_output_archives_previous_output(tmp_path):
+    target = tmp_path / "clip.mp4"
+    target.write_bytes(b"fake video")
+    node = WorkflowNode(
+        id="node-1",
+        project_id="project-1",
+        display_id=3,
+        type="video",
+        title="视频节点",
+        status="idle",
+        prompt="new prompt",
+    )
+    current_output = {
+        "type": "video",
+        "status": "completed",
+        "local_url": "/api/media/project-1/generated_videos/old.mp4",
+        "prompt": "old prompt",
+    }
+    current_input = {"prompt": "old prompt", "duration_seconds": 5}
+
+    output = routes_projects._build_uploaded_node_media_output(
+        project_id="project-1",
+        node=node,
+        rel_path="generated_videos/uploads/clip.mp4",
+        target_path=target,
+        original_filename="clip.mp4",
+        mime_type="video/mp4",
+        size=target.stat().st_size,
+        uploaded_at="2026-06-27T00:00:00",
+        current_output=current_output,
+        current_input=current_input,
+    )
+
+    assert output["type"] == "video"
+    assert output["status"] == "completed"
+    assert output["source"] == "uploaded_node_media"
+    assert output["video"]["local_url"] == "/api/media/project-1/generated_videos/uploads/clip.mp4"
+    assert output["history"][0]["prompt"] == "old prompt"
+    assert output["history"][0]["output"]["local_url"] == "/api/media/project-1/generated_videos/old.mp4"
+
+
 def test_media_provider_schema_accepts_xai_video_format():
     entry = MediaProviderEntry(
         kind="video",
@@ -665,6 +1417,19 @@ def test_media_provider_schema_accepts_t8_grok_video_3_format():
     )
 
     assert entry.api_format == "t8_grok_video_3"
+
+
+def test_media_provider_schema_accepts_lingke_media_generate_format():
+    entry = MediaProviderEntry(
+        kind="video",
+        name="custom-video-relay",
+        base_url="https://api.lk888.ai/v1",
+        api_key="relay-key",
+        model_name="custom-video-model",
+        api_format="lingke_media_generate",
+    )
+
+    assert entry.api_format == "lingke_media_generate"
 
 
 def test_media_provider_schema_accepts_suno_compatible_audio_format():
@@ -1608,6 +2373,67 @@ async def test_xai_video_payload_uses_one_image_url_and_duration():
 
 
 @pytest.mark.asyncio
+async def test_json_image_url_adapters_default_to_data_url(monkeypatch):
+    provider = SimpleNamespace(
+        name="xai-grok-video",
+        model_name="grok-imagine-video-1.5",
+        params_json="{}",
+    )
+    captured: dict = {}
+
+    async def fake_ref_to_data_url(ref: str):
+        captured["ref"] = ref
+        return "data:image/png;base64,abc"
+
+    monkeypatch.setattr(media_provider, "_ref_to_data_url", fake_ref_to_data_url)
+
+    image, warning = await media_provider._xai_image_input(
+        "proj-1",
+        "/api/media/proj-1/generated_images/source.png",
+        provider,
+        {},
+    )
+
+    assert warning is None
+    assert captured["ref"] == "/api/media/proj-1/generated_images/source.png"
+    assert image == {"url": "data:image/png;base64,abc"}
+
+
+@pytest.mark.asyncio
+async def test_json_image_url_adapters_can_use_public_url_mode():
+    provider = SimpleNamespace(
+        name="xai-grok-video",
+        model_name="grok-imagine-video-1.5",
+        params_json=json.dumps({
+            "image_transport": "public_url",
+            "public_base_url": "https://studio.example",
+        }),
+    )
+
+    image, warning = await media_provider._xai_image_input(
+        "proj-1",
+        "/api/media/proj-1/generated_images/source.png",
+        provider,
+        {},
+    )
+
+    assert warning is None
+    assert image == {"url": "https://studio.example/api/media/proj-1/generated_images/source.png"}
+
+
+def test_public_url_mode_requires_public_base_for_local_media():
+    url, warning = media_provider._public_media_url_for_ref(
+        "proj-1",
+        "/api/media/proj-1/generated_images/source.png",
+        None,
+    )
+
+    assert url is None
+    assert warning is not None
+    assert "当前 provider 选择了公网 URL 图片输入模式" in warning
+
+
+@pytest.mark.asyncio
 async def test_grok_1_5_video_payload_uses_multipart_fields(monkeypatch):
     provider = SimpleNamespace(
         name="grok-1-5-video",
@@ -1859,6 +2685,36 @@ def test_t8_grok_video_3_adapter_capabilities_are_structured():
     assert capabilities["supported_resolutions"] == ["480p", "720p", "1080p"]
 
 
+def test_lingke_media_generate_adapter_uses_api_format_without_model_hardcoding():
+    provider = SimpleNamespace(
+        api_format="lingke_media_generate",
+        model_name="custom-video-model",
+    )
+
+    adapter = media_provider._video_provider_adapter(provider)
+    assert adapter is not None
+    capabilities = media_provider._video_adapter_capabilities(adapter)
+
+    assert adapter.name == "lingke_media_generate"
+    assert adapter.model_names == frozenset()
+    assert capabilities["source_images_min"] == 0
+    assert capabilities["source_images_max"] == 12
+    assert capabilities["source_image_transport"] == "configurable_url_or_data_url_list"
+    assert capabilities["field_types"]["duration"] == "string"
+
+
+def test_video_adapter_uses_api_format_for_grok_relay_variants():
+    provider = SimpleNamespace(
+        api_format="t8_grok_video_3",
+        model_name="grok-1.5-video-15s",
+    )
+
+    adapter = media_provider._video_provider_adapter(provider)
+
+    assert adapter is not None
+    assert adapter.name == "t8_grok_video_3"
+
+
 @pytest.mark.asyncio
 async def test_t8_grok_video_3_payload_uses_structured_spec():
     provider = SimpleNamespace(
@@ -1891,6 +2747,316 @@ async def test_t8_grok_video_3_payload_uses_structured_spec():
         "resolution": "1080P",
         "seed": 123,
     }
+
+
+@pytest.mark.asyncio
+async def test_t8_grok_video_3_payload_preserves_configured_model_name():
+    provider = SimpleNamespace(
+        name="relay-grok-video",
+        model_name="grok-1.5-video-15s",
+        params_json="{}",
+    )
+
+    payload, image_candidates, meta = await media_provider._build_t8_grok_video_3_payload(
+        provider=provider,
+        project_id="proj-1",
+        prompt="A cinematic establishing shot with gentle camera movement.",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=10,
+        reference_images=[],
+        extra_override={"aspect_ratio": "16:9", "resolution": "720p"},
+    )
+
+    assert payload["model"] == "grok-1.5-video-15s"
+    assert image_candidates == []
+    assert meta["source_image_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_lingke_media_generate_payload_uses_nested_params():
+    provider = SimpleNamespace(
+        name="custom-video-relay",
+        model_name="custom-video-model",
+        params_json="{}",
+    )
+
+    payload, image_candidates, meta = await media_provider._build_json_video_task_payload(
+        media_provider._LINGKE_MEDIA_GENERATE_SPEC,
+        provider=provider,
+        project_id="proj-1",
+        prompt="A cinematic establishing shot with slow camera movement.",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=15,
+        reference_images=[],
+        extra_override={"aspect_ratio": "9:16", "resolution": "720p", "seed": 123},
+    )
+
+    assert image_candidates == []
+    assert meta["source_image_count"] == 0
+    assert payload == {
+        "model": "custom-video-model",
+        "params": {
+            "prompt": "A cinematic establishing shot with slow camera movement.",
+            "aspect_ratio": "9:16",
+            "duration": "15",
+            "resolution": "720p",
+            "seed": 123,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_lingke_media_generate_payload_uses_configured_fields_and_custom_duration():
+    provider = SimpleNamespace(
+        name="custom-video-relay",
+        model_name="grok-video-3",
+        params_json=json.dumps(
+            {
+                "payload_fields": {"resolution": "params.size"},
+                "resolution_output": "upper",
+                "supported_ratios": ["2:3", "3:2", "1:1"],
+                "default_ratio": "3:2",
+                "duration_max": 60,
+            }
+        ),
+    )
+
+    payload, image_candidates, meta = await media_provider._build_json_video_task_payload(
+        media_provider._LINGKE_MEDIA_GENERATE_SPEC,
+        provider=provider,
+        project_id="proj-1",
+        prompt="A cinematic establishing shot with slow camera movement.",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=22,
+        reference_images=[],
+        extra_override={"aspect_ratio": "16:9", "resolution": "720p"},
+    )
+
+    assert image_candidates == []
+    assert meta["source_image_count"] == 0
+    assert payload == {
+        "model": "grok-video-3",
+        "params": {
+            "prompt": "A cinematic establishing shot with slow camera movement.",
+            "aspect_ratio": "3:2",
+            "duration": "22",
+            "size": "720P",
+        },
+    }
+
+
+def test_lingke_media_generate_business_error_is_classified():
+    error = media_provider._json_video_task_api_error(
+        media_provider._LINGKE_MEDIA_GENERATE_SPEC,
+        {
+            "code": 403,
+            "msg": "无可用渠道分组",
+            "data": {"详情": "该模型未在自定义渠道策略中配置可用渠道分组"},
+        },
+        "https://api.lk888.ai/v1/media/generate",
+    )
+
+    assert error is not None
+    assert error["error_kind"] == "auth"
+    assert "渠道" in error["error"]
+    assert error["endpoint"] == "https://api.lk888.ai/v1/media/generate"
+
+
+@pytest.mark.asyncio
+async def test_lingke_media_generate_submit_uses_nested_params_and_data_url_default(monkeypatch):
+    provider = SimpleNamespace(
+        name="custom-video-relay",
+        model_name="custom-video-model",
+        base_url="https://api.lk888.ai/v1",
+        api_key="relay-key",
+        params_json=json.dumps({"resolution": "720p"}, ensure_ascii=False),
+    )
+    captured: dict = {}
+
+    async def fake_ref_to_data_url(ref: str):
+        captured["ref"] = ref
+        return "data:image/png;base64,abc"
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"code":0,"data":{"task_id":"task-1","status":"pending"}}'
+
+        def json(self):
+            return {"code": 0, "data": {"task_id": "task-1", "status": "pending"}}
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, endpoint, json, headers):
+            captured["endpoint"] = endpoint
+            captured["json"] = json
+            captured["headers"] = headers
+            return FakeResponse()
+
+    monkeypatch.setattr(media_provider, "_ref_to_data_url", fake_ref_to_data_url)
+    monkeypatch.setattr(media_provider.httpx, "AsyncClient", FakeClient)
+
+    result = await media_provider._call_lingke_media_generate(
+        provider=provider,
+        project_id="proj-1",
+        prompt="A neon-lit street scene with slow camera movement.",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=15,
+        reference_images=["/api/media/proj-1/generated_images/source.png"],
+        extra_override={"aspect_ratio": "9:16"},
+        save_locally=False,
+        wait_for_completion=False,
+    )
+
+    assert captured["ref"] == "/api/media/proj-1/generated_images/source.png"
+    assert captured["endpoint"] == "https://api.lk888.ai/v1/media/generate"
+    assert captured["headers"]["Authorization"] == "Bearer relay-key"
+    assert captured["json"] == {
+        "model": "custom-video-model",
+        "params": {
+            "prompt": "A neon-lit street scene with slow camera movement.",
+            "aspect_ratio": "9:16",
+            "duration": "15",
+            "resolution": "720p",
+            "images": ["data:image/png;base64,abc"],
+        },
+    }
+    assert result["ok"] is True
+    assert result["status"] == "running"
+    assert result["job_id"] == "task-1"
+    assert result["query_endpoint"] == "https://api.lk888.ai/v1/skills/task-status?task_id=task-1"
+    assert result["request"]["duration"] == "15"
+    assert result["request"]["ratio"] == "9:16"
+
+
+@pytest.mark.asyncio
+async def test_lingke_media_generate_poll_reads_task_status_success(monkeypatch):
+    provider = SimpleNamespace(
+        name="custom-video-relay",
+        model_name="grok-video-3",
+        base_url="https://api.lk888.ai/v1",
+        api_key="relay-key",
+        params_json="{}",
+    )
+    captured: dict = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"task_id":"task-1","state":"success","is_final":true,"result_url":"https://cdn.example.com/video.mp4","progress":"100%"}'
+
+        def json(self):
+            return {
+                "task_id": "task-1",
+                "model": "grok-video-3",
+                "state": "success",
+                "status": "生成完成",
+                "status_group": "已完成",
+                "is_final": True,
+                "result_url": "https://cdn.example.com/video.mp4",
+                "progress": "100%",
+                "duration_seconds": 94,
+                "cost": 0.54,
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, endpoint, headers):
+            captured["endpoint"] = endpoint
+            captured["headers"] = headers
+            return FakeResponse()
+
+    monkeypatch.setattr(media_provider.httpx, "AsyncClient", FakeClient)
+
+    result = await media_provider._poll_lingke_media_generate_task(
+        provider=provider,
+        project_id="proj-1",
+        task_id="task-1",
+        extra_override={},
+        save_locally=False,
+    )
+
+    assert captured["endpoint"] == "https://api.lk888.ai/v1/skills/task-status?task_id=task-1"
+    assert result["ok"] is True
+    assert result["status"] == "completed"
+    assert result["remote_url"] == "https://cdn.example.com/video.mp4"
+    assert result["polls"][0]["status"] == "success"
+    assert result["polls"][0]["is_final"] is True
+
+
+@pytest.mark.asyncio
+async def test_lingke_media_generate_poll_reads_task_status_failure(monkeypatch):
+    provider = SimpleNamespace(
+        name="custom-video-relay",
+        model_name="grok-video-3",
+        base_url="https://api.lk888.ai/v1",
+        api_key="relay-key",
+        params_json="{}",
+    )
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"task_id":"task-1","state":"failed","is_final":true,"error":"图像下载失败","refunded":true}'
+
+        def json(self):
+            return {
+                "task_id": "task-1",
+                "model": "grok-video-3",
+                "state": "failed",
+                "status": "生成失败",
+                "status_group": "失败",
+                "is_final": True,
+                "progress": "100%",
+                "error": "图像下载失败",
+                "refunded": True,
+                "refunded_amount": 0.54,
+            }
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, endpoint, headers):
+            return FakeResponse()
+
+    monkeypatch.setattr(media_provider.httpx, "AsyncClient", FakeClient)
+
+    result = await media_provider._poll_lingke_media_generate_task(
+        provider=provider,
+        project_id="proj-1",
+        task_id="task-1",
+        extra_override={},
+        save_locally=False,
+    )
+
+    assert result["error_kind"] == "provider_failed"
+    assert result["status"] == "failed"
+    assert result["provider_msg"] == "图像下载失败"
+    assert result["raw"]["refunded"] is True
 
 
 @pytest.mark.asyncio
@@ -2225,6 +3391,338 @@ async def test_text_runner_preserves_tree_dependency_fields():
 
 
 @pytest.mark.asyncio
+async def test_workflow_runtime_skill_payload_prefers_compiled_prompt_template(monkeypatch):
+    async def fake_load_skill(workflow: dict):
+        raise AssertionError("compiled prompt_template should avoid full skill loading")
+
+    monkeypatch.setattr(node_universal, "_load_workflow_text_skill", fake_load_skill)
+
+    payload = await node_universal._workflow_runtime_skill_payload(
+        {"primary_skill": "script_writing", "skill_category": "prompt", "skill_scope": "builtin"},
+        {"prompt_template": "SYSTEM: 写剧本", "rendered_prompt_template": "SYSTEM: 写剧本"},
+    )
+
+    assert payload == {
+        "name": "script_writing",
+        "category": "prompt",
+        "scope": "builtin",
+        "content": "",
+        "content_mode": "compiled_prompt_template",
+        "load_error": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_workflow_runtime_skill_payload_loads_skill_only_as_legacy_fallback(monkeypatch):
+    calls: list[dict] = []
+
+    async def fake_load_skill(workflow: dict):
+        calls.append(workflow)
+        return {
+            "ok": True,
+            "name": "legacy_prompt",
+            "category": "prompt",
+            "scope": "user",
+            "content": "旧节点提示词写法",
+        }
+
+    monkeypatch.setattr(node_universal, "_load_workflow_text_skill", fake_load_skill)
+
+    payload = await node_universal._workflow_runtime_skill_payload(
+        {"primary_skill": "legacy_prompt", "skill_category": "prompt", "skill_scope": "user"},
+        {"prompt_template": "", "rendered_prompt_template": ""},
+    )
+
+    assert len(calls) == 1
+    assert payload["name"] == "legacy_prompt"
+    assert payload["content"] == "旧节点提示词写法"
+    assert payload["content_mode"] == "fallback_skill_content"
+
+
+@pytest.mark.asyncio
+async def test_node_run_workflow_text_node_uses_one_shot_llm(monkeypatch):
+    updates: list[dict[str, Any]] = []
+    llm_calls: list[dict[str, Any]] = []
+    nodes = {
+        "script-1": {
+            "id": "script-1",
+            "display_id": 2,
+            "project_id": "proj-1",
+            "type": "text",
+            "title": "剧本",
+            "status": "idle",
+            "input": {
+                "title": "剧本",
+                "content": "待写剧本。",
+                "references": [{"ref": "node:1", "role": "context"}],
+                "workflow": {
+                    "step_id": "script",
+                    "prompt_ref": "script_writing#script",
+                    "prompt_spec": {"output": "fields.content"},
+                    "prompt_template": "SYSTEM: 剧本写作者\nUSER: 主题={{inputs.plot}}；需求={{brief.output.content}}",
+                    "primary_skill": "script_writing",
+                    "skill_category": "prompt",
+                    "acceptance": "写出可用于后续分镜的剧本。",
+                    "input_facts": {"plot": "江湖雨夜相逢"},
+                },
+            },
+            "prompt": "",
+        },
+        "brief-1": {
+            "id": "brief-1",
+            "display_id": 1,
+            "project_id": "proj-1",
+            "type": "text",
+            "title": "制作需求",
+            "status": "completed",
+            "input": {
+                "content": "江湖雨夜相逢，15秒。",
+                "workflow": {"step_id": "brief"},
+            },
+            "output": {"content": "江湖雨夜相逢，15秒。"},
+            "prompt": "",
+        },
+    }
+
+    async def fake_resolve(project_id: str, node_id: str):
+        assert project_id == "proj-1"
+        return {"script-1": "script-1", "node:1": "brief-1", "1": "brief-1"}.get(str(node_id), str(node_id))
+
+    async def fake_get_node(node_id: str):
+        return nodes[node_id]
+
+    async def fake_update_node(node_id: str, patch: dict):
+        updates.append(patch)
+        if "input_data" in patch:
+            nodes[node_id]["input"] = patch["input_data"]
+        if "status" in patch:
+            nodes[node_id]["status"] = patch["status"]
+        if "output_data" in patch:
+            nodes[node_id]["output"] = patch["output_data"]
+        return {"id": node_id, **patch}
+
+    async def fake_load_skill(workflow: dict):
+        raise AssertionError("prompt_template nodes should not reload full prompt skill at runtime")
+
+    async def fake_call_llm(**kwargs):
+        llm_calls.append(kwargs)
+        assert kwargs["task_type"] == "script_generation"
+        assert "剧本写法 skill 正文" not in kwargs["message"]
+        assert "江湖雨夜相逢" in kwargs["message"]
+        assert "rendered_prompt_template" in kwargs["message"]
+        assert "主题=江湖雨夜相逢" in kwargs["message"]
+        assert "需求=江湖雨夜相逢，15秒。" in kwargs["message"]
+        payload = json.loads(kwargs["message"])
+        assert payload["skill"]["name"] == "script_writing"
+        assert payload["skill"]["content"] == ""
+        assert payload["skill"]["content_mode"] == "compiled_prompt_template"
+        return {"content": "生成的剧本正文", "model": "test-model", "usage": {"total_tokens": 42}}
+
+    async def fake_public_id_map(project_id: str):
+        assert project_id == "proj-1"
+        return {"script-1": "2", "brief-1": "1"}
+
+    monkeypatch.setattr(node_universal, "_resolve_agent_node_id", fake_resolve)
+    monkeypatch.setattr(node_universal, "_node_public_id_map", fake_public_id_map)
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+    monkeypatch.setattr(node_universal, "_load_workflow_text_skill", fake_load_skill)
+    monkeypatch.setattr(node_universal, "_call_workflow_text_llm", fake_call_llm)
+
+    result = await node_universal.node_run(project_id="proj-1", node_id="script-1")
+
+    assert result["ok"] is True
+    assert result["type"] == "text"
+    assert result["result"]["workflow_text_runner"] == "one_shot_llm"
+    assert result["result"]["content"] == "生成的剧本正文"
+    assert len(llm_calls) == 1
+    input_update = next(update["input_data"] for update in updates if "input_data" in update)
+    assert input_update["content"] == "生成的剧本正文"
+    assert input_update["workflow"]["runner"] == "node.run"
+    assert input_update["workflow"]["last_run"]["status"] == "completed"
+    assert input_update["workflow"]["last_run"]["model"] == "test-model"
+    assert input_update["workflow"]["last_run"]["usage_total_tokens"] == 42
+    assert input_update["workflow"]["last_run"]["prompt_dump_run_id"].startswith("workflow_text_")
+    assert updates[-1]["status"] == "completed"
+    assert updates[-1]["output_data"]["workflow_text_runner"] == "one_shot_llm"
+    assert updates[-1]["output_data"]["prompt_dump_run_id"].startswith("workflow_text_")
+
+
+@pytest.mark.asyncio
+async def test_node_run_workflow_text_node_regenerates_stale_content(monkeypatch):
+    updates: list[dict[str, Any]] = []
+    llm_calls: list[dict[str, Any]] = []
+    nodes = {
+        "script-1": {
+            "id": "script-1",
+            "display_id": 1,
+            "project_id": "proj-1",
+            "type": "text",
+            "title": "剧本",
+            "status": "completed",
+            "input": {
+                "title": "剧本",
+                "content": "旧剧本正文",
+                "workflow": {
+                    "step_id": "script",
+                    "prompt_template": "SYSTEM: 新剧本模板\nUSER: {{inputs.plot}}",
+                    "input_facts": {"plot": "雨夜怀表"},
+                    "stale": True,
+                },
+            },
+            "prompt": "",
+        },
+    }
+
+    async def fake_resolve(project_id: str, node_id: str):
+        assert project_id == "proj-1"
+        return str(node_id)
+
+    async def fake_get_node(node_id: str):
+        return nodes[node_id]
+
+    async def fake_update_node(node_id: str, patch: dict):
+        updates.append(patch)
+        if "input_data" in patch:
+            nodes[node_id]["input"] = patch["input_data"]
+        if "status" in patch:
+            nodes[node_id]["status"] = patch["status"]
+        if "output_data" in patch:
+            nodes[node_id]["output"] = patch["output_data"]
+        return {"id": node_id, **patch}
+
+    async def fake_call_llm(**kwargs):
+        llm_calls.append(kwargs)
+        assert "旧剧本正文" in kwargs["message"]
+        assert "新剧本模板" in kwargs["message"]
+        return {"content": "新剧本正文", "model": "test-model", "usage": {"total_tokens": 11}}
+
+    async def fake_public_id_map(project_id: str):
+        assert project_id == "proj-1"
+        return {"script-1": "1"}
+
+    monkeypatch.setattr(node_universal, "_resolve_agent_node_id", fake_resolve)
+    monkeypatch.setattr(node_universal, "_node_public_id_map", fake_public_id_map)
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+    monkeypatch.setattr(node_universal, "_call_workflow_text_llm", fake_call_llm)
+
+    result = await node_universal.node_run(project_id="proj-1", node_id="script-1")
+
+    assert result["ok"] is True
+    assert result["result"]["content"] == "新剧本正文"
+    assert len(llm_calls) == 1
+    input_update = next(update["input_data"] for update in updates if "input_data" in update)
+    assert input_update["content"] == "新剧本正文"
+    assert input_update["workflow"]["stale"] is False
+    assert input_update["workflow"]["last_run"]["usage_total_tokens"] == 11
+
+
+@pytest.mark.asyncio
+async def test_node_run_workflow_image_node_renders_existing_prompt_without_llm(monkeypatch):
+    updates: list[dict] = []
+    llm_calls: list[dict] = []
+    render_calls: list[dict] = []
+    nodes = {
+        "scene-image-1": {
+            "id": "scene-image-1",
+            "display_id": 3,
+            "project_id": "proj-1",
+            "type": "image",
+            "title": "场景参考图",
+            "status": "idle",
+            "input": {
+                "title": "场景参考图",
+                "prompt": "16:9 cinematic scene reference, rainy stone bridge, lanterns, wet bluestone, no characters",
+                "aspect_ratio": "16:9",
+                "resolution": "2560x1440",
+                "references": [{"ref": "node:2", "role": "context"}],
+                "workflow": {
+                    "step_id": "scene_reference",
+                    "prompt_template": "SYSTEM: 场景概念图提示词编写者\nUSER: {{scene.output}}",
+                    "primary_skill": "scene_prompt",
+                    "skill_category": "prompt",
+                    "acceptance": "生成无人物场景参考图。",
+                },
+            },
+            "prompt": "",
+        },
+        "scene-text-1": {
+            "id": "scene-text-1",
+            "display_id": 2,
+            "project_id": "proj-1",
+            "type": "text",
+            "title": "场景集合",
+            "status": "completed",
+            "input": {
+                "content": "雨夜石桥，灯笼，湿润青石。",
+                "workflow": {"step_id": "scene"},
+            },
+            "output": {"content": "雨夜石桥，灯笼，湿润青石。"},
+            "prompt": "",
+        },
+    }
+
+    async def fake_resolve(project_id: str, node_id: str):
+        assert project_id == "proj-1"
+        return {"scene-image-1": "scene-image-1", "node:2": "scene-text-1", "2": "scene-text-1"}.get(str(node_id), str(node_id))
+
+    async def fake_public_id_map(project_id: str):
+        assert project_id == "proj-1"
+        return {"scene-image-1": "3", "scene-text-1": "2"}
+
+    async def fake_get_node(node_id: str):
+        return nodes[node_id]
+
+    async def fake_update_node(node_id: str, patch: dict):
+        updates.append(patch)
+        if "input_data" in patch:
+            nodes[node_id]["input"] = patch["input_data"]
+        if "prompt" in patch:
+            nodes[node_id]["prompt"] = patch["prompt"]
+        if "status" in patch:
+            nodes[node_id]["status"] = patch["status"]
+        if "output_data" in patch:
+            nodes[node_id]["output"] = patch["output_data"]
+        return {"id": node_id, **patch}
+
+    async def fake_load_skill(workflow: dict):
+        raise AssertionError("image workflow nodes should not load prompt skills at node.run time")
+
+    async def fake_call_llm(**kwargs):
+        llm_calls.append(kwargs)
+        raise AssertionError("image workflow nodes should not call LLM at node.run time")
+
+    async def fake_render(project_id: str, node_id: str, fields: dict, node_type: str):
+        render_calls.append({"project_id": project_id, "node_id": node_id, "fields": dict(fields), "node_type": node_type})
+        return {"url": "/storage/scene.png", "local_url": "/storage/scene.png", "size": "2560x1440", "aspect_ratio": "16:9"}
+
+    async def fake_merge(*args, **kwargs):
+        return {"type": "fusion", "stages": [{"name": "图片", **kwargs}]}
+
+    async def fake_emit(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(node_universal, "_resolve_agent_node_id", fake_resolve)
+    monkeypatch.setattr(node_universal, "_node_public_id_map", fake_public_id_map)
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+    monkeypatch.setattr(node_universal, "_load_workflow_text_skill", fake_load_skill)
+    monkeypatch.setattr(node_universal, "_call_workflow_text_llm", fake_call_llm)
+    monkeypatch.setattr(node_universal, "_render_image_node_once", fake_render)
+    monkeypatch.setattr(node_universal, "_merge_stage_into_fusion", fake_merge)
+    monkeypatch.setattr(node_universal, "_emit_fusion_canvas_event", fake_emit)
+
+    result = await node_universal.node_run(project_id="proj-1", node_id="scene-image-1", action="render")
+
+    assert result["ok"] is True
+    assert result["type"] == "image"
+    assert len(llm_calls) == 0
+    assert len(render_calls) == 1
+    assert render_calls[0]["fields"]["prompt"].startswith("16:9 cinematic scene reference")
+
+
+@pytest.mark.asyncio
 async def test_node_list_returns_agent_safe_envelope(monkeypatch):
     async def fake_list_nodes(project_id: str):
         assert project_id == "proj-1"
@@ -2352,6 +3850,171 @@ async def test_node_update_keeps_title_and_prompt_in_input_json(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_node_update_prompt_syncs_workflow_text_prompt_template(monkeypatch):
+    updates: list[dict] = []
+
+    async def fake_get_node(node_id: str):
+        assert node_id == "script-1"
+        return {
+            "id": node_id,
+            "type": "text",
+            "status": "completed",
+            "title": "剧本文本",
+            "prompt": "",
+            "input": {
+                "title": "剧本文本",
+                "workflow": {
+                    "template_id": "story_flow",
+                    "instance_id": "wf_1",
+                    "step_id": "script",
+                    "runner": "node.run",
+                    "prompt_template": "SYSTEM: 原模板",
+                },
+            },
+        }
+
+    async def fake_update_node(node_id: str, patch: dict):
+        assert node_id == "script-1"
+        updates.append(patch)
+        return {
+            "id": node_id,
+            "type": "text",
+            "status": "completed",
+            "title": "剧本文本",
+            "prompt": patch.get("prompt"),
+            "input_json": patch.get("input_json", {}),
+        }
+
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+
+    result = await node_universal.node_update(
+        node_id="script-1",
+        patch={"prompt": "SYSTEM: 当前实例强化模板\nUSER: {{inputs.plot}}\nOUTPUT: text"},
+    )
+
+    workflow = result["input_json"]["workflow"]
+    assert workflow["prompt_template"].startswith("SYSTEM: 当前实例强化模板")
+    assert workflow["step_id"] == "script"
+    assert workflow["runner"] == "node.run"
+    assert workflow["stale"] is True
+    assert result["input_json"]["prompt_status"] == "stale"
+    assert result["requires_rerun"] is True
+    assert result["input_json"]["prompt_preview"].startswith("SYSTEM: 当前实例强化模板")
+    assert updates[0]["input_json"]["workflow"]["template_id"] == "story_flow"
+    assert updates[0]["input_json"]["workflow"]["stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_node_update_merges_partial_workflow_input_patch(monkeypatch):
+    updates: list[dict] = []
+
+    async def fake_get_node(node_id: str):
+        assert node_id == "script-1"
+        return {
+            "id": node_id,
+            "type": "text",
+            "status": "completed",
+            "title": "剧本文本",
+            "input": {
+                "title": "剧本文本",
+                "workflow": {
+                    "template_id": "story_flow",
+                    "instance_id": "wf_1",
+                    "step_id": "script",
+                    "runner": "node.run",
+                    "prompt_template": "SYSTEM: 原模板",
+                },
+            },
+        }
+
+    async def fake_update_node(node_id: str, patch: dict):
+        assert node_id == "script-1"
+        updates.append(patch)
+        return {
+            "id": node_id,
+            "type": "text",
+            "status": "completed",
+            "title": "剧本文本",
+            "input_json": patch.get("input_json", {}),
+        }
+
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+
+    result = await node_universal.node_update(
+        node_id="script-1",
+        patch={"input_json": {"workflow": {"prompt_template": "SYSTEM: 局部模板"}}},
+    )
+
+    workflow = result["input_json"]["workflow"]
+    assert workflow["prompt_template"] == "SYSTEM: 局部模板"
+    assert workflow["template_id"] == "story_flow"
+    assert workflow["instance_id"] == "wf_1"
+    assert workflow["step_id"] == "script"
+    assert workflow["runner"] == "node.run"
+    assert updates[0]["input_json"]["workflow"] == workflow
+
+
+@pytest.mark.asyncio
+async def test_node_update_does_not_mark_unrendered_image_draft_stale(monkeypatch):
+    updates: list[dict] = []
+
+    async def fake_get_node(node_id: str):
+        assert node_id == "image-1"
+        return {
+            "id": node_id,
+            "type": "image",
+            "status": "idle",
+            "title": "分镜图",
+            "prompt": "",
+            "input": {
+                "title": "分镜图",
+                "aspect_ratio": "16:9",
+                "resolution": "2560x1440",
+            },
+            "output": None,
+        }
+
+    async def fake_update_node(node_id: str, patch: dict):
+        assert node_id == "image-1"
+        updates.append(patch)
+        return {
+            "id": node_id,
+            "type": "image",
+            "status": "idle",
+            "title": "分镜图",
+            "prompt": patch.get("prompt"),
+            "input_json": patch.get("input_json", {}),
+        }
+
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+
+    result = await node_universal.node_update(
+        node_id="image-1",
+        patch={"prompt": "新的分镜图提示词"},
+    )
+
+    assert result["input_json"]["prompt"] == "新的分镜图提示词"
+    assert "render_state" not in result["input_json"]
+    assert "render_state" not in result
+    assert "requires_rerun" not in result
+    assert updates == [
+        {
+            "prompt": "新的分镜图提示词",
+            "input_json": {
+                "title": "分镜图",
+                "aspect_ratio": "16:9",
+                "resolution": "2560x1440",
+                "prompt": "新的分镜图提示词",
+                "prompt_preview": "新的分镜图提示词",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_node_update_fields_alias_merges_image_input_and_preserves_fields(monkeypatch):
     updates: list[dict] = []
 
@@ -2406,7 +4069,9 @@ async def test_node_update_fields_alias_merges_image_input_and_preserves_fields(
                     "quality": "high",
                     "references": [{"ref": "node:story-1", "role": "context"}],
                     "render_state": "stale",
-                }
+                },
+                "status": "idle",
+                "error_message": None,
             }
         ]
     assert result["render_state"] == "stale"
@@ -2797,6 +4462,63 @@ async def test_image_node_run_recovers_running_node_with_completed_output(monkey
         }
     ]
     assert result["render_state"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_interrupted_media_nodes_marks_running_stage_failed(monkeypatch, tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'node-recovery.db'}", echo=False, future=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+    session_local = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def fake_session_scope():
+        async with session_local() as session:
+            yield session
+
+    monkeypatch.setattr(node_recovery, "session_scope", fake_session_scope)
+
+    old_time = datetime.utcnow() - timedelta(seconds=3600)
+    output = {
+        "type": "fusion",
+        "status": "running",
+        "stages": [
+            {"name": "提示词", "status": "completed", "text": "prompt"},
+            {"name": "图片", "status": "running", "job_id": "job-1"},
+        ],
+    }
+    async with session_local() as session:
+        session.add(Project(id="proj-recovery", title="恢复测试", state_json="{}"))
+        session.add(WorkflowNode(
+            id="image-running",
+            project_id="proj-recovery",
+            display_id=1,
+            type="image",
+            title="卡住的图片",
+            status="running",
+            output_json=json.dumps(output, ensure_ascii=False),
+            updated_at=old_time,
+        ))
+        await session.commit()
+
+    result = await node_recovery.cleanup_interrupted_media_nodes(
+        project_id="proj-recovery",
+        stale_after_seconds=60,
+        reason="test_interrupted_media",
+    )
+
+    assert result["changed"] == 1
+    assert result["failed"] == 1
+    async with session_local() as session:
+        node = await session.get(WorkflowNode, "image-running")
+        assert node is not None
+        assert node.status == "failed"
+        assert "无法继续接收" in (node.error_message or "")
+        next_output = json.loads(node.output_json or "{}")
+        assert next_output["status"] == "failed"
+        assert next_output["error_kind"] == "test_interrupted_media"
+        assert next_output["stages"][0]["status"] == "completed"
+        assert next_output["stages"][1]["status"] == "failed"
 
 
 @pytest.mark.asyncio

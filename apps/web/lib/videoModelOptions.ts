@@ -47,6 +47,23 @@ export const VIDEO_MODEL_OPTIONS = [
   },
 ] as const
 
+export const VIDEO_API_FORMAT_OPTIONS = [
+  { label: "Lingke Media Generate", value: "lingke_media_generate" },
+  { label: "T8 Grok JSON Task", value: "t8_grok_video_3" },
+  { label: "Grok 1.5 Multipart", value: "grok_1_5" },
+  { label: "xAI Video", value: "xai_video" },
+  { label: "Volcengine Ark", value: "volcengine_ark" },
+] as const
+
+export const VIDEO_IMAGE_TRANSPORT_OPTIONS = [
+  { label: "Base64 / data URL", value: "data_url" },
+  { label: "公网 URL", value: "public_url" },
+] as const
+
+export function isKnownVideoModel(modelName: string): boolean {
+  return VIDEO_MODEL_OPTIONS.some((item) => item.modelName === modelName)
+}
+
 export function videoApiFormatForModel(modelName: string, fallback = "volcengine_ark"): string {
   return VIDEO_MODEL_OPTIONS.find((item) => item.modelName === modelName)?.apiFormat ?? fallback
 }

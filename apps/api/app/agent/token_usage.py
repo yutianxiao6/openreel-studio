@@ -176,6 +176,9 @@ def normalize_model_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     tokenizer = metadata.get("tokenizer")
     if isinstance(tokenizer, str) and tokenizer.strip():
         out["tokenizer"] = tokenizer.strip()
+    tier = metadata.get("tier")
+    if isinstance(tier, str) and tier.strip():
+        out["tier"] = tier.strip()
     params = metadata.get("params")
     if isinstance(params, dict) and params:
         out["params"] = dict(params)
@@ -451,7 +454,8 @@ def build_usage_snapshot(
             model_metadata = response.get("_openreel_model_metadata")
     metadata = normalize_model_metadata(model_metadata)
     response_model = (
-        str(getattr(response, "model", "") or "")
+        str(getattr(response, "_openreel_actual_model", "") or "")
+        or str(getattr(response, "model", "") or "")
         or (response.get("model") if isinstance(response, dict) else "")
         or model
         or ""
@@ -475,6 +479,9 @@ def build_usage_snapshot(
     usage.update(
         {
             "model": response_model or None,
+            "requested_model": getattr(response, "_openreel_requested_model", None),
+            "fallback_used": getattr(response, "_openreel_fallback_used", None),
+            "model_tier": metadata.get("tier"),
             "usage_scope": "latest_llm_call",
             "estimated_input_tokens": estimated_input_tokens,
             "active_input_tokens": active_input_tokens,

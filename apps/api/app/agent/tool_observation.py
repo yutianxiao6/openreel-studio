@@ -119,6 +119,8 @@ def _next_action(result: Any, *, outcome: str) -> str | None:
 
 def _next_for_error_kind(error_kind: str) -> str:
     kind = str(error_kind or "")
+    if kind == "subagent_blocked":
+        return "report_blocked_to_user"
     if kind in {
         "missing_field",
         "missing_id",
@@ -202,6 +204,8 @@ def _how_to_fix(result: dict[str, Any], *, outcome: str, next_action: str | None
     hint = result.get("hint")
     if hint not in (None, "", [], {}):
         return str(hint)
+    if next_action == "report_blocked_to_user":
+        return "向用户说明子 Agent 的 blocked 原因、已尝试步骤和可选下一步。"
     if next_action == "call_agent_review":
         return "调用只读 review 工具检查当前结果，再根据 review 的 findings 决定修订或提交。"
     if next_action == "revise_then_review":
@@ -246,6 +250,13 @@ def _diagnostic_evidence(result: dict[str, Any]) -> dict[str, Any]:
         "grounded_findings_count",
         "blocking_findings_count",
         "collected_facts",
+        "agent",
+        "committed",
+        "candidate_ref",
+        "committed_ref",
+        "steps_used",
+        "repair_ref",
+        "content_fields",
     )
     evidence: dict[str, Any] = {}
     for key in evidence_keys:

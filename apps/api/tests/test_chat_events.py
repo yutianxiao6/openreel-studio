@@ -96,6 +96,17 @@ def test_project_and_store_events_are_typed() -> None:
         "queued_count": 1,
         "error": "busy",
     }
+    assert normalize_chat_event({
+        "type": "queued_turn_started",
+        "client_user_message_id": "client-1",
+        "message": "补充一句",
+        "queued_remaining": 0,
+    }) == {
+        "type": "queued_turn_started",
+        "client_user_message_id": "client-1",
+        "message": "补充一句",
+        "queued_remaining": 0,
+    }
     assert normalize_chat_event(
         {
             "type": "project_reset",
@@ -179,6 +190,30 @@ def test_token_usage_event_is_typed() -> None:
         "session_cumulative_tokens": {"total_tokens": 240, "llm_calls": 2},
         "run_context_peak": {"context_remaining_tokens": 90_000},
         "session_context_peak": {"context_remaining_tokens": 80_000},
+    }
+
+
+def test_subagent_round_event_is_typed() -> None:
+    event = normalize_chat_event(
+        {
+            "type": "subagent_round",
+            "agent": "image_editor",
+            "step": 2,
+            "content": "正在查看裁剪候选图。",
+            "tool": "vision.view_image",
+            "status": "running",
+            "source": "model",
+        }
+    )
+
+    assert event == {
+        "type": "subagent_round",
+        "agent": "image_editor",
+        "step": 2,
+        "content": "正在查看裁剪候选图。",
+        "tool": "vision.view_image",
+        "status": "running",
+        "source": "model",
     }
 
 

@@ -179,7 +179,7 @@ async def test_prompt_v2_video_intake_and_reset_flow_keep_prompt_dumps_and_trace
     assert first_prompt["cache_key"]
     assert first_prompt["section_count"] >= 1
     assert first_prompt["tools_count"] > 0
-    assert any(name in first_prompt["section_names"] for name in {"clarify", "video_duration", "video_types"})
+    assert {"identity", "working_loop", "core_rules"} <= set(first_prompt["section_names"])
     assert any(event.get("event") == "prompt_assembly" for event in first_trace["events"])
     assert any(event.get("event") == "llm_usage" for event in first_trace["events"])
 

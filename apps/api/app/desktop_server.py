@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -22,20 +24,44 @@ def _ensure_desktop_env() -> None:
     user_data = Path(os.environ.get("OPENREEL_USER_DATA_DIR") or _default_user_data_dir())
     data_dir = user_data / "data"
     storage_dir = user_data / "storage"
+    assets_dir = user_data / "assets"
     config_dir = user_data / "config"
     logs_dir = user_data / "logs"
+    plugins_dir = user_data / "plugins"
     skills_dir = user_data / "skills"
+    workflow_templates_dir = user_data / "workflow_templates"
     for directory in (
         data_dir,
         storage_dir,
+        assets_dir,
         config_dir,
         logs_dir,
+        plugins_dir,
         skills_dir,
         skills_dir / "workflows",
         skills_dir / "prompts",
         skills_dir / "review",
+        workflow_templates_dir,
     ):
         directory.mkdir(parents=True, exist_ok=True)
+
+    bundled_defaults = Path(getattr(sys, "_MEIPASS", "")) / "defaults"
+    if bundled_defaults.exists():
+        for name, target in (
+            ("plugins", plugins_dir),
+            ("workflow_templates", workflow_templates_dir),
+        ):
+            source = bundled_defaults / name
+            if not source.exists():
+                continue
+            for item in source.iterdir():
+                destination = target / item.name
+                if destination.exists():
+                    continue
+                if item.is_dir():
+                    shutil.copytree(item, destination)
+                else:
+                    shutil.copy2(item, destination)
 
     os.environ.setdefault("APP_ENV", "desktop")
     os.environ.setdefault("APP_HOST", "127.0.0.1")

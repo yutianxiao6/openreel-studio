@@ -128,6 +128,28 @@ type CanvasNodeData = {
   preview?: Record<string, unknown>
 }
 
+function isWorkflowSpecOnlyRound(event: ChatStreamEvent): boolean {
+  if (event.type !== "agent_round") return false
+  const agents = Array.isArray(event.tool_agents) ? event.tool_agents.map((item) => String(item).trim()).filter(Boolean) : []
+  return agents.length > 0 && agents.every((agent) => agent === "workflow_spec")
+}
+
+function isWorkflowSpecToolEvent(event: ChatStreamEvent): boolean {
+  if (event.type !== "tool_start" && event.type !== "tool_done") return false
+  if (typeof event.agent === "string" && event.agent.trim() === "workflow_spec") return true
+  return event.type === "tool_start" && String(event.tool || "") === "tool.execute" && /workflow_spec|工作流.*模板|流程图/.test(String(event.content || ""))
+}
+
+function isWorkflowSpecPreviewResult(result: unknown): boolean {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false
+  const outer = result as Record<string, unknown>
+  const nested = outer.result && typeof outer.result === "object" && !Array.isArray(outer.result)
+    ? outer.result as Record<string, unknown>
+    : null
+  const candidate = typeof outer.artifact_ref === "string" ? outer : nested
+  return typeof candidate?.artifact_ref === "string" && candidate.artifact_ref.startsWith("workflow_spec:")
+}
+
 const LAYOUT_MODES: { mode: PanelLayoutMode; label: string }[] = [
   { mode: "tier", label: "剧集" },
   { mode: "type", label: "类型" },
@@ -1338,6 +1360,7 @@ export function ProjectPanel() {
       return
     }
     if (event.type === "agent_round") {
+      if (isWorkflowSpecOnlyRound(event)) return
       addAgentRound({
         round: Number(event.round),
         content: String(event.content ?? ""),
@@ -1351,6 +1374,7 @@ export function ProjectPanel() {
       return
     }
     if (event.type === "tool_start" && event.tool) {
+      if (isWorkflowSpecToolEvent(event)) return
       const tool = String(event.tool)
       addToolBubble(tool)
       addAgentRoundToolStart(tool, String(event.content || ""))
@@ -1358,6 +1382,7 @@ export function ProjectPanel() {
     }
     if (event.type === "tool_done" && event.tool) {
       const result = event.result
+      if (isWorkflowSpecPreviewResult(result) || isWorkflowSpecToolEvent(event)) return
       const resultObj = result as Record<string, unknown> | null
       const awaitingConfirmation = Boolean(resultObj?.requires_user_confirm) && !resultObj?.error
       const failed = Boolean(

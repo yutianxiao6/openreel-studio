@@ -16,13 +16,18 @@
       "supports_prompt_cache": null,
       "supports_vision": null,
       "tokenizer": null,
-      "is_default": true,
+      "tier": "balanced",
       "enabled": true,
       "notes": "",
       "params": {}
     }
   ],
   "media_providers": [],
+  "model_tier_defaults": {
+    "strong": null,
+    "balanced": "deepseek-default",
+    "small": null
+  },
   "model_assignments": {},
   "app_settings": {
     "agent.skip_confirmations": false,

@@ -3,6 +3,7 @@ import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps }
 import { motion } from "framer-motion"
 import { cn } from "@/lib/utils"
 import { callTool, getProjectNodes, resolveMediaUrl } from "@/lib/api"
+import { canvasNodeDisplayText } from "@/lib/nodeDisplay"
 import { useCanvasStore } from "@/stores/canvasStore"
 import { useProjectStore } from "@/stores/projectStore"
 import { getNodeStyle } from "./nodeStyles"
@@ -99,6 +100,10 @@ interface PreviewData {
   size_final?: string
   resolution?: string
   output_size?: string
+  panorama?: boolean
+  is_panorama?: boolean
+  projection?: string
+  panorama_capture?: boolean
   grid?: { rows?: number; cols?: number }
   cells?: ImageGridPreviewCell[]
   prompt?: string
@@ -112,6 +117,7 @@ interface NodeData {
   error?: string
   output?: unknown
   prompt?: string
+  previewText?: string
   renderState?: string
   preview?: PreviewData
   group_id?: string
@@ -129,6 +135,13 @@ interface NodeData {
   canvasWidth?: number
   canvasHeight?: number
   canvasSizeMode?: "manual"
+  input?: Record<string, unknown>
+  workflow?: Record<string, unknown>
+  workflowStepPrompt?: string
+  workflowReferences?: Array<{ ref?: string; role?: string }>
+  workflowDependsOn?: string[]
+  referenceCount?: number
+  referenceThumbs?: Array<{ id: string; src: string; title?: string; publicId?: number | string | null }>
 }
 
 const CARD_WIDTH = 260
@@ -235,6 +248,18 @@ function audioMimeType(src: string): string {
   return "audio/mpeg"
 }
 
+function isPanoramaImage(preview?: PreviewData, title?: string, prompt?: string): boolean {
+  if (!preview) return false
+  if (preview.panorama || preview.is_panorama) return true
+  const projection = String(preview.projection ?? "").toLowerCase()
+  if (projection === "equirectangular" || projection.includes("360")) return true
+  const label = `${title ?? ""}\n${prompt ?? ""}`.toLowerCase()
+  return Boolean(
+    ratioFromAspectValue(preview.aspect_ratio) === 2 &&
+    /全景|panorama|equirectangular|360/.test(label),
+  )
+}
+
 function ratioFromSize(width?: number, height?: number): number | null {
   if (!width || !height || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     return null
@@ -261,56 +286,88 @@ function ratioFromAspectValue(value: unknown): number | null {
   return null
 }
 
-function ratioFromPreview(preview?: PreviewData): number | null {
-  if (!preview) return null
-  const direct =
-    ratioFromSize(preview.width, preview.height) ||
-    ratioFromAspectValue(preview.aspect_ratio) ||
-    ratioFromAspectValue(preview.ratio) ||
-    ratioFromAspectValue(preview.size) ||
-    ratioFromAspectValue(preview.size_requested) ||
-    ratioFromAspectValue(preview.size_final) ||
-    ratioFromAspectValue(preview.resolution) ||
-    ratioFromAspectValue(preview.output_size)
-  if (direct) return direct
+function hasMediaUrl(...values: unknown[]): boolean {
+  return values.some((value) => typeof value === "string" && value.trim().length > 0)
+}
 
-  if (Array.isArray(preview.stages)) {
-    for (const stage of preview.stages) {
-      const stageRatio =
-        ratioFromSize(stage.width, stage.height) ||
-        ratioFromAspectValue(stage.aspect_ratio) ||
-        ratioFromAspectValue(stage.ratio) ||
-        ratioFromAspectValue(stage.size) ||
-        ratioFromAspectValue(stage.size_requested) ||
-        ratioFromAspectValue(stage.size_final) ||
-        ratioFromAspectValue(stage.resolution) ||
-        ratioFromAspectValue(stage.output_size)
-      if (stageRatio) return stageRatio
-    }
-  }
-
-  const cell = Array.isArray(preview.cells)
-    ? preview.cells.find((item) => item.width && item.height)
-    : undefined
-  const gridCols = preview.grid?.cols || 1
-  const gridRows = preview.grid?.rows || 1
+function ratioFromPreviewLike(item?: {
+  width?: number
+  height?: number
+  aspect_ratio?: string
+  ratio?: string | number
+  size?: string
+  size_requested?: string
+  size_final?: string
+  resolution?: string
+  output_size?: string
+}): number | null {
+  if (!item) return null
   return (
-    (cell ? ratioFromSize((cell.width || 1) * gridCols, (cell.height || 1) * gridRows) : null) ||
-    (preview.type === "image_grid" ? ratioFromSize(gridCols, gridRows) : null)
+    ratioFromSize(item.width, item.height) ||
+    ratioFromAspectValue(item.aspect_ratio) ||
+    ratioFromAspectValue(item.ratio) ||
+    ratioFromAspectValue(item.size) ||
+    ratioFromAspectValue(item.size_requested) ||
+    ratioFromAspectValue(item.size_final) ||
+    ratioFromAspectValue(item.resolution) ||
+    ratioFromAspectValue(item.output_size)
   )
 }
 
-function mediaNodeDimensions(preview?: PreviewData, media?: { width?: number; height?: number } | null): { width: number; height: number } {
+function fusionMediaStage(preview: PreviewData | undefined, nodeType: "image" | "video"): StageData | undefined {
+  if (preview?.type !== "fusion" || !Array.isArray(preview.stages)) return undefined
+  if (nodeType === "image") {
+    return preview.stages.find((stage) => isImageStageName(stage.name) && hasMediaUrl(stage.local_url, stage.url, stage.remote_url))
+  }
+  return preview.stages.find((stage) =>
+    /视频|video|clip/i.test(stage.name ?? "") &&
+    hasMediaUrl(stage.local_url, stage.url, stage.remote_url)
+  )
+}
+
+function previewHasOutput(preview: PreviewData | undefined, nodeType: "image" | "video"): boolean {
+  if (!preview) return false
+  if (fusionMediaStage(preview, nodeType)) return true
+  if (nodeType === "image") {
+    return (
+      (preview.type === "image" || preview.type === "image_grid" || preview.type === "storyboard") &&
+      hasMediaUrl(preview.local_url, preview.url, preview.remote_url, preview.composite_url)
+    )
+  }
+  return (
+    preview.type === "video" &&
+    hasMediaUrl(preview.local_url, preview.url, preview.remote_url)
+  )
+}
+
+function ratioFromOutputPreview(preview: PreviewData | undefined, nodeType: "image" | "video"): number | null {
+  if (!previewHasOutput(preview, nodeType)) return null
+  const stage = fusionMediaStage(preview, nodeType)
+  if (stage) return ratioFromPreviewLike(stage)
+
   const cell = Array.isArray(preview?.cells)
     ? preview.cells.find((item) => item.width && item.height)
     : undefined
   const gridCols = preview?.grid?.cols || 1
   const gridRows = preview?.grid?.rows || 1
-  const ratio =
-    ratioFromPreview(preview) ||
-    ratioFromSize(media?.width, media?.height) ||
+  return (
+    ratioFromPreviewLike(preview) ||
     (cell ? ratioFromSize((cell.width || 1) * gridCols, (cell.height || 1) * gridRows) : null) ||
-    (preview?.type === "image_grid" ? ratioFromSize(gridCols, gridRows) : null) ||
+    (preview?.type === "image_grid" ? ratioFromSize(gridCols, gridRows) : null)
+  )
+}
+
+function mediaNodeDimensions(
+  preview: PreviewData | undefined,
+  nodeType: "image" | "video",
+  media?: { width?: number; height?: number } | null,
+): { width: number; height: number } {
+  if (!previewHasOutput(preview, nodeType)) {
+    return { width: CARD_WIDTH, height: CARD_HEIGHT }
+  }
+  const ratio =
+    ratioFromSize(media?.width, media?.height) ||
+    ratioFromOutputPreview(preview, nodeType) ||
     CARD_WIDTH / CARD_HEIGHT
 
   let width = Math.sqrt(MEDIA_TARGET_AREA * ratio)
@@ -323,27 +380,6 @@ function mediaNodeDimensions(preview?: PreviewData, media?: { width?: number; he
   }
   const height = width / ratio
   return { width: Math.round(width), height: Math.round(height) }
-}
-
-function textFromPreview(preview?: PreviewData, prompt?: string): string {
-  if (!preview) return prompt || ""
-  if (preview.type === "text" && typeof (preview as PreviewData & { text?: string }).text === "string") {
-    return (preview as PreviewData & { text?: string }).text || prompt || ""
-  }
-  if (preview.summary) return preview.summary
-  if (preview.prompt) return preview.prompt
-  if (preview.identity) return preview.identity
-  if (Array.isArray(preview.episodes) && preview.episodes.length) {
-    return preview.episodes.map((item) => item.title).filter(Boolean).join("\n")
-  }
-  if (Array.isArray(preview.shots) && preview.shots.length) {
-    return preview.shots.map((item, index) => `${item.index ?? index + 1}. ${item.action ?? item.shot_type ?? ""}`).join("\n")
-  }
-  if (Array.isArray(preview.stages)) {
-    const promptStage = preview.stages.find((stage) => /提示词|prompt/i.test(stage.name) && stage.prompt)
-    if (promptStage?.prompt) return promptStage.prompt
-  }
-  return prompt || ""
 }
 
 function statusBorderStyle(status: string, color: string): React.CSSProperties {
@@ -776,14 +812,24 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const [gridBusy, setGridBusy] = useState<string | null>(null)
   const [gridDragStart, setGridDragStart] = useState<{ cellId: string; x: number; y: number } | null>(null)
   const [gridError, setGridError] = useState<string | null>(null)
+  const [imageToolbarVisible, setImageToolbarVisible] = useState(false)
+  const [panoramaConfirmOpen, setPanoramaConfirmOpen] = useState(false)
+  const imageToolbarHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const lastAutoSizeRef = useRef<string | null>(null)
   const [cardVideoPlaying, setCardVideoPlaying] = useState(false)
-  const previewText = textFromPreview(data.preview, data.prompt)
+  const previewText = canvasNodeDisplayText({
+    type: data.type,
+    input: data.input,
+    output: data.output,
+    prompt: data.prompt,
+    preview: data.preview as Record<string, unknown> | undefined,
+    previewText: data.previewText,
+  })
   const autoNodeSize = data.type === "image"
-    ? mediaNodeDimensions(data.preview, imageForSize)
+    ? mediaNodeDimensions(data.preview, "image", imageForSize)
     : data.type === "video"
-    ? mediaNodeDimensions(data.preview, videoForSize)
+    ? mediaNodeDimensions(data.preview, "video", videoForSize)
     : { width: CARD_WIDTH, height: CARD_HEIGHT }
   const useManualCanvasSize = data.canvasSizeMode === "manual" || (data.type !== "image" && data.type !== "video")
   const storedWidth = useManualCanvasSize && typeof data.canvasWidth === "number" && Number.isFinite(data.canvasWidth)
@@ -824,6 +870,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const gridToolActive = gridMode !== "idle"
   const gridEditing = gridToolActive && gridCells.length > 0
   const canGridCrop = data.type === "image" && !isRunning && !isSuperseded && Boolean(image?.primary || gridCells.length)
+  const panoramaNode = data.type === "image" && isPanoramaImage(data.preview, data.title, data.prompt)
   const renderState = data.type === "image" ? data.renderState : undefined
   const resizeActive = selected || resizeHover
   const handleClass = cn(
@@ -835,6 +882,40 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
     transform: "translateY(-50%)",
   } as const
   const portOffset = -NODE_PORT_GUTTER + NODE_PORT_INSET
+  const showImageToolbar = data.type === "image" && Boolean(image?.primary)
+
+  const clearImageToolbarHideTimer = useCallback(() => {
+    if (imageToolbarHideTimer.current) {
+      clearTimeout(imageToolbarHideTimer.current)
+      imageToolbarHideTimer.current = null
+    }
+  }, [])
+
+  const revealImageToolbar = useCallback(() => {
+    if (!showImageToolbar) return
+    clearImageToolbarHideTimer()
+    setImageToolbarVisible(true)
+  }, [clearImageToolbarHideTimer, showImageToolbar])
+
+  const scheduleImageToolbarHide = useCallback(() => {
+    if (!showImageToolbar || gridToolActive) return
+    clearImageToolbarHideTimer()
+    imageToolbarHideTimer.current = setTimeout(() => {
+      setImageToolbarVisible(false)
+      setPanoramaConfirmOpen(false)
+      imageToolbarHideTimer.current = null
+    }, 1500)
+  }, [clearImageToolbarHideTimer, gridToolActive, showImageToolbar])
+
+  useEffect(() => clearImageToolbarHideTimer, [clearImageToolbarHideTimer])
+
+  useEffect(() => {
+    if (!showImageToolbar) {
+      clearImageToolbarHideTimer()
+      setImageToolbarVisible(false)
+      setPanoramaConfirmOpen(false)
+    }
+  }, [clearImageToolbarHideTimer, showImageToolbar])
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -955,6 +1036,55 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
     }))
   }, [data.publicId, data.title, id])
 
+  const requestEditImage = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    window.dispatchEvent(new CustomEvent("openreel:edit-image-node", {
+      detail: {
+        nodeId: id,
+        title: data.title || "",
+        imageUrl: image?.primary || "",
+      },
+    }))
+  }, [data.title, id, image?.primary])
+
+  const requestOpenPanorama = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!image?.primary) return
+    window.dispatchEvent(new CustomEvent("openreel:open-panorama-viewer", {
+      detail: {
+        nodeId: id,
+        title: data.title || "全景图",
+        imageUrl: image.primary,
+      },
+    }))
+  }, [data.title, id, image?.primary])
+
+  const requestPanoramaConfirm = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (panoramaNode) {
+      requestOpenPanorama(event)
+      return
+    }
+    setPanoramaConfirmOpen((value) => !value)
+  }, [panoramaNode, requestOpenPanorama])
+
+  const requestCreatePanorama = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setPanoramaConfirmOpen(false)
+    window.dispatchEvent(new CustomEvent("openreel:create-panorama-from-node", {
+      detail: {
+        nodeId: id,
+        title: data.title || "图片节点",
+        publicId: data.publicId ?? null,
+        imageUrl: image?.primary || "",
+      },
+    }))
+  }, [data.publicId, data.title, id, image?.primary])
+
   const emitCellExtract = useCallback((cell: ImageGridPreviewCell, clientX: number, clientY: number) => {
     if (!cell.cell_id) return
     window.dispatchEvent(new CustomEvent("openreel:grid-cell-extract", {
@@ -981,8 +1111,14 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
         "group relative rounded-md text-white transition-[filter] will-change-transform",
       )}
       style={{ width: nodeWidth, height: nodeHeight, pointerEvents: "auto" }}
-      onMouseEnter={() => setResizeHover(true)}
-      onMouseLeave={() => setResizeHover(false)}
+      onMouseEnter={() => {
+        setResizeHover(true)
+        revealImageToolbar()
+      }}
+      onMouseLeave={() => {
+        setResizeHover(false)
+        scheduleImageToolbarHide()
+      }}
     >
       <NodeResizer
         isVisible={resizeActive}
@@ -1018,6 +1154,124 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
         isConnectableEnd={false}
         style={{ ...portStyle, right: portOffset }}
       />
+
+      {showImageToolbar && (
+        <div
+          className={cn(
+            "nodrag absolute left-1/2 top-0 z-50 -mt-2 flex -translate-x-1/2 -translate-y-full items-center gap-1.5 rounded-md border border-white/10 bg-[#0b0f16]/88 px-1.5 py-1 shadow-[0_16px_40px_rgba(0,0,0,0.45)] backdrop-blur-md transition-opacity duration-150",
+            imageToolbarVisible || gridToolActive
+              ? "pointer-events-auto opacity-100"
+              : "pointer-events-none opacity-0",
+          )}
+          onClick={(event) => event.stopPropagation()}
+          onMouseEnter={revealImageToolbar}
+          onMouseLeave={scheduleImageToolbarHide}
+          onMouseDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {canGridCrop && (
+            <button
+              type="button"
+              onClick={gridToolActive ? finishGridTool : toggleGridTool}
+              disabled={Boolean(gridBusy)}
+              className={cn(
+                "h-7 whitespace-nowrap rounded px-2.5 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-55",
+                gridToolActive
+                  ? "bg-emerald-300 text-emerald-950 hover:bg-emerald-200"
+                  : "border border-white/10 bg-white/[0.06] text-zinc-100 hover:bg-white/[0.12]",
+              )}
+            >
+              {gridToolActive ? "完成" : "宫格裁剪"}
+            </button>
+          )}
+          {gridMode === "choosing" && (
+            <div className="flex items-center gap-1 border-l border-white/10 pl-1.5">
+              {GRID_PRESETS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={(event) => void splitGrid(preset, event)}
+                  disabled={Boolean(gridBusy)}
+                  className="h-7 rounded px-2 text-[10px] font-medium text-zinc-100 transition hover:bg-white/[0.12] disabled:cursor-not-allowed disabled:opacity-55"
+                >
+                  {gridBusy === preset.label ? "..." : preset.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {!gridToolActive && (
+            <>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={requestPanoramaConfirm}
+                  className={cn(
+                    "h-7 whitespace-nowrap rounded px-2.5 text-[11px] font-medium transition",
+                    panoramaNode
+                      ? "border border-sky-200/25 bg-sky-300/14 text-sky-100 hover:bg-sky-300/22"
+                      : "border border-white/10 bg-white/[0.06] text-zinc-100 hover:bg-white/[0.12]",
+                  )}
+                >
+                  {panoramaNode ? "进入全景" : "全景"}
+                </button>
+                {panoramaConfirmOpen && !panoramaNode && (
+                  <div
+                    className="absolute bottom-full left-1/2 z-[70] mb-2 w-56 -translate-x-1/2 rounded-md border border-white/12 bg-[#080c13]/95 p-2.5 text-left shadow-[0_18px_48px_rgba(0,0,0,0.5)] backdrop-blur-md"
+                    onClick={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => event.stopPropagation()}
+                  >
+                    <div className="text-[11px] font-medium leading-4 text-zinc-100">
+                      参考此图片生成一张 360 全景图？
+                    </div>
+                    <div className="mt-1 text-[10px] leading-4 text-zinc-400">
+                      会自动创建新的图片节点并开始生成。
+                    </div>
+                    <div className="mt-2 flex justify-end gap-1.5">
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          setPanoramaConfirmOpen(false)
+                        }}
+                        className="h-6 rounded px-2 text-[10px] text-zinc-300 transition hover:bg-white/10"
+                      >
+                        取消
+                      </button>
+                      <button
+                        type="button"
+                        onClick={requestCreatePanorama}
+                        className="h-6 rounded bg-sky-300 px-2 text-[10px] font-semibold text-sky-950 transition hover:bg-sky-200"
+                      >
+                        生成
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={requestEditImage}
+                className="h-7 whitespace-nowrap rounded border border-cyan-200/20 bg-cyan-300/12 px-2.5 text-[11px] font-medium text-cyan-100 transition hover:bg-cyan-300/18"
+              >
+                编辑
+              </button>
+              <button
+                type="button"
+                onClick={requestAddImageToAssetLibrary}
+                className="h-7 whitespace-nowrap rounded border border-white/10 bg-white/[0.06] px-2.5 text-[11px] font-medium text-zinc-100 transition hover:bg-white/[0.12]"
+              >
+                加入资产库
+              </button>
+            </>
+          )}
+          {gridError && (
+            <div className="max-w-[190px] truncate rounded border border-red-400/25 bg-red-950/80 px-2 py-1 text-[10px] leading-4 text-red-100">
+              {gridError}
+            </div>
+          )}
+        </div>
+      )}
 
       <div
         className={cn(
@@ -1259,67 +1513,6 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 )}
               </div>
             </div>
-          )}
-
-          {canGridCrop && (
-            <div
-              className={cn(
-                "absolute right-2 top-2 z-30 flex flex-col items-end gap-1.5 opacity-0 transition-opacity group-hover:opacity-100",
-                gridToolActive && "opacity-100",
-              )}
-              onClick={(event) => event.stopPropagation()}
-              onMouseDown={(event) => event.stopPropagation()}
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              <button
-                type="button"
-                onClick={gridToolActive ? finishGridTool : toggleGridTool}
-                disabled={Boolean(gridBusy)}
-                className={cn(
-                  "rounded-md px-2.5 py-1.5 text-[11px] font-semibold shadow-xl shadow-black/30 backdrop-blur transition disabled:cursor-not-allowed disabled:opacity-55",
-                  gridToolActive
-                    ? "bg-emerald-400 text-emerald-950 hover:bg-emerald-300"
-                    : "border border-white/10 bg-black/68 text-zinc-100 hover:bg-black/82",
-                )}
-              >
-                {gridToolActive ? "完成" : "宫格裁剪"}
-              </button>
-              {gridMode === "choosing" && (
-                <div className="flex overflow-hidden rounded-md border border-white/10 bg-black/78 p-1 shadow-xl shadow-black/35 backdrop-blur">
-                  {GRID_PRESETS.map((preset) => (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      onClick={(event) => void splitGrid(preset, event)}
-                      disabled={Boolean(gridBusy)}
-                      className="rounded px-2 py-1 text-[10px] font-medium text-zinc-100 transition hover:bg-white/14 disabled:cursor-not-allowed disabled:opacity-55"
-                    >
-                      {gridBusy === preset.label ? "..." : preset.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-              {gridError && (
-                <div className="max-w-[180px] rounded border border-red-400/25 bg-red-950/80 px-2 py-1 text-right text-[10px] leading-4 text-red-100 shadow-xl shadow-black/30">
-                  {gridError}
-                </div>
-              )}
-            </div>
-          )}
-
-          {data.type === "image" && image?.primary && !gridToolActive && (
-            <button
-              type="button"
-              onClick={requestAddImageToAssetLibrary}
-              onMouseDown={(event) => event.stopPropagation()}
-              onPointerDown={(event) => event.stopPropagation()}
-              className={cn(
-                "nodrag absolute right-2 z-40 rounded-md border border-white/10 bg-black/72 px-2.5 py-1.5 text-[11px] font-medium text-zinc-100 opacity-0 shadow-xl shadow-black/30 backdrop-blur transition hover:bg-black/86 group-hover:opacity-100",
-                canGridCrop ? "top-12" : "top-2",
-              )}
-            >
-              加入资产库
-            </button>
           )}
 
           {renderState && (

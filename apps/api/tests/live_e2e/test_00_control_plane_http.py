@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -251,3 +252,31 @@ async def test_web_shape_busy_project_queues_normal_chat_but_rejects_slash(
         assert "当前项目已有任务在执行" in slash.text
     finally:
         await message_queue.mark_streaming(project_id, False)
+
+
+async def test_web_shape_queue_status_reports_detached_run_for_refresh_recovery(
+    api_client: httpx.AsyncClient,
+    project_id: str,
+) -> None:
+    from app.agent.run_broker import project_run_broker
+
+    started = asyncio.Event()
+
+    async def source():
+        started.set()
+        yield {"type": "agent_round", "round": 1, "content": "running", "tools": []}
+        await asyncio.sleep(60)
+        yield {"type": "done", "status": "completed"}
+
+    run = await project_run_broker.start(project_id, source)
+    await started.wait()
+    try:
+        response = await api_client.get(f"/api/chat/queue/{project_id}")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["running"] is True
+        assert payload["streaming"] is True
+    finally:
+        await project_run_broker.cancel(project_id, "test cleanup")
+        if run.task is not None:
+            await asyncio.wait_for(run.task, timeout=1.0)

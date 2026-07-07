@@ -109,23 +109,25 @@ _GUIDANCE = {
     ),
     "agent_loop": (
         "Keep the Agent loop small. Core production tools are project.get_state, "
-        "interaction.request_input, skill.video_production, task.create/list/"
+        "interaction.request_input, skill.search and skill.get, task.create/list/"
         "update/complete, agent.review, node.list/get/create/update/run, canvas.delete, "
         "and tool.search/describe/execute for deferred capabilities. Natural-language "
         "tasks enter the Agent loop; backend preprocessing may clean input and "
         "stale state but must not decide business actions for the model."
     ),
     "video_workflow": (
-        "普通图片/视频制作走节点优先流程：先读 skill.video_production，再直接创建或更新 "
-        "轻量任务和 text/image/video/audio 节点。默认成片骨架是剧本/规划 text、人物图、场景图、分镜图、video。"
+        "普通图片/视频制作走节点优先流程：先用 skill.search 查内置和用户 workflow，"
+        "没有匹配时用 skill.get 读取内置 `video_production` markdown skill，再创建或更新轻量任务和 "
+        "text/image/video/audio 节点。默认成片骨架是剧本/规划 text、人物图、场景图、分镜图、video。"
+        "主 Agent 规划节点图和依赖；每个节点是独立任务。可复用 workflow 编译时，workflow_spec 在隔离上下文读取相关独立 prompt skill，"
+        "把稳定写法编译进每步 prompt_template；物化后主 Agent 用 workflow.run_step/run_next/run_all 填 inputs 并启动运行，内部 runner 按模板调用 node.run。长任务先批量查询 prompt skill 形成 skill_plan，后续同类节点复用。"
         "用 task blocked_by 表达执行依赖，用 parent_node_id 和 fields.references "
         "自动连线表达分组与依赖；references 可用 role 区分 context、visual_reference 和 source_image。复杂阶段产出用 agent.review 做只读检查。只补问阻塞事实，用 interaction.request_input；用户继续自定义时先修订确认；15秒短视频通常不问分集分段，"
         "但仍按剧本、人物图、场景图和分镜图准备。泛化短视频只给时长时，模型可以自行选择一个具体简单概念并写入剧本/规划 text 节点。"
     ),
     "video_workflow_t2v": (
         "文生视频适合快速概念、无参考图或不强求一致性。创建剧本/规划 text 节点记录主题、"
-        "风格、时长、画幅和假设，然后创建 video 节点写可执行 prompt；需要生成时运行该 video 节点。"
-        "不要先创建参考图、分镜图或额外规划对象。"
+        "风格、时长、画幅和假设，然后读取视频提示词 prompt skill，创建 video 节点写可执行 prompt；需要生成时运行该 video 节点。"
     ),
     "video_workflow_storyboard": (
         "分镜/宫格分镜适合需要镜头节奏、动作调度或视觉连续性的短片。创建剧本/规划 text，"

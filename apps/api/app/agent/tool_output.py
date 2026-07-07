@@ -156,13 +156,14 @@ def tool_result_context_messages(tool_call_id: str, envelope: dict[str, Any]) ->
     }]
 
 
-def tool_done_event(tool_name: str, round_number: int, envelope: dict[str, Any]) -> dict[str, Any]:
+def tool_done_event(tool_name: str, round_number: int, envelope: dict[str, Any], agent: str | None = None) -> dict[str, Any]:
     ui = envelope.get("ui") if isinstance(envelope.get("ui"), dict) else {}
     return {
         "type": "tool_done",
         "tool": tool_name,
         "round": round_number,
         "result": ui.get("result"),
+        "agent": agent,
         "tool_output": {
             "version": envelope.get("version"),
             "success": envelope.get("success"),
@@ -199,7 +200,16 @@ def _result_keys(result: Any) -> list[str]:
 
 def _summary_for_trace(result: Any, *, tool_name: str = "") -> Any:
     if isinstance(result, dict):
-        if tool_name in {"node.create", "node.get", "node.list", "node.run", "node.update", "agent.review"}:
+        if tool_name in {
+            "node.create",
+            "node.get",
+            "node.list",
+            "node.run",
+            "node.update",
+            "agent.review",
+            "workflow.spec.apply_patch",
+            "workflow.canvas.inspect",
+        }:
             return context_compact.summarize_tool_result_for_context(tool_name, result)
         summary: dict[str, Any] = {
             "ok": result_handler_ok(result),
@@ -308,6 +318,8 @@ def _strip_model_private_fields(value: Any) -> Any:
     if isinstance(value, dict):
         stripped: dict[str, Any] = {}
         for key, item in value.items():
+            if key in {"_subagent_usage", "_subagent_trace"}:
+                continue
             if key in {"display_id", "project_id"} or key.startswith("_canvas"):
                 continue
             stripped[key] = _strip_model_private_fields(item)

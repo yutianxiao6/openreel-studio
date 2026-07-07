@@ -161,6 +161,76 @@ def _truncate_text(value: Any, limit: int = 1600) -> str:
     return text[:limit] + "...<truncated>"
 
 
+def _summarize_authorized_workflow_refs(result: dict[str, Any]) -> list[dict[str, Any]]:
+    refs = result.get("_workflow_spec_authorized_refs")
+    if not isinstance(refs, list):
+        return []
+
+    compact_refs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in reversed(refs):
+        if not isinstance(item, dict):
+            continue
+        template_id = str(item.get("template_id") or "").strip()
+        artifact_ref = str(item.get("artifact_ref") or "").strip()
+        if not template_id and not artifact_ref:
+            continue
+        key = (template_id, artifact_ref)
+        if key in seen:
+            continue
+        seen.add(key)
+        compact = _copy_present(
+            item,
+            ("template_id", "artifact_ref", "decision", "version_id", "authorized_by", "authorized_at"),
+        )
+        input_fields = _summarize_input_fields(item.get("input_fields"))
+        if input_fields:
+            compact["input_fields"] = input_fields
+        compact_refs.append(compact)
+        if len(compact_refs) >= 3:
+            break
+    return compact_refs
+
+
+def _summarize_workflow_input_values(result: dict[str, Any]) -> dict[str, Any]:
+    store = result.get("workflow_input_values")
+    if not isinstance(store, dict):
+        return {}
+    by_workflow = store.get("by_workflow")
+    if not isinstance(by_workflow, dict):
+        return {}
+
+    workflows: list[dict[str, Any]] = []
+    for key, item in list(by_workflow.items())[:3]:
+        if not isinstance(item, dict):
+            continue
+        values = item.get("values") if isinstance(item.get("values"), dict) else {}
+        value_preview: dict[str, Any] = {}
+        for value_key, value in list(values.items())[:10]:
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                value_preview[str(value_key)] = _truncate_text(value, 160) if isinstance(value, str) else value
+            elif isinstance(value, list):
+                value_preview[str(value_key)] = f"<list:{len(value)}>"
+            elif isinstance(value, dict):
+                value_preview[str(value_key)] = f"<object:{len(value)}>"
+        workflows.append({
+            key: value
+            for key, value in {
+                "workflow_key": key,
+                "workflow_id": item.get("workflow_id"),
+                "artifact_ref": item.get("artifact_ref"),
+                "instance_id": item.get("instance_id"),
+                "updated_at": item.get("updated_at"),
+                "input_keys": list(values.keys())[:20],
+                "values_preview": value_preview,
+            }.items()
+            if value not in (None, "", [], {})
+        })
+    if not workflows:
+        return {}
+    return {"by_workflow": workflows}
+
+
 def _summarize_project_state(result: dict[str, Any]) -> dict[str, Any]:
     pending_blueprint = pending_blueprint_plan(result)
     blueprint = result.get("project_blueprint")
@@ -194,7 +264,7 @@ def _summarize_project_state(result: dict[str, Any]) -> dict[str, Any]:
     token_summary = result.get("agent_token_usage_summary")
     if not isinstance(token_summary, dict):
         token_summary = {}
-    return {
+    payload = {
         "status": "error" if result.get("error") or result.get("ok") is False else "ok",
         "title": result.get("title"),
         "project_mode": result.get("project_mode"),
@@ -210,6 +280,30 @@ def _summarize_project_state(result: dict[str, Any]) -> dict[str, Any]:
         },
         "agent_token_usage_summary": token_summary,
     }
+    authorized_refs = _summarize_authorized_workflow_refs(result)
+    if authorized_refs:
+        payload["latest_authorized_workflow_ref"] = authorized_refs[0]
+        payload["authorized_workflow_refs"] = authorized_refs
+    active_workflow = result.get("active_workflow")
+    if isinstance(active_workflow, dict):
+        compact_active = _copy_present(
+            active_workflow,
+            (
+                "workflow_id",
+                "template_id",
+                "artifact_ref",
+                "instance_id",
+                "title",
+                "name",
+                "status",
+            ),
+        )
+        if compact_active:
+            payload["active_workflow"] = compact_active
+    workflow_inputs = _summarize_workflow_input_values(result)
+    if workflow_inputs:
+        payload["workflow_input_values"] = workflow_inputs
+    return payload
 
 
 def _summarize_deferred_guide(result: dict[str, Any]) -> dict[str, Any]:
@@ -228,6 +322,109 @@ def _summarize_deferred_guide(result: dict[str, Any]) -> dict[str, Any]:
         "has_full_guide": result.get("has_full_guide"),
         "full_guide_request": result.get("full_guide_request"),
     }
+
+
+def _summarize_input_fields(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    compact_fields: list[dict[str, Any]] = []
+    for item in value[:30]:
+        if not isinstance(item, dict):
+            continue
+        compact = _copy_present(
+            item,
+            (
+                "id",
+                "name",
+                "label",
+                "type",
+                "required",
+                "default",
+                "minimum",
+                "maximum",
+                "enum",
+                "options",
+                "missing",
+            ),
+        )
+        description = item.get("description")
+        if description not in (None, "", [], {}):
+            compact["description"] = _truncate_text(description, 180)
+        if compact:
+            compact_fields.append(compact)
+    return compact_fields
+
+
+def _summarize_workflow_spec_agent_result(result: dict[str, Any], nested: dict[str, Any]) -> dict[str, Any]:
+    workflow_summary: dict[str, Any] = {
+        "status": nested.get("status") or result.get("status"),
+        "decision": nested.get("decision"),
+        "template_id": nested.get("template_id"),
+        "artifact_ref": nested.get("artifact_ref"),
+        "version_id": nested.get("version_id"),
+        "next_action": nested.get("next_action"),
+    }
+    input_fields = _summarize_input_fields(nested.get("input_fields"))
+    if input_fields:
+        workflow_summary["input_fields"] = input_fields
+    preview = nested.get("preview")
+    if isinstance(preview, dict):
+        workflow_summary["preview"] = _copy_present(
+            preview,
+            ("id", "name", "title", "description", "summary", "step_count", "workflow_spec_version"),
+        )
+    validation = nested.get("validation")
+    if isinstance(validation, dict):
+        workflow_summary["validation"] = _copy_present(
+            validation,
+            ("ok", "workflow_id", "step_count", "dimension_count", "deferred_group_count"),
+        )
+        protocol = validation.get("protocol")
+        if isinstance(protocol, dict):
+            workflow_summary["validation"]["protocol"] = _copy_present(
+                protocol,
+                ("workflow_spec_version", "required_capabilities", "required_extensions", "extension_ids"),
+            )
+    return {key: value for key, value in workflow_summary.items() if value not in (None, "", [], {})}
+
+
+def _summarize_agent_run_result(result: dict[str, Any]) -> dict[str, Any]:
+    nested = result.get("result") if isinstance(result.get("result"), dict) else {}
+    payload: dict[str, Any] = {
+        "_deferred_tool": result.get("_deferred_tool"),
+        "ok": result.get("ok"),
+        "agent": result.get("agent"),
+        "status": result.get("status") or nested.get("status"),
+        "summary": _truncate_text(result.get("summary"), 800),
+        "steps_used": result.get("steps_used"),
+    }
+    agent_name = str(result.get("agent") or "").strip()
+    if agent_name == "workflow_spec" or nested.get("template_id") or nested.get("artifact_ref"):
+        workflow_spec = _summarize_workflow_spec_agent_result(result, nested)
+        payload.update(_copy_present(workflow_spec, ("template_id", "artifact_ref", "decision", "next_action")))
+        if workflow_spec:
+            payload["workflow_spec"] = workflow_spec
+    else:
+        compact_nested = _copy_present(
+            nested,
+            (
+                "status",
+                "node_id",
+                "node_ids",
+                "completed_node_ids",
+                "committed",
+                "candidate_ref",
+                "committed_ref",
+                "operations_summary",
+                "verification",
+            ),
+        )
+        if compact_nested:
+            payload["subagent_result"] = compact_nested
+    available_agents = result.get("available_agents")
+    if isinstance(available_agents, list) and result.get("status") == "catalog":
+        payload["available_agents"] = available_agents[:20]
+    return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
 
 
 def _resolved_tool_name(tool_name: str, result: dict[str, Any]) -> str:
@@ -478,8 +675,10 @@ def _summarize_node_io(value: Any) -> dict[str, Any]:
 def _summarize_node_input(value: Any, *, node_type: str = "") -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
+    nested_fields = _coerce_dict(value.get("fields"))
+    source = {**nested_fields, **value} if nested_fields else value
     payload = _copy_present(
-        value,
+        source,
         (
             "title",
             "purpose",
@@ -494,12 +693,12 @@ def _summarize_node_input(value: Any, *, node_type: str = "") -> dict[str, Any]:
             "reference_images",
         ),
     )
-    prompt = value.get("prompt")
+    prompt = source.get("prompt")
     if prompt not in (None, "", [], {}):
         limit = 1200 if node_type in {"image", "video", "audio"} else 600
         payload["prompt_preview"] = _truncate_text(prompt, limit)
         payload["prompt_chars"] = len(str(prompt))
-    content = value.get("content") or value.get("description")
+    content = source.get("content") or source.get("description")
     if content not in (None, "", [], {}):
         payload["content_preview"] = _truncate_text(content, 1400 if node_type == "text" else 600)
         payload["content_chars"] = len(str(content))
@@ -588,6 +787,33 @@ def _error_context_payload(result: Any) -> dict[str, Any] | None:
         "suggested_next": result.get("suggested_next"),
         "model_feedback": result.get("model_feedback"),
     }
+    if result.get("_deferred_tool") == "agent.run" or result.get("agent"):
+        nested = result.get("result") if isinstance(result.get("result"), dict) else {}
+        payload.update({
+            "agent": result.get("agent"),
+            "status": result.get("status"),
+            "summary": _truncate_text(result.get("summary"), 800),
+            "steps_used": result.get("steps_used"),
+            "terminal": result.get("terminal"),
+        })
+        blocked_fields = {
+            "status": nested.get("status"),
+            "node_id": nested.get("node_id"),
+            "committed": nested.get("committed"),
+            "candidate_ref": nested.get("candidate_ref"),
+            "committed_ref": nested.get("committed_ref"),
+            "operations_summary": _truncate_text(nested.get("operations_summary"), 600),
+            "verification": _truncate_text(nested.get("verification"), 600),
+            "issues": [
+                _truncate_text(item, 260)
+                for item in (nested.get("issues") if isinstance(nested.get("issues"), list) else [])[:6]
+            ],
+        }
+        payload["subagent_result"] = {
+            key: value
+            for key, value in blocked_fields.items()
+            if value not in (None, "", [], {})
+        }
     for key in (
         "node_id",
         "parent_id",
@@ -598,6 +824,8 @@ def _error_context_payload(result: Any) -> dict[str, Any] | None:
         "expected_aspect_ratio",
         "conflicting_value",
         "supported_aspect_ratios",
+        "repair_ref",
+        "content_fields",
     ):
         value = result.get(key)
         if value not in (None, "", [], {}):
@@ -625,6 +853,22 @@ def _context_summary_payload(tool_name: str, result: Any) -> Any:
             return model_summary
         if tool_name == "project.get_state":
             return _summarize_project_state(result)
+        if tool_name == "skill.search":
+            return _summarize_skill_search_result(result)
+        if tool_name == "tool.search":
+            return _summarize_tool_search_result(result)
+        if tool_name == "tool.describe":
+            return _summarize_tool_describe_result(result)
+        if tool_name == "workflow.spec.apply_patch":
+            return _summarize_workflow_spec_write_result(result)
+        if tool_name == "workflow.canvas.inspect":
+            return _summarize_workflow_canvas_inspect_result(result)
+        if tool_name == "tool.execute" and result.get("_deferred_tool") == "agent.run":
+            return _summarize_agent_run_result(result)
+        if tool_name == "agent.run":
+            return _summarize_agent_run_result(result)
+        if tool_name == "tool.execute" and str(result.get("_deferred_tool") or "").startswith("workflow."):
+            return _summarize_deferred_workflow_result(result)
         if tool_name == "tool.execute" and result.get("_deferred_tool") == "skill.project_mentor":
             return _summarize_deferred_guide(result)
         if tool_name in {"node.create", "node.update"}:
@@ -639,6 +883,463 @@ def _context_summary_payload(tool_name: str, result: Any) -> Any:
             return _summarize_review_result(result)
         return _summarize_tool_result(result)
     return _summarize_tool_result(result)
+
+
+def _summarize_tool_search_result(result: dict[str, Any]) -> dict[str, Any]:
+    tools = result.get("tools")
+    compact_tools: list[dict[str, Any]] = []
+    if isinstance(tools, list):
+        for item in tools[:12]:
+            if not isinstance(item, dict):
+                continue
+            compact: dict[str, Any] = {
+                "name": str(item.get("name") or ""),
+                "category": str(item.get("category") or ""),
+                "description": _truncate_text(item.get("description"), 180),
+            }
+            hints = item.get("usage_hints")
+            if isinstance(hints, list):
+                compact["usage_hints"] = [
+                    _truncate_text(hint, 160)
+                    for hint in hints[:2]
+                    if str(hint or "").strip()
+                ]
+            example = item.get("example")
+            if example not in (None, "", [], {}):
+                compact["example"] = _truncate_text(example, 180)
+            schema_summary = item.get("input_schema_summary")
+            if isinstance(schema_summary, dict):
+                compact["input_schema_summary"] = schema_summary
+            compact_tools.append(compact)
+    payload: dict[str, Any] = {
+        "query": result.get("query"),
+        "category": result.get("category"),
+        "mode": result.get("mode"),
+        "total": result.get("total"),
+        "returned": result.get("returned", len(compact_tools)),
+        "tools": compact_tools,
+    }
+    if result.get("not_found") not in (None, "", [], {}):
+        payload["not_found"] = result.get("not_found")
+    if result.get("catalog") not in (None, "", [], {}):
+        catalog = result.get("catalog")
+        if isinstance(catalog, dict):
+            payload["catalog"] = {
+                "total": catalog.get("total"),
+                "categories": catalog.get("categories"),
+            }
+    payload["next_action"] = (
+        "Pick a matching deferred tool. If its schema is needed, call tool.describe; "
+        "then call tool.execute(name='<tool>', input={...})."
+    )
+    return payload
+
+
+def _summarize_skill_search_result(result: dict[str, Any]) -> dict[str, Any]:
+    def compact_skill(item: dict[str, Any]) -> dict[str, Any]:
+        compact = _copy_present(
+            item,
+            (
+                "name",
+                "category",
+                "description",
+                "applies_to",
+                "scope",
+                "source",
+                "usage",
+                "recommended_tool",
+            ),
+        )
+        direct = item.get("direct_template")
+        if isinstance(direct, dict):
+            compact["direct_template"] = _copy_present(
+                direct,
+                (
+                    "template_id",
+                    "name",
+                    "scope",
+                    "source",
+                    "description",
+                    "inputs",
+                    "required_inputs",
+                    "missing_inputs",
+                    "input_fields",
+                    "input_questions",
+                    "recommended_tool",
+                    "next_action",
+                ),
+            )
+        return compact
+
+    skills = result.get("skills")
+    compact_skills = [
+        compact_skill(item)
+        for item in (skills[:8] if isinstance(skills, list) else [])
+        if isinstance(item, dict)
+    ]
+    groups = result.get("groups")
+    compact_groups: list[dict[str, Any]] = []
+    if isinstance(groups, list):
+        for group in groups[:6]:
+            if not isinstance(group, dict):
+                continue
+            group_skills = group.get("skills")
+            compact_groups.append({
+                "query": group.get("query"),
+                "total": group.get("total"),
+                "skills": [
+                    compact_skill(item)
+                    for item in (group_skills[:5] if isinstance(group_skills, list) else [])
+                    if isinstance(item, dict)
+                ],
+            })
+    payload = {
+        "ok": result.get("ok"),
+        "mode": result.get("mode"),
+        "query": result.get("query"),
+        "queries": result.get("queries"),
+        "category": result.get("category"),
+        "scope_filter": result.get("scope_filter"),
+        "skills": compact_skills,
+        "total": result.get("total"),
+        "groups": compact_groups,
+        "hint": result.get("hint"),
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+
+
+def _summarize_tool_describe_result(result: dict[str, Any]) -> dict[str, Any]:
+    described = result.get("tools")
+    compact_tools: list[dict[str, Any]] = []
+    if isinstance(described, list):
+        for item in described[:8]:
+            if not isinstance(item, dict):
+                continue
+            schema = item.get("input_schema")
+            properties = schema.get("properties") if isinstance(schema, dict) else {}
+            required = schema.get("required") if isinstance(schema, dict) else []
+            prop_names = list(properties.keys())[:16] if isinstance(properties, dict) else []
+            compact: dict[str, Any] = {
+                "name": str(item.get("name") or ""),
+                "category": str(item.get("category") or ""),
+                "description": _truncate_text(item.get("description"), 220),
+                "required": required[:12] if isinstance(required, list) else [],
+                "properties": [str(name) for name in prop_names],
+            }
+            hints = item.get("usage_hints")
+            if isinstance(hints, list):
+                compact["usage_hints"] = [
+                    _truncate_text(hint, 180)
+                    for hint in hints[:3]
+                    if str(hint or "").strip()
+                ]
+            example = item.get("example")
+            if example not in (None, "", [], {}):
+                compact["example"] = _truncate_text(example, 220)
+            compact_tools.append(compact)
+    return {
+        "tools": compact_tools,
+        "not_found": result.get("not_found") if isinstance(result.get("not_found"), list) else [],
+        "next_action": "Call tool.execute with one of these deferred tool names and its input object.",
+    }
+
+
+def _summarize_deferred_workflow_result(result: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "_deferred_tool": result.get("_deferred_tool"),
+        "ok": result.get("ok"),
+        "status": result.get("status"),
+        "template_id": result.get("template_id"),
+        "template_name": result.get("template_name"),
+        "artifact_ref": result.get("artifact_ref"),
+        "instance_id": result.get("instance_id"),
+        "total": result.get("total"),
+        "returned": result.get("returned"),
+        "created_count": result.get("created_count"),
+        "edges_count": result.get("edges_count"),
+        "deferred_group_count": result.get("deferred_group_count"),
+        "decision_hint": result.get("decision_hint"),
+        "next_action": result.get("next_action"),
+    }
+    candidates = result.get("candidates")
+    if isinstance(candidates, list):
+        payload["candidates"] = [
+            _copy_present(
+                item,
+                (
+                    "id",
+                    "name",
+                    "description",
+                    "category",
+                    "applies_to",
+                    "scope",
+                    "source",
+                    "inputs",
+                    "required_inputs",
+                    "missing_inputs",
+                    "input_fields",
+                    "input_questions",
+                    "step_count",
+                    "match_score",
+                ),
+            )
+            for item in candidates[:5]
+            if isinstance(item, dict)
+        ]
+    direct = result.get("direct_template")
+    if isinstance(direct, dict):
+        payload["direct_template"] = _copy_present(
+            direct,
+            (
+                "template_id",
+                "id",
+                "name",
+                "scope",
+                "source",
+                "inputs",
+                "required_inputs",
+                "missing_inputs",
+                "input_fields",
+                "input_questions",
+                "recommended_tool",
+                "next_action",
+            ),
+        )
+    templates = result.get("templates")
+    if isinstance(templates, list):
+        payload["templates"] = [
+            _copy_present(
+                item,
+                ("id", "name", "description", "category", "applies_to", "inputs", "required_inputs", "step_count"),
+            )
+            for item in templates[:8]
+            if isinstance(item, dict)
+        ]
+    nodes = result.get("nodes")
+    if isinstance(nodes, list):
+        compact_nodes: list[dict[str, Any]] = []
+        for item in nodes[:8]:
+            if not isinstance(item, dict):
+                continue
+            compact_nodes.append(_copy_present(item, ("id", "type", "title", "status", "node_id")))
+        payload["nodes"] = compact_nodes
+    runtime = result.get("runtime")
+    if isinstance(runtime, dict):
+        payload["runtime"] = _copy_present(runtime, ("instance_id", "template_id", "template_name", "status", "current_step_id", "progress"))
+    return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+
+
+def _summarize_input_fields(fields: Any, *, limit: int = 12) -> list[dict[str, Any]]:
+    if not isinstance(fields, list):
+        return []
+    summarized: list[dict[str, Any]] = []
+    for item in fields[:limit]:
+        if not isinstance(item, dict):
+            continue
+        summarized.append(
+            _copy_present(
+                item,
+                ("id", "label", "type", "required", "missing", "default", "minimum", "unit"),
+            )
+        )
+    return [item for item in summarized if item]
+
+
+def _summarize_workflow_dry_run(dry_run: Any) -> dict[str, Any]:
+    if not isinstance(dry_run, dict):
+        return {}
+    summary = _copy_present(
+        dry_run,
+        (
+            "status",
+            "ok",
+            "summary",
+            "step_count",
+            "executable_step_count",
+            "repeat_instance_count",
+            "duration_segment_expectation",
+            "visible_output_ids",
+            "leaf_visible_output_ids",
+            "final_output_ids",
+            "reachable_final_output_ids",
+            "executable_batches",
+            "repeat_groups",
+        ),
+    )
+    for key in (
+        "duration_segment_expectation",
+        "visible_output_ids",
+        "leaf_visible_output_ids",
+        "final_output_ids",
+        "reachable_final_output_ids",
+        "repeat_groups",
+    ):
+        if key in dry_run:
+            value = dry_run.get(key)
+            if isinstance(value, (list, dict)):
+                summary[key] = deepcopy(value)
+    return summary
+
+
+def _summarize_workflow_audit(audit: Any) -> dict[str, Any]:
+    if not isinstance(audit, dict):
+        return {}
+    summary = _copy_present(
+        audit,
+        (
+            "status",
+            "ok",
+            "can_save",
+            "can_run",
+            "recommended_use",
+            "summary",
+            "visible_output_count",
+            "severity_counts",
+        ),
+    )
+    dry_run = _summarize_workflow_dry_run(audit.get("dry_run"))
+    if dry_run:
+        summary["dry_run"] = dry_run
+    findings = audit.get("findings")
+    if isinstance(findings, list) and findings:
+        summary["findings"] = [
+            _copy_present(item, ("code", "severity", "message", "path", "step_id"))
+            for item in findings[:8]
+            if isinstance(item, dict)
+        ]
+    return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
+
+
+def _summarize_workflow_spec_write_result(result: dict[str, Any]) -> dict[str, Any]:
+    payload = _copy_present(
+        result,
+        (
+            "ok",
+            "status",
+            "operation",
+            "save_target",
+            "artifact_ref",
+            "template_id",
+            "version_id",
+            "suggested_next",
+            "next_action",
+        ),
+    )
+    preview = result.get("preview")
+    if isinstance(preview, dict):
+        payload["preview"] = _copy_present(
+            preview,
+            (
+                "id",
+                "name",
+                "description",
+                "workflow_spec_version",
+                "step_count",
+                "dimension_count",
+                "deferred_group_count",
+                "reusable",
+                "input_ids",
+                "required_inputs",
+                "audit_status",
+                "can_save",
+                "can_run",
+                "recommended_use",
+            ),
+        )
+        if "description" in payload["preview"]:
+            payload["preview"]["description"] = _truncate_text(payload["preview"]["description"], 500)
+    input_fields = _summarize_input_fields(result.get("input_fields"))
+    if input_fields:
+        payload["input_fields"] = input_fields
+    validation = result.get("validation")
+    if isinstance(validation, dict):
+        payload["validation"] = _copy_present(
+            validation,
+            (
+                "ok",
+                "workflow_id",
+                "step_count",
+                "dimension_count",
+                "deferred_group_count",
+            ),
+        )
+    audit = _summarize_workflow_audit(result.get("audit"))
+    if audit:
+        payload["audit"] = audit
+    self_check = result.get("self_check")
+    if isinstance(self_check, dict):
+        payload["self_check"] = _copy_present(self_check, ("passed", "checks", "issues"))
+    return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+
+
+def _summarize_canvas_nodes(nodes: Any, *, limit: int = 16) -> list[dict[str, Any]]:
+    if not isinstance(nodes, list):
+        return []
+    summarized: list[dict[str, Any]] = []
+    for item in nodes[:limit]:
+        if not isinstance(item, dict):
+            continue
+        summarized.append(
+            _copy_present(
+                item,
+                ("id", "step_id", "title", "type", "node_type", "depends_on", "display_source"),
+            )
+        )
+    return [item for item in summarized if item]
+
+
+def _summarize_workflow_canvas_inspect_result(result: dict[str, Any]) -> dict[str, Any]:
+    payload = _copy_present(result, ("ok", "status", "schema_version", "next_action", "suggested_next"))
+    source = result.get("source")
+    if isinstance(source, dict):
+        payload["source"] = _copy_present(
+            source,
+            ("kind", "template_id", "version_id", "artifact_ref", "repair_ref", "scope", "workflow_id"),
+        )
+    workflow = result.get("workflow")
+    if isinstance(workflow, dict):
+        payload["workflow"] = _copy_present(
+            workflow,
+            ("id", "name", "description", "step_count", "canvas_node_count", "final_output_ids"),
+        )
+        if "description" in payload["workflow"]:
+            payload["workflow"]["description"] = _truncate_text(payload["workflow"]["description"], 500)
+        if "final_output_ids" in workflow and "final_output_ids" not in payload["workflow"]:
+            value = workflow.get("final_output_ids")
+            if isinstance(value, list):
+                payload["workflow"]["final_output_ids"] = deepcopy(value)
+    inputs = result.get("inputs")
+    if isinstance(inputs, dict):
+        payload["inputs"] = {
+            "fields": _summarize_input_fields(inputs.get("fields")),
+            "missing_required": inputs.get("missing_required") if isinstance(inputs.get("missing_required"), list) else [],
+        }
+    dynamic_inputs = result.get("dynamic_inputs")
+    if isinstance(dynamic_inputs, dict):
+        payload["dynamic_inputs"] = _copy_present(
+            dynamic_inputs,
+            ("status", "missing_sample_outputs"),
+        )
+    flow = result.get("flow")
+    if isinstance(flow, dict):
+        payload["flow"] = _copy_present(flow, ("executable_batches", "repeat_groups"))
+    canvas = result.get("canvas")
+    if isinstance(canvas, dict):
+        payload["canvas"] = {
+            "nodes": _summarize_canvas_nodes(canvas.get("nodes")),
+            "edges_count": len(canvas.get("edges")) if isinstance(canvas.get("edges"), list) else 0,
+            "final_outputs": _summarize_canvas_nodes(canvas.get("final_outputs")),
+        }
+    validation = result.get("validation")
+    if isinstance(validation, dict):
+        payload["validation"] = _copy_present(
+            validation,
+            ("status", "ok", "can_save", "can_run", "recommended_use", "summary", "severity_counts", "issues"),
+        )
+        dry_run = _summarize_workflow_dry_run(validation.get("dry_run"))
+        if dry_run:
+            payload["validation"]["dry_run"] = dry_run
+    return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
 
 
 def summarize_tool_result_for_context(tool_name: str, result: Any) -> Any:

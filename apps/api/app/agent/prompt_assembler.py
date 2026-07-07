@@ -6,8 +6,8 @@ Loop model reads the latest user message and chooses tools itself.
 Section trigger types:
   - always      : 每次都加载
   - plan_mode   : 显式 Plan Mode，只读规划
+  - workflow_build_mode : 显式 Workflow Build Mode，搭建/修改工作流
   - attachments : 用户带了附件
-  - failure     : 保留兼容,不再按画布失败节点自动注入
   - factory     : 动态构造(runtime_context, tools_manifest)
 
 Historical business triggers such as create/video/template/introspect are not
@@ -52,6 +52,7 @@ class PromptContext:
             "att": len(self.attachments),
             "title": title or "",
             "collaboration_mode": self.collaboration_mode,
+            "tool_profile": select_tool_profile(self),
             "runtime": _runtime_state_signature(self.state),
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -73,6 +74,7 @@ class PromptAssemblyResult:
     sections: tuple[PromptSectionStat, ...]
     tool_namespaces: tuple[str, ...]
     cache_key: str
+    tool_profile: str = "default"
     runtime: str = ""
 
     def diagnostics(self) -> dict:
@@ -90,6 +92,7 @@ class PromptAssemblyResult:
             "sections_by_trigger": by_trigger,
             "sections_by_tier": by_tier,
             "tool_namespaces": list(self.tool_namespaces),
+            "tool_profile": self.tool_profile,
             "sections": [
                 {
                     "name": section.name,
@@ -105,7 +108,24 @@ class PromptAssemblyResult:
 
 # Baseline namespaces always loaded for the node-first, task-driven creation path.
 _BASELINE_NS = ["project", "interaction", "skill", "node", "canvas", "task", "agent", "tool", "vision"]
-_SUPPORTED_TRIGGERS = {"always", "factory", "plan_mode", "attachments", "failure"}
+_WORKFLOW_BUILD_NS = ["project", "interaction", "skill", "workflow"]
+_DEFAULT_TOOL_PROFILE = "default"
+_WORKFLOW_BUILD_TOOL_PROFILE = "workflow_build"
+_WORKFLOW_BUILD_SUPPRESSED_ALWAYS_SECTIONS = {
+    "working_loop",
+    "task_loop",
+    "core_rules",
+    "delete_rule",
+    "memory_write",
+}
+_PLAN_SUPPRESSED_ALWAYS_SECTIONS = {
+    "working_loop",
+    "task_loop",
+    "core_rules",
+    "delete_rule",
+    "memory_write",
+}
+_SUPPORTED_TRIGGERS = {"always", "factory", "plan_mode", "workflow_build_mode", "attachments"}
 _RUNTIME_STATE_CACHE_KEYS = (
     "metadata",
     "_skills_loaded",
@@ -152,16 +172,25 @@ def trigger_matches(trigger: str, ctx: PromptContext) -> bool:
         return False
     if trigger == "plan_mode":
         return ctx.collaboration_mode == "plan"
+    if trigger == "workflow_build_mode":
+        return ctx.collaboration_mode == "workflow_build"
     if trigger == "attachments":
         return bool(ctx.attachments)
-    if trigger == "failure":
-        return False
     return False
 
 
 def select_tool_namespaces(ctx: PromptContext) -> list[str]:
     """Return a stable namespace hint list without parsing user text."""
+    if ctx.collaboration_mode == "workflow_build":
+        return list(_WORKFLOW_BUILD_NS)
     return list(_BASELINE_NS)
+
+
+def select_tool_profile(ctx: PromptContext) -> str:
+    """Return the stable tool profile for the current collaboration mode."""
+    if ctx.collaboration_mode == "workflow_build":
+        return _WORKFLOW_BUILD_TOOL_PROFILE
+    return _DEFAULT_TOOL_PROFILE
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -197,21 +226,30 @@ def assemble_split_result(ctx: PromptContext) -> PromptAssemblyResult:
     """分层拼装并返回可观测诊断信息。"""
     s_blocks: list[str] = []
     h_blocks: list[str] = []
-    runtime_static_blocks: list[str] = []
     runtime_text = ""
     stats: list[PromptSectionStat] = []
 
     for sec in prompts_pkg.all_sections():
         if sec.trigger == "factory":
             continue
+        if (
+            ctx.collaboration_mode == "workflow_build"
+            and sec.trigger == "always"
+            and sec.name in _WORKFLOW_BUILD_SUPPRESSED_ALWAYS_SECTIONS
+        ):
+            continue
+        if (
+            ctx.collaboration_mode == "plan"
+            and sec.trigger == "always"
+            and sec.name in _PLAN_SUPPRESSED_ALWAYS_SECTIONS
+        ):
+            continue
         if not trigger_matches(sec.trigger, ctx):
             continue
         if not sec.prompt:
             continue
         text = sec.prompt.rstrip()
-        if sec.trigger == "failure":
-            runtime_static_blocks.append(text)
-        elif sec.tier == "s":
+        if sec.tier == "s":
             s_blocks.append(text)
         else:  # 'h' 或 'od' 都进 history
             h_blocks.append(text)
@@ -224,6 +262,7 @@ def assemble_split_result(ctx: PromptContext) -> PromptAssemblyResult:
 
     # factory section 始终进 system(实时数据,每次必更)
     namespaces = tuple(select_tool_namespaces(ctx))
+    tool_profile = select_tool_profile(ctx)
     tools_sec = prompts_pkg.get("tools_manifest")
     if tools_sec and tools_sec.build:
         text = tools_sec.build(namespaces=list(namespaces))
@@ -256,11 +295,6 @@ def assemble_split_result(ctx: PromptContext) -> PromptAssemblyResult:
                 source="factory",
             ))
 
-    if runtime_static_blocks:
-        runtime_text = "\n\n---\n\n".join(
-            [part for part in [runtime_text, *runtime_static_blocks] if part]
-        )
-
     sep = "\n\n---\n\n"
     return PromptAssemblyResult(
         system=sep.join(s_blocks),
@@ -268,6 +302,7 @@ def assemble_split_result(ctx: PromptContext) -> PromptAssemblyResult:
         runtime=runtime_text,
         sections=tuple(stats),
         tool_namespaces=namespaces,
+        tool_profile=tool_profile,
         cache_key=ctx.cache_key(),
     )
 

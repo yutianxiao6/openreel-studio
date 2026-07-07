@@ -411,14 +411,20 @@ class AgentTraceEvent(SQLModel, table=True):
 
 TASK_TYPES = [
     "agent_loop",
+    "agent_review",
+    "agent_compact",
+    "agent_aux",
     "planning",
     "character_generation",
     "outline_generation",
     "script_generation",
     "script_review",
     "storyboard_generation",
+    "image_understanding",
     "image_prompt_generation",
     "video_prompt_generation",
+    "subagent_node_producer",
+    "subagent_image_editor",
 ]
 
 
@@ -460,7 +466,7 @@ class ModelConfigRead(ModelConfigBase):
 # ---------------------------------------------------------------------------
 
 MEDIA_KINDS = ["image", "video", "audio"]
-MEDIA_API_FORMATS = ["openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "suno_compatible", "openai_tts"]
+MEDIA_API_FORMATS = ["openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"]
 
 
 class MediaProviderBase(SQLModel):
@@ -469,7 +475,7 @@ class MediaProviderBase(SQLModel):
     base_url: str
     api_key: Optional[str] = None
     model_name: str                          # model id sent in payload
-    api_format: str = "openai"               # openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5 | t8_grok_video_3 | suno_compatible | openai_tts
+    api_format: str = "openai"               # openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5 | t8_grok_video_3 | lingke_media_generate | suno_compatible | openai_tts
     params_json: Optional[str] = None        # default extra params JSON (size, steps, etc.)
     is_active: bool = False
     enabled: bool = True
@@ -512,6 +518,7 @@ class LlmProviderBase(SQLModel):
     supports_prompt_cache: Optional[bool] = None
     supports_vision: Optional[bool] = None
     tokenizer: Optional[str] = None
+    tier: str = "balanced"
     params_json: Optional[str] = None
     is_default: bool = False
     enabled: bool = True

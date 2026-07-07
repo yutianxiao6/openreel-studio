@@ -8,6 +8,7 @@ COPY apps/api/pyproject.toml apps/api/README.md ./
 RUN uv sync --no-dev
 
 COPY apps/api/app/ ./app/
+COPY plugins/ /workspace/plugins/
 
 EXPOSE 8000
 

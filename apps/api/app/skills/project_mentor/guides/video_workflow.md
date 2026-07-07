@@ -5,16 +5,25 @@ description: Legacy project mentor pointer for node-first video production
 
 # 通用视频制作流程
 
-当前视频制作走节点优先流程。普通图片/视频创作先读取
-`skill.video_production`，再直接创建或更新 `text` / `image` / `video`
-节点。这个文件只作为 `project_mentor` 的历史入口和导航，不再承载完整
-业务教程。
+当前视频制作走节点优先流程。普通图片/视频创作先搜索用户自定义
+workflow skill；没有匹配项时通过 `skill.search` / `skill.get` 读取内置 `video_production`。之后直接
+创建或更新 `text` / `image` / `video` 节点。这个文件只作为
+`project_mentor` 的历史入口和导航，不承载完整业务教程。
+
+主 Agent 负责查 workflow、读取制作流程、规划节点框架、创建或复用框架节点、
+写清依赖和验收标准。每个节点是独立任务单元；框架确定后，剧本、人物图、
+场景图、分镜图和最终 video 节点可由 `node.run` 完成。可复用 workflow
+物化后，主 Agent 用 deferred `workflow.run_step`、`workflow.run_next` 或
+`workflow.run_all` 传入 `inputs` 并启动流程；workflow runner 按依赖选择步骤，
+内部调用节点 runner 执行已编译的 `prompt_template`，完成节点内容、最终 prompt 和媒体运行。
+长项目在框架阶段批量查询所需 prompt skill，形成 `skill_plan`，由 workflow 编译阶段吸收进各步模板，后续同类
+节点复用这份计划。
 
 ## 优先级
 
 1. 用户当前明确要求。
-2. 用户点名的 skill 或自定义完整流程。
-3. `skill.video_production` 的节点优先默认流程。
+2. 用户点名的 skill 或用户自定义 workflow。
+3. `video_production` markdown skill 的内置节点优先默认流程。
 
 用户 skill 或自定义流程可以改变生成视频的方法和步骤。系统仍需满足
 工具、安全、节点类型和最新用户指令。已读取的 skill 是当前制作合同，
@@ -51,6 +60,6 @@ description: Legacy project mentor pointer for node-first video production
 
 ## Prompt
 
-图片和视频 prompt 写法、参考图规则、分镜、首尾帧和故事模板图规则
-统一放在 `skill.video_production`。不要把 prompt 模板检索作为默认
-制作步骤。
+图片和视频 prompt 写法按模块分开。剧本、人物图、场景图、分镜图和
+最终视频提示词分别使用独立 prompt skill；搜索顺序是用户自定义 prompt
+skill，然后是内置默认 prompt skill。可复用 workflow 编译阶段把这些写法吸收进每步 `prompt_template`；standalone worker 只读取当前模块需要的一份。

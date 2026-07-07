@@ -70,6 +70,7 @@ from app.agent.prompt_assembler import (
     PromptContext,
     assemble_split_result,
     get_split_prompt_result,
+    select_tool_profile,
     invalidate_cache,
     select_tool_namespaces,
     should_require_plan,
@@ -98,27 +99,13 @@ from app.agent.reset_flow import (
 from app.agent import slash_commands
 
 from app.agent.prompts import (
-    assets_rule,
     attachment_rule,
-    clarify,
-    collab_modes,
     core_rules,
-    flow_paths,
-    introspect_rule,
     memory_write,
-    node_contract,
     plan_mode,
-    repair_rule,
-    rerun_rule,
     runtime_context,
-    segment_rule,
-    single_image_rule,
     task_loop,
-    template_rule,
-    tool_loader,
-    audit_rule,
-    video_duration,
-    video_types,
+    working_loop,
 )
 
 from app.agent.video_mode import (
@@ -175,7 +162,8 @@ from app.services.media_provider import _openai_images_endpoint
 
 plan_rule = SimpleNamespace(PROMPT=(
     "# Complex Work\n\n"
-    "Read video workflow skills with `skill.search -> skill.get`. Use `text` / `image` / `video` nodes as creative state, "
+    "Read video workflow skills with `skill.search(category='workflow')`, select reusable template candidates before running, "
+    "then use `text` / `image` / `video` nodes as creative state, "
     "and use tasks only as a progress ledger. Write dependencies into node fields and verify outputs before completion."
 ))
 def _normalize_and_validate_plan(*_: Any, **__: Any) -> tuple[None, dict[str, Any]]:

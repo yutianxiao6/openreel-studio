@@ -13,17 +13,25 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.agent.blueprint_revision import create_pending_revision_from_node_patch
+from app.agent.prompt_dump import dump_llm_request, new_run_id
+from app.agent.workflow_structured_output import (
+    WorkflowStructuredOutputError,
+    parse_structured_output,
+    structured_output_contract,
+    structured_output_instructions,
+)
 from app.config import settings
 from app.db.models import Asset, WorkflowNode
 from app.db.session import session_scope
 from app.mcp_tools import canvas_tools
 from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
 from app.services import media_generation, media_history
+from app.services.llm_service import LLMService
 from app.services.node_public_ids import (
     internal_to_public_id_map,
     looks_like_public_node_id,
@@ -36,6 +44,10 @@ from app.services.node_public_ids import (
 from sqlmodel import select
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -56,7 +68,8 @@ NODE_LIST_MAX_LIMIT = 800
 
 NODE_SURFACE_PROJECT_PANEL = "project_panel"
 NODE_SURFACE_DRAFT_CANVAS = "draft_canvas"
-_VALID_NODE_SURFACES = {NODE_SURFACE_PROJECT_PANEL, NODE_SURFACE_DRAFT_CANVAS}
+NODE_SURFACE_WORKFLOW_RUNTIME = "workflow_runtime"
+_VALID_NODE_SURFACES = {NODE_SURFACE_PROJECT_PANEL, NODE_SURFACE_DRAFT_CANVAS, NODE_SURFACE_WORKFLOW_RUNTIME}
 
 
 async def _node_public_id_map(project_id: str) -> dict[str, str]:
@@ -1141,7 +1154,7 @@ def _collect_image_source_values(value: Any, out: list[str] | None = None) -> li
 
 
 def _storage_root() -> Path:
-    return Path(getattr(settings, "STORAGE_PATH", "./storage")).resolve()
+    return settings.storage_path_resolved
 
 
 def _storage_relative_upload_reference(value: str) -> str:
@@ -1772,7 +1785,7 @@ async def _node_create_one(
                 "hint": "parent_node_id 使用 node.list 返回的编号 id，或省略该字段。",
             }
 
-    # Gate 1 + 2:模式守卫。业务流程由 skill.video_production 承接。
+    # Gate 1 + 2:模式守卫。业务流程由 video_production markdown skill 承接。
     # 后端自动推断节点归属模式,不再强制旧 node.get_creation_guide 前置。
     gate_ok, gate_err = await _check_mode_and_guide_gate(project_id, type, fields)
     if not gate_ok:
@@ -2484,6 +2497,14 @@ def _normalize_node_update_patch(node: dict, patch: dict) -> tuple[dict, dict | 
     return next_patch, None
 
 
+def _patch_repairs_failed_node(node: dict, patch: dict) -> bool:
+    if str(node.get("status") or "") != "failed":
+        return False
+    if "status" in patch:
+        return False
+    return any(key in patch for key in ("prompt", "input_json", "input_data"))
+
+
 async def _node_update_one(node_id: str, patch: dict | str | None, project_id: str = "") -> dict:
     """局部修改节点。
 
@@ -2533,11 +2554,15 @@ async def _node_update_one(node_id: str, patch: dict | str | None, project_id: s
     # 通用字段落画布；业务含义由模型写入 fields/content/prompt，不在后端派发。
     canvas_patch = dict(patch)
     image_render_marked_stale = False
+    text_workflow_marked_stale = False
     if canvas_patch:
         input_field_patch_requested = "input_json" in canvas_patch or "input_data" in canvas_patch
         canvas_patch = _merge_input_patch_with_current(node, canvas_patch)
         canvas_patch = _sync_title_patch_with_input(node, canvas_patch)
         canvas_patch = _sync_prompt_patch_with_input(node, canvas_patch)
+        if _patch_repairs_failed_node(node, canvas_patch):
+            canvas_patch["status"] = "idle"
+            canvas_patch["error_message"] = None
         if node.get("type") == "image":
             next_input = canvas_patch.get("input_json")
             if not isinstance(next_input, dict):
@@ -2545,9 +2570,24 @@ async def _node_update_one(node_id: str, patch: dict | str | None, project_id: s
             if isinstance(next_input, dict):
                 next_prompt = str(canvas_patch.get("prompt") if "prompt" in canvas_patch else node.get("prompt") or "")
                 if _image_render_inputs_changed(_old_input, next_input, _old_prompt, next_prompt):
-                    canvas_patch["input_json"] = _with_image_render_state(next_input, "stale")
+                    if _image_node_has_rendered_output(node):
+                        canvas_patch["input_json"] = _with_image_render_state(next_input, "stale")
+                        image_render_marked_stale = True
+                    else:
+                        clean_input = dict(next_input)
+                        clean_input.pop("render_state", None)
+                        canvas_patch["input_json"] = clean_input
                     canvas_patch.pop("input_data", None)
-                    image_render_marked_stale = True
+        if node.get("type") == "text":
+            next_input = canvas_patch.get("input_json")
+            if not isinstance(next_input, dict):
+                next_input = canvas_patch.get("input_data")
+            if isinstance(next_input, dict):
+                next_prompt = str(canvas_patch.get("prompt") if "prompt" in canvas_patch else node.get("prompt") or "")
+                if _workflow_text_prompt_contract_changed(_old_input, next_input, _old_prompt, next_prompt):
+                    canvas_patch["input_json"] = _with_workflow_text_stale(next_input)
+                    canvas_patch.pop("input_data", None)
+                    text_workflow_marked_stale = True
         if (
             node.get("type") == "image"
             and input_field_patch_requested
@@ -2644,6 +2684,12 @@ async def _node_update_one(node_id: str, patch: dict | str | None, project_id: s
         canvas_result["hint"] = (
             "图片节点提示词或生成参数已更新，当前图片仍是旧产物；"
             "请继续对这个节点调用 node.run(action='render') 重新生成。生成完成后 render_state 会变为 fresh。"
+        )
+    if text_workflow_marked_stale:
+        canvas_result["requires_rerun"] = True
+        canvas_result["hint"] = (
+            "文本工作流节点提示词合同已更新，当前正文仍是旧产物；"
+            "请继续对这个节点调用 node.run 重新生成。生成完成后 workflow.stale 会变为 false。"
         )
 
     return await _model_visible_node(canvas_result, project_id)
@@ -2779,6 +2825,7 @@ def _node_list_index_item(
         "version",
         "supersedes_id",
         "links",
+        "workflow",
         "created_at",
         "updated_at",
     ):
@@ -2829,6 +2876,8 @@ async def node_list(
     if invalid is not None:
         return invalid
     nodes = await canvas_tools.list_nodes(project_id)
+    if not surface:
+        nodes = [n for n in nodes if _node_surface(n) != NODE_SURFACE_WORKFLOW_RUNTIME]
     if type:
         nodes = [n for n in nodes if n.get("type") == type]
     if status:
@@ -2935,6 +2984,15 @@ def _sync_prompt_patch_with_input(node: dict, patch: dict) -> dict:
     if prompt:
         next_input["prompt"] = prompt
         next_input["prompt_preview"] = prompt[:1200]
+        workflow = next_input.get("workflow")
+        if (
+            node.get("type") == "text"
+            and isinstance(workflow, dict)
+            and str(workflow.get("prompt_template") or "").strip()
+        ):
+            next_workflow = dict(workflow)
+            next_workflow["prompt_template"] = prompt
+            next_input["workflow"] = next_workflow
     else:
         next_input.pop("prompt", None)
         next_input.pop("prompt_preview", None)
@@ -2953,9 +3011,40 @@ def _merge_input_patch_with_current(node: dict, patch: dict) -> dict:
     next_patch = dict(patch)
     next_input = dict(current_input)
     next_input.update(patch_input)
+    if isinstance(current_input.get("workflow"), dict) and isinstance(patch_input.get("workflow"), dict):
+        next_input["workflow"] = {**current_input["workflow"], **patch_input["workflow"]}
     next_patch["input_json"] = next_input
     next_patch.pop("input_data", None)
     return next_patch
+
+
+def _workflow_text_prompt_contract_changed(
+    old_input: dict[str, Any],
+    new_input: dict[str, Any],
+    old_prompt: str,
+    new_prompt: str,
+) -> bool:
+    old_workflow = old_input.get("workflow") if isinstance(old_input.get("workflow"), dict) else {}
+    new_workflow = new_input.get("workflow") if isinstance(new_input.get("workflow"), dict) else {}
+    if not old_workflow and not new_workflow:
+        return False
+    for key in ("prompt_template", "prompt_ref", "prompt_spec", "primary_skill", "source_node_id"):
+        if _stable_json(old_workflow.get(key)) != _stable_json(new_workflow.get(key)):
+            return True
+    return (
+        str(old_prompt or "").strip() != str(new_prompt or "").strip()
+        and bool(str(new_workflow.get("prompt_template") or "").strip())
+    )
+
+
+def _with_workflow_text_stale(input_data: dict[str, Any] | None) -> dict[str, Any]:
+    next_input = dict(input_data or {})
+    workflow = next_input.get("workflow") if isinstance(next_input.get("workflow"), dict) else {}
+    next_workflow = dict(workflow)
+    next_workflow["stale"] = True
+    next_input["workflow"] = next_workflow
+    next_input["prompt_status"] = "stale"
+    return next_input
 
 
 def _sync_title_patch_with_input(node: dict, patch: dict) -> dict:
@@ -3021,6 +3110,16 @@ def _with_image_render_state(input_data: dict[str, Any] | None, state: str) -> d
     next_input = dict(input_data or {})
     next_input["render_state"] = state
     return next_input
+
+
+def _image_node_has_rendered_output(node: dict[str, Any]) -> bool:
+    output = node.get("output")
+    if output not in (None, "", [], {}):
+        return True
+    if str(node.get("status") or "").strip().lower() in {"completed", "failed"}:
+        return True
+    node_input = node.get("input") if isinstance(node.get("input"), dict) else {}
+    return str(node_input.get("render_state") or node.get("render_state") or "").strip() == "fresh"
 
 
 async def _persist_prompt_to_node(node_id: str, f: dict, prompt: str) -> dict:
@@ -3240,6 +3339,659 @@ async def _run_text_node(project_id: str, node_id: str, f: dict) -> dict:
         "depends_on": f.get("depends_on") or [],
     }
 
+
+def _workflow_text_meta(fields: dict[str, Any]) -> dict[str, Any]:
+    workflow = fields.get("workflow")
+    return dict(workflow) if isinstance(workflow, dict) else {}
+
+
+def _is_placeholder_text(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return True
+    lowered = text.lower()
+    if lowered in {"todo", "tbd", "pending", "draft"}:
+        return True
+    return text.startswith(("待", "TODO", "TBD"))
+
+
+def _should_generate_workflow_text(fields: dict[str, Any], action: str | None) -> bool:
+    workflow = _workflow_text_meta(fields)
+    if not workflow:
+        return False
+    if action == "force":
+        return True
+    if not any(workflow.get(key) for key in ("prompt_template", "prompt_ref", "prompt_spec", "primary_skill", "source_node_id")):
+        return False
+    if bool(workflow.get("stale")):
+        return True
+    return _is_placeholder_text(fields.get("content") or fields.get("description"))
+
+
+def _workflow_text_task_type(workflow: dict[str, Any], fields: dict[str, Any]) -> str:
+    explicit = str(workflow.get("llm_task_type") or fields.get("llm_task_type") or "").strip()
+    if explicit:
+        return explicit
+    text = search_blob(
+        workflow.get("primary_skill"),
+        workflow.get("prompt_ref"),
+        workflow.get("purpose"),
+        workflow.get("step_id"),
+        workflow.get("source_node_id"),
+        fields.get("purpose"),
+        fields.get("stage"),
+        fields.get("title"),
+    )
+    if "video_prompt" in text or "videoprompt" in text or "视频提示词" in text:
+        return "video_prompt_generation"
+    if "shot_grid" in text or "storyboard" in text or "planframes" in text or "分镜" in text:
+        return "storyboard_generation"
+    if "script" in text or "episodeplan" in text or "剧本" in text or "分集" in text:
+        return "script_generation"
+    return "outline_generation"
+
+
+def _strip_llm_fences(content: str) -> str:
+    text = str(content or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+
+def _workflow_text_ref_values(fields: dict[str, Any]) -> list[str]:
+    raw_items: list[Any] = []
+    for key in ("references", "depends_on"):
+        value = fields.get(key)
+        if isinstance(value, list):
+            raw_items.extend(value)
+        elif value:
+            raw_items.append(value)
+    refs: list[str] = []
+    for item in raw_items:
+        if isinstance(item, dict):
+            raw = item.get("ref") or item.get("node_id") or item.get("id") or item.get("value")
+        else:
+            raw = item
+        text = str(raw or "").strip()
+        if not text or text.startswith(("asset:", "upload:", "http://", "https://")) or "/" in text:
+            continue
+        if text not in refs:
+            refs.append(text)
+    return refs
+
+
+_WORKFLOW_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+_WORKFLOW_CONTEXT_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_WORKFLOW_CONTEXT_INDEX_RE = re.compile(r"^(.+?)\[(\d+)\]$")
+
+
+def _workflow_unique_strings(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        marker = _workflow_context_key(text)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(text)
+    return result
+
+
+def _workflow_context_key(value: Any) -> str:
+    text = str(value or "").strip()
+    text = _WORKFLOW_CONTEXT_CAMEL_RE.sub("_", text)
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text.lower())
+
+
+def _workflow_lookup_dict(payload: dict[str, Any], key: str) -> Any:
+    if key in payload:
+        return payload[key]
+    wanted = _workflow_context_key(key)
+    for candidate_key, value in payload.items():
+        if _workflow_context_key(candidate_key) == wanted:
+            return value
+    return None
+
+
+def _workflow_json_object_candidates(value: str) -> list[str]:
+    text = _strip_llm_fences(value)
+    candidates = [text]
+    match = re.search(r"\{.*\}", text, re.S)
+    if match:
+        candidates.append(match.group(0))
+    return candidates
+
+
+def _workflow_parse_json_object(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str):
+        return None
+    for candidate in _workflow_json_object_candidates(value):
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _workflow_structured_value(value: Any) -> Any:
+    parsed = _workflow_parse_json_object(value)
+    if parsed is None:
+        return value
+    for key in ("content", "text", "full_text", "output"):
+        nested = parsed.get(key)
+        nested_parsed = _workflow_parse_json_object(nested)
+        if nested_parsed is not None:
+            result = {**parsed, **nested_parsed}
+            result[key] = nested
+            return result
+    return parsed
+
+
+def _compact_workflow_text_node(node: dict[str, Any]) -> dict[str, Any]:
+    fields = dict(node.get("input") or {})
+    output = _workflow_structured_value(node.get("output"))
+    structured_outputs = node.get("outputs") if isinstance(node.get("outputs"), list) else None
+    if output in (None, "", [], {}) and structured_outputs:
+        first_output = structured_outputs[0] if isinstance(structured_outputs[0], dict) else {}
+        output = _workflow_structured_value(first_output.get("value") if isinstance(first_output, dict) else first_output)
+    if not isinstance(output, dict):
+        output = {"content": output} if output not in (None, "", [], {}) else {}
+    result = {
+        "id": public_node_id_from_dict(node),
+        "title": node.get("title"),
+        "type": node.get("type"),
+        "status": node.get("status"),
+        "content": str(fields.get("content") or output.get("content") or "")[:6000],
+        "prompt": str(node.get("prompt") or fields.get("prompt") or "")[:4000],
+        "output": output,
+        "outputs": structured_outputs or output,
+        "workflow": fields.get("workflow") if isinstance(fields.get("workflow"), dict) else None,
+    }
+    if node.get("artifacts"):
+        result["artifacts"] = node.get("artifacts")
+    refs = fields.get("references")
+    if refs:
+        result["references"] = refs
+    return {k: v for k, v in result.items() if v not in (None, "", [], {})}
+
+
+def _workflow_context_aliases(payload: dict[str, Any]) -> list[str]:
+    workflow = payload.get("workflow") if isinstance(payload.get("workflow"), dict) else {}
+    return _workflow_unique_strings([
+        workflow.get("step_id"),
+        workflow.get("template_step_id"),
+        workflow.get("source_node_id"),
+        workflow.get("repeat_group_id"),
+        payload.get("title"),
+    ])
+
+
+def _workflow_add_context_alias(context: dict[str, Any], alias: str, payload: dict[str, Any]) -> None:
+    text = str(alias or "").strip()
+    if not text:
+        return
+    context.setdefault(text, payload)
+    normalized = _workflow_context_key(text)
+    if normalized and normalized != text:
+        context.setdefault(normalized, payload)
+
+
+def _workflow_add_collection_aliases(context: dict[str, Any], alias: str, payload: dict[str, Any]) -> None:
+    text = str(alias or "").strip()
+    if not text:
+        return
+    for container_key, value in (
+        ("steps", payload),
+        ("nodes", payload),
+        ("outputs", payload.get("output") if isinstance(payload, dict) else None),
+    ):
+        if value in (None, "", [], {}):
+            continue
+        container = context.setdefault(container_key, {})
+        if not isinstance(container, dict):
+            continue
+        container.setdefault(text, value)
+        normalized = _workflow_context_key(text)
+        if normalized and normalized != text:
+            container.setdefault(normalized, value)
+
+
+def _workflow_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _workflow_template_context(
+    *,
+    workflow: dict[str, Any],
+    target: dict[str, Any],
+    upstream_nodes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    input_facts = workflow.get("input_facts") if isinstance(workflow.get("input_facts"), dict) else {}
+    instance_scope = workflow.get("instance_scope") if isinstance(workflow.get("instance_scope"), dict) else {}
+    context: dict[str, Any] = {
+        "inputs": input_facts,
+        "input_facts": input_facts,
+        "instance": instance_scope,
+        "json": instance_scope or input_facts,
+        "steps": {},
+        "nodes": {},
+        "outputs": {},
+        "target": target,
+        "target_node": target,
+        "upstream_nodes": upstream_nodes,
+    }
+    item_name = str(workflow.get("item_name") or workflow.get("item_source") or "").strip()
+    if item_name and instance_scope:
+        context.setdefault(item_name, instance_scope)
+        normalized_item_name = _workflow_context_key(item_name)
+        if normalized_item_name and normalized_item_name != item_name:
+            context.setdefault(normalized_item_name, instance_scope)
+    previous_segment: dict[str, Any] = {}
+    current_group = str(workflow.get("repeat_group_id") or "").strip()
+    current_index = _workflow_int(workflow.get("repeat_group_index"))
+
+    for upstream in upstream_nodes:
+        upstream_workflow = upstream.get("workflow") if isinstance(upstream.get("workflow"), dict) else {}
+        upstream_group = str(upstream_workflow.get("repeat_group_id") or "").strip()
+        upstream_index = _workflow_int(upstream_workflow.get("repeat_group_index"))
+        is_previous = bool(
+            current_group
+            and upstream_group == current_group
+            and current_index is not None
+            and upstream_index == current_index - 1
+        )
+        target_context = previous_segment if is_previous else context
+        for alias in _workflow_context_aliases(upstream):
+            _workflow_add_context_alias(target_context, alias, upstream)
+            if target_context is context:
+                _workflow_add_collection_aliases(context, alias, upstream)
+
+    context["previous_segment"] = previous_segment
+    context["previous"] = previous_segment
+    return context
+
+
+def _workflow_child_values(value: Any, segment: str) -> list[Any]:
+    text = str(segment or "").strip()
+    if not text:
+        return []
+    wants_list = text.endswith("[]")
+    key = text[:-2] if wants_list else text
+    index_match = _WORKFLOW_CONTEXT_INDEX_RE.match(key)
+    explicit_index: int | None = None
+    if index_match:
+        key = index_match.group(1)
+        explicit_index = int(index_match.group(2))
+
+    if isinstance(value, dict):
+        child = _workflow_lookup_dict(value, key)
+        if explicit_index is not None and isinstance(child, list):
+            return [child[explicit_index]] if 0 <= explicit_index < len(child) else []
+        if wants_list and isinstance(child, list):
+            return list(child)
+        return [child] if child is not None else []
+    if isinstance(value, list):
+        if explicit_index is not None and key in {"", "item"}:
+            return [value[explicit_index]] if 0 <= explicit_index < len(value) else []
+        values: list[Any] = []
+        for item in value:
+            values.extend(_workflow_child_values(item, segment))
+        return values
+    return []
+
+
+def _workflow_context_path(context: dict[str, Any], path: str) -> tuple[bool, Any]:
+    parts = [part.strip() for part in str(path or "").split(".") if part.strip()]
+    if not parts:
+        return True, context
+    values: list[Any] = [context]
+    for part in parts:
+        next_values: list[Any] = []
+        for value in values:
+            next_values.extend(_workflow_child_values(value, part))
+        values = next_values
+        if not values:
+            return False, None
+    if len(values) == 1:
+        return True, values[0]
+    return True, values
+
+
+def _workflow_template_value_to_text(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _workflow_render_prompt_template(
+    template: Any,
+    *,
+    workflow: dict[str, Any],
+    target: dict[str, Any],
+    upstream_nodes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    raw = str(template or "")
+    if not raw:
+        return {"prompt_template": "", "rendered_prompt_template": "", "unresolved_template_paths": []}
+    context = _workflow_template_context(
+        workflow=workflow,
+        target=target,
+        upstream_nodes=upstream_nodes,
+    )
+    missing: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        expression = str(match.group(1) or "").strip()
+        found, value = _workflow_context_path(context, expression)
+        if not found:
+            missing.append(expression)
+            return match.group(0)
+        return _workflow_template_value_to_text(value)
+
+    rendered = _WORKFLOW_TEMPLATE_PLACEHOLDER_RE.sub(replace, raw)
+    return {
+        "prompt_template": raw,
+        "rendered_prompt_template": rendered,
+        "unresolved_template_paths": _workflow_unique_strings(missing),
+    }
+
+
+async def _load_workflow_text_skill(workflow: dict[str, Any]) -> dict[str, Any]:
+    primary = str(workflow.get("primary_skill") or "").strip()
+    if not primary:
+        return {"ok": False, "error": "no primary_skill"}
+    category = str(workflow.get("skill_category") or "prompt").strip()
+    scope = str(workflow.get("skill_scope") or workflow.get("scope") or "").strip()
+    from app.mcp_tools import skill_tools
+
+    return await skill_tools.skill_get_skill(primary, category=category, scope=scope)
+
+
+def _workflow_prompt_template_has_contract(prompt_runtime: dict[str, Any]) -> bool:
+    return bool(
+        str(prompt_runtime.get("rendered_prompt_template") or "").strip()
+        or str(prompt_runtime.get("prompt_template") or "").strip()
+    )
+
+
+async def _workflow_runtime_skill_payload(
+    workflow: dict[str, Any],
+    prompt_runtime: dict[str, Any],
+) -> dict[str, Any]:
+    if _workflow_prompt_template_has_contract(prompt_runtime):
+        return {
+            "name": workflow.get("primary_skill"),
+            "category": workflow.get("skill_category"),
+            "scope": workflow.get("skill_scope") or workflow.get("scope"),
+            "content": "",
+            "content_mode": "compiled_prompt_template",
+            "load_error": None,
+        }
+
+    skill = await _load_workflow_text_skill(workflow)
+    skill_content = str(skill.get("content") or "") if skill.get("ok") else ""
+    if len(skill_content) > 12000:
+        skill_content = skill_content[:12000] + "\n\n[skill content truncated]"
+    return {
+        "name": skill.get("name") if skill.get("ok") else workflow.get("primary_skill"),
+        "category": skill.get("category") if skill.get("ok") else workflow.get("skill_category"),
+        "scope": skill.get("scope") if skill.get("ok") else workflow.get("skill_scope"),
+        "content": skill_content,
+        "content_mode": "fallback_skill_content" if skill.get("ok") else "missing_skill",
+        "load_error": None if skill.get("ok") else skill.get("error"),
+    }
+
+
+async def _call_workflow_text_llm(
+    *,
+    task_type: str,
+    system: str,
+    message: str,
+    project_id: str,
+) -> dict[str, Any]:
+    async with session_scope() as session:
+        return await LLMService(session).generate(
+            task_type=task_type,
+            messages=[{"role": "user", "content": message}],
+            system=system,
+            project_id=project_id,
+        )
+
+
+def _workflow_text_usage_total(usage: Any) -> int | None:
+    if not isinstance(usage, dict):
+        return None
+    for key in ("total_tokens", "total"):
+        value = usage.get(key)
+        if isinstance(value, (int, float)):
+            return int(value)
+    return None
+
+
+def _workflow_text_run_log(workflow: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    clean_record = {
+        key: value
+        for key, value in record.items()
+        if value not in (None, "", [], {})
+    }
+    history = workflow.get("run_history")
+    if not isinstance(history, list):
+        history = []
+    next_workflow = dict(workflow)
+    next_workflow["last_run"] = clean_record
+    next_workflow["run_history"] = [*history, clean_record][-8:]
+    return next_workflow
+
+
+async def _update_workflow_text_run_log(
+    node_id: str,
+    fields: dict[str, Any],
+    record: dict[str, Any],
+) -> None:
+    updated_fields = dict(fields)
+    workflow = _workflow_text_meta(fields)
+    updated_fields["workflow"] = _workflow_text_run_log(workflow, record)
+    try:
+        await canvas_tools.update_node(node_id, {"input_data": updated_fields})
+    except Exception:
+        logger.exception("workflow text run log update failed")
+
+
+async def _generate_workflow_text_node(
+    *,
+    project_id: str,
+    node_id: str,
+    node: dict[str, Any],
+    fields: dict[str, Any],
+) -> dict[str, Any]:
+    workflow = _workflow_text_meta(fields)
+    upstream_nodes: list[dict[str, Any]] = []
+    for ref in _workflow_text_ref_values(fields):
+        resolved = await _resolve_agent_node_id(project_id, ref)
+        if not resolved or resolved == node_id:
+            continue
+        upstream = await canvas_tools.get_node(resolved)
+        if not upstream or upstream.get("error"):
+            continue
+        upstream_nodes.append(_compact_workflow_text_node(upstream))
+
+    target = _compact_workflow_text_node(node)
+    prompt_runtime = _workflow_render_prompt_template(
+        workflow.get("prompt_template"),
+        workflow=workflow,
+        target=target,
+        upstream_nodes=upstream_nodes,
+    )
+    skill_payload = await _workflow_runtime_skill_payload(workflow, prompt_runtime)
+    structured_contract = structured_output_contract(workflow)
+    structured_instructions = structured_output_instructions(workflow)
+    system = (
+        "You are a one-shot workflow text node runner. "
+        "Generate the final fields.content for exactly one text node from the provided node spec, prompt template, and upstream nodes. "
+        "Use rendered_prompt_template as the execution contract when it is present. "
+        "Use skill.content only when no prompt template is available. "
+        "Return only the content to write into fields.content."
+    )
+    if structured_instructions:
+        system = f"{system}\n\n{structured_instructions}"
+    message = json.dumps(
+        {
+            "target_node": target,
+            "workflow": workflow,
+            "prompt_template": prompt_runtime["prompt_template"],
+            "rendered_prompt_template": prompt_runtime["rendered_prompt_template"],
+            "unresolved_template_paths": prompt_runtime["unresolved_template_paths"],
+            "prompt_ref": workflow.get("prompt_ref"),
+            "prompt_spec": workflow.get("prompt_spec"),
+            "output_mode": workflow.get("output_mode"),
+            "output_schema": workflow.get("output_schema"),
+            "structured_output_contract": structured_contract,
+            "completion": workflow.get("completion"),
+            "acceptance": workflow.get("acceptance"),
+            "input_facts": workflow.get("input_facts"),
+            "skill": skill_payload,
+            "upstream_nodes": upstream_nodes,
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+    task_type = _workflow_text_task_type(workflow, fields)
+    started_at = _utc_now_iso()
+    dump_run_id = f"workflow_text_{new_run_id()}"
+    dump_llm_request(
+        project_id,
+        dump_run_id,
+        0,
+        system,
+        [{"role": "user", "content": message}],
+        [],
+        user_message=f"workflow text node {public_node_id_from_dict(node) or node_id}",
+    )
+    try:
+        llm_result = await _call_workflow_text_llm(
+            task_type=task_type,
+            system=system,
+            message=message,
+            project_id=project_id,
+        )
+    except Exception as exc:
+        await _update_workflow_text_run_log(
+            node_id,
+            fields,
+            {
+                "run_id": dump_run_id,
+                "status": "failed",
+                "task_type": task_type,
+                "prompt_dump_run_id": dump_run_id,
+                "started_at": started_at,
+                "completed_at": _utc_now_iso(),
+                "error": str(exc)[:500],
+            },
+        )
+        raise
+    content = _strip_llm_fences(str(llm_result.get("content") or ""))
+    if not content:
+        await _update_workflow_text_run_log(
+            node_id,
+            fields,
+            {
+                "run_id": dump_run_id,
+                "status": "failed",
+                "task_type": task_type,
+                "model": llm_result.get("model"),
+                "usage_total_tokens": _workflow_text_usage_total(llm_result.get("usage")),
+                "prompt_dump_run_id": dump_run_id,
+                "started_at": started_at,
+                "completed_at": _utc_now_iso(),
+                "error": "empty_llm_output",
+            },
+        )
+        return {"error": "workflow text runner returned empty content", "error_kind": "empty_llm_output"}
+
+    structured_output: Any | None = None
+    if structured_contract:
+        try:
+            structured_output = parse_structured_output(content, workflow)
+        except WorkflowStructuredOutputError as exc:
+            await _update_workflow_text_run_log(
+                node_id,
+                fields,
+                {
+                    "run_id": dump_run_id,
+                    "status": "failed",
+                    "task_type": task_type,
+                    "model": llm_result.get("model"),
+                    "usage_total_tokens": _workflow_text_usage_total(llm_result.get("usage")),
+                    "prompt_dump_run_id": dump_run_id,
+                    "started_at": started_at,
+                    "completed_at": _utc_now_iso(),
+                    "error": str(exc)[:500],
+                },
+            )
+            return {
+                "error": f"workflow structured output invalid: {exc}",
+                "error_kind": "structured_output_invalid",
+            }
+
+    updated_fields = dict(fields)
+    updated_workflow = dict(workflow)
+    updated_workflow["runner"] = "node.run"
+    updated_workflow["llm_task_type"] = task_type
+    updated_workflow["step_status"] = "completed"
+    updated_workflow["stale"] = False
+    updated_workflow = _workflow_text_run_log(
+        updated_workflow,
+        {
+            "run_id": dump_run_id,
+            "status": "completed",
+            "task_type": task_type,
+            "model": llm_result.get("model"),
+            "usage_total_tokens": _workflow_text_usage_total(llm_result.get("usage")),
+            "prompt_dump_run_id": dump_run_id,
+            "started_at": started_at,
+            "completed_at": _utc_now_iso(),
+            "content_chars": len(content),
+        },
+    )
+    updated_fields["workflow"] = updated_workflow
+    updated_fields["content"] = content
+    updated_fields["prompt_status"] = "completed"
+    await canvas_tools.update_node(node_id, {"input_data": updated_fields})
+    result: dict[str, Any] = {
+        "type": "text",
+        "title": fields.get("title") or node.get("title"),
+        "content": content,
+        "references": updated_fields.get("references") or [],
+        "depends_on": updated_fields.get("depends_on") or [],
+        "workflow_text_runner": "one_shot_llm",
+        "llm_task_type": task_type,
+        "model": llm_result.get("model"),
+        "usage": llm_result.get("usage"),
+        "run_id": dump_run_id,
+        "prompt_dump_run_id": dump_run_id,
+    }
+    if structured_output is not None:
+        result["structured_output"] = structured_output
+        if isinstance(structured_output, dict):
+            result.update(structured_output)
+    return result
 
 def _image_operation_name(fields: dict[str, Any]) -> str:
     return str(
@@ -3496,6 +4248,13 @@ async def node_run(
         return payload
 
     node_type = node.get("type")
+    if _node_surface(node) == NODE_SURFACE_WORKFLOW_RUNTIME:
+        return _run_response({
+            "ok": False,
+            "error": "workflow_runtime 节点是工作流内部记录，不能用 node.run 直接运行。请在工作流流程条运行对应步骤。",
+            "error_kind": "workflow_runtime_node_not_runnable",
+            "node_type": node_type,
+        })
     if (
         node_type == "image"
         and str(node.get("status") or "") == "running"
@@ -3812,6 +4571,56 @@ async def node_run(
             "error": "action='review' 已移除。需要审稿时由模型创建/更新 text 节点或调用合适的只读 guide。",
             "error_kind": "unsupported_action",
             "node_type": node_type,
+        })
+
+    if node_type == "text" and _should_generate_workflow_text(fields, action):
+        await canvas_tools.update_node(node_id, {"status": "running", "error_message": None})
+        try:
+            result = await asyncio.wait_for(
+                _generate_workflow_text_node(
+                    project_id=project_id,
+                    node_id=node_id,
+                    node=node,
+                    fields=fields,
+                ),
+                timeout=_node_run_timeout_seconds(node_type),
+            )
+        except asyncio.TimeoutError:
+            timeout_seconds = _node_run_timeout_seconds(node_type)
+            err_text = f"text workflow LLM 超时({timeout_seconds}s)，请稍后重试"
+            await canvas_tools.update_node(node_id, {"status": "failed", "error_message": err_text})
+            return _run_response({
+                "ok": False,
+                "error": err_text,
+                "error_kind": "timeout",
+                "node_type": node_type,
+            })
+        except Exception as exc:
+            err_text = f"text workflow LLM 异常: {exc}"
+            await canvas_tools.update_node(node_id, {"status": "failed", "error_message": err_text})
+            return _run_response({
+                "ok": False,
+                "error": err_text,
+                "error_kind": "runner_exception",
+                "node_type": node_type,
+                "exception_type": exc.__class__.__name__,
+            })
+        if isinstance(result, dict) and result.get("error"):
+            err_text = str(result.get("error") or "workflow text runner failed")
+            await canvas_tools.update_node(node_id, {"status": "failed", "error_message": err_text})
+            return _run_response({
+                "ok": False,
+                "error": err_text,
+                "error_kind": result.get("error_kind") or "workflow_text_error",
+                "node_type": node_type,
+            })
+        await canvas_tools.update_node(node_id, {"status": "completed", "error_message": None, "output_data": result})
+        return _run_response({
+            "ok": True,
+            "node_id": node_id,
+            "type": node_type,
+            "status": "completed",
+            "result": result,
         })
 
     runner = _RUNNERS.get(node_type)

@@ -49,6 +49,11 @@ class CancelRequest(BaseModel):
     reason: str = ""
 
 
+class DequeueRequest(BaseModel):
+    project_id: str
+    client_user_message_id: str
+
+
 def _iter_text_delta_chunks(content: str, max_chars: int = SSE_TEXT_DELTA_CHUNK_CHARS) -> Iterator[str]:
     if max_chars <= 0 or len(content) <= max_chars:
         yield content
@@ -468,12 +473,22 @@ async def chat_enqueue(request: ChatRequest):
     )
 
 
+@router.post("/dequeue")
+async def chat_dequeue(request: DequeueRequest):
+    """Remove a queued chat message before it becomes the next agent turn."""
+    return await mq.remove_queued(request.project_id, request.client_user_message_id)
+
+
 @router.get("/queue/{project_id}")
 async def chat_queue_status(project_id: str):
-    """看队列长度 + 是否有 stream 在跑(前端轮询/调试用)。"""
+    """看队列长度 + 是否有 stream/run 在跑(前端刷新恢复/调试用)。"""
+    queue_streaming = await mq.is_streaming(project_id)
+    run_running = await project_run_broker.is_running(project_id)
     return {
         "queued": await mq.peek_count(project_id),
-        "streaming": await mq.is_streaming(project_id),
+        "streaming": bool(queue_streaming or run_running),
+        "queue_streaming": queue_streaming,
+        "running": run_running,
     }
 
 

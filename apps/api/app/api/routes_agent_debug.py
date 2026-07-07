@@ -16,6 +16,7 @@ from app.agent.context_compact import tool_results_dir
 from app.agent.prompt_dump import prompt_dumps_root
 from app.agent.slash_commands import build_doctor_snapshot
 from app.agent.trace_store import list_trace_runs, read_trace_events, summarize_token_usage
+from app.agent.workflow_state_evidence import build_workflow_state_evidence
 from app.db.session import get_session
 from app.services.project_service import ProjectService
 
@@ -31,6 +32,25 @@ _MAX_ARTIFACT_READ_BYTES = 128 * 1024
 async def agent_doctor(project_id: str) -> dict[str, Any]:
     """Return the same diagnostic snapshot used by `/doctor`, without chat writes."""
     return await build_doctor_snapshot(project_id)
+
+
+@router.get("/debug/{project_id}/workflow-evidence")
+async def get_workflow_state_evidence(
+    project_id: str,
+    template_id: Annotated[str, Query(max_length=120)] = "",
+    instance_id: Annotated[str, Query(max_length=160)] = "",
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Return backend workflow runtime, canvas node, and edge evidence."""
+    result = await build_workflow_state_evidence(
+        project_id,
+        db,
+        template_id=template_id,
+        instance_id=instance_id,
+    )
+    if result.get("ok") is False:
+        raise HTTPException(status_code=404, detail=result)
+    return result
 
 
 @router.get("/debug/{project_id}/traces")

@@ -192,7 +192,7 @@ def test_agent_tool_surface_matches_node_first_contract() -> None:
     assert registry.tool_exposure("project.reset") == "core"
     assert registry.tool_exposure("skill.get") == "core"
     assert registry.tool_exposure("skill.search") == "core"
-    assert registry.tool_exposure("skill.video_production") == "deferred"
+    assert registry.tool_exposure("skill.video_production") == "unregistered"
     assert registry.tool_exposure("task.create") == "core"
     assert registry.tool_exposure("task.list") == "core"
     assert registry.tool_exposure("task.update") == "core"
@@ -246,6 +246,90 @@ def test_agent_tool_surface_matches_node_first_contract() -> None:
         assert spec is not None, name
         assert tool_meta_tools._tier_of(spec) == 3, name
         assert name not in visible
+
+
+def test_workflow_build_tool_surface_is_dedicated_to_workflow_files() -> None:
+    ctx = PromptContext(
+        project_id="workflow-build-tools",
+        user_message="搭建一个可复用工作流",
+        state={},
+        collaboration_mode="workflow_build",
+    )
+    tools = registry.get_tools_for_agent_loop(
+        namespaces=select_tool_namespaces(ctx),
+        profile=select_tool_profile(ctx),
+    )
+    visible = {
+        str((tool.get("function") or {}).get("name") or "").replace("__", ".")
+        for tool in tools
+    }
+
+    assert visible == {
+        "interaction.request_input",
+        "project.get_state",
+        "skill.get",
+        "skill.search",
+        "workflow.canvas.inspect",
+        "workflow.spec.apply_patch",
+        "workflow.spec.read",
+        "workflow.template.export",
+        "workflow.template.read",
+        "workflow.template.resolve",
+    }
+    assert not {
+        "agent.review",
+        "agent.run",
+        "canvas.delete",
+        "file.workspace_patch",
+        "file.workspace_read",
+        "file.workspace_write",
+        "node.create",
+        "node.get",
+        "node.list",
+        "node.run",
+        "node.update",
+        "project.reset",
+        "task.complete",
+        "task.create",
+        "task.list",
+        "task.update",
+        "tool.describe",
+        "tool.execute",
+        "tool.search",
+        "vision.view_image",
+    } & visible
+    assert registry.core_agent_tool_names(profile="workflow_build") == visible
+
+
+def test_tool_runtime_metadata_is_profile_aware() -> None:
+    default_metadata = registry.runtime_metadata("workflow.spec.apply_patch")
+    workflow_metadata = registry.runtime_metadata("workflow.spec.apply_patch", profile="workflow_build")
+    inspect_metadata = registry.runtime_metadata("workflow.canvas.inspect", profile="workflow_build")
+
+    assert default_metadata is not None
+    assert workflow_metadata is not None
+    assert inspect_metadata is not None
+    assert default_metadata.exposure == "deferred"
+    assert workflow_metadata.exposure == "core"
+    assert inspect_metadata.exposure == "core"
+    assert workflow_metadata.as_dict()["name"] == "workflow.spec.apply_patch"
+    assert any(
+        item["name"] == "workflow.spec.apply_patch" and item["exposure"] == "core"
+        for item in registry.runtime_manifest(profile="workflow_build")
+    )
+    assert any(
+        item["name"] == "workflow.canvas.inspect" and item["exposure"] == "core"
+        for item in registry.runtime_manifest(profile="workflow_build")
+    )
+
+
+def test_workflow_spec_tools_are_registered_from_split_module() -> None:
+    from app.mcp_tools import workflow_tools
+
+    spec = registry.get("workflow.spec.apply_patch")
+    assert spec is not None
+    assert spec.handler.__module__ == "app.mcp_tools.workflow_spec_tools"
+    assert workflow_tools.workflow_spec_apply_patch.__module__ == "app.mcp_tools.workflow_spec_tools"
 
 
 def test_node_create_schema_uses_single_references_entrypoint() -> None:
@@ -728,11 +812,8 @@ def test_agent_prompt_sections_use_current_video_mode_names() -> None:
     prompt_text = "\n".join(
         [
             core_rules.PROMPT,
-            flow_paths.PROMPT,
-            segment_rule.PROMPT,
-            node_contract.PROMPT,
-            single_image_rule.PROMPT,
-            video_types.PROMPT,
+            working_loop.PROMPT,
+            task_loop.PROMPT,
         ]
     )
 
@@ -747,20 +828,18 @@ def test_single_image_prompt_documents_reference_image_to_image_path() -> None:
     prompt_text = "\n".join(
         [
             core_rules.PROMPT,
-            single_image_rule.PROMPT,
-            node_contract.PROMPT,
+            working_loop.PROMPT,
+            attachment_rule.PROMPT,
         ]
     )
 
-    assert "图生图" in prompt_text
     assert "fields.references" in prompt_text
     assert "source_image" in prompt_text
     assert "node.list" in prompt_text
-    assert "node.list(query|regex)" in prompt_text
     assert "node.list(limit=0)" in prompt_text
-    assert "active/user skill" in prompt_text
+    assert "active skill" in prompt_text
     assert "prompt rules" in prompt_text
-    assert "不要进入蓝图或计划流程" in prompt_text
+    assert "蓝图" not in prompt_text
 
 def test_prompt_rules_prioritize_latest_user_message_over_historical_failures() -> None:
     prompt_text = "\n".join([core_rules.PROMPT, task_loop.PROMPT])
@@ -773,9 +852,6 @@ def test_prompt_rules_prioritize_latest_user_message_over_historical_failures() 
     assert "check output against user/active skill" in prompt_text
     assert "task.delete" not in prompt_text
     assert "task.complete" in prompt_text
-    assert "历史 status=failed 节点" in rerun_rule.PROMPT
-    assert "不要主动重跑" in rerun_rule.PROMPT
-    assert "历史失败节点只是背景提醒" in repair_rule.PROMPT
     reminder = AgentOrchestrator._build_checklist_reminder(
         {"project_mode": "single_node"},
         {"total": 1, "by_type": {"character": 1}, "by_status": {"failed": 1}},
@@ -805,7 +881,6 @@ def test_prompt_cache_sensitive_snapshot_for_blank_turn() -> None:
         "identity",
         "working_loop",
         "task_loop",
-        "tool_loader",
         "core_rules",
         "delete_rule",
         "memory_write",
@@ -815,7 +890,7 @@ def test_prompt_cache_sensitive_snapshot_for_blank_turn() -> None:
     assert "本轮用户目标" not in (result.system or "")
     assert "本轮用户目标" not in (result.runtime or "")
     assert "项目标题" in (result.runtime or "")
-    assert len(result.history or "") > 900
+    assert len(result.history or "") > 700
     assert len(json.dumps(tools, ensure_ascii=False, separators=(",", ":"))) < 11_500
     assert len(result.system or "") + len(json.dumps(tools, ensure_ascii=False, separators=(",", ":"))) < 13_500
     def has_schema_description_metadata(value, *, inside_properties: bool = False) -> bool:
@@ -857,15 +932,10 @@ def test_agent_prompt_sections_do_not_advertise_retired_tool_names() -> None:
     prompt_text = "\n".join(
         [
             core_rules.PROMPT,
-            flow_paths.PROMPT,
             memory_write.PROMPT,
-            node_contract.PROMPT,
             plan_rule.PROMPT,
-            rerun_rule.PROMPT,
-            segment_rule.PROMPT,
-            single_image_rule.PROMPT,
-            tool_loader.PROMPT,
-            video_types.PROMPT,
+            working_loop.PROMPT,
+            task_loop.PROMPT,
         ]
     )
     retired_markers = {

@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import inspect
 import json
 from typing import Any
@@ -25,8 +26,16 @@ from app.mcp_tools.registry import _schema_from_handler, registry, ToolSpec
 # Tier 1 工具不进 list,因为它们已经在主工具表里完整可见。
 # 低频工具通过 deferred 暴露；被节点协议吸收的旧辅助工具标记 hidden。
 _CATEGORIES: dict[str, set[str]] = {
-    "guide": {"skill.project_mentor", "skill.story_template_method", "skill.video_production"},
+    "guide": {"skill.project_mentor", "skill.story_template_method"},
     "project": {"project.create"},
+    "workflow": {
+        "workflow.list_templates",
+        "workflow.runtime_status",
+        "workflow.run_step",
+        "workflow.run_next",
+        "workflow.run_all",
+        "agent.run",
+    },
     "delete": set(),
     "query": {
         "project.list",
@@ -49,11 +58,13 @@ _CATEGORIES: dict[str, set[str]] = {
     "task": {"task.create", "task.delete"},
     "collab": {
         "agent.review",
+        "agent.run",
         "agent.map_reduce", "agent.pipeline",
         "agent.hierarchical",
     },
     "attach": {"file.extract_text_from_upload", "drama.parse_uploaded_script"},
     "control": {"media.cancel_image_generation"},
+    "image": {"agent.run"},
     "file": {
         "file.list_dir",
         "file.read_text",
@@ -84,9 +95,18 @@ def _category_of(name: str) -> str | None:
     return None
 
 
+def _categories_of(name: str) -> list[str]:
+    return [cat for cat, names in _CATEGORIES.items() if name in names]
+
+
 _STATIC_SEARCH_HINTS: dict[str, str] = {
     "project.reset": "reset full reset clear failed nodes destructive confirmation 重置项目 清空项目 清理失败节点",
     "project.create": "new project blank project create project 新建项目 空白项目",
+    "workflow.list_templates": "canvas workflow templates scaffold graph nodes dependencies reusable 画布 工作流 模板 骨架 节点 依赖",
+    "workflow.runtime_status": "workflow runtime status active workflow saved inputs instance progress 工作流 运行态 状态 输入 胶囊 实例 进度",
+    "workflow.run_step": "run specific workflow step execute one ready step fill inputs 指定步骤 运行 单步 填写输入",
+    "workflow.run_next": "run next ready workflow step continue fill inputs dependency 下一步 继续运行 填写输入 依赖",
+    "workflow.run_all": "run all remaining workflow steps execute full flow fill inputs 一键运行 全部 剩余步骤 填写输入",
     "skill.project_mentor": (
         "guide project mentor video workflow blueprint tree T2V I2V storyboard shot images story template "
         "text-to-video image-to-video keyframes first frame last frame multi reference @图片 uploaded image style reference asset library "
@@ -113,6 +133,10 @@ _STATIC_SEARCH_HINTS: dict[str, str] = {
     "file.extract_text_from_upload": (
         "extract text from uploaded txt md docx offset limit next_offset paged chunks "
         "抽取上传文件文本 大文件分页 分段读取"
+    ),
+    "agent.run": (
+        "delegate subagent specialist workflow_spec workflow template selector node_producer image_editor node produce prompt fields run image video text audio generate character reference edit crop brush doodle fill cover mask segment background transparent alpha rounded icon annotate text arrow "
+        "preview commit 工作流 模板选择 现有模板 节点生产 节点补全 提示词编写 运行节点 图片生成 视频提示词 人物图 复杂参考图 图片编辑 子agent 子 Agent 专职 委派 裁剪 涂鸦 画笔 覆盖 遮挡 填充 分割 抠图 透明背景 图标圆角 网格 透明色块 文字 箭头 标注"
     ),
     "file.workspace_delete": "delete workspace file directory recursive force no shell codex-like filesystem 删除工作区文件 目录 不执行命令",
     "file.workspace_list": "list workspace files directory recursive no shell codex-like filesystem 列出工作区文件 不执行命令",
@@ -149,6 +173,66 @@ _DEFERRED_FAILURE_POLICY = (
     "不要重新搜索同一个工具，也不要用同一参数重复调用。"
     "先根据 error_kind、hint 和当前状态修正参数；无法修正时停止并说明失败原因。"
 )
+_WORKFLOW_BUILD_ONLY_TOOLS = {
+    "workflow.canvas.inspect",
+    "workflow.draft.start",
+    "workflow.draft.append_steps",
+    "workflow.draft.commit",
+    "workflow.instantiate",
+    "workflow.materialize",
+    "workflow.materialize_artifact",
+    "workflow.protocol_info",
+    "workflow.spec.apply_patch",
+    "workflow.spec.start",
+    "workflow.spec.append_steps",
+    "workflow.spec.commit",
+    "workflow.spec.read",
+    "workflow.spec.patch",
+    "workflow.template.clone_to_artifact",
+    "workflow.template.export",
+    "workflow.template.promote",
+    "workflow.template.read",
+    "workflow.template.resolve",
+    "workflow.template.save_current",
+}
+_WORKFLOW_RUN_TOOLS_REQUIRING_REF = {
+    "workflow.run_step",
+    "workflow.run_next",
+    "workflow.run_all",
+}
+
+
+def _is_workflow_build_context(state: dict[str, Any] | None = None) -> bool:
+    if not isinstance(state, dict):
+        return False
+    return str(state.get("agent_collaboration_mode") or "").strip() == "workflow_build"
+
+
+def _visible_deferred_in_context(spec: ToolSpec, state: dict[str, Any] | None = None) -> bool:
+    if _tier_of(spec) != 2:
+        return False
+    if spec.name in _WORKFLOW_BUILD_ONLY_TOOLS and not _is_workflow_build_context(state):
+        return False
+    return True
+
+
+def _describable_in_context(spec: ToolSpec, state: dict[str, Any] | None = None) -> bool:
+    if _tier_of(spec) == 3:
+        return False
+    if spec.name in _WORKFLOW_BUILD_ONLY_TOOLS and not _is_workflow_build_context(state):
+        return False
+    return True
+
+
+def _agent_visible_deferred_schema(spec: ToolSpec) -> dict[str, Any]:
+    params = spec.schema if spec.schema else _schema_from_handler(spec.handler)
+    if spec.name not in _WORKFLOW_RUN_TOOLS_REQUIRING_REF:
+        return params
+    result = deepcopy(params)
+    properties = result.get("properties")
+    if isinstance(properties, dict):
+        properties.pop("workflow", None)
+    return result
 
 
 def _cached_project_mentor_result(
@@ -286,28 +370,28 @@ def _tool_search_item(spec: ToolSpec, *, category: str, detail: bool = False) ->
     if hints:
         item["usage_hints"] = hints[:3]
     if detail:
-        params = spec.schema if spec.schema else _schema_from_handler(spec.handler)
+        params = _agent_visible_deferred_schema(spec)
         item["input_schema_summary"] = _schema_summary(params)
         item["example"] = _tool_example(spec)
     return item
 
 
-def _deferred_specs(category: str | None = None) -> list[ToolSpec]:
+def _deferred_specs(category: str | None = None, *, state: dict[str, Any] | None = None) -> list[ToolSpec]:
     specs: list[ToolSpec] = []
     for spec in registry._tools.values():
-        if _tier_of(spec) != 2:
+        if not _visible_deferred_in_context(spec, state):
             continue
-        cat = _category_of(spec.name) or "other"
-        if category and cat != category:
+        cats = _categories_of(spec.name) or ["other"]
+        if category and category not in cats:
             continue
         specs.append(spec)
     return sorted(specs, key=lambda item: item.name)
 
 
-def _catalog_from_specs(specs: list[ToolSpec]) -> dict[str, Any]:
+def _catalog_from_specs(specs: list[ToolSpec], *, category: str | None = None) -> dict[str, Any]:
     grouped: dict[str, list[str]] = {}
     for spec in specs:
-        cat = _category_of(spec.name) or "other"
+        cat = category or _category_of(spec.name) or "other"
         grouped.setdefault(cat, []).append(spec.name)
     categories = [
         {
@@ -326,7 +410,7 @@ def _catalog_from_specs(specs: list[ToolSpec]) -> dict[str, Any]:
     }
 
 
-async def tool_describe(names: list[str] | str) -> dict[str, Any]:
+async def tool_describe(names: list[str] | str, _state: dict[str, Any] | None = None) -> dict[str, Any]:
     """拉取一批 Tier 2 工具的完整 input_schema。一次可拉多个。
 
     Args:
@@ -347,16 +431,18 @@ async def tool_describe(names: list[str] | str) -> dict[str, Any]:
         if not spec:
             not_found.append(raw)
             continue
-        if _tier_of(spec) == 3:
+        if not _describable_in_context(spec, _state):
             not_found.append(f"{raw} (hidden)")
             continue
-        params = spec.schema if spec.schema else _schema_from_handler(spec.handler)
+        cats = _categories_of(spec.name) or ["other"]
+        params = _agent_visible_deferred_schema(spec)
         out.append({
             "name": spec.name,
             "description": spec.description or spec.name,
             "input_schema": params,
             "tier": _tier_of(spec),
-            "category": _category_of(spec.name) or "other",
+            "category": cats[0],
+            "categories": cats,
             "tags": spec.tags,
             "usage_hints": _tool_usage_hints(spec),
             "example": _tool_example(spec),
@@ -379,6 +465,7 @@ async def tool_search(
     pattern: str | list[str] | None = None,
     case_sensitive: bool = False,
     limit: int = 8,
+    _state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Search deferred Tier 2 tools by name, category, hints, tags, or description.
 
@@ -404,13 +491,14 @@ async def tool_search(
         not_found: list[str] = []
         for name in names:
             spec = registry.get(name)
-            if not spec or _tier_of(spec) != 2:
+            if not spec or not _visible_deferred_in_context(spec, _state):
                 not_found.append(name)
                 continue
-            cat = _category_of(spec.name) or "other"
-            if category and cat != category:
+            cats = _categories_of(spec.name) or ["other"]
+            if category and category not in cats:
                 not_found.append(name)
                 continue
+            cat = category or cats[0]
             tools.append(_tool_search_item(spec, category=cat, detail=True))
         return {
             "query": query,
@@ -431,9 +519,10 @@ async def tool_search(
 
     matches: list[tuple[int, dict[str, Any]]] = []
 
-    deferred_specs = _deferred_specs(category)
+    deferred_specs = _deferred_specs(category, state=_state)
     for spec in deferred_specs:
-        cat = _category_of(spec.name) or "other"
+        cats = _categories_of(spec.name) or ["other"]
+        cat = category or cats[0]
         haystack = _tool_search_text(spec, cat)
         search_match = match_text(
             haystack,
@@ -497,7 +586,7 @@ async def tool_search(
         "tools": [item for _, item in matches[:result_limit]],
     }
     if mode == "catalog":
-        result["catalog"] = _catalog_from_specs(deferred_specs)
+        result["catalog"] = _catalog_from_specs(deferred_specs, category=category)
     return result
 
 
@@ -513,6 +602,51 @@ def _normalize_input(input_data: dict[str, Any] | str | None) -> dict[str, Any]:
             return {}
         return dict(parsed) if isinstance(parsed, dict) else {}
     return {}
+
+
+def _workflow_ref_from_run_kwargs(kwargs: dict[str, Any]) -> dict[str, str]:
+    return {
+        "template_id": str(kwargs.get("template_id") or "").strip(),
+        "artifact_ref": str(kwargs.get("artifact_ref") or "").strip(),
+    }
+
+
+def _workflow_ref_authorized_in_state(state: dict[str, Any] | None, ref: dict[str, str]) -> bool:
+    if not isinstance(state, dict):
+        return False
+    refs = state.get("_workflow_spec_authorized_refs")
+    if not isinstance(refs, list):
+        return False
+    template_id = ref.get("template_id") or ""
+    artifact_ref = ref.get("artifact_ref") or ""
+    for item in refs:
+        if not isinstance(item, dict):
+            continue
+        if template_id and str(item.get("template_id") or "").strip() == template_id:
+            return True
+        if artifact_ref and str(item.get("artifact_ref") or "").strip() == artifact_ref:
+            return True
+    return False
+
+
+async def _workflow_ref_authorized(project_id: str, state: dict[str, Any] | None, ref: dict[str, str]) -> bool:
+    if _workflow_ref_authorized_in_state(state, ref):
+        return True
+    try:
+        from app.db.models import Project
+        from app.db.session import session_scope
+
+        async with session_scope() as session:
+            project = await session.get(Project, project_id)
+            if project is None:
+                return False
+            try:
+                db_state = json.loads(project.state_json or "{}")
+            except json.JSONDecodeError:
+                return False
+            return _workflow_ref_authorized_in_state(db_state, ref)
+    except Exception:
+        return False
 
 
 def _filter_kwargs(handler, kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -610,6 +744,57 @@ async def tool_execute(
         }
 
     kwargs = _normalize_input(input)
+    if (
+        target in _WORKFLOW_RUN_TOOLS_REQUIRING_REF
+        and kwargs.get("workflow") not in (None, "", {})
+    ):
+        return {
+            "_deferred_tool": target,
+            "_deferred_alias": {"requested": requested_target, "resolved": target} if requested_target != target else None,
+            "_deferred_permission": _permission_summary(target, decision),
+            "ok": False,
+            "error": (
+                "Workflow run tools require a template_id or artifact_ref. "
+                "Inline workflow objects are not accepted by runtime tools."
+            ),
+            "error_kind": "workflow_inline_requires_workflow_spec",
+            "hint": (
+                "默认模式先选择已有 template_id，再运行 workflow.run_step/workflow.run_next/workflow.run_all。"
+            ),
+            "failure_policy": _DEFERRED_FAILURE_POLICY,
+        }
+    if target in _WORKFLOW_RUN_TOOLS_REQUIRING_REF:
+        workflow_ref = _workflow_ref_from_run_kwargs(kwargs)
+        if (workflow_ref["template_id"] or workflow_ref["artifact_ref"]) and not await _workflow_ref_authorized(
+            project_id,
+            _state,
+            workflow_ref,
+        ):
+            return {
+                "_deferred_tool": target,
+                "_deferred_alias": {"requested": requested_target, "resolved": target} if requested_target != target else None,
+                "_deferred_permission": _permission_summary(target, decision),
+                "ok": False,
+                "error": (
+                    "Workflow run tools require an authorized template_id or artifact_ref in this project."
+                ),
+                "error_kind": "workflow_ref_requires_workflow_spec",
+                "hint": (
+                    "先委派 workflow_spec 选择已有模板，并根据 input_fields 判断输入是否足够后运行 workflow。"
+                ),
+                "failure_policy": _DEFERRED_FAILURE_POLICY,
+            }
+    if target in _WORKFLOW_BUILD_ONLY_TOOLS and not _is_workflow_build_context(_state):
+        return {
+            "_deferred_tool": target,
+            "_deferred_alias": {"requested": requested_target, "resolved": target} if requested_target != target else None,
+            "_deferred_permission": _permission_summary(target, decision),
+            "ok": False,
+            "error": f"{target} is available only in Workflow Build Mode.",
+            "error_kind": "workflow_build_mode_required",
+            "hint": "默认模式先委派 workflow_spec 选择已有模板，再运行 workflow.run_step/workflow.run_next/workflow.run_all。",
+            "failure_policy": _DEFERRED_FAILURE_POLICY,
+        }
     kwargs["project_id"] = project_id
     cached_result = _cached_project_mentor_result(target=target, kwargs=kwargs, state=_state)
     if cached_result is not None:

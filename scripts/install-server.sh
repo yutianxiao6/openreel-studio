@@ -136,7 +136,16 @@ if [ ! -f .env.production ]; then
   chmod 600 .env.production
 fi
 
-mkdir -p data storage assets config
+mkdir -p \
+  data \
+  storage \
+  assets \
+  config \
+  plugins \
+  skills/workflows \
+  skills/prompts \
+  skills/review \
+  workflow_templates
 
 if [ -n "${OPENREEL_AUTH_USER:-}" ]; then
   set_env_var .env.production AUTH_USER "$OPENREEL_AUTH_USER"

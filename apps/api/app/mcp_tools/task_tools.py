@@ -10,11 +10,15 @@ from app.mcp_tools.registry import register
 
 def _task_success_response(task, *, action: str) -> dict[str, Any]:
     payload = task.to_dict()
+    client_id = ""
+    if isinstance(payload.get("input"), dict):
+        client_id = str(payload["input"].get("client_id") or "").strip()
     result: dict[str, Any] = {
         "ok": True,
         "action": action,
         "id": task.id,
         "task_id": task.id,
+        "client_id": client_id,
         "status": task.status,
         "subject": task.subject,
         "project_id": task.project_id,
@@ -23,6 +27,34 @@ def _task_success_response(task, *, action: str) -> dict[str, Any]:
     if payload.get("error"):
         result["task_error"] = payload.get("error")
     return result
+
+
+def _task_dict_with_client_id(task) -> dict[str, Any]:
+    payload = task.to_dict()
+    task_input = payload.get("input")
+    if isinstance(task_input, dict):
+        client_id = str(task_input.get("client_id") or "").strip()
+        if client_id:
+            payload["client_id"] = client_id
+    return payload
+
+
+def _resolve_task_by_model_id(task_id: str, project_id: str = ""):
+    task = task_graph.get(task_id)
+    if task:
+        return task, ""
+
+    candidate_tasks = task_graph.list_all(project_id or None)
+    matches = []
+    for candidate in candidate_tasks:
+        task_input = candidate.input if isinstance(candidate.input, dict) else {}
+        if str(task_input.get("client_id") or "").strip() == str(task_id or "").strip():
+            matches.append(candidate)
+    if len(matches) == 1:
+        return matches[0], "client_id"
+    if len(matches) > 1:
+        return None, "ambiguous_client_id"
+    return None, ""
 
 
 @register(
@@ -48,13 +80,17 @@ async def task_create(
     if isinstance(items, list) and items:
         created = []
         previous_id = ""
+        client_to_task_id: dict[str, str] = {}
         sequential = str(mode or "").strip().lower() == "sequential"
         for raw in items[:20]:
             if not isinstance(raw, dict):
                 continue
-            item_subject = str(raw.get("subject") or raw.get("step") or raw.get("title") or "").strip()
+            item_subject = str(
+                raw.get("subject") or raw.get("step") or raw.get("title") or raw.get("label") or ""
+            ).strip()
             if not item_subject:
                 continue
+            client_id = str(raw.get("id") or raw.get("client_id") or raw.get("key") or "").strip()
             raw_blocked = raw.get("blocked_by") or []
             if isinstance(raw_blocked, str):
                 item_blocked = [b.strip() for b in raw_blocked.split(",") if b.strip()]
@@ -62,19 +98,27 @@ async def task_create(
                 item_blocked = [str(b).strip() for b in raw_blocked if str(b).strip()]
             else:
                 item_blocked = []
+            item_blocked = [client_to_task_id.get(b, b) for b in item_blocked]
             if sequential and previous_id and not item_blocked:
                 item_blocked = [previous_id]
+            task_input = raw.get("input") if isinstance(raw.get("input"), dict) else {}
+            task_input = dict(task_input)
+            if client_id:
+                task_input["client_id"] = client_id
             task = task_graph.create(
                 subject=item_subject,
                 description=str(raw.get("description") or ""),
                 tool=str(raw.get("tool") or tool or ""),
+                input=task_input,
                 project_id=project_id,
                 blocked_by=item_blocked,
                 failure_action=str(raw.get("failure_action") or failure_action or "block"),
                 max_retries=raw.get("max_retries") or max_retries or 0,
             )
             previous_id = task.id
-            created.append(task.to_dict())
+            if client_id:
+                client_to_task_id[client_id] = task.id
+            created.append(_task_dict_with_client_id(task))
         return {
             "ok": True,
             "mode": "sequential" if sequential else "independent",
@@ -174,7 +218,7 @@ async def task_list(
         if t.status == "failed"
     ]
     return {
-        "tasks": [task_dict_by_id.get(t.id) or t.to_dict() for t in tasks],
+        "tasks": [task_dict_by_id.get(t.id) or _task_dict_with_client_id(t) for t in tasks],
         "total": len(tasks),
         "total_unfiltered": total_unfiltered,
         "pending": sum(1 for t in tasks if t.status == "pending"),
@@ -219,6 +263,7 @@ async def task_get(task_id: str) -> dict[str, Any]:
 )
 async def task_update(
     task_id: str,
+    project_id: str = "",
     status: str = "",
     owner: str = "",
     error: str = "",
@@ -246,10 +291,29 @@ async def task_update(
     if remove_blocked_by:
         kwargs["remove_blocked_by"] = [b.strip() for b in remove_blocked_by.split(",") if b.strip()]
 
-    task = task_graph.update(task_id, **kwargs)
+    resolved_source = ""
+    resolved_task, resolved_source = _resolve_task_by_model_id(task_id, project_id)
+    resolved_id = resolved_task.id if resolved_task else task_id
+    task = task_graph.update(resolved_id, **kwargs)
     if not task:
+        candidates = task_graph.list_all(project_id or None) if project_id else []
+        if len(candidates) == 1:
+            resolved_task = task_graph.update(candidates[0].id, **kwargs)
+            if resolved_task:
+                result = _task_success_response(resolved_task, action="updated")
+                result["resolved_from_missing_task_id"] = task_id
+                return result
+        if resolved_source == "ambiguous_client_id":
+            return {
+                "ok": False,
+                "error": f"Task client_id {task_id} matches multiple tasks",
+                "error_kind": "task_id_ambiguous",
+            }
         return {"ok": False, "error": f"Task {task_id} not found", "error_kind": "task_not_found"}
-    return _task_success_response(task, action="updated")
+    result = _task_success_response(task, action="updated")
+    if resolved_source:
+        result["resolved_from_client_task_id"] = task_id
+    return result
 
 
 @register(
@@ -259,12 +323,23 @@ async def task_update(
         "工具调用成功且产物/状态确认后使用，并用 result_summary 写短结果。"
     ),
 )
-async def task_complete(task_id: str, result_summary: str = "") -> dict[str, Any]:
+async def task_complete(task_id: str, project_id: str = "", result_summary: str = "") -> dict[str, Any]:
     result = {"summary": result_summary} if result_summary else None
-    task = task_graph.complete(task_id, result=result)
+    resolved_task, resolved_source = _resolve_task_by_model_id(task_id, project_id)
+    resolved_id = resolved_task.id if resolved_task else task_id
+    task = task_graph.complete(resolved_id, result=result)
     if not task:
+        if resolved_source == "ambiguous_client_id":
+            return {
+                "ok": False,
+                "error": f"Task client_id {task_id} matches multiple tasks",
+                "error_kind": "task_id_ambiguous",
+            }
         return {"ok": False, "error": f"Task {task_id} not found", "error_kind": "task_not_found"}
-    return _task_success_response(task, action="completed")
+    response = _task_success_response(task, action="completed")
+    if resolved_source:
+        response["resolved_from_client_task_id"] = task_id
+    return response
 
 
 @register(
@@ -286,7 +361,8 @@ async def task_delete(task_id: str = "", project_id: str = "") -> dict[str, Any]
                 "error_kind": "task_not_found",
                 "hint": "调用 task.list 获取所有任务的 id 和 subject，确认要删哪个后再传正确的 task_id。",
             }
-    result = task_graph.delete(task_id, project_id=project_id)
+    delete_id = "" if task_id == "__all__" else task_id
+    result = task_graph.delete(delete_id, project_id=project_id)
     if isinstance(result, bool):
         if not result and task_id:
             return {

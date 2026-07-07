@@ -19,6 +19,19 @@ https://:3000 {
 		reverse_proxy web:3000
 	}
 
+	@public_media {
+		method GET HEAD
+		path /studio/api/media/* /studio/api/uploads/*
+	}
+	handle @public_media {
+		uri strip_prefix /studio
+		reverse_proxy api:8000 {
+			transport http {
+				read_timeout 10m
+			}
+		}
+	}
+
 	handle /studio/api/* {
 		basic_auth {
 			{$AUTH_USER} {$AUTH_PASSWORD_HASH}

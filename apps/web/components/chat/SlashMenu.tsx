@@ -14,6 +14,7 @@ export interface SlashCommandDef {
 export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: "/help", description: "显示帮助" },
   { name: "/plan", description: "进入只读 Plan Mode", usage: "/plan [目标|execute|exit]" },
+  { name: "/workflow", description: "进入工作流搭建模式", usage: "/workflow [exit]" },
   { name: "/reset", description: "清理失败节点或确认重置", usage: "/reset [failed|full|confirm|cancel]" },
   { name: "/doctor", description: "项目诊断快照" },
   { name: "/status", description: "系统状态(模型/工具/MCP)" },
@@ -21,13 +22,15 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: "/model", description: "当前模型配置" },
   { name: "/project", description: "查看/新建/切换/删除项目", usage: "/project [new|switch|delete]" },
   { name: "/mcp", description: "MCP 连接状态" },
-  { name: "/clear", description: "清空模型可见对话" },
+  { name: "/clear", description: "清空对话、任务和流程运行态" },
 ]
 
 export const SLASH_COMMAND_COMPLETIONS: SlashCommandDef[] = [
   { name: "/plan", description: "进入 Plan Mode", insertOnly: true },
   { name: "/plan execute", description: "执行最近的 proposed plan", insertOnly: true },
   { name: "/plan exit", description: "退出 Plan Mode", insertOnly: true },
+  { name: "/workflow", description: "进入工作流搭建模式", insertOnly: true },
+  { name: "/workflow exit", description: "退出工作流搭建模式", insertOnly: true },
   { name: "/reset failed", description: "清理失败且无产出的节点", insertOnly: true },
   { name: "/reset full", description: "请求全量重置确认", insertOnly: true },
   { name: "/reset confirm", description: "确认全量重置", insertOnly: true },

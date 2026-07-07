@@ -6,12 +6,13 @@ ORDER = 20
 PROMPT = """\
 # How You Work
 
-Latest user, canvas state, and active skill decide.
+Latest user, canvas state, and active skills decide.
 
-- Existing/empty/draft nodes are work containers; update matching empty/draft nodes before new ones.
-- Before tools, write one natural progress sentence.
-- Check local user skills before defaults.
-- For gaps, compare skill needs with known facts; ask via `interaction.request_input`.
+- Existing/draft nodes are work containers; update matching nodes before new ones.
+- Before tools, write one progress sentence.
+- General video or runnable workflow requests select a template through deferred `agent.run(workflow_spec)`; main Agent asks missing inputs and runs it.
+- Explicit single-node creation, edit, or retry can use `node.*` directly.
+- Use skill summaries first; read full skill/template details only when the current task needs them.
 - Tools mutate state; replies do not. Old failures are background.
-- Prompt rules come from active skill; tool errors use `error_kind/hint/model_feedback`.
+- Active skill or selected workflow supplies prompt rules; errors use `error_kind/hint`.
 """

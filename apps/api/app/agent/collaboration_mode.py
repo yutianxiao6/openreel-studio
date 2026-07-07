@@ -10,6 +10,8 @@ from typing import Any
 COLLABORATION_MODE_STATE_KEY = "agent_collaboration_mode"
 MODE_DEFAULT = "default"
 MODE_PLAN = "plan"
+MODE_WORKFLOW_BUILD = "workflow_build"
+SUPPORTED_COLLABORATION_MODES = {MODE_DEFAULT, MODE_PLAN, MODE_WORKFLOW_BUILD}
 
 
 _PROPOSED_PLAN_RE = re.compile(
@@ -19,8 +21,10 @@ _PROPOSED_PLAN_RE = re.compile(
 
 
 def current_collaboration_mode(state: dict[str, Any] | None) -> str:
-    if isinstance(state, dict) and str(state.get(COLLABORATION_MODE_STATE_KEY) or "").lower() == MODE_PLAN:
-        return MODE_PLAN
+    if isinstance(state, dict):
+        raw = str(state.get(COLLABORATION_MODE_STATE_KEY) or "").strip().lower()
+        if raw in SUPPORTED_COLLABORATION_MODES:
+            return raw
     return MODE_DEFAULT
 
 
@@ -28,8 +32,13 @@ def is_plan_mode(state: dict[str, Any] | None) -> bool:
     return current_collaboration_mode(state) == MODE_PLAN
 
 
+def is_workflow_build_mode(state: dict[str, Any] | None) -> bool:
+    return current_collaboration_mode(state) == MODE_WORKFLOW_BUILD
+
+
 def collaboration_mode_patch(mode: str) -> dict[str, str]:
-    normalized = MODE_PLAN if str(mode or "").lower() == MODE_PLAN else MODE_DEFAULT
+    raw = str(mode or "").strip().lower()
+    normalized = raw if raw in SUPPORTED_COLLABORATION_MODES else MODE_DEFAULT
     return {COLLABORATION_MODE_STATE_KEY: normalized}
 
 

@@ -26,6 +26,7 @@ from sqlmodel import select
 from app.config_store.schema import (
     ALLOWED_TASK_TYPES,
     DEFAULT_APP_SETTINGS,
+    DEFAULT_MODEL_TASK_TIERS,
     LlmProviderEntry,
     MediaProviderEntry,
     RuntimeConfig,
@@ -251,8 +252,9 @@ async def _sync_to_db(cfg: RuntimeConfig) -> None:
                     supports_prompt_cache=entry.supports_prompt_cache,
                     supports_vision=entry.supports_vision,
                     tokenizer=entry.tokenizer,
+                    tier=entry.tier,
                     params_json=params_json,
-                    is_default=entry.is_default, enabled=entry.enabled, notes=entry.notes,
+                    is_default=False, enabled=entry.enabled, notes=entry.notes,
                 )
                 session.add(row)
             else:
@@ -266,8 +268,9 @@ async def _sync_to_db(cfg: RuntimeConfig) -> None:
                 row.supports_prompt_cache = entry.supports_prompt_cache
                 row.supports_vision = entry.supports_vision
                 row.tokenizer = entry.tokenizer
+                row.tier = entry.tier
                 row.params_json = params_json
-                row.is_default = entry.is_default
+                row.is_default = False
                 row.enabled = entry.enabled
                 row.notes = entry.notes
                 session.add(row)
@@ -308,13 +311,18 @@ async def _sync_to_db(cfg: RuntimeConfig) -> None:
                 await session.delete(row)
         await session.flush()
 
-        # model_configs：完全替换为文件里 model_assignments 的内容
+        # model_configs：旧 model_assignments 直连 provider 优先；否则按代码里的 task→tier
+        # 策略取该档默认 provider。前端只暴露 strong/balanced/small 三档，不暴露内部 task 名。
         existing_cfg = (await session.exec(select(ModelConfig))).all()
         by_task = {c.task_type: c for c in existing_cfg}
         provider_lookup = {p.name: p for p in cfg.llm_providers}
         keep_t: set[str] = set()
-        for task, prov_name in cfg.model_assignments.items():
+        for task in ALLOWED_TASK_TYPES:
+            prov_name = cfg.model_assignments.get(task)
             if prov_name is None:
+                tier = DEFAULT_MODEL_TASK_TIERS.get(task, "balanced")
+                prov_name = cfg.model_tier_defaults.get(tier)
+            if not prov_name:
                 continue
             keep_t.add(task)
             entry = provider_lookup.get(prov_name)
@@ -375,6 +383,7 @@ async def _ensure_runtime_config_columns(session) -> None:
         ("supports_prompt_cache", "BOOLEAN"),
         ("supports_vision", "BOOLEAN"),
         ("tokenizer", "VARCHAR"),
+        ("tier", "VARCHAR"),
         ("params_json", "VARCHAR"),
     ):
         if column not in existing:
@@ -409,31 +418,50 @@ def _seed_default_config(env_keys: dict[str, str]) -> dict:
         ("GEMINI_API_KEY", "gemini-default", "gemini", "gemini-2.5-flash", None),
     ]
     llm: list[dict] = []
-    first = True
     for env_key, name, provider, model, base in provider_map:
         val = env_keys.get(env_key)
         if not val:
             continue
         llm.append({
             "name": name, "provider": provider, "model_name": model,
-            "base_url": base, "api_key": f"${{{env_key}}}", "is_default": first, "enabled": True,
+            "base_url": base, "api_key": f"${{{env_key}}}", "enabled": True,
             "context_window_tokens": None,
             "max_input_tokens": None,
             "max_output_tokens": None,
             "supports_prompt_cache": None,
             "supports_vision": None,
             "tokenizer": None,
+            "tier": _seed_model_tier(model),
             "params": {},
         })
-        first = False
+    tier_defaults = _seed_model_tier_defaults(llm)
 
     return {
         "$schema_version": 1,
         "llm_providers": llm,
         "media_providers": [],
+        "model_tier_defaults": tier_defaults,
         "model_assignments": {t: None for t in ALLOWED_TASK_TYPES},
         "app_settings": dict(DEFAULT_APP_SETTINGS),
     }
+
+
+def _seed_model_tier(model_name: str) -> str:
+    normalized = model_name.lower()
+    if any(marker in normalized for marker in ("mini", "haiku", "turbo", "flash")):
+        return "small"
+    return "balanced"
+
+
+def _seed_model_tier_defaults(llm: list[dict]) -> dict[str, str | None]:
+    defaults: dict[str, str | None] = {"strong": None, "balanced": None, "small": None}
+    for tier in defaults:
+        defaults[tier] = next((p["name"] for p in llm if p.get("tier") == tier), None)
+    fallback = defaults.get("balanced") or (llm[0]["name"] if llm else None)
+    for tier, value in list(defaults.items()):
+        if value is None:
+            defaults[tier] = fallback
+    return defaults
 
 
 # ── 单例 ───────────────────────────────────────────────────────────────────

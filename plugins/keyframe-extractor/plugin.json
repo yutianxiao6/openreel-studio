@@ -1,0 +1,34 @@
+{
+  "id": "video.keyframe_extractor",
+  "name": "提取关键帧",
+  "version": "1.0.0",
+  "category": "video",
+  "description": "从视频中提取代表性画面，作为分镜、参考图或封面素材。",
+  "permissions": {
+    "network": false,
+    "filesystem": "plugin_workspace",
+    "asset_access": ["read_project", "write_project"],
+    "max_runtime_seconds": 600
+  },
+  "nodes": [
+    {
+      "type": "keyframe_extract",
+      "title": "提取关键帧",
+      "description": "从一个视频里提取若干张关键帧图片。",
+      "inputs": [
+        { "id": "video", "label": "视频", "type": "video", "required": true }
+      ],
+      "outputs": [
+        { "id": "frames", "label": "关键帧", "type": "image_list" }
+      ],
+      "settings": [
+        { "id": "count", "label": "数量", "type": "number", "default": 6, "min": 1, "max": 24 },
+        { "id": "method", "label": "方式", "type": "select", "default": "scene_change", "options": ["scene_change", "uniform"] }
+      ],
+      "runtime": {
+        "kind": "python",
+        "entrypoint": "main:run"
+      }
+    }
+  ]
+}

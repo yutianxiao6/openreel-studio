@@ -17,7 +17,6 @@ PLAN_MODE_EXPLICIT_ALLOWED_TOOLS: set[str] = {
     "node.get",
     "node.list",
     "project.get_state",
-    "skill.video_production",
     "system.models",
     "system.status",
     "task.list",

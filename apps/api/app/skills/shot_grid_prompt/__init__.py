@@ -1,0 +1,1 @@
+"""Markdown-only builtin skill."""

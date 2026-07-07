@@ -25,7 +25,6 @@ EXPECTED_FIXED_SECTIONS = [
     "identity",
     "working_loop",
     "task_loop",
-    "tool_loader",
     "core_rules",
     "delete_rule",
     "memory_write",

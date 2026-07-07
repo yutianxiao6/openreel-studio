@@ -22,6 +22,7 @@ from app.agent.confirmation_protocol import (
 from app.agent.collaboration_mode import (
     MODE_DEFAULT,
     MODE_PLAN,
+    MODE_WORKFLOW_BUILD,
     collaboration_mode_patch,
     proposed_plan_markdown,
 )
@@ -51,7 +52,7 @@ class SlashCommand:
     raw: str
 
 
-_COMMANDS = {"plan", "reset", "doctor", "project", "help"}
+_COMMANDS = {"plan", "workflow", "reset", "doctor", "project", "help"}
 _PROJECT_LIST_ACTIONS = {"", "list", "ls", "status", "当前", "列表"}
 _PROJECT_NEW_ACTIONS = {"new", "create", "add", "新建", "创建"}
 _PROJECT_SWITCH_ACTIONS = {"switch", "open", "use", "切换", "打开"}
@@ -59,6 +60,7 @@ _PROJECT_DELETE_ACTIONS = {"delete", "remove", "rm", "del", "删除"}
 _PROJECT_DELETE_CONFIRM_ACTIONS = {"confirm", "yes", "确认", "确定"}
 _PROJECT_DELETE_CANCEL_ACTIONS = {"cancel", "no", "取消"}
 _PLAN_EXIT_ACTIONS = {"exit", "default", "off", "quit", "退出", "关闭"}
+_WORKFLOW_EXIT_ACTIONS = {"exit", "default", "off", "quit", "退出", "关闭"}
 _PLAN_EXECUTE_ACTIONS = {"execute", "run", "apply", "执行", "实施"}
 _PLAN_LEGACY_ACTIONS = {
     "approve",
@@ -136,6 +138,11 @@ async def slash_command_events(
             yield event
         return
 
+    if command.name == "workflow":
+        async for event in _workflow_events(project_id, command):
+            yield event
+        return
+
     if command.name == "reset":
         async for event in _reset_events(project_id, command):
             yield event
@@ -161,6 +168,39 @@ def _slash_command_streams_to_agent(command: SlashCommand) -> bool:
     if action in _PLAN_EXIT_ACTIONS or action in _PLAN_LEGACY_ACTIONS:
         return False
     return True
+
+
+async def _workflow_events(
+    project_id: str,
+    command: SlashCommand,
+) -> AsyncGenerator[dict[str, Any], None]:
+    action = (command.args[0].lower() if command.args else "").strip()
+
+    if not action:
+        await project_update_state(project_id, collaboration_mode_patch(MODE_WORKFLOW_BUILD))
+        text = "已进入工作流搭建模式。这个模式聚焦工作流搭建、修改、检查和保存；生成视频请退出后运行工作流。发送 `/workflow exit` 退出。"
+        await _emit_text(project_id, command, text, ok=True)
+        yield {"type": "mode_updated", "ok": True, "mode": MODE_WORKFLOW_BUILD, "collaboration_mode": MODE_WORKFLOW_BUILD}
+        yield {"type": "slash_command", "command": "workflow", "action": "enter", "ok": True}
+        yield {"type": "text_delta", "content": text}
+        yield {"type": "done", "status": "completed"}
+        return
+
+    if action in _WORKFLOW_EXIT_ACTIONS:
+        await project_update_state(project_id, collaboration_mode_patch(MODE_DEFAULT))
+        text = "已退出工作流搭建模式，回到默认制作模式。"
+        await _emit_text(project_id, command, text, ok=True)
+        yield {"type": "mode_updated", "ok": True, "mode": MODE_DEFAULT, "collaboration_mode": MODE_DEFAULT}
+        yield {"type": "slash_command", "command": "workflow", "action": "exit", "ok": True}
+        yield {"type": "text_delta", "content": text}
+        yield {"type": "done", "status": "completed"}
+        return
+
+    text = "工作流命令只支持 `/workflow` 和 `/workflow exit`。进入模式后，用普通自然语言描述要搭建或修改的工作流。"
+    await _emit_text(project_id, command, text, ok=False)
+    yield {"type": "slash_command", "command": "workflow", "action": action, "ok": False, "error": "invalid_workflow_action"}
+    yield {"type": "text_delta", "content": text}
+    yield {"type": "done", "status": "failed"}
 
 
 async def _plan_events(
@@ -1185,6 +1225,7 @@ def _help_text(prefix: str | None = None) -> str:
     lines.extend([
         "可用 slash commands：",
         "- /plan [目标|execute|exit]",
+        "- /workflow [exit]",
         "- /reset [failed|full|confirm|cancel]",
         "- /project [new|switch|delete]",
         "- /doctor",

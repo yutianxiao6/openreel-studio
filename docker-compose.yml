@@ -1,20 +1,30 @@
 services:
   api:
     build:
-      context: ./apps/api
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: apps/api/Dockerfile
     container_name: drama-agent-api
+    environment:
+      PROJECT_ROOT: /workspace
+      STORAGE_PATH: /workspace/storage
+      STORAGE_DIR: /workspace/storage
+      OPENREEL_SKILLS_DIR: /workspace/skills
     volumes:
-      - ./data:/app/data
-      - ./storage:/app/storage
+      - ./data:/workspace/data
+      - ./storage:/workspace/storage
+      - ./assets:/workspace/assets
+      - ./config:/workspace/config
+      - ./plugins:/workspace/plugins
+      - ./skills:/workspace/skills
+      - ./workflow_templates:/workspace/workflow_templates
     ports:
       - "8000:8000"
     restart: unless-stopped
 
   web:
     build:
-      context: ./apps/web
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: apps/web/Dockerfile
     container_name: drama-agent-web
     environment:
       - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000

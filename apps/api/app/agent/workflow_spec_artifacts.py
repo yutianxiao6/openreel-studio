@@ -1,0 +1,319 @@
+"""Persist model-authored workflow specs outside the main agent context."""
+from __future__ import annotations
+
+import json
+import re
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+from app.agent import canvas_workflow_templates
+from app.agent.workflow_audit import ensure_workflow_audit_passes
+
+from app.agent.context_compact import tool_results_dir
+
+
+_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_REF_PREFIX = "workflow_spec:"
+_REPAIR_REF_PREFIX = "workflow_repair:"
+_STRUCTURAL_PREVIEW_KEYS = {
+    "id",
+    "name",
+    "description",
+    "step_count",
+    "dimension_count",
+    "deferred_group_count",
+    "reusable",
+    "workflow_spec_version",
+    "required_capabilities",
+    "required_extensions",
+    "extension_ids",
+    "protocol",
+    "input_ids",
+    "required_inputs",
+    "first_steps",
+    "dimensions",
+    "deferred_groups",
+    "audit_status",
+    "can_save",
+    "can_run",
+    "recommended_use",
+}
+
+
+def _safe_project_id(project_id: str) -> str:
+    return _SAFE_NAME_RE.sub("_", str(project_id or "default")).strip("._") or "default"
+
+
+def _artifact_dir(project_id: str) -> Path:
+    path = tool_results_dir() / _safe_project_id(project_id) / "workflow_specs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _repair_dir(project_id: str) -> Path:
+    path = tool_results_dir() / _safe_project_id(project_id) / "workflow_repairs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _safe_ref_name(value: str) -> str:
+    name = _SAFE_NAME_RE.sub("_", str(value or "")).strip("._")
+    if not name:
+        name = f"spec_{uuid.uuid4().hex[:12]}.json"
+    if not name.endswith(".json"):
+        name += ".json"
+    return name
+
+
+def artifact_ref_from_name(name: str) -> str:
+    return _REF_PREFIX + _safe_ref_name(name)
+
+
+def repair_ref_from_name(name: str) -> str:
+    return _REPAIR_REF_PREFIX + _safe_ref_name(name)
+
+
+def _artifact_path(project_id: str, artifact_ref: str) -> Path:
+    raw = str(artifact_ref or "").strip()
+    if raw.startswith(_REF_PREFIX):
+        raw = raw[len(_REF_PREFIX):]
+    name = _safe_ref_name(raw)
+    path = (_artifact_dir(project_id) / name).resolve()
+    root = _artifact_dir(project_id).resolve()
+    if root not in path.parents and path != root:
+        raise ValueError("invalid workflow spec artifact ref")
+    return path
+
+
+def _repair_path(project_id: str, repair_ref: str) -> Path:
+    raw = str(repair_ref or "").strip()
+    if raw.startswith(_REPAIR_REF_PREFIX):
+        raw = raw[len(_REPAIR_REF_PREFIX):]
+    name = _safe_ref_name(raw)
+    path = (_repair_dir(project_id) / name).resolve()
+    root = _repair_dir(project_id).resolve()
+    if root not in path.parents and path != root:
+        raise ValueError("invalid workflow repair ref")
+    return path
+
+
+def _list_len(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _dict_len(value: Any) -> int:
+    return len(value) if isinstance(value, dict) else 0
+
+
+def _workflow_input_ids(workflow: dict[str, Any]) -> list[str]:
+    inputs = workflow.get("inputs")
+    if isinstance(inputs, dict):
+        return [str(key) for key in inputs.keys() if str(key).strip()][:16]
+    if isinstance(inputs, list):
+        result: list[str] = []
+        for item in inputs:
+            if isinstance(item, dict):
+                value = item.get("id") or item.get("name") or item.get("key")
+            else:
+                value = item
+            text = str(value or "").strip()
+            if text:
+                result.append(text)
+        return result[:16]
+    return []
+
+
+def workflow_spec_preview(workflow: dict[str, Any], *, normalized: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = normalized if isinstance(normalized, dict) else workflow
+    if source is workflow:
+        try:
+            source = canvas_workflow_templates.normalize_inline_workflow(workflow)
+        except canvas_workflow_templates.WorkflowTemplateError:
+            source = workflow
+    steps = source.get("steps") if isinstance(source.get("steps"), list) else []
+    dimensions = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
+    deferred_groups = source.get("deferred_groups") if isinstance(source.get("deferred_groups"), list) else []
+    protocol = source.get("protocol") if isinstance(source.get("protocol"), dict) else {}
+    extensions = source.get("extensions") if isinstance(source.get("extensions"), dict) else workflow.get("extensions")
+    extensions = extensions if isinstance(extensions, dict) else {}
+    return {
+        "id": source.get("id") or workflow.get("id"),
+        "name": source.get("name") or workflow.get("name"),
+        "description": source.get("description") or workflow.get("description") or "",
+        "workflow_spec_version": source.get("workflow_spec_version") or workflow.get("workflow_spec_version") or "",
+        "required_capabilities": list(source.get("required_capabilities") or workflow.get("required_capabilities") or []),
+        "required_extensions": list(source.get("required_extensions") or workflow.get("required_extensions") or []),
+        "extension_ids": list(extensions.keys())[:24],
+        "protocol": {
+            key: protocol.get(key)
+            for key in ("protocol_version", "engine_protocol_version", "supported", "missing_capabilities", "missing_extensions")
+            if protocol.get(key) not in (None, "", [], {})
+        },
+        "step_count": len(steps),
+        "dimension_count": _dict_len(dimensions),
+        "deferred_group_count": _list_len(deferred_groups),
+        "reusable": bool(workflow.get("reusable", True)),
+        "input_ids": _workflow_input_ids(workflow),
+        "required_inputs": list(source.get("required_inputs") or workflow.get("required_inputs") or []),
+        "first_steps": [
+            {
+                "id": step.get("id"),
+                "title": step.get("title") or step.get("id"),
+                "node_type": step.get("node_type"),
+                "surface": step.get("surface") or "",
+                "visibility": step.get("visibility") or "",
+                "depends_on": step.get("depends_on") or [],
+                "phase": step.get("phase") or "",
+                "group": step.get("group") or "",
+                "kind": step.get("kind") or "",
+                "ui": step.get("ui") if isinstance(step.get("ui"), dict) else {},
+                "prompt_template": step.get("prompt_template") or "",
+                "prompt_ref": step.get("prompt_ref") or "",
+            }
+            for step in steps[:8]
+            if isinstance(step, dict)
+        ],
+        "dimensions": list(dimensions.keys())[:12],
+        "deferred_groups": [
+            {
+                "id": item.get("id"),
+                "title": item.get("title") or item.get("id"),
+                "depends_on": item.get("depends_on") or [],
+                "status": item.get("status") or "deferred",
+            }
+            for item in deferred_groups[:8]
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def save_workflow_spec_artifact(
+    *,
+    project_id: str,
+    workflow: dict[str, Any],
+    normalized: dict[str, Any] | None = None,
+    self_check: dict[str, Any] | None = None,
+    user_preview: dict[str, Any] | None = None,
+    source: dict[str, Any] | None = None,
+    sample_inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    name = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:10]}.json"
+    path = _artifact_path(project_id, name)
+    audit = ensure_workflow_audit_passes(
+        workflow,
+        normalized=normalized,
+        sample_inputs=sample_inputs or {},
+    )
+    preview = workflow_spec_preview(workflow, normalized=normalized)
+    if isinstance(user_preview, dict):
+        preview = {
+            **{
+                k: v
+                for k, v in user_preview.items()
+                if k not in _STRUCTURAL_PREVIEW_KEYS and v not in (None, "", [], {})
+            },
+            **preview,
+        }
+    preview["audit_status"] = audit.get("status")
+    preview["can_save"] = bool(audit.get("can_save"))
+    preview["can_run"] = bool(audit.get("can_run"))
+    preview["recommended_use"] = audit.get("recommended_use") or ("runnable" if audit.get("can_run") else "draft_only")
+    payload = {
+        "kind": "workflow_spec",
+        "schema_version": "workflow_spec_artifact_v1",
+        "created_at_ms": int(time.time() * 1000),
+        "project_id": project_id,
+        "reusable": bool(workflow.get("reusable", True)),
+        "workflow": workflow,
+        "sample_inputs": sample_inputs or {},
+        "normalized_preview": workflow_spec_preview(workflow, normalized=normalized),
+        "preview": preview,
+        "audit": audit,
+        "self_check": self_check or {},
+        "source": source or {},
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+    return {
+        "artifact_ref": artifact_ref_from_name(path.name),
+        "preview": preview,
+        "audit": audit,
+        "self_check": payload["self_check"],
+    }
+
+
+def load_workflow_spec_artifact(project_id: str, artifact_ref: str) -> dict[str, Any]:
+    path = _artifact_path(project_id, artifact_ref)
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"workflow spec artifact not found: {artifact_ref}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("kind") != "workflow_spec":
+        raise ValueError("invalid workflow spec artifact")
+    workflow = payload.get("workflow")
+    if not isinstance(workflow, dict):
+        raise ValueError("workflow spec artifact has no workflow object")
+    return payload
+
+
+def save_workflow_repair_candidate(
+    *,
+    project_id: str,
+    workflow: dict[str, Any],
+    sample_inputs: dict[str, Any] | None = None,
+    audit: dict[str, Any] | None = None,
+    source: dict[str, Any] | None = None,
+    applied: list[dict[str, Any]] | None = None,
+    user_preview: dict[str, Any] | None = None,
+    self_check: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    name = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:10]}.json"
+    path = _repair_path(project_id, name)
+    preview = workflow_spec_preview(workflow)
+    if isinstance(user_preview, dict):
+        preview = {
+            **{
+                k: v
+                for k, v in user_preview.items()
+                if k not in _STRUCTURAL_PREVIEW_KEYS and v not in (None, "", [], {})
+            },
+            **preview,
+        }
+    if isinstance(audit, dict):
+        preview["audit_status"] = audit.get("status")
+        preview["can_save"] = bool(audit.get("can_save"))
+        preview["can_run"] = bool(audit.get("can_run"))
+        preview["recommended_use"] = audit.get("recommended_use") or "blocked"
+    payload = {
+        "kind": "workflow_repair_candidate",
+        "schema_version": "workflow_repair_candidate_v1",
+        "created_at_ms": int(time.time() * 1000),
+        "project_id": project_id,
+        "workflow": workflow,
+        "sample_inputs": sample_inputs or {},
+        "preview": preview,
+        "audit": audit or {},
+        "applied": applied or [],
+        "self_check": self_check or {},
+        "source": source or {},
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+    return {
+        "repair_ref": repair_ref_from_name(path.name),
+        "preview": preview,
+        "audit": payload["audit"],
+        "self_check": payload["self_check"],
+    }
+
+
+def load_workflow_repair_candidate(project_id: str, repair_ref: str) -> dict[str, Any]:
+    path = _repair_path(project_id, repair_ref)
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"workflow repair candidate not found: {repair_ref}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("kind") != "workflow_repair_candidate":
+        raise ValueError("invalid workflow repair candidate")
+    workflow = payload.get("workflow")
+    if not isinstance(workflow, dict):
+        raise ValueError("workflow repair candidate has no workflow object")
+    return payload

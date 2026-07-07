@@ -18,7 +18,7 @@ from app.db.session import session_scope
 from app.services.media_provider import test_provider as _test_provider
 
 
-_MEDIA_API_FORMATS = {"openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "suno_compatible", "openai_tts"}
+_MEDIA_API_FORMATS = {"openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"}
 _MEDIA_KINDS = {"image", "video", "audio"}
 
 
@@ -70,7 +70,7 @@ async def media_add_provider(
     base_url: API base, e.g. 'https://api.siliconflow.cn' (no trailing /v1)
     api_key: provider API key
     model_name: model identifier sent to the API
-    api_format: 'openai' (default image format), 'raw'/'raw_post', 'volcengine_ark', 'xai_video', 'grok_1_5', 't8_grok_video_3', 'suno_compatible', or 'openai_tts'
+    api_format: 'openai' (default image format), 'raw'/'raw_post', 'volcengine_ark', 'xai_video', 'grok_1_5', 't8_grok_video_3', 'lingke_media_generate', 'suno_compatible', or 'openai_tts'
     set_active: if True, mark this as the active provider for this kind
     params: extra default parameters (size, quality, steps, etc.)
     """

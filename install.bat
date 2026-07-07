@@ -20,6 +20,14 @@ if %errorlevel% neq 0 (
 )
 
 if not exist data mkdir data
+if not exist assets mkdir assets
+if not exist config mkdir config
+if not exist plugins mkdir plugins
+if not exist skills mkdir skills
+if not exist skills\workflows mkdir skills\workflows
+if not exist skills\prompts mkdir skills\prompts
+if not exist skills\review mkdir skills\review
+if not exist workflow_templates mkdir workflow_templates
 if not exist storage mkdir storage
 if not exist storage\assets mkdir storage\assets
 if not exist storage\exports mkdir storage\exports

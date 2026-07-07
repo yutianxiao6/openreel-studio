@@ -60,6 +60,7 @@ from app.agent.vision_context import (
     build_vision_context,
     configured_max_images,
     multimodal_content,
+    redact_image_data_urls,
     vision_metadata_payload,
 )
 from sqlmodel import select
@@ -116,6 +117,7 @@ _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 MAX_ITERATIONS = 200  # 上限很高，几乎不限；真正拦截靠重复错误检测
 _MENTOR_GUIDE_CACHE_KEY = "_mentor_guides_loaded"
 _SKILL_GUIDE_CACHE_KEY = "_skills_loaded"
+_TASK_DONE_STATUSES = {"completed", "skipped"}
 
 _INTERNAL_NAME_RE = re.compile(
     r"\b(?:agent|asset|canvas|config|drama|file|media|memory|mcp|model|node|"
@@ -129,6 +131,11 @@ _INTERNAL_FUNCTION_RE = re.compile(
 _INTERNAL_PARAM_RE = re.compile(
     r"\b(?:scope|node_id|project_id|tool|function|api|API)\s*=\s*['\"][^'\"]+['\"]"
 )
+
+
+def _task_is_active_for_agent(task: Any) -> bool:
+    status = str(getattr(task, "status", "") or "pending").strip().lower()
+    return status not in _TASK_DONE_STATUSES
 
 
 def _sanitize_user_visible_text(text: str) -> str:
@@ -326,6 +333,14 @@ def _deferred_tool_target(tool_args: dict[str, Any]) -> str:
     if not isinstance(tool_args, dict):
         return ""
     return str(tool_args.get("name") or "").strip().replace("__", ".")
+
+
+def _agent_run_agent_name(tool_name: str, tool_args: dict[str, Any]) -> str:
+    if tool_name == "agent.run":
+        return str(tool_args.get("agent") or "").strip()
+    if tool_name != "tool.execute" or _deferred_tool_target(tool_args) != "agent.run":
+        return ""
+    return str(_deferred_tool_input(tool_args).get("agent") or "").strip()
 
 
 def _template_lookup_state_payload(tool_args: dict[str, Any], result: Any) -> dict[str, Any] | None:
@@ -635,6 +650,74 @@ def _format_size(size: int | None) -> str:
     if size < 1024 * 1024:
         return f"{size / 1024:.1f} KB"
     return f"{size / (1024 * 1024):.1f} MB"
+
+
+def _subagent_usage_records(result: Any) -> list[dict[str, Any]]:
+    if not isinstance(result, dict):
+        return []
+    records = result.get("_subagent_usage")
+    if not isinstance(records, list):
+        return []
+    return [item for item in records if isinstance(item, dict) and isinstance(item.get("usage"), dict)]
+
+
+def _subagent_trace_records(result: Any) -> list[dict[str, Any]]:
+    if not isinstance(result, dict):
+        return []
+    records = result.get("_subagent_trace")
+    if not isinstance(records, list):
+        return []
+    return [item for item in records if isinstance(item, dict)]
+
+
+_TRACE_OMITTED_TOOL_ARG_KEYS = {
+    "_requires_plan",
+    "_state",
+    "_user_message",
+    "project_id",
+}
+
+
+def _traceable_tool_value(value: Any, *, depth: int = 0) -> Any:
+    value = redact_image_data_urls(value)
+    if depth >= 5:
+        return "<max_depth>"
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= 40:
+                out["_truncated_keys"] = len(value) - 40
+                break
+            key_str = str(key)
+            if key_str in _TRACE_OMITTED_TOOL_ARG_KEYS:
+                continue
+            out[key_str] = _traceable_tool_value(item, depth=depth + 1)
+        return out
+    if isinstance(value, list):
+        out = [_traceable_tool_value(item, depth=depth + 1) for item in value[:20]]
+        if len(value) > 20:
+            out.append({"_truncated_items": len(value) - 20})
+        return out
+    return value
+
+
+def _traceable_tool_call_input(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(tool_args, dict):
+        return {"tool": tool_name, "input": {}}
+    if tool_name == "tool.execute":
+        target = _deferred_tool_target(tool_args)
+        return {
+            "tool": tool_name,
+            "deferred_tool_name": target,
+            "input": {
+                "name": target,
+                "input": _traceable_tool_value(_deferred_tool_input(tool_args)),
+            },
+        }
+    return {
+        "tool": tool_name,
+        "input": _traceable_tool_value(tool_args),
+    }
 
 
 def _coerce_types(kwargs: dict, params) -> dict:
@@ -1015,6 +1098,7 @@ async def build_split_system_result(
         history=result.history,
         sections=tuple(sections),
         tool_namespaces=result.tool_namespaces,
+        tool_profile=result.tool_profile,
         cache_key=result.cache_key,
         runtime=runtime,
     )
@@ -1158,6 +1242,14 @@ class AgentOrchestrator:
         error = str(result.get("error") or "").strip()
         hint = str(result.get("hint") or "").strip()
         stop_reason = str(result.get("stop_reason") or "")
+        if kind == "subagent_blocked" or stop_reason == "subagent_blocked":
+            summary = str(result.get("summary") or error or "子 Agent 返回 blocked，未提交结果。").strip()
+            nested = result.get("result") if isinstance(result.get("result"), dict) else {}
+            issues = nested.get("issues") if isinstance(nested.get("issues"), list) else []
+            issue_text = "；".join(str(item) for item in issues[:3] if str(item).strip())
+            if issue_text:
+                return f"{summary} 主要问题：{issue_text}"
+            return summary
         if stop_reason == "repeated_tool_error":
             tool = str(result.get("tool") or result.get("_deferred_tool") or "unknown_tool")
             repeat_count = result.get("repeat_count") or "多"
@@ -1432,6 +1524,14 @@ class AgentOrchestrator:
                 cur_referenced_node_ids = item.get("referenced_node_ids") or []
                 cur_display_message = item.get("display_message")
                 cur_user_metadata = item.get("user_metadata")
+                metadata = cur_user_metadata if isinstance(cur_user_metadata, dict) else {}
+                client_user_message_id = metadata.get("clientUserMessageId")
+                yield {
+                    "type": "queued_turn_started",
+                    "client_user_message_id": client_user_message_id if isinstance(client_user_message_id, str) else None,
+                    "message": str(cur_display_message or cur_msg or ""),
+                    "queued_remaining": len(queued_backlog),
+                }
                 continue
 
             break
@@ -1467,7 +1567,7 @@ class AgentOrchestrator:
         try:
             from app.agent.task_graph import task_graph as _tg_init
             _init_tasks = _tg_init.list_all(project_id or None)
-            _active_tasks = [t for t in _init_tasks if t.status != "completed"]
+            _active_tasks = [t for t in _init_tasks if _task_is_active_for_agent(t)]
             if _active_tasks:
                 yield {
                     "type": "checklist_updated",
@@ -2088,6 +2188,7 @@ class AgentOrchestrator:
         from .prompt_assembler import (
             PromptContext,
             derive_status_flags,
+            select_tool_profile,
             select_tool_namespaces,
             should_require_plan,
         )
@@ -2100,7 +2201,8 @@ class AgentOrchestrator:
             **derive_status_flags(state),
         )
         tools = registry.get_tools_for_agent_loop(
-            namespaces=select_tool_namespaces(_ctx)
+            namespaces=select_tool_namespaces(_ctx),
+            profile=select_tool_profile(_ctx),
         )
         if _ctx.collaboration_mode == "plan":
             allowed_tools = plan_mode_allowed_tools()
@@ -2123,6 +2225,7 @@ class AgentOrchestrator:
             system_chars=prompt_assembly_diag.get("system_chars"),
             history_chars=prompt_assembly_diag.get("history_chars"),
             tool_namespaces=prompt_assembly_diag.get("tool_namespaces"),
+            tool_profile=prompt_assembly_diag.get("tool_profile"),
             tools_count=len(_visible_tool_names),
         )
         trace.emit(
@@ -2149,6 +2252,8 @@ class AgentOrchestrator:
         tool_error_counts: dict[tuple[str, str], int] = {}
         terminal_loop_error: dict[str, Any] | None = None
         no_text_fallback_used = False
+        empty_length_retries = 0
+        truncated_tool_call_retries = 0
         max_iter = agent_prefs["max_iterations"]
         EXTRACT_EVERY = 10  # 每 N 个 iteration 周期抽取一次关键事实
         for iteration in range(max_iter):
@@ -2218,7 +2323,7 @@ class AgentOrchestrator:
                 )
                 try:
                     summary_result = await self.llm_service.generate(
-                        task_type="agent_loop",
+                        task_type="agent_compact",
                         messages=[{"role": "user", "content": summary_prompt}],
                         system="You are a conversation summarizer. Be concise.",
                     )
@@ -2402,7 +2507,7 @@ class AgentOrchestrator:
                             exclude_latest_user_content=message,
                         )
                         summary_result = await self.llm_service.generate(
-                            task_type="agent_loop",
+                            task_type="agent_compact",
                             messages=[{"role": "user", "content": summary_prompt}],
                             system="You are a conversation summarizer. Be concise.",
                         )
@@ -2604,6 +2709,26 @@ class AgentOrchestrator:
 
             # No tool calls → output text, done(but check if audit needed first)
             if not msg.tool_calls:
+                finish_reason = str(getattr(choice, "finish_reason", "") or "").strip().lower()
+                if not msg.content and finish_reason in {"length", "max_tokens"} and empty_length_retries < 2:
+                    empty_length_retries += 1
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "上一轮输出达到长度上限且没有形成可执行结果。"
+                                "请用更短的下一步继续；需要调用工具时直接发起紧凑 tool call，"
+                                "省略解释、长正文和长字段。"
+                            ),
+                        }
+                    )
+                    trace.emit(
+                        "loop_transition",
+                        iteration=iteration,
+                        transition_reason="empty_length_response_retry",
+                        retry_count=empty_length_retries,
+                    )
+                    continue
                 raw_text = msg.content or ""
                 proposed_plan_markdown = ""
                 if current_collaboration_mode(state) == "plan":
@@ -2629,7 +2754,7 @@ class AgentOrchestrator:
                 try:
                     from app.agent.task_graph import task_graph as _tg2
                     _tasks = _tg2.list_all(project_id or None)
-                    _active = [t for t in _tasks if t.status != "completed"]
+                    _active = [t for t in _tasks if _task_is_active_for_agent(t)]
                     checklist = [{"step_id": t.id, "title": t.subject, "tool": t.tool or "", "status": t.status} for t in _active]
                 except Exception:
                     checklist = []
@@ -2674,8 +2799,9 @@ class AgentOrchestrator:
                     tool_args = {}
                 # Always use the real project_id, never trust LLM's value
                 tool_args["project_id"] = project_id
-                if tool_name == "tool.execute":
+                if tool_name in {"tool.search", "tool.describe", "tool.execute"}:
                     tool_args["_state"] = state
+                if tool_name == "tool.execute":
                     tool_args["_user_message"] = message
                     tool_args["_requires_plan"] = _requires_plan
                 tool_args = _normalize_attachment_references_in_tool_args(tool_name, tool_args, attachments)
@@ -2688,6 +2814,10 @@ class AgentOrchestrator:
                 iteration=iteration,
                 transition_reason="assistant_requested_tools",
                 tool_names=round_tools,
+                tool_calls=[
+                    _traceable_tool_call_input(tool_name, tool_args)
+                    for _, tool_name, tool_args in round_tool_calls
+                ],
             )
             round_progress_event = await self._build_live_agent_round_summary(
                 iteration,
@@ -2696,6 +2826,13 @@ class AgentOrchestrator:
                 message,
                 planned_actions,
             )
+            round_tool_agents = [
+                agent
+                for _tool_call, call_tool_name, call_tool_args in round_tool_calls
+                if (agent := _agent_run_agent_name(call_tool_name, call_tool_args))
+            ]
+            if round_tool_agents:
+                round_progress_event["tool_agents"] = round_tool_agents
             yield round_progress_event
             round_tool_start_content = (
                 str(round_progress_event.get("content") or "").strip()
@@ -2724,6 +2861,7 @@ class AgentOrchestrator:
             for tool_call, tool_name, tool_args in round_tool_calls:
                 tool_started_at = time.perf_counter()
                 deferred_tool_name = _deferred_tool_target(tool_args) if tool_name == "tool.execute" else ""
+                tool_agent_name = _agent_run_agent_name(tool_name, tool_args)
                 cancel_reason = await mq.get_cancel_reason(project_id)
                 if cancel_reason:
                     await mq.clear_cancel(project_id)
@@ -2736,6 +2874,50 @@ class AgentOrchestrator:
                     yield {"type": "cancelled", "message": f"已停止当前任务：{cancel_reason}"}
                     yield {"type": "text_delta", "content": _sanitize_user_visible_text(f"\n\n已停止当前任务。{cancel_reason}")}
                     return
+
+                if tool_name == "tool.execute" and not deferred_tool_name:
+                    truncated_tool_call_retries += 1
+                    result = normalize_tool_result(
+                        {
+                            "ok": False,
+                            "error": "工具调用参数没有形成有效目标，通常是上一轮输出过长被截断。",
+                            "error_kind": "truncated_tool_call",
+                            "hint": "下一轮使用更短的 tool call；填写 name 和 input，省略解释、长正文和长字段。",
+                        },
+                        tool_name=tool_name,
+                    )
+                    tool_output = build_tool_output_envelope(
+                        result,
+                        project_id=project_id,
+                        run_id=run_id,
+                        iteration=iteration,
+                        tool_name=tool_name,
+                    )
+                    trace.emit(
+                        "tool_result",
+                        iteration=iteration,
+                        tool_name=tool_name,
+                        deferred_tool_name=deferred_tool_name,
+                        transition_reason="truncated_tool_call_retry",
+                        duration_ms=elapsed_ms(tool_started_at),
+                        retry_count=truncated_tool_call_retries,
+                        error_kind=result_error_kind(result),
+                        **tool_trace_fields(tool_output),
+                    )
+                    yield {
+                        "type": "tool_start",
+                        "tool": tool_name,
+                        "round": iteration + 1,
+                        "content": round_tool_start_content,
+                    }
+                    yield tool_done_event(tool_name, iteration + 1, tool_output)
+                    _append_tool_result_messages(tool_call.id, tool_output)
+                    if truncated_tool_call_retries >= 3:
+                        tool_errors.append(result)
+                        terminal_loop_error = result
+                        stop_after_tool = True
+                        break
+                    continue
 
                 tool_budget = turn_budget.before_tool_call(tool_name, tool_args, state)
                 if not tool_budget.allowed:
@@ -2845,6 +3027,7 @@ class AgentOrchestrator:
                     "tool": tool_name,
                     "round": iteration + 1,
                     "content": round_tool_start_content,
+                    "agent": tool_agent_name or None,
                 }
 
                 spec = registry.get(tool_name)
@@ -2960,7 +3143,62 @@ class AgentOrchestrator:
                         raw_result = await registry.call(tool_name, **call_kwargs)
                         if _destructive:
                             await self._drop_session_cache(None)
+                        subagent_usage_records = _subagent_usage_records(raw_result)
+                        subagent_trace_records = _subagent_trace_records(raw_result)
                         raw_result = normalize_tool_result(raw_result, tool_name=tool_name)
+                        for subagent_record in subagent_trace_records:
+                            trace.emit(
+                                "subagent_trace",
+                                iteration=iteration,
+                                tool_name=tool_name,
+                                deferred_tool_name=deferred_tool_name,
+                                transition_reason="subagent_internal_trace",
+                                subagent=subagent_record.get("agent"),
+                                subagent_step=subagent_record.get("step"),
+                                subagent_event=subagent_record.get("event"),
+                                payload={
+                                    key: value
+                                    for key, value in subagent_record.items()
+                                    if key not in {"agent", "step", "event"}
+                                },
+                            )
+                        for usage_record in subagent_usage_records:
+                            usage_snapshot = usage_record.get("usage")
+                            if not isinstance(usage_snapshot, dict) or not usage_snapshot:
+                                continue
+                            run_token_totals = accumulate_usage(run_token_totals, usage_snapshot)
+                            session_token_totals = accumulate_usage(session_token_totals, usage_snapshot)
+                            usage_payload = build_usage_monitor_payload(
+                                usage_snapshot,
+                                run_token_totals,
+                                session_token_totals,
+                            )
+                            phase = f"subagent:{usage_record.get('agent') or 'unknown'}"
+                            trace.emit(
+                                "llm_usage",
+                                iteration=iteration,
+                                transition_reason="subagent_model_response_usage",
+                                phase=phase,
+                                subagent=usage_record.get("agent"),
+                                subagent_step=usage_record.get("step"),
+                                **usage_payload,
+                            )
+                            state["agent_token_usage"] = session_token_totals
+                            try:
+                                await self.project_service.update_project_state(
+                                    project_id,
+                                    {"agent_token_usage": session_token_totals},
+                                )
+                            except Exception:
+                                logger.exception("failed to persist subagent token usage")
+                            yield {
+                                "type": "token_usage",
+                                "project_id": project_id,
+                                "run_id": run_id,
+                                "round": iteration + 1,
+                                "phase": phase,
+                                **usage_payload,
+                            }
                         skill_cache = _skill_guide_cache_payload(tool_name, raw_result)
                         if skill_cache:
                             existing_skill_cache = state.get(_SKILL_GUIDE_CACHE_KEY)
@@ -3089,6 +3327,30 @@ class AgentOrchestrator:
                         step_index += 1
                         error_kind = tool_error_kind or "tool_error"
                         tool_errors.append(result)
+                        if (
+                            tool_name == "tool.execute"
+                            and isinstance(result, dict)
+                            and str(result.get("_deferred_tool") or "") == "agent.run"
+                            and (
+                                str(result.get("error_kind") or "") == "subagent_blocked"
+                                or str(result.get("status") or "") == "blocked"
+                            )
+                        ):
+                            terminal_loop_error = {
+                                **result,
+                                "stop_reason": "subagent_blocked",
+                            }
+                            stop_after_tool = True
+                            trace.emit(
+                                "loop_transition",
+                                iteration=iteration,
+                                tool_name=tool_name,
+                                transition_reason="subagent_blocked_stopped",
+                                error_kind=error_kind,
+                                deferred_tool_name=str(result.get("_deferred_tool") or ""),
+                                status=str(result.get("status") or ""),
+                            )
+                            break
                         error_key = (tool_name, error_kind)
                         tool_error_counts[error_key] = tool_error_counts.get(error_key, 0) + 1
                         # Also count per-tool errors (any error_kind) so the model
@@ -3327,7 +3589,7 @@ class AgentOrchestrator:
                     error_kind=result_error_kind(result),
                     **tool_trace_fields(tool_output),
                 )
-                yield tool_done_event(tool_name, iteration + 1, tool_output)
+                yield tool_done_event(tool_name, iteration + 1, tool_output, agent=tool_agent_name or None)
 
                 # Blueprint tree tools → emit blueprint_tree_changed SSE event
                 # so the frontend can incrementally update its tree cache.
@@ -3419,7 +3681,7 @@ class AgentOrchestrator:
                     try:
                         from app.agent.task_graph import task_graph
                         tasks = task_graph.list_all(project_id or None)
-                        active = [t for t in tasks if t.status != "completed"]
+                        active = [t for t in tasks if _task_is_active_for_agent(t)]
                         checklist_payload = [
                             {
                                 "step_id": t.id,
@@ -4050,6 +4312,7 @@ class AgentOrchestrator:
             all_tasks = _tg.list_all(task_project_id) if task_project_id else []
         except Exception:
             all_tasks = []
+        active_tasks = [t for t in all_tasks if _task_is_active_for_agent(t)]
         checklist = [
             {
                 "step_id": t.id,
@@ -4059,7 +4322,7 @@ class AgentOrchestrator:
                 "blocked_by": t.blocked_by or [],
                 "actual_node_id": (t.input or {}).get("node_id", ""),
             }
-            for t in all_tasks
+            for t in active_tasks
         ]
         # 没有任务、没有 plan 前置要求 → 不注入。节点状态由模型按需 node.list/node.get 读取。
         if not checklist and not require_plan:
@@ -4069,7 +4332,6 @@ class AgentOrchestrator:
 
         # 清单段
         if checklist:
-            done = sum(1 for s in checklist if s.get("status") == "completed")
             failed = sum(1 for s in checklist if s.get("status") == "failed")
             pending_idx = next(
                 (i for i, s in enumerate(checklist)
@@ -4077,14 +4339,14 @@ class AgentOrchestrator:
                 None,
             )
             lines.append(
-                f"\n执行清单({done}/{len(checklist)} 完成,失败 {failed}):"
+                f"\n待处理清单({len(checklist)} 项,失败 {failed}):"
             )
             for i, s in enumerate(checklist):
                 st = s.get("status") or "pending"
                 marker = {
-                    "completed": "[done]",
                     "failed": "[failed]",
                     "in_progress": "[running]",
+                    "blocked": "[blocked]",
                 }.get(st, "[pending]")
                 cursor = " ← 当前应做" if i == pending_idx else ""
                 nid = s.get("actual_node_id")
@@ -4100,8 +4362,7 @@ class AgentOrchestrator:
                 )
             else:
                 lines.append(
-                    "\n清单已全部跑完。做收尾自检，然后纯文本告诉用户结果。"
-                    "用户明确要求清理残留画布内容时，按删除确认流程处理。"
+                    "\n清单里只剩失败或阻塞项。检查真实节点和工具结果后修复，无法继续时向用户说明。"
                 )
         elif require_plan:
             lines.append(

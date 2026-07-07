@@ -28,11 +28,22 @@ class AgentRoundEvent(ChatEvent):
     content: str
     source: Literal["model", "action_summary"] = "model"
     tools: list[str] = Field(default_factory=list)
+    tool_agents: list[str] = Field(default_factory=list)
 
 
 class AgentRoundDoneEvent(ChatEvent):
     type: Literal["agent_round_done"]
     round: int
+
+
+class SubagentRoundEvent(ChatEvent):
+    type: Literal["subagent_round"]
+    agent: str
+    step: int
+    content: str
+    tool: str | None = None
+    status: Literal["running", "completed", "failed"] = "running"
+    source: Literal["model"] | None = None
 
 
 class TokenUsageEvent(ChatEvent):
@@ -57,6 +68,7 @@ class ToolStartEvent(ChatEvent):
     tool: str
     round: int | None = None
     content: str | None = None
+    agent: str | None = None
 
 
 class ToolDoneEvent(ChatEvent):
@@ -65,6 +77,7 @@ class ToolDoneEvent(ChatEvent):
     round: int | None = None
     result: Any = None
     tool_output: dict[str, Any] | None = None
+    agent: str | None = None
 
 
 class StepStartEvent(ChatEvent):
@@ -247,6 +260,13 @@ class MergedMessagesEvent(ChatEvent):
     count: int
 
 
+class QueuedTurnStartedEvent(ChatEvent):
+    type: Literal["queued_turn_started"]
+    client_user_message_id: str | None = None
+    message: str | None = None
+    queued_remaining: int | None = None
+
+
 class ParallelStartEvent(ChatEvent):
     type: Literal["parallel_start"]
     total_steps: int
@@ -280,6 +300,7 @@ _EVENT_MODELS: dict[str, type[ChatEvent]] = {
     "text_delta": TextDeltaEvent,
     "agent_round": AgentRoundEvent,
     "agent_round_done": AgentRoundDoneEvent,
+    "subagent_round": SubagentRoundEvent,
     "token_usage": TokenUsageEvent,
     "tool_start": ToolStartEvent,
     "tool_done": ToolDoneEvent,
@@ -317,6 +338,7 @@ _EVENT_MODELS: dict[str, type[ChatEvent]] = {
     "info": InfoEvent,
     "queued": QueuedEvent,
     "merged_messages": MergedMessagesEvent,
+    "queued_turn_started": QueuedTurnStartedEvent,
     "parallel_start": ParallelStartEvent,
     "step_failed": StepFailedEvent,
     "step_completed": StepCompletedEvent,

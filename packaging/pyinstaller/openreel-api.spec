@@ -16,6 +16,12 @@ datas = [
 ]
 datas += collect_data_files("litellm")
 
+KEYFRAME_PLUGIN_DIR = ROOT / "plugins" / "keyframe-extractor"
+for plugin_file in ("main.py", "plugin.json"):
+    path = KEYFRAME_PLUGIN_DIR / plugin_file
+    if path.exists():
+        datas.append((str(path), "defaults/plugins/keyframe-extractor"))
+
 mcp_config = API_DIR / "app" / "mcp_servers.json"
 if mcp_config.exists():
     datas.append((str(mcp_config), "app"))

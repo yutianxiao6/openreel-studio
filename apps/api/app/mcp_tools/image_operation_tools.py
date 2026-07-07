@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.db.session import session_scope
 from app.services import image_operations
+from app.services.node_public_ids import resolve_internal_node_id
 
 
 async def grid_split(
@@ -73,6 +75,68 @@ async def place_grid_cell(
         source_ref=source_ref,
         fit=fit,
         remove_source_node=remove_source_node,
+    )
+
+
+async def edit(
+    project_id: str,
+    node_id: str,
+    operations: list[dict[str, Any]] | None = None,
+    action: str = "preview",
+    source_ref: str | None = None,
+    candidate_ref: str | None = None,
+) -> dict[str, Any]:
+    async with session_scope() as session:
+        resolved_node_id = await resolve_internal_node_id(session, project_id, node_id)
+    return await image_operations.edit_image_node(
+        project_id=project_id,
+        node_id=resolved_node_id or node_id,
+        operations=operations or [],
+        action=action,
+        source_ref=source_ref,
+        candidate_ref=candidate_ref,
+    )
+
+
+async def segment(
+    project_id: str,
+    node_id: str | None = None,
+    source_ref: str | None = None,
+    target: str = "main_subject",
+    method: str = "auto",
+    unit: str = "normalized",
+    rect: dict[str, Any] | list[Any] | None = None,
+    bbox: dict[str, Any] | list[Any] | None = None,
+    foreground_points: list[Any] | None = None,
+    background_points: list[Any] | None = None,
+    background_tolerance: int = 28,
+    expand: int = 0,
+    shrink: int = 0,
+    feather: float = 1.0,
+    smooth: int = 1,
+    grabcut_iterations: int = 5,
+) -> dict[str, Any]:
+    resolved_node_id = None
+    if node_id:
+        async with session_scope() as session:
+            resolved_node_id = await resolve_internal_node_id(session, project_id, node_id)
+    return await image_operations.segment_image_node(
+        project_id=project_id,
+        node_id=resolved_node_id or node_id,
+        source_ref=source_ref,
+        target=target,
+        method=method,
+        unit=unit,
+        rect=rect,
+        bbox=bbox,
+        foreground_points=foreground_points or [],
+        background_points=background_points or [],
+        background_tolerance=background_tolerance,
+        expand=expand,
+        shrink=shrink,
+        feather=feather,
+        smooth=smooth,
+        grabcut_iterations=grabcut_iterations,
     )
 
 

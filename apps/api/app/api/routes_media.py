@@ -20,7 +20,7 @@ router = APIRouter()
 
 
 def _storage_root() -> Path:
-    return Path(getattr(settings, "STORAGE_PATH", "./storage")).resolve()
+    return settings.storage_path_resolved
 
 
 def _is_within(path: Path, root: Path) -> bool:

@@ -44,6 +44,29 @@ def test_tool_output_envelope_keeps_small_result_inline(tmp_path, monkeypatch) -
     assert trace["tool_result_raw_chars"] >= len('{"ok":true}')
 
 
+def test_tool_output_strips_subagent_private_diagnostics_from_model_context(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(context_compact, "tool_results_dir", lambda: tmp_path)
+
+    envelope = build_tool_output_envelope(
+        {
+            "ok": True,
+            "status": "completed",
+            "_subagent_usage": [{"agent": "image_editor", "usage": {"total_tokens": 42}}],
+            "_subagent_trace": [{"agent": "image_editor", "event": "tool_result"}],
+        },
+        project_id="project",
+        run_id="run",
+        iteration=1,
+        tool_name="tool.execute",
+        budget_chars=1000,
+    )
+
+    rendered = envelope["model_visible"]["content"]
+    assert "_subagent_usage" not in rendered
+    assert "_subagent_trace" not in rendered
+    assert "image_editor" not in rendered
+
+
 def test_tool_output_envelope_preserves_success_model_feedback(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(context_compact, "tool_results_dir", lambda: tmp_path)
 
@@ -324,6 +347,65 @@ def test_tool_output_envelope_preserves_error_feedback_for_model_and_ui(tmp_path
     assert trace["tool_result_success"] is False
     assert trace["tool_result_outcome"] == "recoverable_error"
     assert trace["tool_result_summary"]["error_kind"] == "node_not_found"
+
+
+def test_tool_output_envelope_preserves_compacted_subagent_blocked_details(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(context_compact, "tool_results_dir", lambda: tmp_path)
+
+    result = {
+        "_deferred_tool": "agent.run",
+        "ok": False,
+        "agent": "image_editor",
+        "status": "blocked",
+        "summary": "已尝试多轮主体分割，但无法可靠提交。",
+        "result": {
+            "status": "blocked",
+            "node_id": "12",
+            "committed": False,
+            "candidate_ref": "/api/media/project/preview.png",
+            "committed_ref": None,
+            "operations_summary": "多次调整 GrabCut 参数并检查透明区域。",
+            "verification": "候选图仍有背景残留。",
+            "issues": ["背景和发丝颜色过近，当前分割不可靠。"],
+        },
+        "steps_used": 12,
+        "error": "已尝试多轮主体分割，但无法可靠提交。",
+        "error_kind": "subagent_blocked",
+        "hint": "向用户说明失败原因、已尝试步骤和可选下一步。",
+        "suggested_next": "report_blocked_to_user",
+        "model_feedback": {
+            "tool": "agent.run",
+            "error_kind": "subagent_blocked",
+            "what_went_wrong": "已尝试多轮主体分割，但无法可靠提交。",
+            "how_to_fix": "向用户说明失败原因、已尝试步骤和可选下一步。",
+            "suggested_next": "report_blocked_to_user",
+            "evidence": {
+                "node_id": "12",
+                "committed": False,
+                "candidate_ref": "/api/media/project/preview.png",
+                "steps_used": 12,
+            },
+        },
+        "tool_log": [{"tool": "image.segment", "ok": True, "blob": "x" * 9000}],
+    }
+    envelope = build_tool_output_envelope(
+        result,
+        project_id="project",
+        run_id="run",
+        iteration=4,
+        tool_name="tool.execute",
+        budget_chars=500,
+    )
+
+    observation = json.loads(envelope["model_visible"]["content"])
+    assert observation["success"] is False
+    assert observation["next_action"] == "report_blocked_to_user"
+    assert observation["model_feedback"]["error_kind"] == "subagent_blocked"
+    assert observation["result"]["summary"]["subagent_result"]["committed"] is False
+    assert observation["result"]["summary"]["subagent_result"]["candidate_ref"].endswith("preview.png")
+    assert observation["result"]["summary"]["subagent_result"]["issues"][0].startswith("背景和发丝")
+    trace = tool_trace_fields(envelope)
+    assert trace["tool_result_summary"]["subagent_result"]["node_id"] == "12"
 
 
 def test_tool_output_envelope_routes_permission_errors_to_user_input(tmp_path, monkeypatch) -> None:

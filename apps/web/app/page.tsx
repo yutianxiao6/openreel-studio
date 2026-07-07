@@ -10,6 +10,7 @@ import { useViewModeStore } from "@/stores/viewModeStore"
 import { useBlueprintStore } from "@/stores/blueprintStore"
 import { SettingsModal } from "@/components/settings/SettingsModal"
 import { ProjectTitleEditor } from "@/components/project/ProjectTitleEditor"
+import { WorkspaceViewTabs, workspaceViewDescription, type WorkspaceView } from "@/components/workspace/WorkspaceViewTabs"
 import { api } from "@/lib/api"
 
 const LS_KEY = "drama.currentProjectId"
@@ -51,8 +52,14 @@ export default function HomePage() {
   const [chatWidth, setChatWidth] = useState<number>(CHAT_DEFAULT)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [mobilePane, setMobilePane] = useState<MobilePane>("chat")
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("canvas")
   const draggingRef = useRef(false)
   const viewModeReadyRef = useRef(false)
+
+  const switchWorkspaceView = useCallback((next: WorkspaceView) => {
+    setWorkspaceView(next)
+    setMobilePane("work")
+  }, [])
 
   useEffect(() => {
     const stored = typeof window !== "undefined" ? window.localStorage.getItem(LS_CHAT_WIDTH) : null
@@ -209,13 +216,13 @@ export default function HomePage() {
         </div>
         <div className={`min-h-0 flex-1 flex-col overflow-hidden md:flex ${mobilePane === "work" ? "flex" : "hidden"}`}>
           <div className="flex shrink-0 items-center gap-1 border-b border-white/10 bg-[#111318]/80 px-3 py-2">
-            <span className="rounded-md bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-950">创作画布</span>
+            <WorkspaceViewTabs value={workspaceView} onChange={switchWorkspaceView} />
             <span className="ml-auto hidden truncate text-[10px] text-zinc-600 sm:block">
-              任务驱动的 text / image / video / audio 节点实时展示
+              {workspaceViewDescription(workspaceView)}
             </span>
           </div>
           <div className="min-h-0 flex-1 overflow-hidden">
-            <WorkflowCanvas />
+            <WorkflowCanvas workspaceView={workspaceView} onWorkspaceViewChange={switchWorkspaceView} />
           </div>
         </div>
       </div>

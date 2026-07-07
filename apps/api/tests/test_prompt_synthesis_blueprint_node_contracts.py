@@ -1,5 +1,5 @@
 from app.agent import planner
-from app.agent.prompts import flow_paths, task_loop
+from app.agent.prompts import core_rules, task_loop, working_loop
 
 
 def test_planner_prompt_uses_generic_node_surface():
@@ -12,14 +12,16 @@ def test_planner_prompt_uses_generic_node_surface():
 
 
 def test_runtime_prompt_guides_generic_video_workflow():
-    combined = "\n".join([flow_paths.PROMPT, task_loop.PROMPT])
+    combined = "\n".join([working_loop.PROMPT, core_rules.PROMPT, task_loop.PROMPT])
 
     assert "text" in combined
     assert "image" in combined
     assert "video" in combined
-    assert "skill.search" in combined
-    assert "skill.get" in combined
+    assert "existing workflow templates" in combined
+    assert "Workflow Build Mode" not in combined
     assert "node" in combined
+    assert "workflow_spec returns" not in combined
+    assert "workflow.run" not in combined
     assert "blueprint.start_tree_draft" not in combined
     assert "blueprint.append_tree_node" not in combined
     assert "blueprint.finalize_tree_draft" not in combined

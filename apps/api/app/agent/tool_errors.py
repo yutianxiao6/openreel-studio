@@ -38,6 +38,8 @@ def _default_error_kind(result: dict[str, Any]) -> str:
 
 def _default_hint(error_kind: str) -> str:
     kind = str(error_kind or "")
+    if kind == "subagent_blocked":
+        return "子 Agent 已返回 blocked 终态。向用户说明失败原因、已尝试步骤和可选下一步。"
     if kind in {"missing_field", "missing_id", "missing_node", "missing_patch", "missing_prompt", "missing_video_node_for_video_request", "bad_deferred_tool_arguments", "invalid_field"}:
         return "检查工具参数和必填字段，必要时先读取项目或节点状态后再重试。"
     if kind in {"dependency_missing", "guide_not_loaded", "missing_prompt_source", "missing_prompt_template", "missing_template_selection_reason", "implicit_video_production_path"}:
@@ -53,6 +55,8 @@ def _default_hint(error_kind: str) -> str:
 
 def _default_suggested_next(error_kind: str) -> str:
     kind = str(error_kind or "")
+    if kind == "subagent_blocked":
+        return "report_blocked_to_user"
     if kind in {
         "missing_field",
         "missing_id",
@@ -99,6 +103,11 @@ def _diagnostic_evidence(result: dict[str, Any]) -> dict[str, Any]:
         "required_tool_calls",
         "required_tool_flow",
         "fix_example",
+        "agent",
+        "committed",
+        "candidate_ref",
+        "committed_ref",
+        "steps_used",
     )
     evidence: dict[str, Any] = {}
     for key in evidence_keys:

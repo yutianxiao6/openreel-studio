@@ -3,6 +3,8 @@ name: story_template_method
 tool_name: skill.story_template_method
 description: 故事模板图生视频方法指南：解释适用条件、图片模型要求、通用 image/video 节点组织和提示词写法
 when_to_use: 用户明确要求故事模板、复杂动作调度、强美术风格，或模型判断普通宫格/首尾帧不足以稳定表达空间和动作时
+category: workflow
+applies_to: 故事模板 故事模板图 复杂动作调度 强美术风格 视觉开发板 story template action choreography
 tags: [video, image_to_video, story_template, guide]
 source: skill
 ---

@@ -467,6 +467,38 @@ class ToolSpec:
         return self.name.split(".", 1)[1] if "." in self.name else self.name
 
 
+@dataclass(frozen=True)
+class ToolRuntimeMetadata:
+    name: str
+    namespace: str
+    exposure: str
+    description: str
+    tags: tuple[str, ...]
+    search_hint: str
+    usage_hints: tuple[str, ...]
+    is_read_only: bool
+    is_destructive: bool
+    requires_confirmation: bool
+    is_concurrency_safe: bool
+    max_result_size: int | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "namespace": self.namespace,
+            "exposure": self.exposure,
+            "description": self.description,
+            "tags": list(self.tags),
+            "search_hint": self.search_hint,
+            "usage_hints": list(self.usage_hints),
+            "is_read_only": self.is_read_only,
+            "is_destructive": self.is_destructive,
+            "requires_confirmation": self.requires_confirmation,
+            "is_concurrency_safe": self.is_concurrency_safe,
+            "max_result_size": self.max_result_size,
+        }
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
@@ -556,22 +588,56 @@ class ToolRegistry:
 
     def tool_exposure(self, name: str) -> str:
         """Return the agent-facing exposure tier for a registered tool."""
+        return self.tool_exposure_for_profile(name)
+
+    def tool_exposure_for_profile(self, name: str, profile: str | None = None) -> str:
+        """Return exposure tier for a tool under the selected core profile."""
         spec = self.get(name)
         if spec is None:
             return "unregistered"
         if name in self._AGENT_HIDDEN:
             return "hidden"
-        if name in self._CORE_AGENT_TOOLS:
+        if name in self._core_tool_names_for_profile(profile):
             return "core"
         if name in self._TIER1_EXTRA or spec.namespace in self._TIER1_NS:
             return "core"
         return "deferred"
 
-    def core_agent_tool_names(self) -> set[str]:
+    def runtime_metadata(self, name: str, profile: str | None = None) -> ToolRuntimeMetadata | None:
+        spec = self.get(name)
+        if spec is None:
+            return None
+        return ToolRuntimeMetadata(
+            name=spec.name,
+            namespace=spec.namespace,
+            exposure=self.tool_exposure_for_profile(name, profile),
+            description=spec.description,
+            tags=tuple(spec.tags),
+            search_hint=spec.search_hint,
+            usage_hints=tuple(spec.usage_hints),
+            is_read_only=spec.is_read_only,
+            is_destructive=spec.is_destructive,
+            requires_confirmation=spec.requires_confirmation,
+            is_concurrency_safe=spec.is_concurrency_safe,
+            max_result_size=spec.max_result_size,
+        )
+
+    def runtime_manifest(self, profile: str | None = None) -> list[dict[str, Any]]:
+        return [
+            metadata.as_dict()
+            for metadata in (
+                self.runtime_metadata(spec.name, profile)
+                for spec in sorted(self._tools.values(), key=lambda item: item.name)
+            )
+            if metadata is not None
+        ]
+
+    def core_agent_tool_names(self, profile: str = "default") -> set[str]:
+        core_names = self._core_tool_names_for_profile(profile)
         return {
             name
             for name in self._tools
-            if self.tool_exposure(name) == "core"
+            if name in core_names and name not in self._AGENT_HIDDEN
         }
 
     def deferred_tool_names(self) -> set[str]:
@@ -691,6 +757,8 @@ class ToolRegistry:
         # settings panel.
         *AGENT_HIDDEN_MEDIA_PROVIDER_READ_TOOL_NAMES,
         "media.test_provider",
+        "image.edit",
+        "image.segment",
         "image.grid_split",
         "image.grid_combine",
         "image.extract_grid_cell",
@@ -739,6 +807,11 @@ class ToolRegistry:
         # available for readonly/debug and attachment paths.
         # assets 库路径配置仍由设置/资产面板处理；显式保存走 deferred。
         "assets.set_library_path",
+        # Workflow build mode exposes workflow.canvas.inspect as the single
+        # model-facing active review surface. These remain registered for
+        # internal diagnostics and direct debug paths.
+        "workflow.state_evidence",
+        "workflow.semantic_review",
         # task.create/delete remain registered for explicit deferred cleanup and
         # backend compatibility, but are no longer part of the default core
         # tool surface.
@@ -748,9 +821,9 @@ class ToolRegistry:
         # blueprint write/cleanup wrappers have been internalized and unregistered.
     }
 
-    # Stable core tool surface for the Agent Loop. The node-first path keeps
-    # business workflow in skill.video_production and exposes primitives needed
-    # to read state, ask users, maintain a lightweight task ledger, and
+    # Stable core tool surface for the Agent Loop. The node-first path discovers
+    # business workflow through skill.search and scoped skill reads, and exposes primitives to
+    # read state, ask users, maintain a lightweight task ledger, and
     # create/update/run/delete nodes.
     _CORE_AGENT_TOOLS: set[str] = {
         "agent.review",
@@ -774,12 +847,34 @@ class ToolRegistry:
         "tool.search",
         "vision.view_image",
     }
+    _WORKFLOW_BUILD_CORE_TOOLS: set[str] = {
+        "interaction.request_input",
+        "project.get_state",
+        "skill.get",
+        "skill.search",
+        "workflow.canvas.inspect",
+        "workflow.spec.apply_patch",
+        "workflow.spec.read",
+        "workflow.template.export",
+        "workflow.template.read",
+        "workflow.template.resolve",
+    }
+    _CORE_TOOL_PROFILES: dict[str, set[str]] = {
+        "default": _CORE_AGENT_TOOLS,
+        "workflow_build": _WORKFLOW_BUILD_CORE_TOOLS,
+    }
     _CORE_NS: set[str] = {"agent", "canvas", "interaction", "node", "project", "skill", "task", "tool", "vision"}
+
+    @classmethod
+    def _core_tool_names_for_profile(cls, profile: str | None = None) -> set[str]:
+        key = str(profile or "default").strip().lower() or "default"
+        return set(cls._CORE_TOOL_PROFILES.get(key) or cls._CORE_AGENT_TOOLS)
 
     def get_tools_for_agent_loop(
         self,
         namespaces: list[str] | None = None,
         stable_core: bool = True,
+        profile: str = "default",
     ) -> list[dict[str, Any]]:
         """Export a curated tool list for the Agent Loop.
 
@@ -794,10 +889,11 @@ class ToolRegistry:
         Use `resolve_tool_name()` to convert back.
         """
         if stable_core:
+            core_names = self._core_tool_names_for_profile(profile)
             specs = [
                 spec
                 for spec in sorted(self._tools.values(), key=lambda s: s.name)
-                if spec.name in self._CORE_AGENT_TOOLS and spec.name not in self._AGENT_HIDDEN
+                if spec.name in core_names and spec.name not in self._AGENT_HIDDEN
             ]
             result: list[dict[str, Any]] = []
             for spec in specs:
@@ -897,6 +993,7 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "agent.map_reduce": "并行分发多个独立子任务，并可选做聚合摘要",
     "agent.pipeline": "按顺序执行协作阶段，并把上一阶段产出注入下一阶段",
     "agent.review": "隔离运行只读审查子 Agent，按用户需求和证据检查具体错误",
+    "agent.run": "把一个明确职责的任务委派给专职子 Agent，并返回隔离执行结果",
     "asset.list": "读取项目资产记录列表",
     "assets.get_library_path": "读取资产库路径配置",
     "assets.list_project": "读取单一本地资产库文件列表（兼容入口）",
@@ -920,6 +1017,8 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "file.workspace_read": "读取当前 workspace 内的文件内容",
     "file.workspace_search": "在当前 workspace 内按文件名或文本内容搜索",
     "file.workspace_write": "写入当前 workspace 内的文本文件",
+    "image.edit": "对图片节点执行本地裁剪、mask/分割、涂鸦、填充、文字和箭头编辑，先产出候选图再提交",
+    "image.segment": "对图片节点或图片引用生成主体分割 mask 和透明 PNG，不直接覆盖节点",
     "image.extract_grid_cell": "把宫格图片节点里的单个 cell 导出成新的图片节点",
     "image.grid_combine": "把多个同规格图片组合成图片节点内部宫格",
     "image.grid_split": "把图片节点切换为宫格编辑态并生成内部裁剪 cell",
@@ -946,10 +1045,9 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "project.reset": "按 scope 清理失败节点或执行已确认的全量项目重置",
     "scene.list": "读取项目场景列表",
     "shot.list": "读取项目镜头列表",
-    "skill.get": "读取指定 skill 全文",
+    "skill.get": "读取 skill 摘要或全文；workflow 默认摘要，detail='full' 才返回全文",
     "skill.project_mentor": "查询项目架构、规则、文档入口和排障顺序",
-    "skill.search": "搜索 skill；用户本地优先",
-    "skill.video_production": "读取节点优先的图片和视频制作流程",
+    "skill.search": "按 category/scope 搜索 workflow/prompt/review skill；返回用户自定义或内置默认来源",
     "system.models": "读取任务类型到模型的当前映射",
     "system.status": "读取系统状态、模型、工具、MCP 和能力摘要",
     "task.complete": "把执行任务标记为 completed 并保存结果摘要",
@@ -960,10 +1058,12 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "tool.execute": "执行已经 search/describe 过的 deferred 工具",
     "tool.search": "列出 visible deferred 工具目录，或按名称、分类、标签和描述搜索 deferred 工具",
     "vision.view_image": "读取项目图片节点或项目存储图片，并把一张或多张图片像素附加给主模型上下文",
+    "workflow.spec.apply_patch": "创建、替换或修订 workflow spec，并返回已校验保存的引用",
 }
 
 _STANDARD_CANNOT_BY_NAME: dict[str, str] = {
     "agent.review": "不能创建、修改、运行、删除、批准、重置或直接向用户提交；只返回审查结论给主 Agent",
+    "agent.run": "不能绕过子 Agent 白名单、当前项目作用域或权限策略",
     "canvas.delete": "不能当作 full reset；它不清任务、项目 state 或标题",
     "config.read": "不能写配置；配置修改走设置页或 config REST 控制面",
     "config.read_file": "不能写配置；配置修改走设置页或 config REST 控制面",
@@ -984,10 +1084,11 @@ _STANDARD_CANNOT_BY_NAME: dict[str, str] = {
     "tool.execute": "不能执行核心、隐藏或已注销工具，不能绕过 permission policy",
     "tool.search": "不能返回核心、隐藏或已注销工具；目录只包含 visible deferred 工具",
     "vision.view_image": "不能分析图片、生成摘要或替模型做判断；只把图片像素附加给主模型",
+    "workflow.spec.apply_patch": "不能创建画布节点、运行流程或绕过 workflow 协议校验",
 }
 
 _STANDARD_CANNOT_BY_NAMESPACE: dict[str, str] = {
-    "agent": "不能授权写入、删除、重置或生成媒体；协作子任务仍受只读/权限边界约束",
+    "agent": "不能绕过角色白名单、节点作用域、权限策略或破坏性确认；写能力只来自明确注册的 scoped worker",
     "assets": "不能配置资产库根路径或删除资产；保存、分类、移动和加入画布必须来自当前用户明确要求",
     "asset": "不能注册、写入或附加资产；创作资产走节点或资产服务",
     "canvas": "不能创建、删除或修改节点内容；节点 CRUD 走 node.*",
@@ -1008,6 +1109,7 @@ _STANDARD_CANNOT_BY_NAMESPACE: dict[str, str] = {
 _STANDARD_USAGE_BY_NAME: dict[str, str] = {
     "interaction.request_input": "questions 提交后本轮停止，等待用户回复。",
     "agent.review": "阶段产出后调用；传目标、需求、摘要和证据；只修有证据的问题。",
+    "agent.run": "workflow_spec 只选择已有 workflow 模板；node_producer 处理指定节点；image_editor 处理像素编辑。",
     "canvas.delete": "scope='selected' 配 node_ids；scope='all' 清空当前项目画布。",
     "node.create": "单个或少量批量创建；搭框架/低风险可用 nodes，复杂媒体 prompt 或大量节点分批。",
     "node.get": "精确读取节点详情；多个节点一次传 node_ids，只有一个节点才传 node_id。",
@@ -1015,9 +1117,8 @@ _STANDARD_USAGE_BY_NAME: dict[str, str] = {
     "node.run": "运行前检查内容/prompt/fields/依赖；不符合当前 skill 或用户要求时先 node.update；失败读 error_kind/hint/model_feedback。",
     "node.update": "input_json 与旧 input 局部合并；不同改动用 updates，同一 patch 可配 node_ids；复杂/高风险分批。",
     "project.get_state": "开始、继续、排障或回答状态问题前读取真实项目状态。",
-    "skill.search": "制作流程/提示词写法先搜；用户本地 skill 优先。",
-    "skill.get": "读取 search 选中项；用户 skill 覆盖默认指南。",
-    "skill.video_production": "补全/创建/修复图片/视频生产节点前读取；summary 用于轻量判断，full 用于实际制作。",
+    "skill.search": "传 category='workflow'|'prompt'|'review'；scope=user 是自定义，scope=builtin 是内置默认；queries 可一次查询多个模块。",
+    "skill.get": "读取 skill；workflow skill 用于选择模板，prompt skill 可用于节点或工作流步骤，review 通常交给 agent.review。",
     "task.create": "复杂多步用 subject 或 items 建 checklist；简单任务跳过。",
     "task.complete": "任务真实完成并有结果摘要后调用。",
     "task.list": "需要恢复进度、找可执行/失败/阻塞任务或清理残留前调用。",
@@ -1026,6 +1127,7 @@ _STANDARD_USAGE_BY_NAME: dict[str, str] = {
     "tool.execute": "core 工具直接调用；deferred 先 search/describe。",
     "tool.search": "query='' 列出 visible deferred 目录；category 可缩小目录；知道名字后用 select:name 精确选择。",
     "vision.view_image": "看已有图片时先定位 node_id；node_ids/sources 可批量附加；工具不做摘要。",
+    "workflow.spec.apply_patch": "create 传 workflow；update 传 base 和 operations；replace 传 base 和 workflow；save.target 可为 artifact 或 template。",
     "project.reset": (
         "scope='failed' 清失败节点；scope='full' 带 reason 返回确认卡，确认后执行。"
     ),
@@ -1042,9 +1144,8 @@ _STANDARD_LIMIT_BY_NAME: dict[str, str] = {
     "node.update": "只改允许字段，不写入不属于该节点的产物",
     "project.get_state": "只读取项目状态",
     "project.reset": "full reset 需要当前用户明确请求和确认",
-    "skill.get": "只读取 skill 内容",
-    "skill.search": "只搜索 skill 索引",
-    "skill.video_production": "只读取制作指南，不创建、修改、运行或审批内容",
+    "skill.get": "只读取 skill；workflow 默认摘要，detail='full' 才返回全文",
+    "skill.search": "只搜索指定 category 的 skill 索引",
     "task.complete": "只标记真实完成的任务",
     "task.list": "只读取任务列表",
     "task.update": "只更新任务状态和元数据",
@@ -1052,6 +1153,7 @@ _STANDARD_LIMIT_BY_NAME: dict[str, str] = {
     "tool.execute": "只执行 deferred 工具并受 permission policy 约束",
     "tool.search": "只列出或搜索 visible deferred 工具元数据",
     "vision.view_image": "只读取并附加图片像素，不创建摘要、不修改项目",
+    "workflow.spec.apply_patch": "只保存 workflow spec artifact 或用户模板，不物化画布和不执行流程",
 }
 
 
@@ -1258,6 +1360,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         task_tools,
         tool_meta_tools,
         vision_tools,
+        workflow_tools,
     )
 
     target_registry = target or registry
@@ -1281,7 +1384,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
           "type": "object",
           "properties": {
               "query": {"type": "string", "description": "空字符串列 visible deferred 目录；也支持关键词、select:name,name、discover:能力描述"},
-              "category": {"type": "string", "description": "可选分类，如 guide/project/query/assets/system/memory/task/collab/attach/control/file"},
+              "category": {"type": "string", "description": "可选分类，如 guide/project/workflow/query/assets/system/memory/task/collab/attach/control/image/file"},
               "regex": {
                   "oneOf": [
                       {"type": "string"},
@@ -1367,8 +1470,81 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
       })
 
     # ─────────────────────────────────────────────────────────────────────
-    # image.* —— 前端图片编辑隐藏工具；Agent 通过 image node operation + node.run 使用
+    # image.* —— 低层图片编辑能力；前端走 REST，Agent 走 agent.run(image_editor)，底层工具保持隐藏。
     # ─────────────────────────────────────────────────────────────────────
+    R("image.edit", image_operation_tools.edit,
+      tags=["image", "write"],
+      description="对图片节点执行本地编辑；preview 产出候选图，commit 才覆盖节点并归档历史。",
+      search_hint=(
+          "crop brush doodle fill cover mask segment background transparent alpha rounded rectangle annotate text arrow image edit preview commit "
+          "裁剪 涂鸦 画笔 覆盖 遮挡 填充 网格 透明 文字 箭头 标注 图片编辑 候选图 提交"
+      ),
+	      usage_hints=[
+	          "action='preview' 会生成候选图并把图片像素附加给下一轮模型上下文。",
+	          "preview 返回后直接依据附加的视觉上下文判断；候选图满意后 action='commit' 并传 candidate_ref，不满意则从 base_ref/checkpoint 重新 preview。",
+	          "精细透明背景和图标圆角使用 operations=[{'type':'mask','mode':'background'|'shape'|'color','effect':'transparent',...}]。",
+          "tool.execute(name='image.edit', input={'node_id':'12','action':'preview','operations':[{'type':'crop','unit':'pixel','rect':{'x':0,'y':0,'width':512,'height':512}}]})",
+      ],
+      schema={
+          "type": "object",
+          "properties": {
+              "node_id": {"type": "string", "description": "图片节点编号，如 12 或 #12。"},
+              "action": {"type": "string", "enum": ["preview", "commit"], "description": "preview 只生成候选图；commit 覆盖节点并写历史。"},
+              "source_ref": {"type": "string", "description": "可选源图引用；默认使用 node_id 当前输出。"},
+              "candidate_ref": {"type": "string", "description": "preview 返回的候选图 local_url；commit 时传它。"},
+              "operations": {
+                  "type": "array",
+                  "items": {
+                      "type": "object",
+                      "additionalProperties": True,
+                      "properties": {
+                          "type": {"type": "string", "enum": ["crop", "brush", "fill", "mask", "selection", "segment", "text", "arrow"]},
+                          "unit": {"type": "string", "enum": ["normalized", "pixel"]},
+                          "mode": {"type": "string", "description": "mask/selection/segment 模式：shape、background、color、alpha。"},
+                          "effect": {"type": "string", "description": "mask 效果：transparent/clear/erase、keep/isolate、fill、opaque。"},
+                          "shape": {"type": "string", "description": "shape 模式：rect、rounded_rect、ellipse、polygon、path。"},
+                          "tolerance": {"type": "number", "description": "background/color 模式的颜色阈值。"},
+                          "feather": {"type": "number", "description": "mask 边缘羽化像素。"},
+                          "expand": {"type": "integer", "description": "扩大 mask 像素数，用于清理边缘残留。"},
+                          "shrink": {"type": "integer", "description": "缩小 mask 像素数。"},
+                      },
+                  },
+                  "description": "顺序执行的编辑操作；crop/fill 用 rect 或 points；mask 可按 shape/background/color/alpha 生成选择区并透明化、保留或填色；brush 用 points/strokes，text 用 text+position，arrow 用 start/end。",
+              },
+      },
+          "required": ["node_id"],
+      })
+    R("image.segment", image_operation_tools.segment,
+      tags=["image", "write", "hidden"],
+      description="生成主体分割 mask 和透明 PNG；不覆盖节点，供后续 image.edit 裁剪、圆角和提交。",
+      search_hint=(
+          "segment cutout mask alpha matte foreground subject background removal transparent png icon crop "
+          "抠图 分割 主体 前景 背景移除 透明 png mask 图标 圆角"
+      ),
+      usage_hints=[
+          "先用 image.segment 得到 cutout_ref、mask_ref、bbox，再用 image.edit 处理裁剪、正方形、圆角和 commit。",
+          "复杂主体可传 rect/bbox 或 foreground_points/background_points 给 GrabCut 约束。",
+      ],
+      schema={
+          "type": "object",
+          "properties": {
+              "node_id": {"type": "string", "description": "图片节点编号，如 12 或 #12；node_id 和 source_ref 至少传一个。"},
+              "source_ref": {"type": "string", "description": "可选图片引用；可用于候选图或本地媒体 URL。"},
+              "target": {"type": "string", "description": "分割目标，默认 main_subject。"},
+              "method": {"type": "string", "enum": ["auto", "alpha", "background", "grabcut"], "description": "分割方式；auto 依次尝试 alpha、背景洪泛和 GrabCut。"},
+              "unit": {"type": "string", "enum": ["normalized", "pixel"], "description": "rect 和点坐标单位。"},
+              "rect": {"type": "object", "description": "可选主体大致矩形，用于 GrabCut，例如 {x,y,width,height}。"},
+              "bbox": {"type": "object", "description": "rect 的别名。"},
+              "foreground_points": {"type": "array", "items": {"type": "object"}, "description": "可选前景点，格式 {x,y}。"},
+              "background_points": {"type": "array", "items": {"type": "object"}, "description": "可选背景点，格式 {x,y}。"},
+              "background_tolerance": {"type": "integer", "description": "背景洪泛颜色容差，默认 28。"},
+              "expand": {"type": "integer", "description": "扩大主体 mask 像素数。"},
+              "shrink": {"type": "integer", "description": "缩小主体 mask 像素数，用于去边。"},
+              "feather": {"type": "number", "description": "主体边缘羽化像素。"},
+              "smooth": {"type": "integer", "description": "mask 平滑强度。"},
+              "grabcut_iterations": {"type": "integer", "description": "GrabCut 迭代次数，默认 5。"},
+          },
+      })
     R("image.grid_split", image_operation_tools.grid_split,
       tags=["image", "write", "hidden"],
       description="把当前图片节点转换为 image_grid 输出，内部保存裁剪 cell，不自动创建多个画布节点。",
@@ -1626,7 +1802,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
     R("node.run", node_universal.node_run, tags=["node", "execute"],
       description=(
         "执行已有 text/image/video/audio 节点并保存产物。需要节点已具备可运行输入；"
-        "text 节点只保存已有 fields.content，不会替模型起草脚本或提示词；"
+        "普通 text 节点保存已有 fields.content；带 workflow prompt_ref/prompt_spec 的 text 节点可在本工具内单次 LLM 生成 fields.content；"
         "节点运行前先按当前 skill 和用户要求检查内容/prompt、fields 和依赖；"
         "不符合时先 node.update 修原节点，不要只改无关字段后重跑；"
         "复杂或高风险创作节点可用 agent.review 辅助检查内容、字段和依赖；"
@@ -1868,6 +2044,32 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
       description="查询某个 feature flag 当前是否启用，以及是否被 kill switch 强制关闭。")
 
     # agent.* — meta + 四种协作模式
+    R("agent.run", agent_tools.agent_run, tags=["agent", "write"],
+      description="委派给已注册的专职子 Agent；适合选择已有 workflow 模板、媒体节点生产和隔离图片编辑。",
+      search_hint=(
+          "subagent specialist delegate agent run workflow_spec workflow template selector node_producer image_editor node produce prompt fields run image video audio generate character reference edit crop brush fill annotate text arrow "
+          "segment cutout background removal transparent png mask icon "
+          "工作流 模板选择 现有模板 节点生产 节点补全 提示词编写 运行节点 图片生成 视频提示词 人物图 参考图 图片编辑 子agent 子 Agent 委派 专职 worker 裁剪 涂鸦 画笔 覆盖 填充 标注 文字 箭头 抠图 分割 透明背景 图标"
+      ),
+      usage_hints=[
+          "Workflow 请求交给 workflow_spec 选择器；普通视频默认返回 general_short_drama_workflow 的 template_id，显式模板、artifact 或 workflow skill 才返回其他引用。",
+          "主 Agent 拿到 template_id/artifact_ref 和 input_fields 后，根据用户原话和历史状态判断是否提问；需要复查模板或 spec 时再读取 workflow.template.read 或 workflow.spec.read。",
+          "tool.execute(name='agent.run', input={'agent':'workflow_spec','task':'为用户的视频请求选择可运行工作流模板','inputs':{'facts':{'plot':'江湖相逢'},'current_workflow':{}}})",
+          "tool.execute(name='agent.run', input={'agent':'node_producer','task':'补全并运行节点12的人物参考图；按选定人物 prompt skill 写入并生成，完成后看图自检。','inputs':{'node_id':'12','allowed_node_types':['image'],'basis':{'kind':'skill_plan'},'primary_skill':{'name':'character_prompt','category':'prompt','scope':'builtin'},'acceptance_criteria':['主体清晰','参考一致']},'max_steps':12})",
+          "tool.execute(name='agent.run', input={'agent':'image_editor','task':'修复节点12的软件图标边角和外框；成品要主体完整、安全边距稳定、透明背景干净，提交前验证最终候选。','inputs':{'node_id':'12'},'max_steps':24})",
+          "抠图、透明背景、图标圆角和复杂边缘清理交给 image_editor；它可以在隔离上下文中调用 image.segment 和 image.edit。",
+          "node_producer 通常使用默认步数或 10-12；简单局部编辑通常 max_steps=12-16，复杂透明背景、抠图、图标修边或多轮预览可用 20-30。",
+          "image_editor 自己看图、preview、验证并 commit；主 Agent 根据返回的 verification 判断是否继续。",
+      ],
+      schema={
+          "type": "object",
+          "properties": {
+              "agent": {"type": "string", "description": "专职子 Agent 名称；当前支持 workflow_spec、node_producer、image_editor。workflow_spec 只选择已有模板；省略或传 catalog 返回可用列表。"},
+              "task": {"type": "string", "description": "交给子 Agent 的自然语言任务；写清目标成品、保留内容、验收标准和失败停止条件。"},
+              "inputs": {"type": "object", "description": "少量上下文，如 workflow_skill_name、artifact_ref、facts、node_id/node_ids、allowed_node_types、basis、primary_skill、inline_spec、source_ref、candidate_ref、notes。"},
+              "max_steps": {"type": "integer", "description": "子 Agent 最大步骤数；通常不传。node_producer 默认 12，image_editor 默认 20；复杂编辑可提高。"},
+          },
+      })
     R("agent.map_reduce", agent_tools.agent_map_reduce, tags=["agent", "mode"],
       description="Map-Reduce 模式:并行扇出 N 个独立子任务,可选 LLM 聚合摘要(三模型对比、候选图、独立配角)。")
     R("agent.pipeline", agent_tools.agent_pipeline, tags=["agent", "mode"],
@@ -1879,7 +2081,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
           "隔离运行通用只读审查子 Agent，用真实项目状态、任务、计划、节点、指南和文件审查主 Agent 指定目标。"
           "复杂视频节点批次或任务需要第二视角时传 review_goal、user_request、work_summary、review_profile、evidence、guide_topics/focus。"
           "媒体运行前可用它批量检查 prompt 是否符合 skill、字段是否可执行、依赖是否使用节点编号。"
-          "自定义检查 skill 可放在 skills/review/<key>.md，或通过 review_skill_key 指定。"
+          "自定义检查 skill 用 skill.search(category='review') 发现，再把名称传给 review_skill_key。"
           "返回 pass/revise_required/blocked 等结果；主 Agent 只修有 evidence 或 violated_requirement 的具体问题。"
       ))
     # panel.* — project-level panel view (mode/axis switching)

@@ -23,7 +23,18 @@ if ! command -v uv >/dev/null 2>&1; then
   pip install uv
 fi
 
-mkdir -p data storage/assets storage/exports storage/temp
+mkdir -p \
+  data \
+  storage/assets \
+  storage/exports \
+  storage/temp \
+  assets \
+  config \
+  plugins \
+  skills/workflows \
+  skills/prompts \
+  skills/review \
+  workflow_templates
 
 echo "Installing frontend dependencies..."
 pnpm install

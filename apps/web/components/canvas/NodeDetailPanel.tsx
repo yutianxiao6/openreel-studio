@@ -6,18 +6,26 @@ import {
   callTool,
   getRuntimeConfigFile,
   getProjectNodeDetails,
+  getProjectNodes,
   listProjectAssets,
   resolveMediaUrl,
   switchProjectNodeHistory,
   updateProjectNodeDetails,
   uploadFile,
+  uploadProjectNodeMedia,
 } from "@/lib/api"
 import {
   VIDEO_MODEL_OPTIONS,
   VIDEO_RESOLUTION_OPTIONS,
   defaultVideoResolutionForModel,
+  isKnownVideoModel,
   videoSupportedResolutionsForModel,
 } from "@/lib/videoModelOptions"
+import {
+  inputFieldsFromNodeInput,
+  nodePromptText,
+  nodeReadableText,
+} from "@/lib/nodeDisplay"
 import { MarkdownView } from "@/components/common/MarkdownView"
 import { useCanvasStore } from "@/stores/canvasStore"
 import { useChatStore } from "@/stores/chatStore"
@@ -149,6 +157,8 @@ const EMPTY_DRAFT: EditableNodeDraft = {
   reference_images: [],
 }
 
+const VIDEO_ASPECT_RATIO_OPTIONS = ["16:9", "9:16", "3:2", "2:3", "1:1"]
+
 interface Props {
   nodeId: string
   projectId?: string | null
@@ -158,6 +168,7 @@ interface Props {
   onRequestStoryRevision?: (nodeId: string) => void | Promise<void>
   actionDisabled?: boolean
   presentation?: "drawer" | "modal"
+  editRequestKey?: string | number | null
 }
 
 const STATUS_LABELS: Record<string, { label: string; cls: string }> = {
@@ -261,13 +272,19 @@ interface ReferenceItem {
   label: string
 }
 
+interface ProjectNodeIndexItem {
+  id?: string
+  display_id?: string | number | null
+  title?: string | null
+}
+
 function asObj(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null
 }
 
 function pickUrl(o: Record<string, unknown> | null): string | null {
   if (!o) return null
-  const u = o.local_url || o.url || o.remote_url
+  const u = o.local_url || o.url || o.remote_url || o.composite_url
   if (typeof u === "string" && u) return u
   return null
 }
@@ -393,15 +410,62 @@ function pickReferenceUrl(ref: unknown): string {
 
 function referenceFileUrl(projectId: string | null | undefined, value: string): string {
   if (!projectId || !value) return ""
-  if (/^(https?:|\/api\/|data:)/.test(value)) return resolveMediaUrl(value)
-  if (value.startsWith("uploads/")) return resolveMediaUrl(`/api/uploads/${projectId}/file/${value}`)
-  if (value.startsWith("generated_images/")) {
-    return resolveMediaUrl(`/api/media/${projectId}/${value.replace(/^generated_images\//, "")}`)
+  const normalized = value.startsWith("upload:") ? value.slice(7).trim() : value
+  if (/^(https?:|\/api\/|data:)/.test(normalized)) return resolveMediaUrl(normalized)
+  if (normalized.startsWith("uploads/")) return resolveMediaUrl(`/api/uploads/${projectId}/file/${normalized}`)
+  if (normalized.startsWith("generated_images/")) {
+    return resolveMediaUrl(`/api/media/${projectId}/${normalized.replace(/^generated_images\//, "")}`)
   }
-  if (value.startsWith("generated_audio/")) {
-    return resolveMediaUrl(`/api/media/${projectId}/${value}`)
+  if (normalized.startsWith("generated_audio/")) {
+    return resolveMediaUrl(`/api/media/${projectId}/${normalized}`)
   }
   return ""
+}
+
+function stripNodeReferenceMarker(value: string): string {
+  let text = value.trim()
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const prefix of ["@", "node:", "#"]) {
+      if (text.startsWith(prefix)) {
+        text = text.slice(prefix.length).trim()
+        changed = true
+      }
+    }
+  }
+  return text
+}
+
+function isUuidLike(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+}
+
+function addNodeLookupKey(lookup: Map<string, string>, key: unknown, nodeId: string) {
+  const text = String(key ?? "").trim()
+  if (!text) return
+  lookup.set(text, nodeId)
+  lookup.set(stripNodeReferenceMarker(text), nodeId)
+}
+
+async function resolveProjectNodeReference(projectId: string, value: string): Promise<string> {
+  const raw = stripNodeReferenceMarker(value)
+  if (!raw) return ""
+  if (isUuidLike(raw)) return raw
+  const canvas = await getProjectNodes(projectId)
+  const lookup = new Map<string, string>()
+  for (const item of (canvas.nodes || []) as ProjectNodeIndexItem[]) {
+    const nodeId = String(item.id || "").trim()
+    if (!nodeId) continue
+    addNodeLookupKey(lookup, nodeId, nodeId)
+    if (item.display_id !== undefined && item.display_id !== null) {
+      addNodeLookupKey(lookup, item.display_id, nodeId)
+      addNodeLookupKey(lookup, `#${item.display_id}`, nodeId)
+      addNodeLookupKey(lookup, `node:${item.display_id}`, nodeId)
+      addNodeLookupKey(lookup, `node:#${item.display_id}`, nodeId)
+    }
+  }
+  return lookup.get(raw) || lookup.get(value.trim()) || ""
 }
 
 function normalizeReferenceValue(text: string, label: string, refId?: string): ReferenceItem | null {
@@ -412,10 +476,12 @@ function normalizeReferenceValue(text: string, label: string, refId?: string): R
   if (value.startsWith("/") && refId) return { kind: "reference", value: refId, label }
   if (value.startsWith("/")) return { kind: "url", value, label }
   if (value.startsWith("node:")) return { kind: "node", value: value.slice(5), label: "节点引用" }
+  if (/^#?\d+$/.test(value)) return { kind: "node", value: stripNodeReferenceMarker(value), label: "节点引用" }
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
     return { kind: "node", value, label: "节点引用" }
   }
   if (value.startsWith("asset:")) return { kind: "asset", value: value.slice(6), label: "资产引用" }
+  if (value.startsWith("upload:")) return { kind: "file", value: value.slice(7).trim(), label }
   if (value.startsWith("uploads/") || value.startsWith("generated_images/") || value.startsWith("generated_audio/")) return { kind: "file", value, label }
   if (refId) return { kind: "reference", value: refId, label }
   return { kind: "text", value, label: "视觉锚点" }
@@ -456,10 +522,16 @@ function normalizeReference(ref: unknown): ReferenceItem | null {
     const normalized = normalizeReferenceValue(refValue, label, refId)
     if (normalized) return normalized
   }
+  if (typeof refValue === "number" || typeof refValue === "boolean") {
+    const normalized = normalizeReferenceValue(String(refValue), label, refId)
+    if (normalized) return normalized
+  }
   const nodeId = obj.node_id || obj.nodeId || obj.source_node_id || obj.sourceNodeId
   if (typeof nodeId === "string" && nodeId) return { kind: "node", value: nodeId, label }
+  if (typeof nodeId === "number" || typeof nodeId === "boolean") return { kind: "node", value: String(nodeId), label }
   const assetId = obj.asset_id || obj.assetId
   if (typeof assetId === "string" && assetId) return { kind: "asset", value: assetId, label }
+  if (typeof assetId === "number" || typeof assetId === "boolean") return { kind: "asset", value: String(assetId), label }
   if (refId) return { kind: "reference", value: refId, label }
   const text = obj.description || obj.prompt || obj.id
   return typeof text === "string" && text ? { kind: "text", value: text, label } : null
@@ -970,69 +1042,6 @@ function prettyJson(value: unknown): string {
   }
 }
 
-const FIELD_LABELS: Record<string, string> = {
-  title: "标题",
-  content: "内容",
-  description: "描述",
-  resolution: "分辨率",
-  quality: "质量",
-  aspect_ratio: "画幅",
-  duration: "时长",
-  duration_seconds: "时长",
-  style: "风格",
-  voice: "声音",
-  speed: "语速",
-  instructions: "TTS 指令",
-  format: "格式",
-  instrumental: "纯音乐",
-  custom_mode: "高级模式",
-  customMode: "高级模式",
-  negative_tags: "负面标签",
-  negativeTags: "负面标签",
-  production_path: "制作方式",
-  prompt_template: "提示词模板",
-  references: "参考",
-  depends_on: "依赖",
-  blueprint_node_id: "蓝图节点",
-  blueprint_node_type: "蓝图类型",
-}
-
-function formatFieldValue(value: unknown): string {
-  if (typeof value === "string") return value
-  if (typeof value === "number" || typeof value === "boolean") return String(value)
-  if (Array.isArray(value)) return value.map((item) => formatFieldValue(item)).filter(Boolean).join("、")
-  if (value && typeof value === "object") {
-    const obj = value as Record<string, unknown>
-    for (const key of ["title", "name", "summary", "description", "content", "prompt"]) {
-      const text = obj[key]
-      if (typeof text === "string" && text.trim()) return text.trim()
-    }
-    return Object.entries(obj)
-      .slice(0, 4)
-      .map(([key, item]) => `${FIELD_LABELS[key] || key}: ${formatFieldValue(item)}`)
-      .filter(Boolean)
-      .join("；")
-  }
-  return ""
-}
-
-function FieldRows({ value }: { value: Record<string, unknown> }) {
-  const rows = Object.entries(value)
-    .map(([key, item]) => [FIELD_LABELS[key] || key, formatFieldValue(item)] as const)
-    .filter(([, item]) => item.trim())
-  if (rows.length === 0) return null
-  return (
-    <dl className="overflow-hidden rounded-lg bg-black/25 ring-1 ring-white/[0.06]">
-      {rows.map(([label, item]) => (
-        <div key={label} className="grid gap-1 border-b border-white/[0.06] px-3.5 py-2.5 text-[13px] last:border-b-0 sm:grid-cols-[104px_minmax(0,1fr)]">
-          <dt className="text-zinc-500">{label}</dt>
-          <dd className="whitespace-pre-wrap break-words leading-5 text-zinc-200">{item}</dd>
-        </div>
-      ))}
-    </dl>
-  )
-}
-
 function NodeDebugSection({ node }: { node: NodeFull }) {
   const [open, setOpen] = useState(false)
   return (
@@ -1201,6 +1210,112 @@ function MediaSpecBadges({
   )
 }
 
+function isImageSource(value: unknown): boolean {
+  return typeof value === "string" && /(\.(png|jpe?g|webp|gif|bmp|svg)(\?|#|$)|^data:image\/)/i.test(value)
+}
+
+function resolveReferenceImageUrl(projectId: string | null | undefined, value: string, trustImage = false): string {
+  const raw = value.trim()
+  if (!raw) return ""
+  const resolved = referenceFileUrl(projectId, raw) || resolveMediaUrl(raw) || raw
+  const looksVideo = /\.(mp4|webm|mov)(\?|#|$)/i.test(raw) || /\.(mp4|webm|mov)(\?|#|$)/i.test(resolved)
+  const looksAudio = /\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/i.test(raw) || /\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/i.test(resolved)
+  if (!resolved || looksVideo || looksAudio) {
+    return ""
+  }
+  if (
+    trustImage ||
+    isImageSource(raw) ||
+    isImageSource(resolved) ||
+    raw.startsWith("generated_images/") ||
+    raw.startsWith("upload:") ||
+    raw.startsWith("uploads/")
+  ) {
+    return resolved
+  }
+  return ""
+}
+
+function firstReferenceImageUrl(value: unknown, projectId?: string | null, depth = 0): string {
+  if (value == null || depth > 5) return ""
+  const parsed = parseJson(value)
+  if (typeof parsed === "string") {
+    return resolveReferenceImageUrl(projectId, parsed)
+  }
+  if (Array.isArray(parsed)) {
+    for (const item of parsed) {
+      const url = firstReferenceImageUrl(item, projectId, depth + 1)
+      if (url) return url
+    }
+    return ""
+  }
+  const grid = imageGridFromOutput(parsed)
+  if (grid) {
+    const url = grid.local_url || grid.composite_url || grid.url || ""
+    const resolved = resolveReferenceImageUrl(projectId, url, true)
+    if (resolved) return resolved
+  }
+  const media = collectMedia(parsed).find((item) => item.kind === "image")
+  if (media?.src) return media.src
+  const obj = asObj(parsed)
+  if (!obj) return ""
+  const directKeys = [
+    "local_url",
+    "url",
+    "remote_url",
+    "composite_url",
+    "image_url",
+    "thumbnail_url",
+    "preview_url",
+    "poster",
+  ]
+  for (const key of directKeys) {
+    const candidate = obj[key]
+    if (typeof candidate !== "string" || !candidate) continue
+    const url = resolveReferenceImageUrl(projectId, candidate, key !== "url")
+    if (url) return url
+  }
+  const nestedKeys = [
+    "image",
+    "result",
+    "output",
+    "media",
+    "asset",
+    "file",
+    "preview",
+    "thumbnail",
+    "source_image",
+    "reference_image",
+    "selected",
+  ]
+  for (const key of nestedKeys) {
+    if (!Object.prototype.hasOwnProperty.call(obj, key)) continue
+    const url = firstReferenceImageUrl(obj[key], projectId, depth + 1)
+    if (url) return url
+  }
+  const listKeys = [
+    "stages",
+    "images",
+    "assets",
+    "media_items",
+    "files",
+    "items",
+    "history",
+    "outputs",
+    "results",
+    "reference_images",
+  ]
+  for (const key of listKeys) {
+    const items = obj[key]
+    if (!Array.isArray(items)) continue
+    for (const item of items) {
+      const url = firstReferenceImageUrl(item, projectId, depth + 1)
+      if (url) return url
+    }
+  }
+  return ""
+}
+
 function ImagePlaceholder({ label, busy = false }: { label: string; busy?: boolean }) {
   return (
     <div className="flex h-40 w-full items-center justify-center rounded-lg bg-black/30 text-[12px] text-zinc-500 ring-1 ring-white/[0.06]">
@@ -1223,7 +1338,7 @@ function RefThumbnail({
   setLightbox: (v: { src: string; alt?: string } | null) => void
   compact?: boolean
 }) {
-  const token = `${ref.kind}:${ref.value}`
+  const refTitle = ref.kind === "node" ? ref.label : `${ref.kind}:${ref.value}`
   // 异步把节点/资产引用解析到真实图片 url；失败时展示等待状态，不再调用不存在的 asset.get 工具。
   const [resolved, setResolved] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
@@ -1234,7 +1349,7 @@ function RefThumbnail({
     ;(async () => {
       try {
         if (ref.kind === "url") {
-          setResolved(resolveMediaUrl(ref.value) || ref.value)
+          setResolved(resolveReferenceImageUrl(projectId, ref.value, true) || resolveMediaUrl(ref.value) || ref.value)
           return
         }
         if (ref.kind === "file") {
@@ -1256,38 +1371,20 @@ function RefThumbnail({
           return
         }
         if (ref.kind === "node") {
-          let nodeId = ref.value
-          if (projectId && nodeId && nodeId.length < 36) {
-            const nodes = await callTool<Array<{ id?: string }>>("node.list", { project_id: projectId })
-            if (cancelled) return
-            if (Array.isArray(nodes)) {
-              const matches = nodes
-                .map((node) => String(node.id || ""))
-                .filter((id) => id.startsWith(nodeId))
-              if (matches.length === 1) nodeId = matches[0]
-            }
+          if (!projectId) {
+            setFailed(true)
+            return
           }
-          const r = await callTool<Record<string, unknown>>("node.get", { project_id: projectId, node_id: nodeId })
+          const nodeId = await resolveProjectNodeReference(projectId, ref.value)
           if (cancelled) return
-          // output 可能是 fusion(stages 里挑图)、image、或直接顶层 url
-          const out = r?.output as unknown
-          let url: string | null = null
-          const outObj = (out && typeof out === "object" && !Array.isArray(out))
-            ? (out as Record<string, unknown>)
-            : null
-          if (outObj) {
-            if (Array.isArray(outObj.stages)) {
-              for (const s of outObj.stages as Record<string, unknown>[]) {
-                const u = (s.local_url || s.url || s.remote_url) as string | undefined
-                if (u) { url = u; break }
-              }
-            }
-            if (!url) {
-              const u = (outObj.local_url || outObj.url || outObj.remote_url) as string | undefined
-              if (u) url = u
-            }
+          if (!nodeId) {
+            setFailed(true)
+            return
           }
-          if (url) setResolved(resolveMediaUrl(url) || url)
+          const r = await getProjectNodeDetails<Record<string, unknown>>(projectId, nodeId)
+          if (cancelled) return
+          const url = firstReferenceImageUrl(r?.output, projectId) || firstReferenceImageUrl(r, projectId)
+          if (url) setResolved(url)
           else setFailed(true)
         } else if (ref.kind === "asset") {
           if (!projectId) {
@@ -1298,7 +1395,7 @@ function RefThumbnail({
           if (cancelled) return
           const asset = r.assets.find((item) => item.id === ref.value)
           const u = asset?.url || asset?.path
-          if (u) setResolved(resolveMediaUrl(u) || u)
+          if (u) setResolved(resolveReferenceImageUrl(projectId, u, true) || resolveMediaUrl(u) || u)
           else setFailed(true)
         }
       } catch {
@@ -1315,7 +1412,7 @@ function RefThumbnail({
         className={compact
           ? "group relative block h-7 w-7 overflow-hidden rounded bg-black/40 ring-1 ring-white/[0.12] transition hover:ring-cyan-200/70"
           : "group relative block overflow-hidden rounded-lg bg-black/40 ring-1 ring-white/[0.08]"}
-        title={token}
+        title={ref.label}
       >
         <img
           src={resolved}
@@ -1336,7 +1433,7 @@ function RefThumbnail({
     return (
       <span
         className="flex min-h-20 items-center rounded-lg bg-white/[0.03] px-2 py-1 text-[11px] text-gray-400 ring-1 ring-white/[0.08]"
-        title={`${token} 暂无可预览图片`}
+        title={`${refTitle} 暂无可预览图片`}
       >
         {ref.kind === "text" ? ref.value : "引用图等待产出"}
       </span>
@@ -1344,7 +1441,7 @@ function RefThumbnail({
   }
   // loading
   return (
-    <div className="flex h-20 items-center justify-center rounded-lg bg-black/40 ring-1 ring-white/[0.08]" title={token}>
+    <div className="flex h-20 items-center justify-center rounded-lg bg-black/40 ring-1 ring-white/[0.08]" title={refTitle}>
       <div className="w-4 h-4 border-2 border-teal-400 border-t-transparent rounded-full animate-spin" />
     </div>
   )
@@ -1398,26 +1495,12 @@ const TYPED_RENDERED_NODE_TYPES = new Set([
   "segment_video_clip",
 ])
 
-function compactObject(value: Record<string, unknown>, excludedKeys: Set<string>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(value).filter(([key, item]) => item != null && item !== "" && !excludedKeys.has(key)),
-  )
-}
-
 function pickPromptText(nodePrompt: string, input: Record<string, unknown>, output: Record<string, unknown>): string {
-  const keys = ["prompt", "video_prompt", "image_prompt", "text", "content", "description", "summary"]
-  for (const value of [nodePrompt, ...keys.map((key) => input[key]), ...keys.map((key) => output[key])]) {
-    if (typeof value === "string" && value.trim()) return value.trim()
-  }
-  return ""
+  return nodePromptText({ input, output, prompt: nodePrompt })
 }
 
-function pickReadableText(input: Record<string, unknown>, output: Record<string, unknown>, nodePrompt = ""): string {
-  const keys = ["content", "text", "summary", "description", "outline", "script", "prompt"]
-  for (const value of [...keys.map((key) => output[key]), ...keys.map((key) => input[key]), nodePrompt]) {
-    if (typeof value === "string" && value.trim()) return value.trim()
-  }
-  return ""
+function pickEditablePromptText(nodePrompt: string, input: Record<string, unknown>, output: Record<string, unknown>): string {
+  return nodePromptText({ input, output, prompt: nodePrompt })
 }
 
 function pickReferences(input: Record<string, unknown>, output: Record<string, unknown>): unknown[] | undefined {
@@ -1491,6 +1574,49 @@ function firstText(...values: unknown[]): string {
   return ""
 }
 
+function textNodeBodyText(input: Record<string, unknown>, rawOutput: unknown, nodePrompt = ""): string {
+  return nodeReadableText({ type: "text", input, output: rawOutput, prompt: nodePrompt })
+}
+
+function TextNodeStructuredDetails({
+  input,
+  rawOutput,
+  nodePrompt,
+  refs,
+  projectId,
+  setLightbox,
+}: {
+  input: Record<string, unknown>
+  rawOutput: unknown
+  nodePrompt: string
+  refs: unknown[] | undefined
+  projectId?: string | null
+  setLightbox: (v: { src: string; alt?: string } | null) => void
+}) {
+  const outputText = textNodeBodyText(input, rawOutput, nodePrompt)
+  const hasContent = outputText.trim().length > 0
+  return (
+    <div className="space-y-3">
+      {hasContent ? (
+        <Section title="正文">
+          <PromptBlock>{outputText}</PromptBlock>
+          <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
+        </Section>
+      ) : (
+        <Section title="正文">
+          <ImagePlaceholder label="等待文本内容" />
+          <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
+        </Section>
+      )}
+      {!hasContent && nodePrompt && (
+        <Section title="提示词">
+          <PromptBlock>{nodePrompt}</PromptBlock>
+        </Section>
+      )}
+    </div>
+  )
+}
+
 function firstBool(defaultValue: boolean, ...values: unknown[]): boolean {
   for (const value of values) {
     if (typeof value === "boolean") return value
@@ -1533,9 +1659,7 @@ function rawNodeInput(input: unknown): Record<string, unknown> {
 }
 
 function nodeInputFields(input: unknown): Record<string, unknown> {
-  const inputObj = rawNodeInput(input)
-  const nestedFields = asObj(inputObj.fields)
-  return nestedFields ? { ...inputObj, ...nestedFields } : inputObj
+  return inputFieldsFromNodeInput(input)
 }
 
 function normalizeRenderState(value: unknown): "stale" | "fresh" | string | undefined {
@@ -1567,14 +1691,20 @@ function stringArrayFromUnknown(value: unknown): string[] {
       if (!obj) return ""
       const direct = obj.reference_input || obj.rel_path || obj.path || obj.source_path || obj.url || obj.local_url || obj.remote_url
       if (typeof direct === "string" && direct.trim()) return direct.trim()
+      if (typeof direct === "number" || typeof direct === "boolean") return String(direct)
       const ref = obj.ref || obj.reference || obj.value
       if (typeof ref === "string" && ref.trim()) return ref.trim()
+      if (typeof ref === "number" || typeof ref === "boolean") return String(ref)
       const nodeId = obj.node_id || obj.nodeId || obj.source_node_id || obj.sourceNodeId
       if (typeof nodeId === "string" && nodeId.trim()) return `node:${nodeId.trim()}`
+      if (typeof nodeId === "number" || typeof nodeId === "boolean") return `node:${String(nodeId)}`
       const assetId = obj.asset_id || obj.assetId
       if (typeof assetId === "string" && assetId.trim()) return `asset:${assetId.trim()}`
+      if (typeof assetId === "number" || typeof assetId === "boolean") return `asset:${String(assetId)}`
       const id = obj.ref_id || obj.id
-      return typeof id === "string" && id.trim() ? id.trim() : ""
+      if (typeof id === "string" && id.trim()) return id.trim()
+      if (typeof id === "number" || typeof id === "boolean") return String(id)
+      return ""
     })
     .filter(Boolean)
 }
@@ -1587,8 +1717,8 @@ function nodeRefIdFromUnknown(value: unknown): string {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     let text = String(value).trim()
     if (!text) return ""
-    if (text.startsWith("@")) text = text.slice(1).trim()
-    if (text.startsWith("node:")) return text.slice(5).trim()
+    text = stripNodeReferenceMarker(text)
+    if (/^\d+$/.test(text)) return text
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text) ? text : ""
   }
   const obj = asObj(value)
@@ -1634,13 +1764,16 @@ function removeNodeReferencesFromContainer(
 }
 
 function normalizeVideoAspectRatio(value: string): string {
-  return value === "9:16" ? "9:16" : "16:9"
+  const text = value.trim()
+  return text || "16:9"
 }
 
 function draftFromNode(node: NodeFull): EditableNodeDraft {
   const input = nodeInputFields(node.input)
-  const output = asObj(parseJson(node.output)) || {}
+  const rawOutput = parseJson(node.output)
+  const output = asObj(rawOutput) || {}
   const nodePrompt = typeof node.prompt === "string" ? node.prompt : ""
+  const editablePromptDraft = pickEditablePromptText(nodePrompt, input, output)
   const inputReferenceImages = stringArrayFromUnknown(input.reference_images)
   const inputReferences = stringArrayFromUnknown(input.references)
   const inputDependsOn = stringArrayFromUnknown(input.depends_on)
@@ -1662,8 +1795,8 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
   return {
     ...EMPTY_DRAFT,
     title: firstText(node.title, input.title, output.title),
-    content: firstText(input.content, output.content, input.text, output.text, input.summary, output.summary),
-    prompt: pickPromptText(nodePrompt, input, output),
+    content: node.type === "text" ? textNodeBodyText(input, rawOutput, nodePrompt) : "",
+    prompt: editablePromptDraft,
     model: firstText(input.model, output.model),
     style: firstText(input.style, output.style),
     voice: firstText(input.voice, output.voice),
@@ -1677,7 +1810,7 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
     resolution: firstText(input.resolution, input.size, output.resolution, output.size)
       || (node.type === "image" ? defaultImageResolutionForAspect(firstText(input.aspect_ratio, output.aspect_ratio) || "16:9") : node.type === "video" ? "720p" : ""),
     quality: firstText(input.quality, output.quality) || (node.type === "image" ? "high" : ""),
-    duration_seconds: firstText(input.duration_seconds, input.duration, output.duration_seconds, output.duration) || (node.type === "video" ? "5" : ""),
+    duration_seconds: firstText(input.duration_seconds, input.duration, output.duration_seconds, output.duration),
     instrumental: firstBool(true, input.instrumental, output.instrumental),
     custom_mode: firstBool(false, input.custom_mode, input.customMode, output.custom_mode, output.customMode),
     reference_images: Array.from(new Set(referenceImages)),
@@ -1688,6 +1821,7 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: A
   title: string
   prompt: string | null
   input: Record<string, unknown>
+  output?: unknown
 } {
   const currentRaw = rawNodeInput(node.input)
   const output = asObj(parseJson(node.output)) || {}
@@ -1737,8 +1871,9 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: A
     }
   }
 
+  const textContent = draft.content.trim()
   if (node.type === "text") {
-    nextInput.content = draft.content.trim()
+    nextInput.content = textContent
     if (prompt) nextInput.prompt = prompt
     else delete nextInput.prompt
   } else {
@@ -1760,7 +1895,11 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: A
     if (resolution) nextInput.resolution = resolution
     else delete nextInput.resolution
     const duration = draft.duration_seconds.trim()
-    nextInput.duration_seconds = duration && Number.isFinite(Number(duration)) ? Number(duration) : duration
+    if (duration) nextInput.duration_seconds = Number.isFinite(Number(duration)) ? Number(duration) : duration
+    else {
+      delete nextInput.duration_seconds
+      delete nextInput.duration
+    }
   }
 
   if (node.type === "audio") {
@@ -1807,7 +1946,12 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: A
     }
   }
 
-  return { title, prompt: prompt || null, input: nextInput }
+  return {
+    title,
+    prompt: prompt || null,
+    input: nextInput,
+    ...(node.type === "text" ? { output: textContent || null } : {}),
+  }
 }
 
 function previewPatchFromNode(node: NodeFull): Record<string, unknown> | undefined {
@@ -1848,7 +1992,7 @@ function previewPatchFromNode(node: NodeFull): Record<string, unknown> | undefin
       return videoPreview
     }
   }
-  const text = node.type === "text" ? pickReadableText(input, output, node.prompt || "") : ""
+  const text = node.type === "text" ? textNodeBodyText(input, parseJson(node.output), node.prompt || "") : ""
   if (text) return { type: "text", text }
   const prompt = pickPromptText(node.prompt || "", input, output)
   if (prompt && node.type === "image") return { type: "image_prompt", prompt }
@@ -1911,10 +2055,22 @@ function videoPreviewPatchFromOutput(output: Record<string, unknown>): Record<st
 }
 
 function canvasPatchFromNode(node: NodeFull): Record<string, unknown> {
+  const input = nodeInputFields(node.input)
+  const previewText = nodeReadableText({
+    type: node.type,
+    input,
+    output: node.output,
+    prompt: node.prompt || "",
+  })
   const patch: Record<string, unknown> = {
     title: node.title,
+    type: node.type,
     status: node.status,
     prompt: node.prompt ?? undefined,
+    input: node.input ?? undefined,
+    output: node.output ?? undefined,
+    workflowRuntimeOutput: node.output ?? undefined,
+    previewText: previewText || undefined,
     renderState: renderStateFromNode(node),
     error_message: nodeDisplayError(node) || undefined,
   }
@@ -1924,7 +2080,7 @@ function canvasPatchFromNode(node: NodeFull): Record<string, unknown> {
 }
 
 const inputClass =
-  "w-full rounded-md border border-white/[0.08] bg-black/35 px-2.5 py-2 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-cyan-300/45 focus:bg-black/45"
+  "w-full rounded-md border border-white/[0.1] bg-[#080c13] px-2.5 py-2 text-sm text-zinc-100 outline-none transition [color-scheme:dark] placeholder:text-zinc-500 focus:border-cyan-300/45 focus:bg-[#0b111a]"
 
 function DraftField({
   label,
@@ -1985,7 +2141,7 @@ function ChipControl({
         <input
           value={options.includes(value) ? "" : value}
           onChange={(event) => onChange(event.target.value)}
-          className="h-8 min-w-0 flex-1 rounded-md border border-white/[0.08] bg-black/30 px-2 text-xs text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-cyan-300/45"
+          className="h-8 min-w-0 flex-1 rounded-md border border-white/[0.1] bg-[#080c13] px-2 text-xs text-zinc-100 outline-none [color-scheme:dark] placeholder:text-zinc-500 focus:border-cyan-300/45"
           placeholder={placeholder || "自定义"}
         />
       </div>
@@ -2012,7 +2168,7 @@ function SelectControl({
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-8 w-full rounded-md border border-white/[0.08] bg-black/30 px-2 text-xs text-zinc-100 outline-none focus:border-cyan-300/45"
+        className="h-8 w-full rounded-md border border-white/[0.1] bg-[#080c13] px-2 text-xs text-zinc-100 outline-none [color-scheme:dark] focus:border-cyan-300/45"
       >
         {options.map((option) => (
           <option key={`${option.value}:${option.label}`} value={option.value} disabled={option.disabled}>
@@ -2191,7 +2347,7 @@ function ReferenceEditor({
               }
             }}
             placeholder="node:ID / asset:ID / uploads/... / URL"
-            className="min-w-0 flex-1 bg-transparent px-2.5 py-1.5 text-xs text-zinc-100 outline-none placeholder:text-zinc-600"
+            className="min-w-0 flex-1 bg-transparent px-2.5 py-1.5 text-xs text-zinc-100 outline-none [color-scheme:dark] placeholder:text-zinc-500"
           />
           <button
             type="button"
@@ -2282,10 +2438,10 @@ function NodeEditView({
       }
     }),
   ]
-  const knownVideoModel = VIDEO_MODEL_OPTIONS.some((item) => item.modelName === draft.model)
+  const knownVideoModel = isKnownVideoModel(draft.model)
+  const selectedVideoTemplate = knownVideoModel ? draft.model : ""
   const videoModelOptions = [
-    { label: "使用当前激活视频模型", value: "" },
-    ...(draft.model && !knownVideoModel ? [{ label: `未适配: ${draft.model}`, value: draft.model }] : []),
+    { label: "使用当前激活或自定义", value: "" },
     ...VIDEO_MODEL_OPTIONS.map((item) => ({
       label: item.label,
       value: item.modelName,
@@ -2314,6 +2470,9 @@ function NodeEditView({
     const supported = videoSupportedResolutionsForModel(model)
     const resolution = supported.includes(draft.resolution) ? draft.resolution : defaultVideoResolutionForModel(model)
     onChange({ model, resolution })
+  }
+  const applyVideoModelTemplate = (model: string) => {
+    updateVideoModel(model)
   }
   const updateAudioProvider = (providerName: string) => {
     onChange({ model: providerName })
@@ -2463,13 +2622,11 @@ function NodeEditView({
                   )}
                 </>
               ) : isVideo ? (
-                <SelectControl
+                <ChipControl
                   label="画幅"
                   value={normalizeVideoAspectRatio(draft.aspect_ratio)}
-                  options={[
-                    { label: "16:9", value: "16:9" },
-                    { label: "9:16", value: "9:16" },
-                  ]}
+                  options={VIDEO_ASPECT_RATIO_OPTIONS}
+                  placeholder="比例"
                   onChange={(aspect_ratio) => onChange({ aspect_ratio })}
                 />
               ) : (
@@ -2502,24 +2659,38 @@ function NodeEditView({
               {isVideo && (
                 <>
                   <SelectControl
-                    label="适配模型"
-                    value={draft.model}
+                    label="模型模板"
+                    value={selectedVideoTemplate}
                     options={videoModelOptions}
-                    onChange={updateVideoModel}
+                    onChange={applyVideoModelTemplate}
+                    hint="留空时可使用当前激活视频 Provider，或在下面手填 provider 名/模型名。"
                   />
+                  <DraftField label="模型/Provider">
+                    <input
+                      value={draft.model}
+                      onChange={(event) => updateVideoModel(event.target.value)}
+                      className={inputClass}
+                      placeholder="留空使用当前激活视频 Provider"
+                    />
+                  </DraftField>
                   <SelectControl
                     label="分辨率"
                     value={draft.resolution || defaultVideoResolutionForModel(draft.model)}
                     options={videoResolutionOptions}
                     onChange={(resolution) => onChange({ resolution })}
                   />
-                  <ChipControl
-                    label="时长"
-                    value={draft.duration_seconds}
-                    options={["5", "10", "15"]}
-                    placeholder="秒"
-                    onChange={(duration_seconds) => onChange({ duration_seconds })}
-                  />
+                  <DraftField label="时长">
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputMode="numeric"
+                      value={draft.duration_seconds}
+                      onChange={(event) => onChange({ duration_seconds: event.target.value })}
+                      className={inputClass}
+                      placeholder="秒"
+                    />
+                  </DraftField>
                 </>
               )}
             </div>
@@ -2787,6 +2958,7 @@ function ImagePreviewSection({
           </div>
         )}
 
+        <MediaSpecBadges spec={spec} className="mt-2" />
         <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
       </div>
       {inpaintMode && imageSrc && (
@@ -2849,7 +3021,6 @@ function ImagePreviewSection({
           )}
         </div>
       )}
-      <MediaSpecBadges spec={spec} className="mt-2" />
     </Section>
   )
 }
@@ -2951,25 +3122,71 @@ function MediaHistorySection({
   )
 }
 
+function NodeMediaUploadSection({
+  nodeType,
+  uploading,
+  disabled,
+  onUpload,
+}: {
+  nodeType: string
+  uploading: boolean
+  disabled: boolean
+  onUpload: (files: FileList | null) => void | Promise<void>
+}) {
+  if (nodeType !== "image" && nodeType !== "video") return null
+  const isVideo = nodeType === "video"
+  const label = uploading ? "上传中..." : isVideo ? "上传视频替换" : "上传图片替换"
+  const accept = isVideo
+    ? "video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,.m4v"
+    : "image/png,image/jpeg,image/webp,image/gif,image/bmp,.png,.jpg,.jpeg,.webp,.gif,.bmp"
+
+  return (
+    <Section title="节点产物">
+      <div className="flex flex-wrap items-center gap-2">
+        <label
+          className={`rounded-md border px-3 py-2 text-xs font-semibold transition ${
+            disabled
+              ? "cursor-not-allowed border-white/[0.07] bg-white/[0.03] text-zinc-500"
+              : "cursor-pointer border-cyan-200/25 bg-cyan-300/12 text-cyan-100 hover:border-cyan-200/45 hover:bg-cyan-300/18"
+          }`}
+        >
+          {label}
+          <input
+            type="file"
+            accept={accept}
+            disabled={disabled}
+            className="hidden"
+            onChange={(event) => {
+              void onUpload(event.currentTarget.files)
+              event.currentTarget.value = ""
+            }}
+          />
+        </label>
+        {uploading && (
+          <span className="h-3.5 w-3.5 rounded-full border-2 border-cyan-100/55 border-t-transparent animate-spin" />
+        )}
+      </div>
+    </Section>
+  )
+}
+
 function GenericNodeDetails({
   node,
-  mediaCount,
 }: {
   node: NodeFull
-  mediaCount: number
 }) {
-  const inputObj = asObj(parseJson(node.input)) || {}
+  const inputObj = nodeInputFields(node.input)
   const outputObj = asObj(parseJson(node.output)) || {}
   const nodePrompt = typeof node.prompt === "string" ? node.prompt : ""
   const prompt = pickPromptText(nodePrompt, inputObj, outputObj)
-  const inputRest = compactObject(inputObj, new Set(["prompt", "image_prompt", "video_prompt"]))
-  const outputRest = compactObject(outputObj, new Set(["prompt", "image_prompt", "video_prompt", "url", "local_url", "remote_url"]))
-  const outputText = typeof node.output === "string" && node.output.trim() ? node.output.trim() : ""
-  const hasInput = Object.keys(inputRest).length > 0
-  const hasOutput = Object.keys(outputRest).length > 0 || outputText
-  const hasPromptOnly = Boolean(prompt) && !hasInput && !hasOutput && mediaCount === 0
+  const outputText = nodeReadableText({
+    type: node.type,
+    input: inputObj,
+    output: node.output,
+    prompt: nodePrompt,
+  })
 
-  if (!prompt && !hasInput && !hasOutput && !hasPromptOnly) return null
+  if (!prompt && !outputText) return null
 
   return (
     <div className="space-y-3">
@@ -2978,20 +3195,11 @@ function GenericNodeDetails({
           <PromptBlock>{prompt}</PromptBlock>
         </Section>
       )}
-      {hasInput && (
-        <Section title="输入参数">
-          <FieldRows value={inputRest} />
-        </Section>
-      )}
-      {outputText ? (
+      {outputText && (
         <Section title="输出内容">
           <PromptBlock>{outputText}</PromptBlock>
         </Section>
-      ) : hasOutput ? (
-        <Section title="输出内容">
-          <FieldRows value={outputRest} />
-        </Section>
-      ) : null}
+      )}
     </div>
   )
 }
@@ -3023,28 +3231,22 @@ function TypedRenderer({
   onSwitchHistory: (entry: MediaHistoryEntry) => void | Promise<void>
   switchingHistoryId?: string | null
 }) {
-  const inObj = asObj(parseJson(input)) || {}
+  const inObj = nodeInputFields(input)
   const outObj = asObj(parseJson(output)) || {}
   const topPrompt = typeof nodePrompt === "string" ? nodePrompt : ""
   const busy = nodeStatus === "running" || nodeStatus === "queued"
 
   if (type === "text") {
-    const text = pickReadableText(inObj, outObj, topPrompt)
     const refs = pickReferences(inObj, outObj)
     return (
-      <div className="space-y-3">
-        {text ? (
-          <Section title="内容">
-            <PromptBlock>{text}</PromptBlock>
-            <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
-          </Section>
-        ) : (
-          <Section title="内容">
-            <ImagePlaceholder label="等待文本内容" />
-            <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
-          </Section>
-        )}
-      </div>
+      <TextNodeStructuredDetails
+        input={inObj}
+        rawOutput={parseJson(output)}
+        nodePrompt={topPrompt}
+        refs={refs}
+        projectId={projectId}
+        setLightbox={setLightbox}
+      />
     )
   }
 
@@ -3052,16 +3254,16 @@ function TypedRenderer({
     const media = collectMedia(outObj).filter((item) => item.kind === "image")
     const image = media[0]
     const prompt = pickPromptText(topPrompt, inObj, outObj)
-    const spec = pickMediaSpec(outObj, inObj)
     const refs = pickReferences(inObj, outObj)
+    const spec = pickMediaSpec(outObj, inObj)
     return (
       <div className="space-y-3">
-	        <ImagePreviewSection
-	          node={node}
-	          image={image}
-	          refs={refs}
-	          spec={spec}
-	          busy={busy}
+        <ImagePreviewSection
+          node={node}
+          image={image}
+          refs={refs}
+          spec={spec}
+          busy={busy}
           projectId={projectId}
           setLightbox={setLightbox}
           onEdited={onEdited}
@@ -3108,9 +3310,9 @@ function TypedRenderer({
 	        ) : (
 	          <Section title="视频预览">
 	            <ImagePlaceholder label={busy ? "视频生成中..." : "待生成视频"} busy={busy} />
-	            <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
-	          </Section>
-	        )}
+            <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
+          </Section>
+        )}
         {prompt && (
           <Section title="视频提示词">
             <PromptBlock>{prompt}</PromptBlock>
@@ -3166,10 +3368,7 @@ function TypedRenderer({
 
   // ── character ──
   if (type === "character") {
-    // 兼容三种 output 形态:
-    // 1) fusion: { type:"fusion", stages:[{name:'人物设定',...},{name:'提示词',prompt},{name:'参考图',url,size,quality,...}] }
-    // 2) 平铺单人: { character:{name,identity,appearance,visual_prompt,...}, character_id }
-    // 3) 平铺多人: { characters:[...] } — 取第一个
+    // 识别三种结构化 output: fusion 阶段、单人 character、多人 characters。
     const stages = Array.isArray(outObj.stages) ? (outObj.stages as StageData[]) : []
     const promptStage = stages.find((s) => /提示词/.test(s.name))
     const imageStage = stages.find((s) => /图|参考/.test(s.name) && !/提示词/.test(s.name))
@@ -3203,7 +3402,7 @@ function TypedRenderer({
     const motivation = pickStr("motivation")
     const traits = pickList("traits")
 
-    // 当前节点 prompt 优先；旧 output/fusion prompt 只作为历史产物兜底。
+    // 当前节点 prompt 优先；output/fusion prompt 作为补充来源。
     const visualPrompt =
       topPrompt ||
       (inObj.prompt as string) ||
@@ -3255,7 +3454,7 @@ function TypedRenderer({
           </Section>
         ) : (
           <Section title="生图规格(尚未出图)">
-            <ImagePlaceholder label="未出图 — 调用 node.run(action='render') 生成" />
+            <ImagePlaceholder label="未出图 - 点击重新生成" />
             <MediaSpecBadges spec={spec} className="mt-1.5" />
             <ReferenceThumbStrip refs={refsChar} projectId={projectId} setLightbox={setLightbox} />
           </Section>
@@ -3340,7 +3539,7 @@ function TypedRenderer({
           </Section>
         ) : (
           <Section title="生图规格(尚未出图)">
-            <ImagePlaceholder label="未出图 — 调用 node.run(action='render') 生成" />
+            <ImagePlaceholder label="未出图 - 点击重新生成" />
             <MediaSpecBadges spec={spec} className="mt-1.5" />
             <ReferenceThumbStrip refs={refsScene} projectId={projectId} setLightbox={setLightbox} />
           </Section>
@@ -3356,10 +3555,7 @@ function TypedRenderer({
 
   // ── episode_script ──
   if (type === "episode_script") {
-    // 兼容三种产物形态:
-    //  A) 正确:outObj.script = {...}
-    //  B) 历史 wrapper:outObj.result.script = {...} (orchestrator 旧 bug 把 node.run 的返回壳整段写入)
-    //  C) 顶层平铺:整个 outObj 就是 script(episode_number/scenes 直接在 outObj 上)
+    // 识别三种剧本结构: script、result.script、顶层 scenes/title。
     const wrapped = asObj((outObj as Record<string, unknown>).result)
     const script =
       asObj(outObj.script) ||
@@ -3404,7 +3600,7 @@ function TypedRenderer({
           <Section title={`场次（${scenes.length}）`}>
             <div className="space-y-2">
               {scenes.map((sc, i) => {
-                // dialogues 数组 / dialogue 字符串 / dialogue 数组 都兼容
+                // dialogues/dialogue 字段统一展示。
                 const rawDialogues = sc.dialogues ?? sc.dialogue
                 const dialogues = Array.isArray(rawDialogues)
                   ? (rawDialogues as Record<string, string>[])
@@ -3453,7 +3649,7 @@ function TypedRenderer({
 
   // ── script_collection（全剧目录） ──
   if (type === "script_collection") {
-    // 兼容历史 wrapper:outObj.result.outline
+    // 支持 outline 或 result.outline 结构。
     const wrapped = asObj((outObj as Record<string, unknown>).result)
     const outline =
       asObj(outObj.outline) ||
@@ -3522,11 +3718,7 @@ function TypedRenderer({
 
   // ── episode_cast_scene_plan ──
   if (type === "episode_cast_scene_plan") {
-    // 兼容 4 种形态:
-    //  A) 顶层平铺(新): outObj.cast / outObj.scenes / outObj.segment_assignments
-    //  B) plan 嵌套:outObj.plan.{cast,scenes,segment_assignments}
-    //  C) wrapper:outObj.result.plan.{...}
-    //  D) wrapper 平铺:outObj.result.{cast,scenes,segment_assignments}
+    // 识别 plan 的顶层结构和 result 嵌套结构。
     const wrapped = asObj((outObj as Record<string, unknown>).result)
     const planObj =
       asObj(outObj.plan) ||
@@ -3619,7 +3811,7 @@ function TypedRenderer({
           </Section>
         ) : (
           <Section title="生图规格(尚未出图)">
-            <ImagePlaceholder label="未出图 — 调用 node.run(action='render') 生成" />
+            <ImagePlaceholder label="未出图 - 点击重新生成" />
             <MediaSpecBadges spec={spec} className="mt-1.5" />
             <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
           </Section>
@@ -3713,7 +3905,7 @@ function TypedRenderer({
           </Section>
         ) : (
           <Section title="生图规格(尚未出图)">
-            <ImagePlaceholder label="未出图 — 调用 node.run(action='render') 生成" />
+            <ImagePlaceholder label="未出图 - 点击重新生成" />
             <MediaSpecBadges spec={spec} className="mt-1.5" />
             <ReferenceThumbStrip refs={refsShot} projectId={projectId} setLightbox={setLightbox} />
           </Section>
@@ -3845,7 +4037,7 @@ function TypedRenderer({
     )
   }
 
-  // ── 兜底 ──
+  // ── 未匹配的类型由通用详情区处理 ──
   return null
 }
 
@@ -3858,6 +4050,7 @@ export default function NodeDetailPanel({
   onRequestStoryRevision,
   actionDisabled = false,
   presentation = "modal",
+  editRequestKey = null,
 }: Props) {
   const storeProjectId = useProjectStore((s) => s.currentProject?.id)
   const updateCanvasNode = useCanvasStore((s) => s.updateNode)
@@ -3874,6 +4067,7 @@ export default function NodeDetailPanel({
   const [saving, setSaving] = useState(false)
   const [rerunning, setRerunning] = useState(false)
   const [uploadingRefs, setUploadingRefs] = useState(false)
+  const [uploadingOutput, setUploadingOutput] = useState(false)
   const [switchingHistoryId, setSwitchingHistoryId] = useState<string | null>(null)
   const [detailReloadTick, setDetailReloadTick] = useState(0)
   const [audioProviders, setAudioProviders] = useState<AudioProviderOption[]>([])
@@ -3927,6 +4121,7 @@ export default function NodeDetailPanel({
     setSaving(false)
     setRerunning(false)
     setUploadingRefs(false)
+    setUploadingOutput(false)
     setSwitchingHistoryId(null)
     setLightbox(null)
     setVideoLightbox(null)
@@ -3935,6 +4130,12 @@ export default function NodeDetailPanel({
   useEffect(() => {
     if (data && !editing) setDraft(draftFromNode(data))
   }, [data, editing])
+
+  useEffect(() => {
+    if (!editRequestKey || !data || !EDITABLE_NODE_TYPES.has(data.type)) return
+    setDraft(draftFromNode(data))
+    setEditing(true)
+  }, [data, editRequestKey])
 
   useEffect(() => {
     let cancelled = false
@@ -3994,12 +4195,12 @@ export default function NodeDetailPanel({
     ? "fixed left-1/2 top-1/2 z-[70] flex max-h-[calc(100dvh-28px)] w-[calc(100vw-20px)] flex-col overflow-hidden rounded-lg border border-white/[0.09] bg-[#0f131b]/96 shadow-[0_28px_90px_rgba(0,0,0,0.66)] backdrop-blur-xl sm:max-h-[84vh] sm:w-[min(900px,calc(100vw-72px))]"
     : "absolute bottom-3 left-3 right-3 top-3 z-30 flex flex-col overflow-hidden rounded-lg border border-white/[0.09] bg-[#0f131b]/96 shadow-2xl backdrop-blur sm:left-auto sm:w-[380px]"
   const canRequestStoryRevision = Boolean(data && onRequestStoryRevision && STORY_REVISION_NODE_TYPES.has(data.type))
-  const canRerunMediaNode = Boolean(data && onRerun && MEDIA_RERUN_NODE_TYPES.has(data.type))
+  const canRerunNode = Boolean(data && onRerun && MEDIA_RERUN_NODE_TYPES.has(data.type))
   const mediaRunTarget = data?.type === "video" ? "视频" : data?.type === "audio" ? "音频" : "图片"
   const mediaRunLabel = data && (data.status === "idle" || data.status === "queued")
     ? `生成${mediaRunTarget}`
     : `重新生成${mediaRunTarget}`
-  const footerActionCount = [canRequestStoryRevision, canRerunMediaNode].filter(Boolean).length
+  const footerActionCount = [canRequestStoryRevision, canRerunNode].filter(Boolean).length
   const footerClass = footerActionCount >= 3
     ? "grid grid-cols-3 gap-2 border-t border-white/[0.08] bg-[#111722]/92 px-3 py-3 shrink-0 sm:px-4"
     : footerActionCount === 2
@@ -4007,7 +4208,7 @@ export default function NodeDetailPanel({
     : "border-t border-white/[0.08] bg-[#111722]/92 px-3 py-3 shrink-0 sm:px-4"
 
   const canEdit = Boolean(data && EDITABLE_NODE_TYPES.has(data.type))
-  const actionBusy = actionDisabled || rerunning
+  const actionBusy = actionDisabled || rerunning || uploadingOutput
   const selectedAudioProvider = data?.type === "audio" ? resolveAudioProvider(draft.model, audioProviders) : undefined
   const selectedAudioMode = data?.type === "audio"
     ? audioProviderModeFromFormat(selectedAudioProvider?.api_format)
@@ -4045,6 +4246,33 @@ export default function NodeDetailPanel({
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setUploadingRefs(false)
+    }
+  }
+
+  const uploadNodeMediaOutput = async (files: FileList | null) => {
+    if (!files?.length || !currentProjectId || !data) return
+    if (data.type !== "image" && data.type !== "video") return
+    setUploadingOutput(true)
+    setError(null)
+    try {
+      const result = await uploadProjectNodeMedia<NodeFull>(currentProjectId, data.id, files[0])
+      setData(result)
+      setDraft(draftFromNode(result))
+      updateCanvasNode(result.id, canvasPatchFromNode(result))
+      setDetailReloadTick((tick) => tick + 1)
+      if (Array.isArray(result.changes) && result.changes.length > 0) {
+        appendMessage({
+          id: crypto.randomUUID?.() ?? `node-media-upload-${Date.now()}`,
+          role: "assistant",
+          content: "",
+          createdAt: new Date().toISOString(),
+          changeCard: { tool: "node.update", changes: result.changes },
+        })
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setUploadingOutput(false)
     }
   }
 
@@ -4233,6 +4461,12 @@ export default function NodeDetailPanel({
               />
             ) : (
             <>
+              <NodeMediaUploadSection
+                nodeType={data.type}
+                uploading={uploadingOutput}
+                disabled={actionDisabled || uploadingOutput || data.status === "running" || data.status === "queued"}
+                onUpload={uploadNodeMediaOutput}
+              />
               {/* Typed renderer (12 类节点的人性化视图) */}
               <TypedRenderer
                 node={data}
@@ -4249,7 +4483,7 @@ export default function NodeDetailPanel({
                 switchingHistoryId={switchingHistoryId}
               />
               {!TYPED_RENDERED_NODE_TYPES.has(data.type) && (
-                <GenericNodeDetails node={data} mediaCount={media.length} />
+                <GenericNodeDetails node={data} />
               )}
 
               {/* Media gallery (兜底,如果 typed renderer 没覆盖到的媒体也展示) */}
@@ -4324,7 +4558,7 @@ export default function NodeDetailPanel({
         </div>
 
         {/* Footer */}
-        {data && !editing && (status !== "running" || rerunning) && (canRequestStoryRevision || canRerunMediaNode) && (
+        {data && !editing && (status !== "running" || rerunning) && (canRequestStoryRevision || canRerunNode) && (
           <div className={footerClass}>
             {canRequestStoryRevision && (
 	              <button
@@ -4335,7 +4569,7 @@ export default function NodeDetailPanel({
                 修改剧情
               </button>
             )}
-            {canRerunMediaNode && (
+            {canRerunNode && (
 	              <button
 	                onClick={() => {
                     setError(null)
@@ -4356,7 +4590,7 @@ export default function NodeDetailPanel({
 	                className="flex items-center justify-center gap-2 rounded-md border border-cyan-200/20 bg-cyan-300 px-3 py-2.5 text-sm font-semibold text-cyan-950 shadow-[0_10px_26px_rgba(34,211,238,0.18)] transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-55"
 	              >
 	                {rerunning && <span className="h-3.5 w-3.5 rounded-full border-2 border-cyan-950/40 border-t-transparent animate-spin" />}
-	                {rerunning ? "生成中..." : mediaRunLabel}
+	                {rerunning ? "运行中..." : mediaRunLabel}
 	              </button>
             )}
           </div>

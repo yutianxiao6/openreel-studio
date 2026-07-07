@@ -1,0 +1,848 @@
+{
+  "id": "general_short_drama_workflow",
+  "name": "通用视频制作工作流",
+  "description": "默认视频制作流程：输入剧情和基础参数后，生成总剧本、逐段剧本文本、人物参考图、场景参考图、宫格分镜、视频提示词和最终视频节点。",
+  "category": "workflow",
+  "applies_to": "通用视频制作 默认视频制作 workflow 文生视频 15秒分段 宫格分镜 人物参考 场景参考 视频提示词 最终视频",
+  "workflow_spec_version": "openreel.workflow.v1",
+  "required_capabilities": [
+    "core.node.text",
+    "core.node.image",
+    "core.node.video",
+    "core.runner.node_run",
+    "core.runner.workflow_input",
+    "core.prompt_template",
+    "core.repeat",
+    "core.foreach",
+    "core.context_refs",
+    "core.reference_selectors",
+    "core.depends_on_previous",
+    "core.output_mode.json",
+    "core.surface.canvas",
+    "core.surface.workflow_runtime"
+  ],
+  "extensions": {
+    "openreel.core": {
+      "label": "OpenReel built-in workflow runtime",
+      "version": "1"
+    }
+  },
+  "defaults": {
+    "durationSeconds": 15,
+    "episodeCount": 1,
+    "fields": {
+      "tmp": true,
+      "status": "draft",
+      "workflow_kind": "general_short_drama_workflow"
+    },
+    "aspect_ratio": "16:9",
+    "resolution": "2560x1440",
+    "quality": "high",
+    "duration_seconds": 15,
+    "segmentSeconds": 15
+  },
+  "inputs_schema": {
+    "plot": {
+      "type": "string",
+      "title": "故事主题或剧情",
+      "description": "故事主题、简要情节或完整剧本。"
+    },
+    "style": {
+      "type": "string",
+      "title": "视觉风格",
+      "description": "视觉风格、时代质感、摄影质感和整体情绪。"
+    },
+    "type": {
+      "type": "string",
+      "title": "视频类型",
+      "description": "例如短剧、电影短片、预告片、广告片。"
+    },
+    "episodeCount": {
+      "type": "integer",
+      "title": "集数",
+      "minimum": 1,
+      "default": 1
+    },
+    "durationSeconds": {
+      "type": "integer",
+      "title": "总时长",
+      "minimum": 1,
+      "default": 15,
+      "description": "整支视频或单集目标时长，单位秒。"
+    },
+    "segmentSeconds": {
+      "type": "integer",
+      "title": "每段时长",
+      "minimum": 1,
+      "default": 15,
+      "description": "每个视频段的目标时长，系统据此自动计算段数。"
+    }
+  },
+  "required_inputs": [
+    "plot",
+    "durationSeconds"
+  ],
+  "dimensions": {},
+  "steps": [
+    {
+      "acceptance": "输入字段与默认值完整，节点只整理入口参数，不生成剧本或提示词正文。",
+      "fields": {},
+      "id": "input",
+      "inputs_schema": {
+        "plot": {
+          "type": "string"
+        },
+        "style": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "episodeCount": {
+          "default": 1,
+          "type": "integer"
+        },
+        "durationSeconds": {
+          "default": 15,
+          "type": "integer"
+        },
+        "segmentSeconds": {
+          "default": 15,
+          "type": "integer"
+        }
+      },
+      "node_type": "text",
+      "surface": "workflow_runtime",
+      "visibility": "flow_only",
+      "runner": "workflow_input",
+      "title": "运行输入"
+    },
+    {
+      "acceptance": "仅当 episodeCount > 1 时运行；输出多集规划，包含每集标题、剧情方向、情绪钩子和连续性备注。",
+      "auto_skip_when": "{{inputs.episodeCount}} <= 1",
+      "depends_on": [
+        "input"
+      ],
+      "fields": {},
+      "id": "episode_plan",
+      "node_type": "text",
+      "surface": "workflow_runtime",
+      "visibility": "flow_only",
+      "output_mode": "json",
+      "output_schema": {
+        "fields": [
+          {
+            "id": "episodes",
+            "label": "分集规划",
+            "type": "array",
+            "required": true
+          }
+        ],
+        "allow_extra_fields": true,
+        "labels": {
+          "episodes": "分集规划",
+          "title": "标题",
+          "plot": "剧情方向",
+          "continuity_note": "连续性备注"
+        }
+      },
+      "primary_skill": "script_writing",
+      "prompt_template": "SYSTEM:\n你是一位专业影视编剧，把总体情节拆成连续短剧的分集大纲。\nUSER:\n请基于 plot={{inputs.plot}}、style={{inputs.style}}、type={{inputs.type}}、episodeCount={{inputs.episodeCount}} 规划多集方向；当集数为 1 时该节点跳过。\nOUTPUT:\n只输出结构化分集规划，包含 episodes；每集包含 index、title、plot、continuity_note。plot 控制在 120-220 字，写清本集主要事件、人物动机、冲突推进和结尾钩子。\nCHECK:\n每集有独立起承转合；前后集因果衔接、悬念递进；不要输出剧本正文、分段、人物表、场景表或分镜。",
+      "runner": "node.run",
+      "title": "分集规划",
+      "source_node_id": "episodePlan"
+    },
+    {
+      "acceptance": "输出完整可读剧本正文，并按每 15 秒或 segmentSeconds 拆出清楚段落。",
+      "depends_on": [
+        "input",
+        "episode_plan"
+      ],
+      "id": "script",
+      "node_type": "text",
+      "surface": "workflow_runtime",
+      "visibility": "flow_only",
+      "primary_skill": "script_writing",
+      "prompt_template": "SYSTEM:\n你是一位专业影视编剧和导演，根据用户情节、视频风格和类型生成完整短剧剧本。\nUSER:\n请基于 plot={{inputs.plot}}、style={{inputs.style}}、type={{inputs.type}}、episodeCount={{inputs.episodeCount}}、durationSeconds={{inputs.durationSeconds}}、segmentSeconds={{inputs.segmentSeconds}} 和 episodePlan={{episodePlan.output}} 生成完整剧本。durationSeconds 表示整支视频或单集目标时长；segmentSeconds 表示每段目标时长；段数由 durationSeconds ÷ segmentSeconds 向上取整得到。若用户文字里的段数和结构化时长冲突，以结构化时长为准。\nOUTPUT:\n只输出剧本正文，不输出 JSON。正文先写一句整体故事梗概，再按【第N段｜起止秒｜标题】拆段。每段必须包含场景环境、出场人物、人物动作、对白/旁白、情绪氛围、结尾画面；段内配角和纯场景信息直接写进该段正文，供后续拆分使用。\nCHECK:\n段落数量匹配时长计算；每段时长不超过 segmentSeconds；剧情具有入口状态、触发、动作推进、情绪转折和落点画面；整体故事连续，能支撑后续人物、场景、分镜和视频提示词生成。",
+      "runner": "node.run",
+      "title": "剧本",
+      "kind": "text"
+    },
+    {
+      "id": "script_canvas",
+      "title": "剧本",
+      "kind": "canvas_text",
+      "node_type": "text",
+      "runner": "workflow_canvas_output",
+      "depends_on": [
+        "script"
+      ],
+      "fields": {
+        "workflow_source_step": "script",
+        "workflow_source_path": "output",
+        "workflow_generate": false
+      },
+      "acceptance": "画布显示“剧本”的正文输出。"
+    },
+    {
+      "acceptance": "输出 style_template、main_characters[]、minor_characters_by_segment[]、scenes_by_segment[]，并保持人物和场景跨段一致。",
+      "depends_on": [
+        "script"
+      ],
+      "fields": {},
+      "id": "plan_characters_scenes",
+      "node_type": "text",
+      "surface": "workflow_runtime",
+      "visibility": "flow_only",
+      "output_mode": "json",
+      "output_schema": {
+        "fields": [
+          {
+            "id": "style_template",
+            "label": "视觉风格",
+            "type": "object",
+            "required": true
+          },
+          {
+            "id": "main_characters",
+            "label": "主要人物",
+            "type": "array",
+            "required": true
+          },
+          {
+            "id": "minor_characters_by_segment",
+            "label": "分段次要人物",
+            "type": "array"
+          },
+          {
+            "id": "scenes_by_segment",
+            "label": "分段场景",
+            "type": "array",
+            "required": true
+          }
+        ],
+        "allow_extra_fields": true,
+        "hidden": [
+          "reuse_key",
+          "used_in_segments"
+        ],
+        "labels": {
+          "style_template": "视觉风格",
+          "main_characters": "主要人物",
+          "minor_characters_by_segment": "分段次要人物",
+          "scenes_by_segment": "分段场景",
+          "name": "名称",
+          "visual_goal": "视觉目标"
+        }
+      },
+      "primary_skill": "script_writing",
+      "prompt_template": "SYSTEM:\n你是一位专业影视美术总监。根据完整剧本统一规划人物、场景和视觉风格，确保全片一致性。\nUSER:\n请基于 script={{script.output}}、style={{inputs.style}}、type={{inputs.type}} 规划主要人物、每段配角、每段主场景和全片风格模板。\nOUTPUT:\n只输出结构化规划，包含 style_template、main_characters、minor_characters_by_segment、scenes_by_segment。style_template 不是简单复制用户风格词，而是结合年代、地域、氛围、色调、光影、构图、画面质感推导出的固定视觉模板。main_characters 只包含贯穿多段的核心角色，每个角色包含 name、reuse_key、visual_goal、used_in_segments、reference_prompt_brief。minor_characters_by_segment 和 scenes_by_segment 按段落顺序排列；段内配角只作为字段，不额外生成独立人物图；场景只写有实质剧情的核心地点，纯环境描述，不含人物。\nCHECK:\n同一角色跨段名称、性别、服装和身份一致；场景宁少勿多，相同地点使用同一 reuse_key；每段都有可执行的主场景和必要人物信息；无人物场景提示要明确纯环境、无人影。",
+      "runner": "node.run",
+      "title": "人物与场景规划",
+      "source_node_id": "planCharactersScenes"
+    },
+    {
+      "acceptance": "整理主要人物集合入口；每个主要人物保持独立条目。",
+      "collection": {
+        "from_step": "plan_characters_scenes",
+        "kind": "characters",
+        "label": "主要人物集合",
+        "path": "output.main_characters"
+      },
+      "depends_on": [
+        "plan_characters_scenes"
+      ],
+      "fields": {},
+      "id": "main_characters",
+      "node_type": "text",
+      "surface": "workflow_runtime",
+      "visibility": "flow_only",
+      "output_mode": "json",
+      "output_schema": {
+        "type": "collection",
+        "items_key": "main_characters",
+        "fields": [
+          {
+            "id": "name",
+            "label": "名称",
+            "type": "string",
+            "required": true
+          },
+          {
+            "id": "reuse_key",
+            "label": "复用标识",
+            "type": "string"
+          },
+          {
+            "id": "visual_goal",
+            "label": "视觉目标",
+            "type": "string",
+            "required": true
+          },
+          {
+            "id": "used_in_segments",
+            "label": "使用段落",
+            "type": "array"
+          },
+          {
+            "id": "reference_prompt_brief",
+            "label": "参考图提示词摘要",
+            "type": "string"
+          }
+        ],
+        "hidden": [
+          "reuse_key",
+          "used_in_segments"
+        ],
+        "labels": {
+          "main_characters": "主要人物",
+          "name": "名称",
+          "visual_goal": "视觉目标",
+          "reference_prompt_brief": "参考图提示词摘要"
+        }
+      },
+      "primary_skill": "script_writing",
+      "prompt_template": "SYSTEM:\n你是影视美术总监，整理全片主要人物集合，供后续逐个生成人物参考图。\nUSER:\n请基于 main_characters={{planCharactersScenes.output.main_characters}}、style_template={{planCharactersScenes.output.style_template}}、script={{script.output}} 输出主要人物集合清单。\nOUTPUT:\n输出主要人物条目集合；每个角色包含 name、reuse_key、visual_goal、used_in_segments、reference_prompt_brief。reference_prompt_brief 必须写清性别、年龄段、体型、发型、五官、服装、材质、关键道具和身份气质，不写动作表情。\nCHECK:\n每个主要人物独立成项；同一人物的名称和 reuse_key 稳定；内容可直接支持角色模型图提示词。",
+      "runner": "node.run",
+      "title": "主要人物集合",
+      "source_node_id": "mainCharacters",
+      "kind": "collection"
+    },
+    {
+      "acceptance": "等待 mainCharacters 输出 main_characters[] 后按角色展开；每个角色生成一张独立人物参考图。",
+      "depends_on": [
+        "main_characters"
+      ],
+      "foreach": {
+        "from_step": "main_characters",
+        "kind": "characters",
+        "label": "按主要人物逐个展开",
+        "path": "output.main_characters"
+      },
+      "id": "main_character_images",
+      "repeat": {
+        "label": "按主要人物逐个展开",
+        "mode": "per_main_character"
+      },
+      "surface": "workflow_runtime",
+      "visibility": "flow_only",
+      "steps": [
+        {
+          "id": "main_character_image_prompt",
+          "title": "主要人物参考图提示词",
+          "kind": "text",
+          "node_type": "text",
+          "runner": "node.run",
+          "surface": "workflow_runtime",
+          "visibility": "flow_only",
+          "primary_skill": "character_prompt",
+          "prompt_template": "SYSTEM:\n你是人物视觉设定师，按官方设定集角色视觉参考表写单个主要人物的参考图提示词。\nUSER:\n请基于 current_character={{json}}、script={{script.output}}、style_template={{planCharactersScenes.output.style_template}} 输出这一名角色的人物官方设定集提示词正文。\nOUTPUT:\n只输出纯文本 image prompt，不输出 JSON。采用“官方设定集角色视觉参考表，真人摄影级质感，纯白背景图解风排版”。正文按同一张官方角色设定表组织：角色身份与姓名、脸部与体态、正面/侧面/背面全身三面图、四分之三角度、表情特写、服装与装备拆解、配色与材质、关键道具、世界观边注、统一风格模板和画面要求。人物保持可复用设定姿态，背景为纯白或浅灰设定板，不写剧情动作、场景叙事或分镜镜头。\nCHECK:\n同一脸、同一发型、同一服装、同一装备和同一身体比例稳定；五官、发型、服饰层次、材质、配色和道具足够明确；输出能作为后续分镜与视频的主要人物视觉参考。",
+          "context_refs": [
+            "script",
+            "plan_characters_scenes"
+          ],
+          "output_schema": {
+            "labels": {
+              "prompt": "图片提示词",
+              "image_prompt": "图片提示词",
+              "visual_prompt": "视觉提示词",
+              "reference_prompt_brief": "参考图提示词摘要",
+              "resolution": "分辨率",
+              "aspect_ratio": "画幅",
+              "quality": "质量",
+              "reference_images": "参考图"
+            }
+          },
+          "acceptance": "当前实例只服务一个主要人物，输出可直接生成的人物设定集 image prompt 正文。",
+          "depends_on": []
+        },
+        {
+          "id": "main_character_image",
+          "title": "主要人物参考图",
+          "node_type": "image",
+          "acceptance": "当前实例只服务一个主要人物，输出可直接生成的人物设定集 image prompt 正文。",
+          "kind": "image",
+          "runner": "workflow_canvas_output",
+          "depends_on": [
+            "main_character_image_prompt"
+          ],
+          "context_refs": [
+            {
+              "ref": "script_canvas",
+              "role": "context"
+            }
+          ],
+          "fields": {
+            "workflow_source_step": "main_character_image_prompt",
+            "workflow_source_path": "output",
+            "workflow_generate": true
+          }
+        }
+      ],
+      "title": "主要人物参考图集合",
+      "fields": {},
+      "source_node_id": "mainCharacterImages"
+    },
+    {
+      "acceptance": "按 durationSeconds 和 segmentSeconds 自动计算段数并逐段执行；每段先生成可见剧本文本，再生成场景、分镜、视频提示词和最终视频。",
+      "depends_on": [
+        "script"
+      ],
+      "id": "episode_segments",
+      "layout_after": [
+        "main_character_images"
+      ],
+      "repeat": {
+        "label": "按总时长和每段时长自动逐段展开",
+        "mode": "duration_segments",
+        "foreach": {
+          "from": "segments",
+          "path": "segments"
+        }
+      },
+      "surface": "workflow_runtime",
+      "visibility": "flow_only",
+      "steps": [
+        {
+          "acceptance": "只输出当前段剧本正文，画布需要显示该段文本。",
+          "fields": {},
+          "id": "segment_script",
+          "node_type": "text",
+          "surface": "workflow_runtime",
+          "visibility": "flow_only",
+          "primary_skill": "script_writing",
+          "prompt_template": "SYSTEM:\n你是影视编剧助理，从完整剧本中整理当前段的独立剧本文本。\nUSER:\n请基于 current_segment={{json}}、script={{script.output}}、durationSeconds={{json.duration_seconds}}、startSecond={{json.start_second}}、endSecond={{json.end_second}} 提取并润色当前段剧本。只处理当前段，不改写其他段。\nOUTPUT:\n只输出当前段剧本正文，不输出 JSON。格式为【第{{json.index}}段｜{{json.start_second}}-{{json.end_second}}s｜标题】后接正文。正文包含场景环境、出场人物、人物动作、对白/旁白、情绪氛围、结尾画面；段内配角和纯场景信息写在正文里。\nCHECK:\n该段能独立阅读；时长不超过当前段 duration_seconds；文本与总剧本一致，并能直接作为后续场景、分镜和视频提示词的唯一段落输入。",
+          "runner": "node.run",
+          "title": "分段剧本",
+          "source_node_id": "segmentScript",
+          "kind": "text"
+        },
+        {
+          "id": "segment_script_canvas",
+          "title": "分段剧本",
+          "kind": "canvas_text",
+          "node_type": "text",
+          "runner": "workflow_canvas_output",
+          "depends_on": [
+            "segment_script"
+          ],
+          "fields": {
+            "workflow_source_step": "segment_script",
+            "workflow_source_path": "output",
+            "workflow_generate": false
+          },
+          "acceptance": "画布显示当前段剧本正文。"
+        },
+        {
+          "acceptance": "没有配角时可跳过；有配角时整理当前段配角集合，每个配角保持独立条目。",
+          "auto_skip_when": "{{planCharactersScenes.output.minor_characters_by_segment[episode_index-1][segment_index-1]}} is empty",
+          "collection": {
+            "from_step": "plan_characters_scenes",
+            "kind": "minor_characters",
+            "label": "当前段配角集合",
+            "path": "output.minor_characters_by_segment[]"
+          },
+          "depends_on": [
+            "main_characters",
+            "plan_characters_scenes",
+            "segment_script_canvas"
+          ],
+          "fields": {},
+          "id": "minor_characters",
+          "node_type": "text",
+          "surface": "workflow_runtime",
+          "visibility": "flow_only",
+          "output_mode": "json",
+          "output_schema": {
+            "type": "collection",
+            "items_key": "minor_characters",
+            "fields": [
+              {
+                "id": "name",
+                "label": "名称",
+                "type": "string",
+                "required": true
+              },
+              {
+                "id": "visual_goal",
+                "label": "视觉目标",
+                "type": "string",
+                "required": true
+              },
+              {
+                "id": "relationship_to_main",
+                "label": "与主角关系",
+                "type": "string"
+              },
+              {
+                "id": "reference_prompt_brief",
+                "label": "参考图提示词摘要",
+                "type": "string"
+              }
+            ],
+            "labels": {
+              "minor_characters": "次要人物",
+              "name": "名称",
+              "visual_goal": "视觉目标",
+              "relationship_to_main": "与主角关系",
+              "reference_prompt_brief": "参考图提示词摘要"
+            }
+          },
+          "primary_skill": "character_prompt",
+          "prompt_template": "SYSTEM:\n你是人物视觉设定师，为当前段配角整理轻量身份锚点集合。\nUSER:\n请基于 current_segment={{json}}、segmentScript={{segmentScriptCanvas.output}}、minor_characters={{planCharactersScenes.output.minor_characters_by_segment}}、mainCharacters={{mainCharacters.outputs}}、style_template={{planCharactersScenes.output.style_template}} 输出当前段配角集合。\nOUTPUT:\n输出当前段次要人物条目集合；每个配角包含 name、visual_goal、relationship_to_main、reference_prompt_brief。配角只服务当前段，不生成独立参考图；reference_prompt_brief 写清性别、年龄段、服装、身份和与主角关系。\nCHECK:\n配角不与主要人物重复；无配角时节点可跳过；配角信息能进入分镜和视频提示词。",
+          "runner": "node.run",
+          "title": "次要人物集合",
+          "source_node_id": "minorCharacters",
+          "kind": "collection"
+        },
+        {
+          "acceptance": "按当前段场景规划整理场景集合；如存在相同 reuse_key，可在字段中标明连续性。",
+          "collection": {
+            "from_step": "plan_characters_scenes",
+            "kind": "scenes",
+            "label": "当前段场景集合",
+            "path": "output.scenes_by_segment[]"
+          },
+          "depends_on": [
+            "plan_characters_scenes",
+            "segment_script_canvas"
+          ],
+          "fields": {},
+          "id": "scene",
+          "node_type": "text",
+          "surface": "workflow_runtime",
+          "visibility": "flow_only",
+          "output_mode": "json",
+          "output_schema": {
+            "type": "collection",
+            "items_key": "scenes",
+            "fields": [
+              {
+                "id": "name",
+                "label": "名称",
+                "type": "string",
+                "required": true
+              },
+              {
+                "id": "reuse_key",
+                "label": "复用标识",
+                "type": "string"
+              },
+              {
+                "id": "spatial_layout",
+                "label": "空间结构",
+                "type": "string",
+                "required": true
+              },
+              {
+                "id": "lighting",
+                "label": "光线",
+                "type": "string"
+              },
+              {
+                "id": "props",
+                "label": "道具",
+                "type": "array"
+              },
+              {
+                "id": "reference_prompt_brief",
+                "label": "参考图提示词摘要",
+                "type": "string"
+              }
+            ],
+            "hidden": [
+              "reuse_key"
+            ],
+            "labels": {
+              "scenes": "场景",
+              "name": "名称",
+              "spatial_layout": "空间结构",
+              "lighting": "光线",
+              "props": "道具",
+              "reference_prompt_brief": "参考图提示词摘要"
+            }
+          },
+          "primary_skill": "scene_prompt",
+          "prompt_template": "SYSTEM:\n你是场景概念设计师，把当前段核心地点整理成可复用场景集合。\nUSER:\n请基于 current_segment={{json}}、segmentScript={{segmentScriptCanvas.output}}、scenes={{planCharactersScenes.output.scenes_by_segment}}、style_template={{planCharactersScenes.output.style_template}} 输出当前段场景集合。\nOUTPUT:\n输出当前段场景条目集合；每个场景包含 name、reuse_key、spatial_layout、lighting、props、reference_prompt_brief。只保留有实质剧情的主场景；场景描述是纯环境，不含任何人物；reference_prompt_brief 必须可用于生成无人物场景图。\nCHECK:\n每个场景独立成项；相同地点 reuse_key 一致；空间结构、入口方向、关键道具、光线和风格明确，能支撑后续分镜构图。",
+          "runner": "node.run",
+          "title": "场景集合",
+          "kind": "collection"
+        },
+        {
+          "id": "scene_reference_prompt",
+          "title": "场景参考图提示词",
+          "kind": "text",
+          "node_type": "text",
+          "runner": "node.run",
+          "surface": "workflow_runtime",
+          "visibility": "flow_only",
+          "depends_on": [
+            "segment_script_canvas",
+            "scene"
+          ],
+          "primary_skill": "scene_prompt",
+          "prompt_template": "SYSTEM:\n你是场景概念图提示词编写者，把当前段场景集合写成可直接生成的无人物场景参考图提示词。\nUSER:\n请基于 current_segment={{json}}、segmentScript={{segmentScriptCanvas.output}}、scenes={{scene.outputs}}、style_template={{planCharactersScenes.output.style_template}} 输出当前段场景参考图提示词正文。\nOUTPUT:\n只输出纯文本 image prompt，不输出 JSON。写法采用“2x2 四机位全景图网格，纯场景环境，无人物无人影，从四个不同角度拍摄同一场景”。正文包含全景建立镜头、入口或主方向视角、反向或侧向空间、道具细节或俯视布局，并写清空间结构、入口方向、关键道具、光线、材质和整体视觉风格。\nCHECK:\n四个画格属于同一地点；画面主体是环境和道具；空间、光线、道具和风格足够清楚，能作为分镜图视觉参考。",
+          "output_schema": {
+            "labels": {
+              "prompt": "图片提示词",
+              "image_prompt": "图片提示词",
+              "visual_prompt": "视觉提示词",
+              "resolution": "分辨率",
+              "aspect_ratio": "画幅",
+              "quality": "质量",
+              "reference_images": "参考图"
+            }
+          },
+          "acceptance": "生成当前段场景参考图；本段多个场景时组织成清晰的场景设定板，供分镜图稳定参考。",
+          "fields": {
+            "purpose": "scene_reference_prompt",
+            "stage": "scene_reference_prompt"
+          },
+          "source_node_id": "sceneReferencePrompt"
+        },
+        {
+          "id": "scene_reference",
+          "title": "场景参考图",
+          "node_type": "image",
+          "acceptance": "生成当前段场景参考图；本段多个场景时组织成清晰的场景设定板，供分镜图稳定参考。",
+          "source_node_id": "sceneReference",
+          "kind": "image",
+          "runner": "workflow_canvas_output",
+          "depends_on": [
+            "scene_reference_prompt"
+          ],
+          "fields": {
+            "purpose": "scene_reference",
+            "stage": "scene_reference",
+            "workflow_source_step": "scene_reference_prompt",
+            "workflow_source_path": "output",
+            "workflow_generate": true
+          },
+          "context_refs": [
+            {
+              "ref": "segment_script_canvas",
+              "role": "context"
+            },
+            {
+              "ref": "scene",
+              "role": "context"
+            }
+          ]
+        },
+        {
+          "acceptance": "输出 grid_count、grid_prompts[]、appearing_characters[]、continuity_note；为 storyboard 提供逐格分镜规划。",
+          "depends_on": [
+            "segment_script_canvas",
+            "main_characters",
+            "minor_characters",
+            "scene",
+            "scene_reference"
+          ],
+          "fields": {},
+          "id": "plan_frames",
+          "node_type": "text",
+          "surface": "workflow_runtime",
+          "visibility": "flow_only",
+          "output_mode": "json",
+          "output_schema": {
+            "fields": [
+              {
+                "id": "grid_count",
+                "label": "宫格数量",
+                "type": "integer",
+                "required": true
+              },
+              {
+                "id": "grid_prompts",
+                "label": "分镜格",
+                "type": "array",
+                "required": true
+              },
+              {
+                "id": "appearing_characters",
+                "label": "出场人物",
+                "type": "array"
+              },
+              {
+                "id": "continuity_note",
+                "label": "连续性备注",
+                "type": "string"
+              }
+            ],
+            "allow_extra_fields": true,
+            "labels": {
+              "grid_count": "宫格数量",
+              "grid_prompts": "分镜格",
+              "appearing_characters": "出场人物",
+              "continuity_note": "连续性备注",
+              "shot_size": "景别",
+              "composition": "构图",
+              "action": "动作",
+              "emotion": "情绪",
+              "camera_motion": "运镜",
+              "transition_note": "衔接备注"
+            }
+          },
+          "primary_skill": "shot_grid_prompt",
+          "prompt_template": "SYSTEM:\n你是一位资深电影分镜师与镜头语言导演。根据当前段剧本规划宫格分镜，重镜头、重动作、重情绪、重构图。\nUSER:\n请基于 current_segment={{json}}、segmentScript={{segmentScriptCanvas.output}}、mainCharacters={{mainCharacters.outputs}}、minorCharacters={{minorCharacters.outputs}}、scene={{scene.outputs}}、sceneReference={{sceneReference.output}} 规划当前段每一格分镜。\nOUTPUT:\n输出分镜规划，包含 grid_count、grid_prompts、appearing_characters、continuity_note。普通段落建议 4 格，动作密集或转折复杂时可增加到 6 格。grid_prompts 每格必须是关键叙事节点；用“第X排第Y格”标识格位；每格按镜头景别/角度/运镜、人物动作与情绪、站位构图、场景氛围的顺序写；用人物名指代角色，不重复描述外貌服饰。\nCHECK:\n每格只服务当前段；没有无意义过渡；相邻格动作和情节连贯；appearing_characters 只列本段实际出镜人物名；风格词不要在每格重复堆叠。",
+          "runner": "node.run",
+          "title": "宫格分镜规划",
+          "source_node_id": "planFrames"
+        },
+        {
+          "id": "storyboard_prompt",
+          "title": "宫格分镜图提示词",
+          "kind": "text",
+          "node_type": "text",
+          "runner": "node.run",
+          "surface": "workflow_runtime",
+          "visibility": "flow_only",
+          "depends_on": [
+            "segment_script_canvas",
+            "plan_frames",
+            "scene_reference",
+            "minor_characters",
+            "scene"
+          ],
+          "primary_skill": "shot_grid_prompt",
+          "prompt_template": "SYSTEM:\n你是分镜图提示词编写者，把每格规划组织成一张宫格分镜图 image prompt。\nUSER:\n请基于 segmentScript={{segmentScriptCanvas.output}}、grid_count={{planFrames.output.grid_count}}、grid_prompts={{planFrames.output.grid_prompts}}、appearingCharacters={{planFrames.output.appearing_characters}}、style={{inputs.style}}、mainCharacters={{mainCharacters.outputs}}、minorCharacters={{minorCharacters.outputs}}、scene={{scene.outputs}}、sceneReference={{sceneReference.output}} 生成宫格分镜图所需内容。人物参考图由 appearingCharacters 动态匹配后作为 visual_reference 提供。\nOUTPUT:\n只输出纯文本 image prompt，不输出 JSON。写法采用“宫格分镜图，电影分镜，每格一个镜头，清晰格线分隔，每格内容不同”。说明 grid_count 对应的布局，按左到右、上到下逐格写画面；每格突出镜头景别、角度、人物动作、站位构图和环境氛围；整体附加统一 style_template。\nCHECK:\n不生成普通人物图鉴；没有字幕、标号或多余文字；人物外观由参考图继承；空间、道具和光线参考当前段场景图；每格足以支撑后续 videoPrompt 的时间段描述。",
+          "output_schema": {
+            "labels": {
+              "prompt": "图片提示词",
+              "image_prompt": "图片提示词",
+              "visual_prompt": "视觉提示词",
+              "resolution": "分辨率",
+              "aspect_ratio": "画幅",
+              "quality": "质量",
+              "reference_images": "参考图"
+            }
+          },
+          "acceptance": "根据 grid_prompts[] 组织为宫格分镜图 image prompt；阅读顺序为从左到右、从上到下；不包含标号、字幕或文字。"
+        },
+        {
+          "id": "storyboard",
+          "title": "宫格分镜图",
+          "node_type": "image",
+          "reference_selectors": [
+            {
+              "from_group": "main_character_images",
+              "match_fields": [
+                "name",
+                "reuse_key",
+                "character",
+                "character_id",
+                "id",
+                "title"
+              ],
+              "role": "visual_reference",
+              "source_path": "output.appearing_characters",
+              "source_step": "planFrames"
+            }
+          ],
+          "acceptance": "根据 grid_prompts[] 组织为宫格分镜图 image prompt；阅读顺序为从左到右、从上到下；不包含标号、字幕或文字。",
+          "kind": "image",
+          "runner": "workflow_canvas_output",
+          "depends_on": [
+            "storyboard_prompt",
+            "main_character_images"
+          ],
+          "fields": {
+            "workflow_source_step": "storyboard_prompt",
+            "workflow_source_path": "output",
+            "workflow_generate": true
+          },
+          "context_refs": [
+            {
+              "ref": "segment_script_canvas",
+              "role": "context"
+            },
+            {
+              "ref": "plan_frames",
+              "role": "context"
+            },
+            {
+              "ref": "scene_reference",
+              "role": "context"
+            },
+            {
+              "ref": "minor_characters",
+              "role": "context"
+            },
+            {
+              "ref": "scene",
+              "role": "context"
+            }
+          ]
+        },
+        {
+          "acceptance": "输出完整视频提示词正文；时长总和等于当前段 duration_seconds，按时间顺序描述镜头、参考图用途和声音设计。",
+          "depends_on": [
+            "segment_script_canvas",
+            "storyboard",
+            "plan_frames",
+            "minor_characters",
+            "scene"
+          ],
+          "fields": {
+            "purpose": "video_prompt",
+            "stage": "video_prompt",
+            "prompt_source": "skill:video_prompt"
+          },
+          "id": "video_prompt",
+          "node_type": "text",
+          "surface": "workflow_runtime",
+          "visibility": "flow_only",
+          "primary_skill": "video_prompt",
+          "prompt_template": "SYSTEM:\n你是 AI 视频生成提示词专家。根据参考图片、当前段剧本和宫格分镜，为这一段视频写可执行提示词。\nUSER:\n请基于 current_segment={{json}}、segmentScript={{segmentScriptCanvas.output}}、durationSeconds={{json.duration_seconds}}、type={{inputs.type}}、style={{inputs.style}}、storyboard={{storyboard.output}}、grid_prompts={{planFrames.output.grid_prompts}}、mainCharacters={{mainCharacters.outputs}}、minorCharacters={{minorCharacters.outputs}}、scene={{scene.outputs}} 生成本段视频提示词。\nOUTPUT:\n只输出纯文本视频提示词，不输出 JSON。开头列出参考图片用途声明，空一行后按时间码逐段描述画面。格式为：【起止时间 | 第X排第Y格 | 画面概述→动作变化 | 镜头运动方式】后接详细描述。每个时间段写镜头层、主体层、画面层和必要对白/音效；根据每格剧情密度分配时长，所有时间段之和等于 durationSeconds。\nCHECK:\n提示词重心放在运动过程和动作变化；每个时间段只写一个核心动作；动作承接 storyboard 和 grid_prompts；景别、运镜、光线使用清楚的高频词；总时长匹配当前段 duration_seconds；提示词只描述视频模型需要执行的画面、声音和一致性要求。",
+          "runner": "node.run",
+          "title": "视频提示词",
+          "source_node_id": "videoPrompt"
+        },
+        {
+          "id": "final_video",
+          "title": "最终视频",
+          "node_type": "video",
+          "kind": "video",
+          "runner": "workflow_canvas_output",
+          "depends_on": [
+            "video_prompt",
+            "storyboard"
+          ],
+          "fields": {
+            "purpose": "final_video",
+            "stage": "final_video",
+            "production_path": "image_to_video",
+            "workflow_source_step": "video_prompt",
+            "workflow_source_path": "output",
+            "workflow_generate": true
+          },
+          "context_refs": [
+            {
+              "ref": "storyboard",
+              "role": "visual_reference"
+            },
+            {
+              "ref": "video_prompt",
+              "role": "context"
+            }
+          ],
+          "acceptance": "画布显示当前段最终视频节点，使用上游完整视频提示词，并参考宫格分镜图生成。",
+          "source_node_id": "finalVideo"
+        }
+      ],
+      "title": "分段制作",
+      "fields": {},
+      "source_node_id": "episodeSegments"
+    }
+  ],
+  "reusable": true,
+  "version": "1",
+  "inputs": [
+    "plot",
+    "style",
+    "type",
+    "episodeCount",
+    "durationSeconds",
+    "segmentSeconds"
+  ]
+}

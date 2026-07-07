@@ -10,7 +10,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.db.models import WorkflowNode, WorkflowEdge
-from app.services.node_ids import next_node_display_id
+from app.services.node_ids import next_node_display_id, node_display_id_allocation
 
 
 def _as_json_str(value: Any) -> str | None:
@@ -60,19 +60,29 @@ def _reference_value(item: Any) -> str:
     return str(item or "").strip()
 
 
-def _dependency_node_ids(input_data: dict[str, Any], node_ids: set[str]) -> list[str]:
+def _dependency_node_ids(input_data: dict[str, Any], node_lookup: dict[str, str]) -> list[str]:
     raw_items: list[Any] = []
     containers = [input_data]
     fields = input_data.get("fields")
     if isinstance(fields, dict):
         containers.append(fields)
     for container in containers:
-        for key in ("depends_on", "references", "reference_images"):
+        explicit_found = False
+        for key in ("depends_on", "references"):
             value = container.get(key)
             if isinstance(value, list):
                 raw_items.extend(value)
+                explicit_found = True
             elif value:
                 raw_items.append(value)
+                explicit_found = True
+        if explicit_found:
+            continue
+        value = container.get("reference_images")
+        if isinstance(value, list):
+            raw_items.extend(value)
+        elif value:
+            raw_items.append(value)
 
     deps: list[str] = []
     for raw in raw_items:
@@ -81,15 +91,13 @@ def _dependency_node_ids(input_data: dict[str, Any], node_ids: set[str]) -> list
             text = text[1:]
         if text.startswith("node:"):
             text = text[5:]
-        if (
-            not text
-            or text.startswith(("asset:", "upload:", "http://", "https://"))
-            or "/" in text
-            or text not in node_ids
-        ):
+        if not text or text.startswith(("asset:", "upload:", "http://", "https://")) or "/" in text:
             continue
-        if text not in deps:
-            deps.append(text)
+        node_id = node_lookup.get(text) or node_lookup.get(text.lstrip("#"))
+        if not node_id:
+            continue
+        if node_id not in deps:
+            deps.append(node_id)
     return deps
 
 
@@ -112,13 +120,23 @@ def canvas_edge_payloads(
     to depend on C.
     """
     node_ids = {node.id for node in nodes}
+    node_lookup: dict[str, str] = {}
+    for node in nodes:
+        candidates: list[Any] = [node.id]
+        display_id = getattr(node, "display_id", None)
+        if display_id is not None:
+            candidates.extend([display_id, f"#{display_id}"])
+        for candidate in candidates:
+            text = "" if candidate is None else str(candidate).strip()
+            if text:
+                node_lookup[text] = node.id
     desired_by_target: dict[str, list[str]] = {}
     dependency_owned_targets: set[str] = set()
     for node in nodes:
         input_data = _as_dict(node.input_json)
         if _has_dependency_keys(input_data):
             dependency_owned_targets.add(node.id)
-        deps = [dep for dep in _dependency_node_ids(input_data, node_ids) if dep != node.id]
+        deps = [dep for dep in _dependency_node_ids(input_data, node_lookup) if dep != node.id]
         if deps:
             desired_by_target[node.id] = deps
 
@@ -189,10 +207,17 @@ class NodeService:
     async def create_node(
         self, project_id: str, payload: dict[str, Any]
     ) -> WorkflowNode:
-        now = datetime.utcnow()
+        async with node_display_id_allocation(project_id):
+            return await self._create_node_locked(project_id, payload)
 
+    async def _create_node_locked(
+        self, project_id: str, payload: dict[str, Any]
+    ) -> WorkflowNode:
+        now = datetime.utcnow()
         supersedes_id = payload.get("supersedes_id")
         version = int(payload.get("version", 1))
+        model_config = _with_ui_creator(payload.get("model_config_json"))
+        surface = model_config.get("surface") or model_config.get("_surface")
         if supersedes_id:
             prev = await self.db.get(WorkflowNode, supersedes_id)
             if prev is not None:
@@ -201,7 +226,7 @@ class NodeService:
         node = WorkflowNode(
             id=str(uuid.uuid4()),
             project_id=project_id,
-            display_id=await next_node_display_id(self.db, project_id),
+            display_id=None if surface == "workflow_runtime" else await next_node_display_id(self.db, project_id),
             type=payload.get("type", "script_generation"),
             title=payload.get("title", ""),
             status=payload.get("status", "idle"),
@@ -209,7 +234,7 @@ class NodeService:
             position_y=float(payload.get("position_y", 0.0)),
             input_json=_as_json_str(payload.get("input_json")),
             output_json=_as_json_str(payload.get("output_json")),
-            model_config_json=_as_json_str(_with_ui_creator(payload.get("model_config_json"))),
+            model_config_json=_as_json_str(model_config),
             prompt=payload.get("prompt"),
             error_message=payload.get("error_message"),
             version=version,

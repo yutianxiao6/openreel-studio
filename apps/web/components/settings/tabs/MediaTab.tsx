@@ -2,7 +2,13 @@
 
 import { useState } from "react"
 import type { ConfigContext, MediaProviderEntry } from "../SettingsModal"
-import { VIDEO_MODEL_OPTIONS, videoApiFormatForModel } from "@/lib/videoModelOptions"
+import {
+  VIDEO_API_FORMAT_OPTIONS,
+  VIDEO_IMAGE_TRANSPORT_OPTIONS,
+  VIDEO_MODEL_OPTIONS,
+  isKnownVideoModel,
+  videoApiFormatForModel,
+} from "@/lib/videoModelOptions"
 
 type MediaKind = "image" | "video" | "audio"
 
@@ -13,6 +19,10 @@ const AUDIO_API_FORMAT_OPTIONS = [
 
 function normalizeAudioApiFormat(value?: string): string {
   return AUDIO_API_FORMAT_OPTIONS.some((item) => item.value === value) ? value as string : "openai_tts"
+}
+
+function normalizeVideoImageTransport(value?: unknown): string {
+  return VIDEO_IMAGE_TRANSPORT_OPTIONS.some((item) => item.value === value) ? value as string : "data_url"
 }
 
 function normalizeMediaProvider(entry: MediaProviderEntry): MediaProviderEntry {
@@ -30,7 +40,7 @@ function normalizeMediaProvider(entry: MediaProviderEntry): MediaProviderEntry {
   }
   return {
     ...entry,
-    api_format: videoApiFormatForModel(entry.model_name, entry.api_format || "volcengine_ark"),
+    api_format: entry.api_format?.trim() || videoApiFormatForModel(entry.model_name, "lingke_media_generate"),
   }
 }
 
@@ -146,8 +156,8 @@ function blank(kind: MediaKind): MediaProviderEntry {
     name: "",
     base_url: "",
     api_key: "",
-    model_name: kind === "video" ? VIDEO_MODEL_OPTIONS[0].modelName : kind === "audio" ? "tts-1" : "",
-    api_format: kind === "video" ? VIDEO_MODEL_OPTIONS[0].apiFormat : kind === "audio" ? "openai_tts" : "openai",
+    model_name: kind === "audio" ? "tts-1" : "",
+    api_format: kind === "video" ? "lingke_media_generate" : kind === "audio" ? "openai_tts" : "openai",
     is_active: false, enabled: true, notes: "", params: {},
   }
 }
@@ -164,6 +174,7 @@ function Row({
   onSetActive: () => void
 }) {
   const [draft, setDraft] = useState(entry)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
 
   if (!editing) {
     return (
@@ -199,12 +210,20 @@ function Row({
 
   const setField = (k: keyof MediaProviderEntry, v: string | boolean | object) =>
     setDraft({ ...draft, [k]: v } as MediaProviderEntry)
+  const setParamField = (key: string, value: string) => {
+    const nextParams = { ...(draft.params || {}) }
+    const clean = value.trim()
+    if (clean) nextParams[key] = clean
+    else delete nextParams[key]
+    setDraft({ ...draft, params: nextParams })
+  }
 
-  const setVideoModel = (modelName: string) => {
+  const applyVideoTemplate = (modelName: string) => {
+    if (!modelName) return
     setDraft({
       ...draft,
       model_name: modelName,
-      api_format: videoApiFormatForModel(modelName),
+      api_format: videoApiFormatForModel(modelName, draft.api_format || "lingke_media_generate"),
     })
   }
   const setAudioApiFormat = (apiFormat: string) => {
@@ -215,16 +234,10 @@ function Row({
     })
   }
 
-  const videoModelOptions = entry.kind === "video" && !VIDEO_MODEL_OPTIONS.some((item) => item.modelName === draft.model_name)
-    ? [
-        {
-          label: `未适配: ${draft.model_name || "空模型"}`,
-          modelName: draft.model_name,
-          apiFormat: draft.api_format || "volcengine_ark",
-        },
-        ...VIDEO_MODEL_OPTIONS,
-      ]
-    : VIDEO_MODEL_OPTIONS
+  const selectedVideoTemplate = entry.kind === "video" && isKnownVideoModel(draft.model_name)
+    ? draft.model_name
+    : ""
+  const videoImageTransport = normalizeVideoImageTransport(draft.params?.image_transport)
 
   return (
     <div className="rounded-lg border border-indigo-700/60 bg-indigo-950/20 px-3 py-3 space-y-2">
@@ -232,7 +245,7 @@ function Row({
         <F label="名称" required value={draft.name} onChange={(v) => setField("name", v)} />
         <F label="Base URL" required value={draft.base_url} onChange={(v) => setField("base_url", v)}
           hint={entry.kind === "video"
-            ? "填写当前服务商的 Base URL；系统只按适配模型切换协议。"
+            ? "填写当前服务商的 Base URL；请求结构由协议/API Format 决定。"
             : entry.kind === "audio"
               ? draft.api_format === "suno_compatible"
                 ? "填写 Suno-compatible 服务的 Base URL；系统不会绑定固定中转站。"
@@ -241,29 +254,63 @@ function Row({
         {entry.kind === "video" ? (
           <>
             <SelectField
-              label="适配模型"
+              label="模型模板"
+              value={selectedVideoTemplate}
+              onChange={applyVideoTemplate}
+              options={[
+                { label: "自定义/不套用模板", value: "" },
+                ...VIDEO_MODEL_OPTIONS.map((item) => ({
+                  label: item.label,
+                  value: item.modelName,
+                })),
+              ]}
+              defaultText="可手填"
+              hint="选择模板会同时填入模型名和推荐协议；自定义模型可直接改下面的模型名。"
+            />
+            <F
+              label="模型名"
               required
               value={draft.model_name}
-              onChange={setVideoModel}
-              options={videoModelOptions.map((item) => ({
-                label: item.label,
-                value: item.modelName,
-              }))}
+              onChange={(v) => setField("model_name", v)}
+              hint="填写当前中转站或官方接口实际支持的模型 ID。"
             />
-            <SelectField
-              label="协议/API Format"
-              value={draft.api_format}
-              onChange={() => {}}
-              options={[
-                { label: "T8 Grok Video 3", value: "t8_grok_video_3" },
-                { label: "Grok 1.5 Multipart", value: "grok_1_5" },
-                { label: "xAI Video", value: "xai_video" },
-                { label: "Volcengine Ark", value: "volcengine_ark" },
-              ]}
-              disabled
-              defaultText="按适配模型自动选择"
-              hint="按适配模型自动选择，不需要手填。"
-            />
+            <div className="col-span-2 rounded border border-gray-800 bg-gray-950/35 p-2">
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((value) => !value)}
+                className="flex w-full items-center justify-between text-left text-[11px] text-gray-300"
+              >
+                <span>高级设置</span>
+                <span className="text-gray-500">{advancedOpen ? "收起" : "展开"}</span>
+              </button>
+              {advancedOpen && (
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <SelectField
+                    label="协议/API Format"
+                    value={draft.api_format || "lingke_media_generate"}
+                    onChange={(v) => setField("api_format", v)}
+                    options={VIDEO_API_FORMAT_OPTIONS}
+                    hint="同一个模型名在不同中转站可能使用不同请求结构；这里选择后端适配器。"
+                  />
+                  <SelectField
+                    label="图片输入"
+                    value={videoImageTransport}
+                    onChange={(v) => setParamField("image_transport", v)}
+                    options={VIDEO_IMAGE_TRANSPORT_OPTIONS}
+                    hint="默认本地项目图转 Base64/data URL，已有公网 URL 原样传；公网 URL 模式需要服务商能直接访问图片地址。"
+                  />
+                  {videoImageTransport === "public_url" && (
+                    <F
+                      label="公网根地址"
+                      value={String(draft.params?.public_base_url || "")}
+                      onChange={(v) => setParamField("public_base_url", v)}
+                      defaultText="默认空"
+                      hint="用于把 /api/media/... 项目图片转成外网可访问 URL，例如 https://example.com。"
+                    />
+                  )}
+                </div>
+              )}
+            </div>
           </>
         ) : entry.kind === "audio" ? (
           <>
@@ -346,7 +393,7 @@ function SelectField({ label, value, onChange, options, hint, disabled = false, 
     label: string
     value: string
     onChange: (v: string) => void
-    options: Array<{ label: string; value: string }>
+    options: ReadonlyArray<{ label: string; value: string }>
     hint?: string
     disabled?: boolean
     required?: boolean

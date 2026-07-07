@@ -46,6 +46,86 @@ def test_unknown_business_prompt_triggers_are_not_loaded_automatically() -> None
         "video",
     } & loaded_triggers
 
+def test_workflow_build_prompt_loads_only_in_workflow_build_mode() -> None:
+    default_result = assemble_split_result(PromptContext(
+        project_id="workflow-build-default",
+        user_message="搭建一个文生视频工作流",
+        state={},
+    ))
+    workflow_result = assemble_split_result(PromptContext(
+        project_id="workflow-build-mode",
+        user_message="搭建一个文生视频工作流",
+        state={},
+        collaboration_mode="workflow_build",
+    ))
+
+    default_triggers = {section.trigger for section in default_result.sections}
+    workflow_triggers = {section.trigger for section in workflow_result.sections}
+
+    assert "workflow_build_mode" not in default_triggers
+    assert "workflow_build_mode" in workflow_triggers
+    assert "Workflow Build Mode" not in default_result.system
+    assert "Workflow Build Mode" in workflow_result.system
+    assert workflow_result.tool_profile == "workflow_build"
+    assert workflow_result.tool_namespaces == ("project", "interaction", "skill", "workflow")
+    assert "node.*" not in workflow_result.system
+    assert "canvas.delete" not in workflow_result.system
+    assert "task.*" not in workflow_result.history
+
+
+def test_workflow_build_prompt_uses_dedicated_cached_prefix() -> None:
+    ctx = PromptContext(
+        project_id="workflow-build-mode",
+        user_message="修改当前工作流，把图片节点改成循环输出",
+        state={"metadata": {"title": "测试项目"}},
+        collaboration_mode="workflow_build",
+    )
+
+    result = assemble_split_result(ctx)
+    section_names = [section.name for section in result.sections]
+
+    assert section_names == [
+        "identity",
+        "workflow_build_mode",
+        "runtime_context",
+    ]
+    assert '"tool_profile": "workflow_build"' in result.cache_key
+    assert result.diagnostics()["tool_profile"] == "workflow_build"
+    assert len(result.system) < 5200
+    assert "schema='openreel.workflow.authoring.v1'" in result.system
+    assert "Canonical example" in result.system
+    assert "Collection schemas contain every field later read by loop children" in result.system
+    assert "Generated visible text is kind text with visible:true" in result.system
+    assert "Put the prompt on the media step" in result.system
+    assert "If a prompt relies on another generated product" in result.system
+    assert "put the repeat group id in needs" in result.system
+    assert "{{full_script.output}}" in result.system
+    assert "{{segment.segment_text}}" in result.system
+    assert "After a repairable failure, continue from the returned `repair_ref`" in result.system
+    assert "Ready means saved and inspected with `workflow.canvas.inspect`" in result.system
+    assert "Patch again when visible outputs, loops, dependencies, or final outputs are missing" in result.system
+    assert result.history == ""
+
+def test_plan_mode_prompt_is_read_only_without_execution_sections() -> None:
+    result = assemble_split_result(PromptContext(
+        project_id="plan-mode",
+        user_message="先给我一个计划",
+        state={},
+        collaboration_mode="plan",
+    ))
+
+    section_names = [section.name for section in result.sections]
+
+    assert section_names == [
+        "identity",
+        "plan_mode",
+        "runtime_context",
+    ]
+    assert "Plan Mode" in result.system
+    assert "node.*" not in result.system
+    assert "task.*" not in result.system
+    assert result.history == ""
+
 def test_default_prompt_budget_stays_small_for_ordinary_turns() -> None:
     result = assemble_split_result(PromptContext(
         project_id="test",
@@ -64,10 +144,10 @@ def test_always_prompt_models_shared_canvas_collaboration() -> None:
     text = "\n".join([identity.PROMPT, working_loop.PROMPT, core_rules.PROMPT])
 
     assert "co-author one" in text
-    assert "shared canvas is creative truth" in text
+    assert "Canvas is creative truth" in text
     assert "user and Agent nodes have equal authority" in text
-    assert "empty/draft nodes are work containers" in text
-    assert "update matching empty/draft nodes before new ones" in text
+    assert "Existing/draft nodes are work containers" in text
+    assert "update matching nodes before new ones" in text
 
 def test_runtime_context_does_not_duplicate_latest_user_goal() -> None:
     text = runtime_context.build(
@@ -225,28 +305,27 @@ def test_always_prompt_sections_are_contracts_not_manuals() -> None:
 def test_working_loop_stays_domain_neutral_like_codex_core_prompt() -> None:
     assert "Latest user" in working_loop.PROMPT
     assert "canvas state" in working_loop.PROMPT
-    assert "interaction.request_input" in working_loop.PROMPT
+    assert "existing workflow templates" in working_loop.PROMPT
+    assert "Workflow Build Mode" not in working_loop.PROMPT
     assert "Tools mutate state" in working_loop.PROMPT
-    assert "model_feedback" in working_loop.PROMPT
-    assert "known facts" in working_loop.PROMPT
-    assert "Prompt rules come from active skill" in working_loop.PROMPT
-    assert "Before tools, write one natural progress sentence" in working_loop.PROMPT
+    assert "prompt rules" in working_loop.PROMPT
+    assert "Before tools, write one progress sentence" in working_loop.PROMPT
     assert "blueprint.start_tree_draft" not in working_loop.PROMPT
     assert "finalize_tree_draft" not in working_loop.PROMPT
     assert "agent.review" not in working_loop.PROMPT
     assert "video_workflow" not in working_loop.PROMPT
+    assert "workflow_spec returns" not in working_loop.PROMPT
+    assert "workflow.run_*" not in working_loop.PROMPT
 
 def test_state_prompt_sections_are_runtime_principles_not_manuals() -> None:
     sections = {
-        "repair_rule": (repair_rule.PROMPT, ("node.get", "node.list", "skill.search")),
-        "rerun_rule": (rerun_rule.PROMPT, ("node_id", "node.update", "node.run")),
         "plan_rule": (plan_rule.PROMPT, ("skill", "text", "video", "node")),
     }
 
     for name, (text, markers) in sections.items():
         _assert_system_prompt_v2(name, text, max_len=1250, required_markers=markers)
 
-def test_failure_repair_rule_is_not_auto_injected_from_canvas_state() -> None:
+def test_failure_trigger_is_not_supported_in_default_prompt() -> None:
     result = assemble_split_result(PromptContext(
         project_id="failure-cache",
         user_message="继续",
@@ -254,38 +333,13 @@ def test_failure_repair_rule_is_not_auto_injected_from_canvas_state() -> None:
         has_recent_failure=True,
     ))
 
+    assert not trigger_matches("failure", PromptContext(project_id="failure-cache"))
     assert "Node Repair" not in result.runtime
     assert "Node Repair" not in result.history
 
-def test_video_workflow_prompt_sections_are_runtime_principles_not_manuals() -> None:
-    sections = {
-        "clarify": (clarify.PROMPT, ("interaction.request_input", "active skill", "known", "unknown")),
-        "video_duration": (video_duration.PROMPT, ("segment", "15", "active/default skill")),
-        "segment_rule": (segment_rule.PROMPT, ("segment", "15", "active/default skill")),
-        "video_types": (video_types.PROMPT, ("interaction.request_input", "active/default skill")),
-        "flow_paths": (flow_paths.PROMPT, ("skill.search", "image", "video")),
-    }
-
-    for name, (text, markers) in sections.items():
-        _assert_system_prompt_v2(name, text, max_len=900, required_markers=markers)
-
-def test_template_and_audit_prompt_sections_are_runtime_principles_not_manuals() -> None:
-    sections = {
-        "template_rule": (template_rule.PROMPT, ("skills", "node prompt", "reusable prompt method")),
-        "audit_rule": (audit_rule.PROMPT, ("project.get_state", "node.list", "prompt 是否可执行")),
-    }
-
-    for name, (text, markers) in sections.items():
-        _assert_system_prompt_v2(name, text, max_len=900, required_markers=markers)
-
 def test_low_frequency_prompt_sections_are_runtime_principles_not_manuals() -> None:
     sections = {
-        "assets_rule": (assets_rule.PROMPT, ("assets.list_project", "assets.list_categories", "assets.add_to_canvas", "fields.references")),
         "attachment_rule": (attachment_rule.PROMPT, ("runtime state", "fields.references", "source_image")),
-        "single_image_rule": (single_image_rule.PROMPT, ("fields.references", "node.create", "node.run")),
-        "node_contract": (node_contract.PROMPT, ("skill.search", "node.create", "dependency_missing")),
-        "introspect_rule": (introspect_rule.PROMPT, ("system", "tool.describe")),
-        "collab_modes": (collab_modes.PROMPT, ("collab", "subagent", "只读")),
     }
 
     for name, (text, markers) in sections.items():
@@ -327,6 +381,62 @@ def test_complex_request_reminder_requires_plan() -> None:
     )
     assert "计划工具不在本轮可见工具面" in reminder
     assert "plan.propose" not in reminder
+
+def test_checklist_reminder_omits_skipped_tasks(monkeypatch) -> None:
+    from app.agent import task_graph as task_graph_module
+
+    monkeypatch.setattr(
+        task_graph_module.task_graph,
+        "list_all",
+        lambda project_id=None: [
+            SimpleNamespace(
+                id="task_1",
+                subject="旧分镜节奏",
+                tool="task",
+                status="skipped",
+                blocked_by=[],
+                input={},
+            )
+        ],
+    )
+
+    reminder = AgentOrchestrator._build_checklist_reminder({}, project_id="project-1")
+
+    assert reminder == ""
+
+def test_checklist_reminder_keeps_pending_and_filters_skipped(monkeypatch) -> None:
+    from app.agent import task_graph as task_graph_module
+
+    monkeypatch.setattr(
+        task_graph_module.task_graph,
+        "list_all",
+        lambda project_id=None: [
+            SimpleNamespace(
+                id="task_1",
+                subject="旧分镜节奏",
+                tool="task",
+                status="skipped",
+                blocked_by=[],
+                input={},
+            ),
+            SimpleNamespace(
+                id="task_2",
+                subject="重写剧本",
+                tool="node.update",
+                status="pending",
+                blocked_by=[],
+                input={},
+            ),
+        ],
+    )
+
+    reminder = AgentOrchestrator._build_checklist_reminder({}, project_id="project-1")
+
+    assert "待处理清单(1 项,失败 0)" in reminder
+    assert "重写剧本" in reminder
+    assert "旧分镜节奏" not in reminder
+    assert "[pending]" in reminder
+    assert "[skipped]" not in reminder
 
 def test_agent_loop_no_text_fallback_reports_tool_error() -> None:
     text = AgentOrchestrator._build_no_text_fallback(
@@ -501,20 +611,12 @@ def test_stop_hook_does_not_repeat_completion_audit() -> None:
     assert result.audit_message == ""
 
 def test_agent_review_is_model_called_not_orchestrator_hardcoded() -> None:
-    prompt_text = "\n".join([working_loop.PROMPT, tool_loader.PROMPT, plan_rule.PROMPT, audit_rule.PROMPT, collab_modes.PROMPT])
+    tools = registry.get_tools_for_agent_loop(namespaces=select_tool_namespaces(PromptContext(project_id="test")))
+    visible = {str((tool.get("function") or {}).get("name") or "").replace("__", ".") for tool in tools}
 
-    assert "agent.review" in prompt_text
-    assert "审查目标" in prompt_text
-    assert "用户需求" in prompt_text
-    assert "工作摘要" in prompt_text
-    assert "检查结果只返回给你" in prompt_text or "只返回结果给你" in prompt_text
-    assert "继续修改" in prompt_text
-    assert "通用只读审查" in prompt_text
-    assert "review_skill_key" in prompt_text
-    assert "custom_checklist" in prompt_text
-    assert "skills/review/<key>.md" in prompt_text
-    assert "blueprint.finalize_tree_draft" not in prompt_text
-    assert "自定义检查项" in prompt_text or "用户自定义检查项" in prompt_text
+    assert "agent.review" in visible
+    assert "agent.run" not in visible
+    assert "workflow.spec.apply_patch" not in visible
 
 def test_post_tool_use_hook_matches_node_create_expected_type() -> None:
     result = run_post_tool_use_checklist(
@@ -888,47 +990,7 @@ def test_video_intake_preserves_model_delegation_as_collected_facts() -> None:
     assert "model_decide 表示用户授权模型选择" not in runtime_text
     assert "duration/aspect_ratio/production_basis 等字段要落成具体可执行值" not in runtime_text
 
-def test_video_prompts_teach_segment_vs_storyboard_without_conflicting_shortcuts() -> None:
-    prompt_text = "\n".join([
-        clarify.PROMPT,
-        segment_rule.PROMPT,
-        flow_paths.PROMPT,
-        video_duration.PROMPT,
-        video_types.PROMPT,
-    ])
-
-    assert "分段(segment)是视频片段级拆分，不是分镜/镜头拆分" in prompt_text
-    assert "15 秒动作短片默认 1 个 segment" in prompt_text
-    assert "15 秒视频" in prompt_text and "直接当一段连续视频做" in prompt_text
-    assert "Durations above 15s can be split around 15s" in prompt_text
-    assert "选项含“模型规划/15秒/10秒/5秒”" not in prompt_text
-    assert "严禁创建或运行 `episode_segment_plan`" not in prompt_text
-    assert "episode_segment_plan`（仅长视频或用户要求切段）" not in prompt_text
-
-def test_video_prompts_tell_model_to_read_workflow_when_process_is_underspecified() -> None:
-    prompt_text = "\n".join([
-        clarify.PROMPT,
-        plan_rule.PROMPT,
-        tool_loader.PROMPT,
-    ])
-
-    assert "skill.search" in prompt_text
-    assert "skill.get" in prompt_text
-    assert "blueprint_tree_guide" not in prompt_text
-    assert "finalize_tree_draft" not in prompt_text
-    assert "agent.review" not in working_loop.PROMPT
-
-def test_story_template_prompt_routes_to_deferred_skill_not_video_request() -> None:
-    prompt_text = "\n".join([
-        tool_loader.PROMPT,
-        flow_paths.PROMPT,
-    ])
-
-    assert "skill.story_template_method" in prompt_text
-    assert "detail='full'" in prompt_text
-    assert "skill.video_production(request=...)" not in prompt_text
-
-def test_always_tool_loader_stays_generic_and_omits_template_contracts() -> None:
+def test_default_prompt_omits_old_workflow_authoring_routes() -> None:
     result = assemble_split_result(PromptContext(
         project_id="test",
         user_message="生成一张女主角人物参考图",
@@ -936,9 +998,15 @@ def test_always_tool_loader_stays_generic_and_omits_template_contracts() -> None
     ))
     section_names = [section.name for section in result.sections]
 
-    assert "tool_loader" in section_names
+    assert "tool_loader" not in section_names
     assert "template_rule" not in section_names
-    assert "Use the visible core tools directly" in result.system
+    assert "workflow.run_*" not in result.system
+    assert "latest_authorized_workflow_ref" not in result.system
+    assert "tool.execute(name=\"agent.run\"" not in result.system
+    assert "Main Agent keeps workflow skill/spec/template decisions inside workflow_spec" not in result.system
+    assert "workflow_spec returns" not in result.system
+    assert "Workflow Build Mode" not in result.system
+    assert "`node.*`" in result.system
     assert "template.list_categories" not in result.system
     assert "template.list(category, query)" not in result.system
     assert "template.get" not in result.system
@@ -1396,3 +1464,99 @@ async def test_orchestrator_video_blueprint_basic_intake_emits_structured_event(
     assert holder["saved"][1][2]["interactionInput"]["stage"] == "basic"
     assert "presentation" not in holder["saved"][1][2]["interactionInput"]
     assert holder["state"]["pending_video_blueprint_request"]["stage"] == "basic"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_retries_empty_length_response(monkeypatch) -> None:
+    holder = {"state": {}, "saved": [], "trace": []}
+
+    class FakeProjectService:
+        async def get_project(self, project_id: str):
+            return SimpleNamespace(state_json=json.dumps(holder["state"]))
+
+        async def get_project_state(self, project_id: str):
+            return dict(holder["state"])
+
+        async def update_project_state(self, project_id: str, patch: dict):
+            holder["state"].update(patch)
+            return SimpleNamespace(state_json=json.dumps(holder["state"]))
+
+    class FakeTrace:
+        def __init__(self, project_id: str, run_id: str):
+            self.events = []
+
+        def emit(self, *args, **kwargs):
+            holder["trace"].append((args, kwargs))
+            self.events.append((args, kwargs))
+
+    class FakeMessage:
+        def __init__(self, content: str = "", tool_calls=None):
+            self.content = content
+            self.tool_calls = tool_calls
+
+    class FakeLLMService:
+        def __init__(self):
+            self.calls = 0
+
+        async def generate_with_tools(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                message = FakeMessage("")
+                finish_reason = "length"
+            else:
+                message = FakeMessage("已用更短方式继续。")
+                finish_reason = "stop"
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
+                usage={"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150},
+                model="fake-model",
+            )
+
+        async def generate(self, *args, **kwargs):
+            return {"content": "继续。"}
+
+    async def fake_save_message(project_id: str, role: str, content: str, metadata=None):
+        holder["saved"].append((role, content, metadata))
+
+    async def fake_settings():
+        return {
+            "max_iterations": 3,
+            "auto_archive": True,
+            "blueprint_review_mode": "continuous_final_review",
+            "video_plan_confirmation_mode": "one_shot",
+        }
+
+    async def fake_compute_canvas_summary(project_id: str):
+        return {"total": 0, "by_type": {}, "running": 0, "failed": 0, "completed": 0, "nodes": []}
+
+    async def fake_build_messages(project_id: str, message: str, include_history: bool = True, current_message_aliases=None):
+        return [{"role": "user", "content": message}]
+
+    async def fake_maybe_compress_history(project_id: str):
+        return None
+
+    monkeypatch.setattr(orchestrator_module, "AgentTrace", FakeTrace)
+    monkeypatch.setattr(orchestrator_module, "_load_agent_settings", fake_settings)
+
+    orchestrator = AgentOrchestrator.__new__(AgentOrchestrator)
+    orchestrator.project_service = FakeProjectService()
+    orchestrator.llm_service = FakeLLMService()
+    orchestrator._save_message = fake_save_message
+    orchestrator._compute_canvas_summary = fake_compute_canvas_summary
+    orchestrator._build_messages = fake_build_messages
+    orchestrator._maybe_compress_history = fake_maybe_compress_history
+
+    events = [
+        event
+        async for event in orchestrator._stream_one_turn("project-1", "生成工作流")
+    ]
+
+    assistant_text = "".join(str(event.get("content") or "") for event in events if event.get("type") == "text_delta")
+    assert "已用更短方式继续" in assistant_text
+    assert "这轮没有生成可见回复" not in assistant_text
+    assert orchestrator.llm_service.calls == 2
+    assert any(
+        args and args[0] == "loop_transition" and kwargs.get("transition_reason") == "empty_length_response_retry"
+        for args, kwargs in holder["trace"]
+    )
+    assert holder["saved"][-1][1] == "已用更短方式继续。"

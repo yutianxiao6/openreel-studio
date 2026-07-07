@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -54,10 +54,29 @@ class LlmProviderEntry(BaseModel):
         max_length=64,
         description="token 估算器标记，例如 o200k_base/cl100k_base/provider",
     )
-    is_default: bool = Field(False, description="兜底 provider；全局只能有 1 条 True")
+    tier: str = Field(
+        "balanced",
+        description="模型策略档位: strong | balanced | small",
+    )
     enabled: bool = True
     notes: Optional[str] = None
     params: dict = Field(default_factory=dict, description="其他模型私有元数据，原样保存在配置中")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_global_default(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "is_default" in value:
+            next_value = dict(value)
+            next_value.pop("is_default", None)
+            return next_value
+        return value
+
+    @field_validator("tier")
+    @classmethod
+    def _valid_tier(cls, v: str) -> str:
+        if v not in ALLOWED_MODEL_TIERS:
+            raise ValueError(f"tier must be one of {ALLOWED_MODEL_TIERS}, got {v!r}")
+        return v
 
     @model_validator(mode="after")
     def _validate_token_limits(self) -> "LlmProviderEntry":
@@ -86,7 +105,7 @@ class MediaProviderEntry(BaseModel):
     base_url: str = Field(..., min_length=1)
     api_key: Optional[str] = None
     model_name: str = Field(..., min_length=1)
-    api_format: str = Field("openai", description="openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5 | t8_grok_video_3 | suno_compatible | openai_tts")
+    api_format: str = Field("openai", description="openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5 | t8_grok_video_3 | lingke_media_generate | suno_compatible | openai_tts")
     is_active: bool = False
     enabled: bool = True
     notes: Optional[str] = None
@@ -102,9 +121,9 @@ class MediaProviderEntry(BaseModel):
     @field_validator("api_format")
     @classmethod
     def _valid_api_format(cls, v: str) -> str:
-        if v not in ("openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "suno_compatible", "openai_tts"):
+        if v not in ("openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"):
             raise ValueError(
-                "api_format must be 'openai', 'raw', 'raw_post', 'volcengine_ark', 'xai_video', 'grok_1_5', 't8_grok_video_3', 'suno_compatible', or 'openai_tts', "
+                "api_format must be 'openai', 'raw', 'raw_post', 'volcengine_ark', 'xai_video', 'grok_1_5', 't8_grok_video_3', 'lingke_media_generate', 'suno_compatible', or 'openai_tts', "
                 f"got {v!r}"
             )
         return v
@@ -113,20 +132,46 @@ class MediaProviderEntry(BaseModel):
 # ── 顶层模型 ──────────────────────────────────────────────────────────────
 
 
+ALLOWED_MODEL_TIERS = ("strong", "balanced", "small")
+
 # 与 db.models.TASK_TYPES 保持一致；改动需同步那边
 ALLOWED_TASK_TYPES = (
     "agent_loop",
+    "agent_review",
+    "agent_compact",
+    "agent_aux",
     "planning",
     "character_generation",
     "outline_generation",
     "script_generation",
     "script_review",
     "storyboard_generation",
+    "image_understanding",
     "image_prompt_generation",
     "video_prompt_generation",
+    "subagent_node_producer",
+    "subagent_image_editor",
 )
+DEFAULT_MODEL_TASK_TIERS: dict[str, str] = {
+    "agent_loop": "strong",
+    "agent_review": "small",
+    "agent_compact": "balanced",
+    "agent_aux": "small",
+    "planning": "balanced",
+    "character_generation": "balanced",
+    "outline_generation": "balanced",
+    "script_generation": "strong",
+    "script_review": "small",
+    "storyboard_generation": "balanced",
+    "image_understanding": "balanced",
+    "image_prompt_generation": "balanced",
+    "video_prompt_generation": "strong",
+    "subagent_node_producer": "balanced",
+    "subagent_image_editor": "balanced",
+}
 LEGACY_TASK_TYPE_ALIASES = {
     "intent_parse": "agent_loop",
+    "subagent_image_generator": "subagent_node_producer",
 }
 
 # app_settings 已知键和默认值；启动 bootstrap 时若文件缺失会补全
@@ -152,6 +197,7 @@ class RuntimeConfig(BaseModel):
     schema_version_: int = Field(1, alias="$schema_version")
     llm_providers: list[LlmProviderEntry] = Field(default_factory=list)
     media_providers: list[MediaProviderEntry] = Field(default_factory=list)
+    model_tier_defaults: dict[str, Optional[str]] = Field(default_factory=dict)
     model_assignments: dict[str, Optional[str]] = Field(default_factory=dict)
     app_settings: dict = Field(default_factory=dict)
 
@@ -166,14 +212,7 @@ class RuntimeConfig(BaseModel):
                 raise ValueError(f"llm_providers: 重复 name {p.name!r}")
             seen.add(p.name)
 
-        # 2. is_default 至多 1 条
-        defaults = [p.name for p in self.llm_providers if p.is_default]
-        if len(defaults) > 1:
-            raise ValueError(
-                f"llm_providers: is_default=True 至多 1 条，当前 {len(defaults)} 条: {defaults}"
-            )
-
-        # 3. media_providers (kind, name) 联合唯一
+        # 2. media_providers (kind, name) 联合唯一
         media_seen: set[tuple[str, str]] = set()
         for m in self.media_providers:
             key = (m.kind, m.name)
@@ -181,7 +220,7 @@ class RuntimeConfig(BaseModel):
                 raise ValueError(f"media_providers: 重复 (kind={m.kind!r}, name={m.name!r})")
             media_seen.add(key)
 
-        # 4. 同 kind 内 is_active 至多 1 条
+        # 3. 同 kind 内 is_active 至多 1 条
         for kind in ("image", "video", "audio"):
             actives = [m.name for m in self.media_providers if m.kind == kind and m.is_active]
             if len(actives) > 1:
@@ -197,8 +236,24 @@ class RuntimeConfig(BaseModel):
             normalized_assignments[normalized_task] = name
         self.model_assignments = normalized_assignments
 
-        # 5. model_assignments 引用必须存在
+        normalized_tier_defaults: dict[str, Optional[str]] = {
+            tier: self.model_tier_defaults.get(tier)
+            for tier in ALLOWED_MODEL_TIERS
+        }
+        for tier in self.model_tier_defaults:
+            if tier not in ALLOWED_MODEL_TIERS:
+                raise ValueError(
+                    f"model_tier_defaults: 未知 tier {tier!r}（可选: {ALLOWED_MODEL_TIERS}）"
+                )
+        self.model_tier_defaults = normalized_tier_defaults
+
+        # 5. model_tier_defaults / model_assignments 引用必须存在
         provider_names = {p.name for p in self.llm_providers}
+        for tier, name in self.model_tier_defaults.items():
+            if name is not None and name not in provider_names:
+                raise ValueError(
+                    f"model_tier_defaults[{tier}]: 引用不存在的 provider {name!r}"
+                )
         for task, name in self.model_assignments.items():
             if task not in ALLOWED_TASK_TYPES:
                 raise ValueError(

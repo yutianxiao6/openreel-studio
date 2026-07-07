@@ -40,6 +40,14 @@
       {
         "from": "dist/resources/web",
         "to": "web"
+      },
+      {
+        "from": "../../plugins/keyframe-extractor",
+        "to": "defaults/plugins/keyframe-extractor",
+        "filter": [
+          "main.py",
+          "plugin.json"
+        ]
       }
     ],
     "win": {

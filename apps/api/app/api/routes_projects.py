@@ -2,25 +2,49 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import uuid
+import base64
+import binascii
 from datetime import datetime
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Literal, Optional
 
 from sqlalchemy import or_
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.db.models import Message, WorkflowEdge, WorkflowNode
+from app.config import settings
+from app.db.models import Asset, Message, WorkflowEdge, WorkflowNode
 from app.db.session import get_session
-from app.mcp_tools import canvas_tools, panel_tools
-from app.services import media_history
+from app.agent import canvas_workflow_templates, workflow_spec_artifacts, workflow_template_store
+from app.agent.workflow_audit import WorkflowAuditError
+from app.mcp_tools import canvas_tools, panel_tools, workflow_tools
+from app.services import image_operations, media_history, project_media_history
 from app.services.node_service import NodeService, workflow_node_payload
-from app.services.node_ids import next_node_display_id
+from app.services.node_ids import next_node_display_id, node_display_id_allocation
+from app.services.node_public_ids import internal_to_public_id_map, publicize_node_refs, resolve_internal_node_id
+from app.services.node_recovery import cleanup_interrupted_media_nodes
 from app.services.project_service import DEFAULT_EPISODE_COUNT, ProjectService
 
 router = APIRouter()
+
+
+NODE_MEDIA_UPLOAD_MAX_BYTES: dict[str, int] = {
+    "image": 50 * 1024 * 1024,
+    "video": 1024 * 1024 * 1024,
+}
+NODE_MEDIA_UPLOAD_EXTENSIONS: dict[str, tuple[str, ...]] = {
+    "image": (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"),
+    "video": (".mp4", ".webm", ".mov", ".m4v"),
+}
+NODE_MEDIA_UPLOAD_FALLBACK_EXTENSION = {
+    "image": ".png",
+    "video": ".mp4",
+}
+ACTIVE_WORKFLOW_STATE_KEY = "active_workflow"
 
 
 class CreateProjectRequest(BaseModel):
@@ -63,6 +87,11 @@ class CanvasNodeUpdateRequest(BaseModel):
     title: Optional[str] = None
     prompt: Optional[str] = None
     input: Optional[dict[str, Any]] = None
+    output: Optional[Any] = None
+
+
+class CanvasNodesDeleteRequest(BaseModel):
+    node_ids: list[str] = Field(default_factory=list)
 
 
 class CanvasNodeHistorySwitchRequest(BaseModel):
@@ -70,10 +99,95 @@ class CanvasNodeHistorySwitchRequest(BaseModel):
     index: Optional[int] = None
 
 
+class CanvasNodeImageEditRequest(BaseModel):
+    action: str = "preview"
+    source_ref: Optional[str] = None
+    candidate_ref: Optional[str] = None
+    operations: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CanvasNodeImageCurvePreviewRequest(BaseModel):
+    source_ref: Optional[str] = None
+    color: str = "#22d3ee"
+    detail: float = 0.78
+    line_strength: float = 0.92
+    base_visibility: float = 0.12
+
+
+class CanvasPanoramaCaptureRequest(BaseModel):
+    title: Optional[str] = None
+    data_url: str
+    x: float = 0.0
+    y: float = 0.0
+    source_node_id: Optional[str] = None
+    mode: Literal["single", "four", "eight"] = "single"
+
+
 class CanvasEdgeRequest(BaseModel):
     source_node_id: str
     target_node_id: str
     label: Optional[str] = None
+
+
+class ProjectWorkflowMaterializeRequest(BaseModel):
+    template_id: Optional[str] = None
+    workflow: Optional[dict[str, Any]] = None
+    artifact_ref: Optional[str] = None
+    title: Optional[str] = None
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+    origin_x: float = 120.0
+    origin_y: float = 120.0
+    spacing_x: float = 360.0
+    spacing_y: float = 240.0
+
+
+class ProjectWorkflowPreviewRequest(BaseModel):
+    template_id: Optional[str] = None
+    workflow: Optional[dict[str, Any]] = None
+    artifact_ref: Optional[str] = None
+    instance_id: Optional[str] = None
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectWorkflowRunStepRequest(ProjectWorkflowMaterializeRequest):
+    step_id: str
+    instance_id: Optional[str] = None
+
+
+class ProjectWorkflowRunNextRequest(ProjectWorkflowMaterializeRequest):
+    instance_id: Optional[str] = None
+
+
+class ProjectWorkflowRunAllRequest(ProjectWorkflowRunNextRequest):
+    max_steps: int = 0
+
+
+class ProjectWorkflowRuntimePauseRequest(BaseModel):
+    template_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class ProjectWorkflowActiveRequest(BaseModel):
+    kind: Literal["template", "artifact", "imported"]
+    template_id: Optional[str] = None
+    artifact_ref: Optional[str] = None
+    workflow: Optional[dict[str, Any]] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class ProjectWorkflowTemplateSaveRequest(BaseModel):
+    workflow: dict[str, Any]
+    template_id: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = "user"
+    applies_to: Optional[str] = None
+    version: Optional[str] = None
+    replace_existing: bool = False
+    inputs: dict[str, Any] = Field(default_factory=dict)
 
 
 class CanvasNodeSnapshot(BaseModel):
@@ -105,6 +219,12 @@ class CanvasRestoreSnapshotRequest(BaseModel):
     edges: list[CanvasEdgeSnapshot] = []
 
 
+class ProjectMediaHistoryRestoreRequest(BaseModel):
+    x: float = 0.0
+    y: float = 0.0
+    title: Optional[str] = None
+
+
 def _parse_json_dict(raw: object) -> dict:
     if isinstance(raw, dict):
         return raw
@@ -132,6 +252,256 @@ def _json_dumps_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return json.dumps(value, ensure_ascii=False)
+
+
+def _project_active_workflow_payload(project_id: str, state: dict[str, Any] | None) -> dict[str, Any] | None:
+    active = state.get(ACTIVE_WORKFLOW_STATE_KEY) if isinstance(state, dict) else None
+    if not isinstance(active, dict):
+        return None
+    kind = str(active.get("kind") or "").strip().lower()
+    if kind == "template":
+        template_id = str(active.get("template_id") or "").strip()
+        if not template_id:
+            return None
+        return {
+            "kind": "template",
+            "template_id": template_id,
+            "updated_at": active.get("updated_at") or "",
+        }
+    if kind == "artifact":
+        artifact_ref = str(active.get("artifact_ref") or "").strip()
+        if not artifact_ref:
+            return None
+        payload: dict[str, Any] = {
+            "kind": "artifact",
+            "artifact_ref": artifact_ref,
+            "name": active.get("name") or "",
+            "description": active.get("description") or "",
+            "updated_at": active.get("updated_at") or "",
+        }
+        try:
+            artifact = workflow_spec_artifacts.load_workflow_spec_artifact(project_id, artifact_ref)
+            workflow = artifact.get("workflow") if isinstance(artifact.get("workflow"), dict) else {}
+            preview = artifact.get("preview") if isinstance(artifact.get("preview"), dict) else {}
+            if workflow:
+                payload["workflow"] = workflow
+            if preview:
+                payload["preview"] = preview
+                payload["name"] = payload["name"] or preview.get("name") or ""
+                payload["description"] = payload["description"] or preview.get("description") or ""
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+            payload["error"] = str(exc)
+        return payload
+    if kind == "imported":
+        workflow = active.get("workflow")
+        if not isinstance(workflow, dict):
+            return None
+        preview = workflow_spec_artifacts.workflow_spec_preview(workflow)
+        if active.get("name"):
+            preview["name"] = active.get("name")
+        if active.get("description"):
+            preview["description"] = active.get("description")
+        return {
+            "kind": "imported",
+            "workflow": workflow,
+            "preview": preview,
+            "name": active.get("name") or preview.get("name") or "",
+            "description": active.get("description") or preview.get("description") or "",
+            "updated_at": active.get("updated_at") or "",
+        }
+    return None
+
+
+def _workflow_id_from_active_payload(active: dict[str, Any] | None) -> str:
+    if not isinstance(active, dict):
+        return ""
+    if active.get("kind") == "template":
+        return str(active.get("template_id") or "").strip()
+    workflow = active.get("workflow") if isinstance(active.get("workflow"), dict) else {}
+    preview = active.get("preview") if isinstance(active.get("preview"), dict) else {}
+    return str(workflow.get("id") or preview.get("id") or "").strip()
+
+
+def _project_workflow_runtime_payload(state: dict[str, Any] | None, workflow_id: str = "") -> dict[str, Any] | None:
+    if not isinstance(state, dict):
+        return None
+    payload = workflow_tools.workflow_runtime_public_payload(state, template_id=workflow_id)
+    if not payload.get("steps"):
+        return None
+    return payload
+
+
+def _project_workflow_runtime_payloads(state: dict[str, Any] | None, workflow_id: str = "") -> list[dict[str, Any]]:
+    if not isinstance(state, dict):
+        return []
+    return workflow_tools.workflow_runtime_public_payloads(state, template_id=workflow_id)
+
+
+def _active_workflow_state_from_request(req: ProjectWorkflowActiveRequest) -> dict[str, Any]:
+    updated_at = datetime.utcnow().isoformat()
+    if req.kind == "template":
+        template_id = str(req.template_id or "").strip()
+        if not template_id:
+            raise HTTPException(status_code=400, detail="template_id is required")
+        try:
+            canvas_workflow_templates.get_template(template_id)
+        except canvas_workflow_templates.WorkflowTemplateError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "kind": "template",
+            "template_id": template_id,
+            "updated_at": updated_at,
+        }
+    if req.kind == "artifact":
+        artifact_ref = str(req.artifact_ref or "").strip()
+        if not artifact_ref:
+            raise HTTPException(status_code=400, detail="artifact_ref is required")
+        return {
+            "kind": "artifact",
+            "artifact_ref": artifact_ref,
+            "name": str(req.name or "").strip(),
+            "description": str(req.description or "").strip(),
+            "updated_at": updated_at,
+        }
+    workflow = req.workflow if isinstance(req.workflow, dict) else None
+    if not workflow:
+        raise HTTPException(status_code=400, detail="workflow is required")
+    if not isinstance(workflow.get("steps"), list):
+        raise HTTPException(status_code=400, detail="workflow.steps is required")
+    try:
+        canvas_workflow_templates.normalize_inline_workflow(workflow)
+    except canvas_workflow_templates.WorkflowTemplateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "kind": "imported",
+        "workflow": workflow,
+        "name": str(req.name or "").strip(),
+        "description": str(req.description or "").strip(),
+        "updated_at": updated_at,
+    }
+
+
+def _classify_node_media_upload(filename: str, mime_type: str | None) -> str | None:
+    suffix = Path(filename).suffix.lower()
+    mime = (mime_type or "").lower()
+    if suffix in NODE_MEDIA_UPLOAD_EXTENSIONS["image"] or mime.startswith("image/"):
+        return "image"
+    if suffix in NODE_MEDIA_UPLOAD_EXTENSIONS["video"] or mime.startswith("video/"):
+        return "video"
+    return None
+
+
+def _safe_node_media_upload_filename(
+    raw_name: str,
+    *,
+    node: WorkflowNode,
+    kind: str,
+    mime_type: str | None = None,
+) -> str:
+    original = Path(raw_name or "upload").name
+    stem = Path(original).stem.strip()[:64] or "upload"
+    safe_stem = "".join(
+        char if char.isascii() and (char.isalnum() or char in {"-", "_"}) else "-"
+        for char in stem
+    ).strip("-_")
+    if not safe_stem:
+        safe_stem = "upload"
+    suffix = Path(original).suffix.lower()
+    if suffix not in NODE_MEDIA_UPLOAD_EXTENSIONS.get(kind, ()):
+        guessed_mime, _ = mimetypes.guess_type(original)
+        suffix = (
+            mimetypes.guess_extension(mime_type or guessed_mime or "")
+            or NODE_MEDIA_UPLOAD_FALLBACK_EXTENSION[kind]
+        )
+        if suffix == ".jpe":
+            suffix = ".jpg"
+        if suffix not in NODE_MEDIA_UPLOAD_EXTENSIONS.get(kind, ()):
+            suffix = NODE_MEDIA_UPLOAD_FALLBACK_EXTENSION[kind]
+    node_label = f"n{node.display_id}" if node.display_id is not None else node.id[:8]
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    return f"{node_label}-{timestamp}-{uuid.uuid4().hex[:8]}-{safe_stem}{suffix}"
+
+
+def _build_uploaded_node_media_output(
+    *,
+    project_id: str,
+    node: WorkflowNode,
+    rel_path: str,
+    target_path: Path,
+    original_filename: str,
+    mime_type: str | None,
+    size: int,
+    uploaded_at: str,
+    current_output: Any,
+    current_input: dict[str, Any],
+) -> dict[str, Any]:
+    item = project_media_history.file_payload(project_id, rel_path, target_path)
+    if not item:
+        raise ValueError("Unsupported uploaded media")
+    item.update({
+        "source": "node_upload",
+        "source_node_id": node.id,
+        "source_node_title": node.title,
+        "title": node.title or item.get("title"),
+        "prompt": media_history.prompt_from_state(current_output, current_input, node.prompt),
+    })
+    output = _media_output_for_history_item(item)
+    output.update({
+        "ok": True,
+        "source": "uploaded_node_media",
+        "rel_path": rel_path,
+        "filename": original_filename,
+        "stored_filename": target_path.name,
+        "mime_type": mime_type or item.get("mime_type"),
+        "size": size,
+        "uploaded_at": uploaded_at,
+    })
+    history = media_history.media_history_from_output(current_output)
+    entry = media_history.make_history_entry(
+        current_output,
+        node_type=node.type,
+        prompt=node.prompt or current_input.get("prompt"),
+        input_data=current_input,
+        label="previous_output",
+    )
+    if entry:
+        history = [entry, *history]
+    return media_history.attach_media_history(output, history)
+
+
+async def _write_upload_file(target: Path, file: UploadFile, *, max_bytes: int) -> int:
+    size = 0
+    chunk_size = 1 << 20
+    with target.open("wb") as fh:
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > max_bytes:
+                fh.close()
+                target.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail=f"File exceeds {max_bytes} bytes")
+            fh.write(chunk)
+    return size
+
+
+def _media_output_for_history_item(item: dict[str, Any]) -> dict[str, Any]:
+    return project_media_history.output_for_item(item)
+
+
+async def _list_project_media_history_items(project_id: str, db: AsyncSession) -> list[dict[str, Any]]:
+    try:
+        return await project_media_history.list_items(project_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def _find_project_media_history_item(project_id: str, item_id: str, db: AsyncSession) -> dict[str, Any] | None:
+    try:
+        return await project_media_history.find_item(project_id, item_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _strip_ui_private(data: dict) -> dict:
@@ -212,7 +582,10 @@ def _node_creator(node: WorkflowNode) -> str:
     return "user" if raw == "user" else "agent"
 
 
-def _node_detail_payload(node: WorkflowNode) -> dict[str, Any]:
+def _node_detail_payload(node: WorkflowNode, id_map: dict[str, str] | None = None) -> dict[str, Any]:
+    mapping = id_map or {}
+    input_data = _strip_ui_private(_parse_json_dict(node.input_json))
+    output_data = _parse_json_value(node.output_json)
     return {
         "id": node.id,
         "display_id": node.display_id,
@@ -221,8 +594,8 @@ def _node_detail_payload(node: WorkflowNode) -> dict[str, Any]:
         "title": node.title,
         "status": node.status,
         "position": {"x": node.position_x, "y": node.position_y},
-        "input": _strip_ui_private(_parse_json_dict(node.input_json)) or None,
-        "output": _parse_json_value(node.output_json),
+        "input": publicize_node_refs(input_data, mapping) or None,
+        "output": publicize_node_refs(output_data, mapping),
         "prompt": node.prompt,
         "render_state": _node_render_state(node),
         "error_message": node.error_message,
@@ -232,6 +605,14 @@ def _node_detail_payload(node: WorkflowNode) -> dict[str, Any]:
         "created_at": node.created_at.isoformat() if node.created_at else None,
         "updated_at": node.updated_at.isoformat() if node.updated_at else None,
     }
+
+
+async def _public_id_map(project_id: str, db: AsyncSession) -> dict[str, str]:
+    return await internal_to_public_id_map(db, project_id)
+
+
+async def _node_detail_response(node: WorkflowNode, project_id: str, db: AsyncSession) -> dict[str, Any]:
+    return _node_detail_payload(node, await _public_id_map(project_id, db))
 
 
 _CHANGE_LABELS = {
@@ -325,8 +706,30 @@ def _reference_value(raw: Any) -> str:
     return str(raw or "").strip()
 
 
-def _node_dependency_aliases(node_id: str) -> set[str]:
-    return {node_id, f"node:{node_id}"}
+def _public_node_ref(node: WorkflowNode | str) -> str:
+    if isinstance(node, WorkflowNode) and node.display_id is not None:
+        return f"node:{node.display_id}"
+    node_id = node.id if isinstance(node, WorkflowNode) else str(node)
+    return f"node:{node_id}"
+
+
+def _node_dependency_aliases(node: WorkflowNode | str) -> set[str]:
+    node_id = node.id if isinstance(node, WorkflowNode) else str(node)
+    aliases = {node_id, f"node:{node_id}", f"@{node_id}", f"@node:{node_id}"}
+    display_id = node.display_id if isinstance(node, WorkflowNode) else None
+    if display_id is not None:
+        public_id = str(display_id).strip()
+        aliases.update({
+            public_id,
+            f"#{public_id}",
+            f"node:{public_id}",
+            f"node:#{public_id}",
+            f"@{public_id}",
+            f"@#{public_id}",
+            f"@node:{public_id}",
+            f"@node:#{public_id}",
+        })
+    return aliases
 
 
 def _reference_role(raw: Any) -> str:
@@ -348,14 +751,15 @@ def _manual_edge_reference_role(source: WorkflowNode, target: WorkflowNode) -> s
 
 def _add_edge_dependency(target: WorkflowNode, source: WorkflowNode | str) -> bool:
     source_node_id = source.id if isinstance(source, WorkflowNode) else source
+    source_ref = _public_node_ref(source)
     input_data = _parse_json_dict(target.input_json)
-    aliases = _node_dependency_aliases(source_node_id)
+    aliases = _node_dependency_aliases(source)
 
     def add_to_container(container: dict[str, Any]) -> bool:
         changed = False
         deps = _dependency_values(container.get("depends_on"))
         if not any(dep in aliases for dep in deps):
-            deps.append(f"node:{source_node_id}")
+            deps.append(source_ref)
             container["depends_on"] = deps
             changed = True
 
@@ -365,13 +769,13 @@ def _add_edge_dependency(target: WorkflowNode, source: WorkflowNode | str) -> bo
                 refs = container.get("references")
                 ref_items = refs if isinstance(refs, list) else ([refs] if refs else [])
                 if not any(_reference_value(item) in aliases for item in ref_items):
-                    ref_items.append({"ref": f"node:{source_node_id}", "role": role})
+                    ref_items.append({"ref": source_ref, "role": role})
                     container["references"] = ref_items
                     changed = True
                 if target.type in {"text", "image", "video"}:
                     reference_images = _dependency_values(container.get("reference_images"))
                     if not any(ref in aliases for ref in reference_images):
-                        reference_images.append(f"node:{source_node_id}")
+                        reference_images.append(source_ref)
                         container["reference_images"] = reference_images
                         changed = True
         return changed
@@ -391,9 +795,9 @@ def _add_edge_dependency(target: WorkflowNode, source: WorkflowNode | str) -> bo
     return True
 
 
-def _remove_edge_dependency(target: WorkflowNode, source_node_id: str) -> bool:
+def _remove_edge_dependency(target: WorkflowNode, source: WorkflowNode | str) -> bool:
     input_data = _parse_json_dict(target.input_json)
-    aliases = _node_dependency_aliases(source_node_id)
+    aliases = _node_dependency_aliases(source)
 
     def remove_from_container(container: dict[str, Any]) -> bool:
         changed = False
@@ -430,7 +834,7 @@ def _remove_edge_dependency(target: WorkflowNode, source_node_id: str) -> bool:
 
 
 def _session_clear_state_patch(state: dict, *, cleared_at: str) -> tuple[dict, int]:
-    """Build a prompt-context clear patch without touching project artifacts."""
+    """Build a model-context clear patch without touching canvas artifacts."""
     memory = state.get("memory") if isinstance(state.get("memory"), dict) else {}
     facts = memory.get("facts") if isinstance(memory.get("facts"), list) else []
     pinned_facts = [
@@ -447,6 +851,9 @@ def _session_clear_state_patch(state: dict, *, cleared_at: str) -> tuple[dict, i
             "_skills_loaded": {},
             "_last_template_lookup": None,
             "_last_agent_review": None,
+            ACTIVE_WORKFLOW_STATE_KEY: None,
+            "workflow_runtime": {},
+            "workflow_input_values": {},
             "memory": next_memory,
             "agent_token_usage": None,
             "context_cleared_at": cleared_at,
@@ -545,7 +952,7 @@ async def get_project_state(
 async def clear_project_session(
     project_id: str, db: AsyncSession = Depends(get_session)
 ) -> dict[str, object]:
-    """Clear model-visible chat context without touching blueprint/canvas."""
+    """Clear model-visible session context without touching canvas nodes/assets."""
     svc = ProjectService(db)
     state = await svc.get_project_state(project_id)
     if state is None:
@@ -557,6 +964,12 @@ async def clear_project_session(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     archived_messages = await _archive_active_project_messages(db, project_id)
+    try:
+        from app.agent.task_graph import task_graph
+
+        cleared_tasks = int(task_graph.clear_project(project_id))
+    except Exception:
+        cleared_tasks = 0
     await db.commit()
     return {
         "ok": True,
@@ -569,10 +982,15 @@ async def clear_project_session(
             "_skills_loaded",
             "_last_template_lookup",
             "_last_agent_review",
+            "active_workflow",
+            "workflow_runtime",
+            "workflow_input_values",
             "memory.facts",
+            "task_graph",
             "agent_token_usage",
         ],
         "archived_messages": archived_messages,
+        "cleared_tasks": cleared_tasks,
         "removed_memory_facts": removed_memory_facts,
         "context_cleared_at": cleared_at,
     }
@@ -595,12 +1013,430 @@ async def list_messages(project_id: str, db: AsyncSession = Depends(get_session)
 async def list_project_nodes(
     project_id: str, db: AsyncSession = Depends(get_session)
 ):
+    await cleanup_interrupted_media_nodes(project_id=project_id)
     svc = NodeService(db)
     nodes = await svc.list_nodes(project_id)
     edges = await svc.list_canvas_edges(project_id, nodes=nodes)
     return {
         "nodes": [workflow_node_payload(n) for n in nodes],
         "edges": edges,
+    }
+
+
+@router.get("/{project_id}/workflow/templates")
+async def list_project_workflow_templates(
+    project_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    svc = ProjectService(db)
+    state = await svc.get_project_state(project_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        templates = canvas_workflow_templates.list_template_summaries()
+    except canvas_workflow_templates.WorkflowTemplateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    active_workflow = _project_active_workflow_payload(project_id, state)
+    workflow_id = _workflow_id_from_active_payload(active_workflow)
+    active_runtime = _project_workflow_runtime_payload(state, workflow_id)
+    active_runtimes = _project_workflow_runtime_payloads(state)
+    runtime_workflow_id = workflow_id or str((active_runtime or {}).get("template_id") or "").strip()
+    runtime_instance_id = str((active_runtime or {}).get("instance_id") or "").strip()
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "templates": templates,
+        "total": len(templates),
+        "active_workflow": active_workflow,
+        "active_workflow_runtime": active_runtime,
+        "active_workflow_runtimes": active_runtimes,
+        "workflow_input_values": workflow_tools.workflow_input_values_public_payload(
+            state,
+            workflow_id=runtime_workflow_id,
+            instance_id=runtime_instance_id,
+        ),
+    }
+
+
+@router.post("/{project_id}/workflow/templates")
+async def save_project_workflow_template(
+    project_id: str,
+    req: ProjectWorkflowTemplateSaveRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    svc = ProjectService(db)
+    state = await svc.get_project_state(project_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    workflow = req.workflow if isinstance(req.workflow, dict) else None
+    if not workflow:
+        raise HTTPException(status_code=400, detail="workflow is required")
+    try:
+        saved = workflow_template_store.save_user_template(
+            workflow=workflow,
+            template_id=req.template_id or "",
+            name=req.name or "",
+            description=req.description or "",
+            category=req.category or "user",
+            applies_to=req.applies_to or "",
+            version=req.version or "",
+            sample_inputs=req.inputs,
+            source={
+                "project_id": project_id,
+                "source": "frontend_workflow_editor",
+            },
+            replace_existing=req.replace_existing,
+        )
+    except workflow_template_store.WorkflowTemplateStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except WorkflowAuditError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc), "audit": exc.report}) from exc
+    except canvas_workflow_templates.WorkflowTemplateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "project_id": project_id,
+        **saved,
+    }
+
+
+@router.get("/{project_id}/workflow/templates/{template_id}/download")
+async def download_project_workflow_template(
+    project_id: str,
+    template_id: str,
+    version_id: str = Query(""),
+    db: AsyncSession = Depends(get_session),
+):
+    svc = ProjectService(db)
+    state = await svc.get_project_state(project_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        package = workflow_template_store.export_template_package(template_id, version_id)
+    except workflow_template_store.WorkflowTemplateStoreError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "template_id": package.get("template_id"),
+        "version_id": package.get("version_id"),
+        "filename": f"{package.get('template_id') or 'workflow_template'}.openreel-workflow-template.json",
+        "package": package,
+    }
+
+
+@router.put("/{project_id}/workflow/active")
+async def set_project_active_workflow(
+    project_id: str,
+    req: ProjectWorkflowActiveRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    svc = ProjectService(db)
+    state = await svc.get_project_state(project_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if req.kind == "artifact":
+        try:
+            workflow_spec_artifacts.load_workflow_spec_artifact(project_id, req.artifact_ref or "")
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    active = _active_workflow_state_from_request(req)
+    project = await svc.update_project_state(project_id, {ACTIVE_WORKFLOW_STATE_KEY: active})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    refreshed_state = await svc.get_project_state(project_id) or {}
+    active_workflow = _project_active_workflow_payload(project_id, refreshed_state)
+    workflow_id = _workflow_id_from_active_payload(active_workflow)
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "active_workflow": active_workflow,
+        "active_workflow_runtime": _project_workflow_runtime_payload(refreshed_state, workflow_id),
+        "active_workflow_runtimes": _project_workflow_runtime_payloads(refreshed_state),
+    }
+
+
+@router.post("/{project_id}/workflow/runtime/{instance_id}/pause")
+async def pause_project_workflow_runtime(
+    project_id: str,
+    instance_id: str,
+    req: ProjectWorkflowRuntimePauseRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    svc = ProjectService(db)
+    state = await svc.get_project_state(project_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    result = await workflow_tools.workflow_runtime_request_pause(
+        project_id,
+        instance_id,
+        template_id=req.template_id or "",
+        reason=req.reason or "",
+    )
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result)
+    refreshed_state = await svc.get_project_state(project_id) or {}
+    active_workflow = _project_active_workflow_payload(project_id, refreshed_state)
+    workflow_id = _workflow_id_from_active_payload(active_workflow)
+    return {
+        **result,
+        "active_workflow_runtime": _project_workflow_runtime_payload(refreshed_state, workflow_id),
+        "active_workflow_runtimes": _project_workflow_runtime_payloads(refreshed_state),
+    }
+
+
+@router.delete("/{project_id}/workflow/runtime/{instance_id}")
+async def delete_project_workflow_runtime(
+    project_id: str,
+    instance_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    svc = ProjectService(db)
+    state = await svc.get_project_state(project_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    result = await workflow_tools.workflow_runtime_delete_instance(project_id, instance_id)
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result)
+    refreshed_state = await svc.get_project_state(project_id) or {}
+    active_workflow = _project_active_workflow_payload(project_id, refreshed_state)
+    workflow_id = _workflow_id_from_active_payload(active_workflow)
+    return {
+        **result,
+        "active_workflow_runtime": _project_workflow_runtime_payload(refreshed_state, workflow_id),
+        "active_workflow_runtimes": _project_workflow_runtime_payloads(refreshed_state),
+    }
+
+
+@router.post("/{project_id}/workflow/preview")
+async def preview_project_workflow(
+    project_id: str,
+    req: ProjectWorkflowPreviewRequest,
+):
+    result = await workflow_tools.workflow_preview(
+        project_id=project_id,
+        template_id=req.template_id or "",
+        workflow=req.workflow,
+        artifact_ref=req.artifact_ref or "",
+        instance_id=req.instance_id or "",
+        inputs=req.inputs,
+        context=req.context,
+    )
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/{project_id}/workflow/materialize")
+async def materialize_project_workflow(
+    project_id: str,
+    req: ProjectWorkflowMaterializeRequest,
+):
+    if req.workflow:
+        result = await workflow_tools.workflow_materialize(
+            project_id=project_id,
+            workflow=req.workflow,
+            title=req.title or "",
+            inputs=req.inputs,
+            context=req.context,
+            origin_x=req.origin_x,
+            origin_y=req.origin_y,
+            spacing_x=req.spacing_x,
+            spacing_y=req.spacing_y,
+        )
+    elif req.artifact_ref:
+        result = await workflow_tools.workflow_materialize_artifact(
+            project_id=project_id,
+            artifact_ref=req.artifact_ref,
+            title=req.title or "",
+            inputs=req.inputs,
+            context=req.context,
+            origin_x=req.origin_x,
+            origin_y=req.origin_y,
+            spacing_x=req.spacing_x,
+            spacing_y=req.spacing_y,
+        )
+    else:
+        result = await workflow_tools.workflow_instantiate(
+            project_id=project_id,
+            template_id=req.template_id or "",
+            title=req.title or "",
+            inputs=req.inputs,
+            origin_x=req.origin_x,
+            origin_y=req.origin_y,
+            spacing_x=req.spacing_x,
+            spacing_y=req.spacing_y,
+        )
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/{project_id}/workflow/run-step")
+async def run_project_workflow_step(
+    project_id: str,
+    req: ProjectWorkflowRunStepRequest,
+):
+    result = await workflow_tools.workflow_run_step(
+        project_id=project_id,
+        step_id=req.step_id,
+        template_id=req.template_id or "",
+        workflow=req.workflow,
+        artifact_ref=req.artifact_ref or "",
+        title=req.title or "",
+        inputs=req.inputs,
+        context=req.context,
+        instance_id=req.instance_id or "",
+        origin_x=req.origin_x,
+        origin_y=req.origin_y,
+        spacing_x=req.spacing_x,
+        spacing_y=req.spacing_y,
+    )
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/{project_id}/workflow/run-next")
+async def run_project_workflow_next_step(
+    project_id: str,
+    req: ProjectWorkflowRunNextRequest,
+):
+    result = await workflow_tools.workflow_run_next_step(
+        project_id=project_id,
+        template_id=req.template_id or "",
+        workflow=req.workflow,
+        artifact_ref=req.artifact_ref or "",
+        title=req.title or "",
+        inputs=req.inputs,
+        context=req.context,
+        instance_id=req.instance_id or "",
+        origin_x=req.origin_x,
+        origin_y=req.origin_y,
+        spacing_x=req.spacing_x,
+        spacing_y=req.spacing_y,
+    )
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/{project_id}/workflow/run-all")
+async def run_project_workflow_all_steps(
+    project_id: str,
+    req: ProjectWorkflowRunAllRequest,
+):
+    result = await workflow_tools.workflow_run_all_steps(
+        project_id=project_id,
+        template_id=req.template_id or "",
+        workflow=req.workflow,
+        artifact_ref=req.artifact_ref or "",
+        title=req.title or "",
+        inputs=req.inputs,
+        context=req.context,
+        instance_id=req.instance_id or "",
+        origin_x=req.origin_x,
+        origin_y=req.origin_y,
+        spacing_x=req.spacing_x,
+        spacing_y=req.spacing_y,
+        max_steps=req.max_steps,
+    )
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.get("/{project_id}/media-history")
+async def list_project_media_history(
+    project_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    return {"items": await _list_project_media_history_items(project_id, db)}
+
+
+@router.post("/{project_id}/media-history/{item_id}/restore")
+async def restore_project_media_history_item(
+    project_id: str,
+    item_id: str,
+    req: ProjectMediaHistoryRestoreRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    item = await _find_project_media_history_item(project_id, item_id, db)
+    if not item:
+        raise HTTPException(status_code=404, detail="Media history item not found")
+    kind = str(item.get("kind") or "").strip().lower()
+    if kind not in {"image", "video", "audio"}:
+        raise HTTPException(status_code=400, detail="Unsupported media history kind")
+    rel_path = str(item.get("rel_path") or "")
+    try:
+        path = project_media_history.media_path_from_rel_path(project_id, rel_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Media file not found")
+
+    title = (req.title or str(item.get("title") or "")).strip() or {
+        "image": "历史图片",
+        "video": "历史视频",
+        "audio": "历史音频",
+    }[kind]
+    prompt = str(item.get("prompt") or "").strip()
+    async with node_display_id_allocation(project_id):
+        node = WorkflowNode(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            display_id=await next_node_display_id(db, project_id),
+            type=kind,
+            title=title,
+            status="completed",
+            position_x=req.x,
+            position_y=req.y,
+            input_json=json.dumps({
+                "surface": "media_history",
+                "prompt": prompt,
+                "source": {
+                    "kind": "project_media_history",
+                    "history_id": item.get("id"),
+                    "rel_path": rel_path,
+                },
+            }, ensure_ascii=False),
+            output_json=json.dumps(_media_output_for_history_item(item), ensure_ascii=False),
+            model_config_json=json.dumps({"surface": "media_history", "_ui_creator": "user"}, ensure_ascii=False),
+            prompt=prompt or None,
+            error_message=None,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(node)
+        await db.commit()
+        await db.refresh(node)
+    return {"ok": True, "node": await _node_detail_response(node, project_id, db)}
+
+
+@router.delete("/{project_id}/media-history/{item_id}")
+async def delete_project_media_history_item(
+    project_id: str,
+    item_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    item = await _find_project_media_history_item(project_id, item_id, db)
+    if not item:
+        raise HTTPException(status_code=404, detail="Media history item not found")
+    rel_path = str(item.get("rel_path") or "")
+    try:
+        path = project_media_history.media_path_from_rel_path(project_id, rel_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    deleted = False
+    if path.exists() and path.is_file():
+        path.unlink()
+        deleted = True
+    project_media_history.remove_item(project_id, item_id)
+    return {
+        "ok": True,
+        "id": item_id,
+        "rel_path": rel_path,
+        "deleted": deleted,
     }
 
 
@@ -651,7 +1487,7 @@ async def get_project_canvas_node_detail(
     node = await db.get(WorkflowNode, node_id)
     if not node or node.project_id != project_id:
         raise HTTPException(status_code=404, detail="Node not found")
-    return _node_detail_payload(node)
+    return await _node_detail_response(node, project_id, db)
 
 
 @router.patch("/{project_id}/nodes/{node_id}")
@@ -699,24 +1535,132 @@ async def update_project_canvas_node_detail(
 
     next_input = _strip_ui_private(current_input)
     node.input_json = json.dumps(next_input, ensure_ascii=False)
+    if node.type == "text" and "output" in fields_set:
+        node.output_json = json.dumps(req.output, ensure_ascii=False) if req.output not in (None, "") else None
     node.updated_at = datetime.utcnow()
     db.add(node)
     await db.commit()
     await db.refresh(node)
-    payload = _node_detail_payload(node)
+    id_map = await _public_id_map(project_id, db)
+    next_input_public = publicize_node_refs(_strip_ui_private(_parse_json_dict(node.input_json)), id_map)
+    payload = _node_detail_payload(node, id_map)
     payload["changes"] = _node_update_changes(
         old_title=old_title,
         new_title=node.title or "",
         old_prompt=old_prompt,
         new_prompt=node.prompt or "",
-        old_input=old_input,
-        new_input=_strip_ui_private(_parse_json_dict(node.input_json)),
+        old_input=publicize_node_refs(old_input, id_map),
+        new_input=next_input_public,
     )
     if had_dependency_fields or _has_dependency_fields(next_input):
         try:
             payload["edge_sync"] = await canvas_tools.sync_dependency_edges(project_id, node_id, next_input)
         except Exception as exc:
             payload["edge_sync_warning"] = str(exc)[:200]
+    return payload
+
+
+@router.post("/{project_id}/nodes/{node_id}/media")
+async def upload_project_canvas_node_media(
+    project_id: str,
+    node_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_session),
+):
+    node = await db.get(WorkflowNode, node_id)
+    if not node or node.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Node not found")
+    if node.type not in {"image", "video"}:
+        raise HTTPException(status_code=400, detail="Only image/video nodes support direct media upload")
+
+    raw_name = Path(file.filename or "upload").name
+    if not raw_name or raw_name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    mime_type = file.content_type or mimetypes.guess_type(raw_name)[0]
+    upload_kind = _classify_node_media_upload(raw_name, mime_type)
+    if upload_kind != node.type:
+        expected = "image" if node.type == "image" else "video"
+        raise HTTPException(status_code=400, detail=f"Uploaded file must be a {expected}")
+
+    try:
+        root = project_media_history.project_root(project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    media_dir = project_media_history.MEDIA_HISTORY_DIRS[node.type]
+    target_dir = root / media_dir / "uploads"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = _safe_node_media_upload_filename(
+        raw_name,
+        node=node,
+        kind=node.type,
+        mime_type=mime_type,
+    )
+    target = (target_dir / filename).resolve()
+    try:
+        target.relative_to((root / media_dir).resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Path outside media storage") from exc
+
+    max_bytes = NODE_MEDIA_UPLOAD_MAX_BYTES[node.type]
+    size = await _write_upload_file(target, file, max_bytes=max_bytes)
+    rel_path = f"{media_dir}/uploads/{filename}"
+    current_input = _parse_json_dict(node.input_json)
+    current_output = _parse_json_value(node.output_json)
+    uploaded_at = datetime.utcnow().isoformat()
+    try:
+        next_output = _build_uploaded_node_media_output(
+            project_id=project_id,
+            node=node,
+            rel_path=rel_path,
+            target_path=target,
+            original_filename=raw_name,
+            mime_type=mime_type,
+            size=size,
+            uploaded_at=uploaded_at,
+            current_output=current_output,
+            current_input=current_input,
+        )
+    except ValueError as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    current_input["uploaded_output"] = {
+        "kind": "user_upload",
+        "rel_path": rel_path,
+        "url": project_media_history.media_url(project_id, rel_path),
+        "filename": raw_name,
+        "mime_type": mime_type,
+        "size": size,
+        "uploaded_at": uploaded_at,
+    }
+    if node.type == "image":
+        current_input["render_state"] = "fresh"
+
+    node.input_json = json.dumps(_strip_ui_private(current_input), ensure_ascii=False)
+    node.output_json = json.dumps(next_output, ensure_ascii=False)
+    node.status = "completed"
+    node.error_message = None
+    node.updated_at = datetime.utcnow()
+    db.add(node)
+    await db.commit()
+    await db.refresh(node)
+    project_media_history.register_node_outputs(project_id, node)
+
+    payload = await _node_detail_response(node, project_id, db)
+    payload["uploaded_media"] = {
+        "kind": node.type,
+        "rel_path": rel_path,
+        "url": project_media_history.media_url(project_id, rel_path),
+        "filename": raw_name,
+        "size": size,
+        "mime_type": mime_type,
+    }
+    payload["changes"] = [{
+        "field": "media_output",
+        "label": "节点产物",
+        "before": media_history.media_signature(current_output)[:800],
+        "after": media_history.media_signature(next_output)[:800],
+    }]
     return payload
 
 
@@ -771,7 +1715,7 @@ async def switch_project_canvas_node_history(
     await db.commit()
     await db.refresh(node)
 
-    payload = _node_detail_payload(node)
+    payload = await _node_detail_response(node, project_id, db)
     payload["switched_history"] = {
         "id": selected.get("id"),
         "created_at": selected.get("created_at"),
@@ -786,35 +1730,267 @@ async def switch_project_canvas_node_history(
     return payload
 
 
+@router.post("/{project_id}/nodes/{node_id}/image/edit")
+async def edit_project_canvas_node_image(
+    project_id: str,
+    node_id: str,
+    req: CanvasNodeImageEditRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    result = await image_operations.edit_image_node(
+        project_id=project_id,
+        node_id=node_id,
+        operations=req.operations,
+        action=req.action,
+        source_ref=req.source_ref,
+        candidate_ref=req.candidate_ref,
+    )
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result)
+    if str(result.get("action") or "").lower() == "commit":
+        node = await db.get(WorkflowNode, node_id)
+        if node and node.project_id == project_id:
+            result["node"] = await _node_detail_response(node, project_id, db)
+    return result
+
+
+@router.post("/{project_id}/nodes/{node_id}/image/edit/cleanup")
+async def cleanup_project_canvas_node_image_edit(
+    project_id: str,
+    node_id: str,
+):
+    result = await image_operations.cleanup_image_edit_temps(project_id=project_id, node_id=node_id)
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/{project_id}/nodes/{node_id}/image/curve-preview")
+async def preview_project_canvas_node_image_curve(
+    project_id: str,
+    node_id: str,
+    req: CanvasNodeImageCurvePreviewRequest,
+):
+    result = await image_operations.preview_curve_image_node(
+        project_id=project_id,
+        node_id=node_id,
+        source_ref=req.source_ref,
+        color=req.color,
+        detail=req.detail,
+        line_strength=req.line_strength,
+        base_visibility=req.base_visibility,
+    )
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@router.post("/{project_id}/panorama/captures")
+async def create_project_panorama_capture(
+    project_id: str,
+    req: CanvasPanoramaCaptureRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    header, sep, encoded = req.data_url.partition(",")
+    if sep != "," or not header.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="data_url must be an image data URL")
+    media_type = header[5:].split(";", 1)[0].lower()
+    ext = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/webp": ".webp",
+    }.get(media_type)
+    if not ext:
+        raise HTTPException(status_code=400, detail="Unsupported image data URL type")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid image data URL")
+    if not raw or len(raw) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image data is empty or too large")
+
+    source = None
+    if req.source_node_id:
+        source = await db.get(WorkflowNode, req.source_node_id)
+        if not source or source.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Source node not found")
+
+    capture_dir = settings.storage_path_resolved / project_id / "generated_images" / "panorama_captures"
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"panorama-capture-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}{ext}"
+    target = capture_dir / filename
+    target.write_bytes(raw)
+    local_url = f"/api/media/{project_id}/panorama_captures/{filename}"
+
+    title = (req.title or "").strip() or {
+        "single": "全景截图",
+        "four": "全景四视角",
+        "eight": "全景八视角",
+    }.get((req.mode or "").strip().lower(), "全景截图")
+    input_data = {
+        "surface": "draft_canvas",
+        "title": title,
+        "prompt": title,
+        "fields": {
+            "panorama_capture": True,
+            "capture_mode": req.mode,
+            **({"references": [{"ref": source.display_id if source and source.display_id is not None else req.source_node_id, "role": "source_panorama"}]} if req.source_node_id else {}),
+        },
+        "render_state": "fresh",
+        **({"references": [{"ref": source.display_id if source and source.display_id is not None else req.source_node_id, "role": "source_panorama"}]} if req.source_node_id else {}),
+    }
+    output = {
+        "ok": True,
+        "type": "image",
+        "operation": "panorama_capture",
+        "status": "completed",
+        "url": local_url,
+        "local_url": local_url,
+        "mode": req.mode,
+        "panorama_capture": True,
+    }
+    svc = NodeService(db)
+    node = await svc.create_node(
+        project_id,
+        {
+            "type": "image",
+            "title": title,
+            "status": "completed",
+            "position_x": req.x,
+            "position_y": req.y,
+            "input_json": input_data,
+            "output_json": output,
+            "prompt": title,
+            "model_config_json": {
+                "surface": "draft_canvas",
+                "_ui_creator": "user",
+            },
+        },
+    )
+    if source:
+        edge = WorkflowEdge(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            source_node_id=source.id,
+            target_node_id=node.id,
+            label="全景截图",
+        )
+        db.add(edge)
+    await db.commit()
+    await db.refresh(node)
+    return {
+        "ok": True,
+        "local_url": local_url,
+        "node": await _node_detail_response(node, project_id, db),
+    }
+
+
+async def _delete_project_canvas_nodes(
+    project_id: str,
+    requested_node_ids: list[str],
+    db: AsyncSession,
+) -> dict[str, Any]:
+    resolved_ids: list[str] = []
+    for raw_id in requested_node_ids:
+        text = str(raw_id or "").strip()
+        if not text:
+            continue
+        resolved = await resolve_internal_node_id(db, project_id, text)
+        if resolved and resolved not in resolved_ids:
+            resolved_ids.append(resolved)
+    if not resolved_ids:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    node_result = await db.exec(
+        select(WorkflowNode).where(
+            WorkflowNode.project_id == project_id,
+            WorkflowNode.id.in_(resolved_ids),
+        )
+    )
+    nodes = list(node_result.all())
+    if not nodes:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    found_ids = [node.id for node in nodes]
+    if not found_ids:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    try:
+        project_media_history.register_nodes_outputs(project_id, nodes)
+    except Exception:
+        # History registration is best-effort; node deletion must still work.
+        pass
+
+    edge_result = await db.exec(
+        select(WorkflowEdge).where(
+            WorkflowEdge.project_id == project_id,
+            or_(
+                WorkflowEdge.source_node_id.in_(found_ids),
+                WorkflowEdge.target_node_id.in_(found_ids),
+            ),
+        )
+    )
+    edges = list(edge_result.all())
+    for edge in edges:
+        await db.delete(edge)
+
+    remaining_result = await db.exec(
+        select(WorkflowNode).where(
+            WorkflowNode.project_id == project_id,
+            ~WorkflowNode.id.in_(found_ids),
+        )
+    )
+    remaining_nodes = list(remaining_result.all())
+    cleaned_dependency_nodes = 0
+    for target in remaining_nodes:
+        changed = False
+        for source in nodes:
+            if _remove_edge_dependency(target, source):
+                changed = True
+        if changed:
+            cleaned_dependency_nodes += 1
+            db.add(target)
+
+    asset_result = await db.exec(
+        select(Asset).where(
+            Asset.project_id == project_id,
+            Asset.node_id.in_(found_ids),
+        )
+    )
+    assets = list(asset_result.all())
+    for asset in assets:
+        await db.delete(asset)
+
+    for node in nodes:
+        await db.delete(node)
+    await db.commit()
+    return {
+        "ok": True,
+        "id": nodes[0].id if len(nodes) == 1 else None,
+        "deleted_node_ids": [node.id for node in nodes],
+        "deleted_nodes": len(nodes),
+        "deleted_edges": len(edges),
+        "deleted_asset_records": len(assets),
+        "cleaned_dependency_nodes": cleaned_dependency_nodes,
+    }
+
+
+@router.post("/{project_id}/nodes/delete")
+async def delete_project_canvas_nodes(
+    project_id: str,
+    req: CanvasNodesDeleteRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    return await _delete_project_canvas_nodes(project_id, req.node_ids, db)
+
+
 @router.delete("/{project_id}/nodes/{node_id}")
 async def delete_project_canvas_node(
     project_id: str,
     node_id: str,
     db: AsyncSession = Depends(get_session),
 ):
-    node = await db.get(WorkflowNode, node_id)
-    if not node or node.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Node not found")
-
-    edge_result = await db.exec(
-        select(WorkflowEdge).where(
-            WorkflowEdge.project_id == project_id,
-            or_(
-                WorkflowEdge.source_node_id == node_id,
-                WorkflowEdge.target_node_id == node_id,
-            ),
-        )
-    )
-    edges = list(edge_result.all())
-    for edge in edges:
-        if edge.source_node_id == node_id:
-            target = await db.get(WorkflowNode, edge.target_node_id)
-            if target and target.project_id == project_id and _remove_edge_dependency(target, node_id):
-                db.add(target)
-        await db.delete(edge)
-    await db.delete(node)
-    await db.commit()
-    return {"ok": True, "id": node_id, "deleted_edges": len(edges)}
+    return await _delete_project_canvas_nodes(project_id, [node_id], db)
 
 
 @router.post("/{project_id}/canvas/restore-snapshot")
@@ -827,73 +2003,74 @@ async def restore_project_canvas_snapshot(
     restored_edges: list[str] = []
     now = datetime.utcnow()
 
-    for item in req.nodes:
-        node_type = item.type.strip().lower()
-        if node_type not in {"text", "image", "video", "audio"}:
-            continue
-        position = item.position or {}
-        model_config = {"surface": "draft_canvas", "_ui_creator": "user" if item.creator == "user" else "agent"}
-        existing = await db.get(WorkflowNode, item.id)
-        if existing and existing.project_id != project_id:
-            continue
-        node = existing or WorkflowNode(id=item.id, project_id=project_id, created_at=now)
-        if node.display_id is None:
-            node.display_id = await next_node_display_id(db, project_id)
-        node.type = node_type
-        node.title = item.title or {
-            "text": "文本节点",
-            "image": "图片节点",
-            "video": "视频节点",
-            "audio": "音频节点",
-        }[node_type]
-        node.status = item.status or "idle"
-        node.position_x = float(position.get("x", 0.0) or 0.0)
-        node.position_y = float(position.get("y", 0.0) or 0.0)
-        node.input_json = _json_dumps_or_none(item.input)
-        node.output_json = _json_dumps_or_none(item.output)
-        node.model_config_json = _json_dumps_or_none(model_config)
-        node.prompt = item.prompt
-        node.error_message = item.error_message
-        node.version = item.version or 1
-        node.supersedes_id = item.supersedes_id
-        node.updated_at = now
-        db.add(node)
-        restored_nodes.append(node.id)
-
-    await db.flush()
-
-    for item in req.edges:
-        source_id = item.source_node_id or item.source
-        target_id = item.target_node_id or item.target
-        if not source_id or not target_id or source_id == target_id:
-            continue
-        source = await db.get(WorkflowNode, source_id)
-        target = await db.get(WorkflowNode, target_id)
-        if not source or not target or source.project_id != project_id or target.project_id != project_id:
-            continue
-        existing = None
-        if item.id:
-            existing = await db.get(WorkflowEdge, item.id)
+    async with node_display_id_allocation(project_id):
+        for item in req.nodes:
+            node_type = item.type.strip().lower()
+            if node_type not in {"text", "image", "video", "audio"}:
+                continue
+            position = item.position or {}
+            model_config = {"surface": "draft_canvas", "_ui_creator": "user" if item.creator == "user" else "agent"}
+            existing = await db.get(WorkflowNode, item.id)
             if existing and existing.project_id != project_id:
-                existing = None
-        if not existing:
-            existing = (await db.exec(
-                select(WorkflowEdge).where(
-                    WorkflowEdge.project_id == project_id,
-                    WorkflowEdge.source_node_id == source_id,
-                    WorkflowEdge.target_node_id == target_id,
-                )
-            )).first()
-        edge = existing or WorkflowEdge(id=item.id or str(uuid.uuid4()), project_id=project_id, created_at=now)
-        edge.source_node_id = source_id
-        edge.target_node_id = target_id
-        edge.label = item.label
-        db.add(edge)
-        if _add_edge_dependency(target, source):
-            db.add(target)
-        restored_edges.append(edge.id)
+                continue
+            node = existing or WorkflowNode(id=item.id, project_id=project_id, created_at=now)
+            if node.display_id is None:
+                node.display_id = await next_node_display_id(db, project_id)
+            node.type = node_type
+            node.title = item.title or {
+                "text": "文本节点",
+                "image": "图片节点",
+                "video": "视频节点",
+                "audio": "音频节点",
+            }[node_type]
+            node.status = item.status or "idle"
+            node.position_x = float(position.get("x", 0.0) or 0.0)
+            node.position_y = float(position.get("y", 0.0) or 0.0)
+            node.input_json = _json_dumps_or_none(item.input)
+            node.output_json = _json_dumps_or_none(item.output)
+            node.model_config_json = _json_dumps_or_none(model_config)
+            node.prompt = item.prompt
+            node.error_message = item.error_message
+            node.version = item.version or 1
+            node.supersedes_id = item.supersedes_id
+            node.updated_at = now
+            db.add(node)
+            restored_nodes.append(node.id)
 
-    await db.commit()
+        await db.flush()
+
+        for item in req.edges:
+            source_id = item.source_node_id or item.source
+            target_id = item.target_node_id or item.target
+            if not source_id or not target_id or source_id == target_id:
+                continue
+            source = await db.get(WorkflowNode, source_id)
+            target = await db.get(WorkflowNode, target_id)
+            if not source or not target or source.project_id != project_id or target.project_id != project_id:
+                continue
+            existing = None
+            if item.id:
+                existing = await db.get(WorkflowEdge, item.id)
+                if existing and existing.project_id != project_id:
+                    existing = None
+            if not existing:
+                existing = (await db.exec(
+                    select(WorkflowEdge).where(
+                        WorkflowEdge.project_id == project_id,
+                        WorkflowEdge.source_node_id == source_id,
+                        WorkflowEdge.target_node_id == target_id,
+                    )
+                )).first()
+            edge = existing or WorkflowEdge(id=item.id or str(uuid.uuid4()), project_id=project_id, created_at=now)
+            edge.source_node_id = source_id
+            edge.target_node_id = target_id
+            edge.label = item.label
+            db.add(edge)
+            if _add_edge_dependency(target, source):
+                db.add(target)
+            restored_edges.append(edge.id)
+
+        await db.commit()
     return {"ok": True, "nodes": restored_nodes, "edges": restored_edges}
 
 
@@ -1004,7 +2181,7 @@ async def delete_project_edge(
     if source and source.project_id != project_id:
         raise HTTPException(status_code=404, detail="Source node not found")
 
-    dependency_removed = _remove_edge_dependency(target, source_id)
+    dependency_removed = _remove_edge_dependency(target, source or source_id)
     if dependency_removed:
         db.add(target)
     edges_to_delete = list((await db.exec(

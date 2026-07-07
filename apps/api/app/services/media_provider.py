@@ -393,7 +393,7 @@ async def _resolve_reference_images(
 
     resolved: list[str] = []
     errors: list[str] = []
-    storage_root = Path(getattr(settings, "STORAGE_PATH", "./storage")).resolve()
+    storage_root = settings.storage_path_resolved
 
     for raw in refs:
         if not isinstance(raw, str) or not raw.strip():
@@ -572,6 +572,7 @@ _ARK_IMAGE_ROLES = {"reference_image", "first_frame", "last_frame"}
 _XAI_VIDEO_FORMATS = {"xai_video"}
 _GROK_1_5_VIDEO_FORMATS = {"grok_1_5"}
 _T8_GROK_VIDEO_3_FORMATS = {"t8_grok_video_3"}
+_LINGKE_MEDIA_GENERATE_FORMATS = {"lingke_media_generate", "lk888_media_generate"}
 _XAI_DEFAULT_BASE_URL = "https://api.x.ai/v1"
 _XAI_DONE_STATUSES = {"done", "completed", "succeeded"}
 _XAI_FAILED_STATUSES = {"failed", "expired", "cancelled", "canceled"}
@@ -638,6 +639,71 @@ _T8_GROK_VIDEO_3_SPEC = JsonVideoTaskSpec(
     long_duration_after=15,
     long_duration_resolution="720p",
     resolution_output="upper",
+)
+_LINGKE_MEDIA_GENERATE_SPEC = JsonVideoTaskSpec(
+    name="lingke_media_generate",
+    display_name="Lingke media.generate",
+    api_formats=frozenset(_LINGKE_MEDIA_GENERATE_FORMATS),
+    model_names=frozenset(),
+    create_path="/v1/media/generate",
+    query_path_template="/v1/skills/task-status?task_id={task_id}",
+    upload_path=None,
+    strip_suffixes=(
+        "/v1/media/generate",
+        "/v1/media/status",
+        "/v1/skills/task-status",
+        "/v1",
+    ),
+    payload_fields={
+        "prompt": "params.prompt",
+        "model": "model",
+        "ratio": "params.aspect_ratio",
+        "duration": "params.duration",
+        "resolution": "params.resolution",
+        "images": "params.images",
+        "seed": "params.seed",
+    },
+    field_types={
+        "prompt": "string",
+        "model": "string",
+        "ratio": "string",
+        "duration": "string",
+        "resolution": "string",
+        "images": "url_list",
+        "seed": "integer",
+    },
+    source_images_field="params.images",
+    source_images_min=0,
+    source_images_max=12,
+    source_image_transport="configurable_url_or_data_url_list",
+    upload_file_field="file",
+    upload_response_url_paths=(),
+    task_id_paths=("data.task_id", "data.taskId", "data.id", "task_id", "taskId", "id", "job_id", "data.job_id"),
+    status_path="state",
+    progress_path="progress",
+    result_url_paths=(
+        "result_url",
+        "data.result_url",
+        "data.resultUrl",
+        "data.video_url",
+        "data.url",
+        "data.output",
+        "data.result.video_url",
+        "data.result.url",
+        "result_url",
+        "video_url",
+        "url",
+    ),
+    done_statuses=frozenset({"success", "succeeded", "completed", "complete", "done"}),
+    failed_statuses=frozenset({"failure", "failed", "error", "expired", "cancelled", "canceled"}),
+    running_statuses=frozenset({"not_start", "queued", "pending", "running", "processing", "in_progress", "submitted"}),
+    supported_ratios=frozenset({"2:3", "3:2", "16:9", "9:16", "1:1"}),
+    supported_resolutions=frozenset({"480p", "720p", "1080p"}),
+    default_ratio="16:9",
+    default_resolution="720p",
+    duration_min=1,
+    duration_max=30,
+    resolution_output="lower",
 )
 _VIDEO_RESOLUTION_ORDER = {"480p": 0, "720p": 1, "1080p": 2, "2k": 3, "4k": 4}
 _VIDEO_MODEL_CALLING_DOC = "apps/api/app/skills/video_production/VIDEO_MODEL_CALLING.md"
@@ -837,6 +903,10 @@ def _t8_grok_video_3_endpoint(base_url: str | None) -> str:
     return _json_video_task_endpoint(base_url, _T8_GROK_VIDEO_3_SPEC)
 
 
+def _lingke_media_generate_endpoint(base_url: str | None) -> str:
+    return _json_video_task_endpoint(base_url, _LINGKE_MEDIA_GENERATE_SPEC)
+
+
 def _suno_generate_endpoint(base_url: str | None) -> str:
     base = str(base_url or "").strip().rstrip("/")
     if not base:
@@ -884,6 +954,25 @@ def _coerce_float(value: Any, default: float) -> float:
         return float(str(value))
     except (TypeError, ValueError):
         return default
+
+
+def _string_set(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        return {item.strip() for item in value.split(",") if item.strip()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return {str(item).strip() for item in value if str(item or "").strip()}
+    return set()
+
+
+def _int_set(value: Any) -> set[int]:
+    out: set[int] = set()
+    for item in _string_set(value):
+        coerced = _coerce_int(item)
+        if coerced is not None:
+            out.add(coerced)
+    return out
 
 
 def _ark_ratio(value: Any) -> str | None:
@@ -953,22 +1042,46 @@ def _ark_duration(value: Any, model_name: str | None) -> tuple[int | None, str |
     return duration, None
 
 
-def _json_video_task_ratio(value: Any, spec: JsonVideoTaskSpec) -> str | None:
+def _json_video_task_supported_ratios(spec: JsonVideoTaskSpec, extra: dict[str, Any]) -> frozenset[str]:
+    configured = _string_set(extra.get("supported_ratios") or extra.get("supported_aspect_ratios"))
+    return frozenset(configured) if configured else spec.supported_ratios
+
+
+def _json_video_task_supported_resolutions(spec: JsonVideoTaskSpec, extra: dict[str, Any]) -> frozenset[str]:
+    configured = _string_set(extra.get("supported_resolutions") or extra.get("supported_sizes"))
+    normalized = {
+        item.lower() if re.match(r"^\d+p$", item.strip(), re.I) else item.strip()
+        for item in configured
+    }
+    return frozenset(normalized) if normalized else spec.supported_resolutions
+
+
+def _json_video_task_duration_bounds(spec: JsonVideoTaskSpec, extra: dict[str, Any]) -> tuple[int, int]:
+    min_value = _coerce_int(extra.get("duration_min") or extra.get("min_duration"))
+    max_value = _coerce_int(extra.get("duration_max") or extra.get("max_duration"))
+    duration_min = min_value if min_value is not None and min_value > 0 else spec.duration_min
+    duration_max = max_value if max_value is not None and max_value >= duration_min else spec.duration_max
+    return duration_min, duration_max
+
+
+def _json_video_task_ratio(value: Any, supported_ratios: frozenset[str]) -> str | None:
     if value is None:
         return None
     text = str(value).strip().lower()
     text = _ARK_RATIO_ALIASES.get(text, text)
-    return text if text in spec.supported_ratios else None
+    return text if text in supported_ratios else None
 
 
-def _json_video_task_resolution(value: Any, spec: JsonVideoTaskSpec) -> str | None:
+def _json_video_task_resolution(value: Any, supported_resolutions: frozenset[str]) -> str | None:
     if value is None:
         return None
     text = str(value).strip().lower()
-    if text in spec.supported_resolutions:
+    supported_lower = {item.lower() for item in supported_resolutions}
+    if text in supported_lower:
         return text
     if text in {"480", "720", "1080"}:
-        return f"{text}p"
+        candidate = f"{text}p"
+        return candidate if candidate in supported_lower else None
     if "x" not in text:
         return None
     left, right = text.split("x", 1)
@@ -977,24 +1090,39 @@ def _json_video_task_resolution(value: Any, spec: JsonVideoTaskSpec) -> str | No
     if not width or not height:
         return None
     short_side = min(width, height)
-    if short_side >= 1000:
-        return "1080p"
-    if short_side >= 700:
-        return "720p"
-    return "480p"
+    for candidate in ("1080p", "720p", "480p"):
+        if candidate not in supported_lower:
+            continue
+        threshold = 1000 if candidate == "1080p" else 700 if candidate == "720p" else 0
+        if short_side >= threshold:
+            return candidate
+    return None
 
 
-def _json_video_task_duration(value: Any, spec: JsonVideoTaskSpec) -> tuple[int | None, str | None]:
+def _json_video_task_duration(
+    value: Any,
+    spec: JsonVideoTaskSpec,
+    supported_durations: set[int] | None = None,
+    duration_min: int | None = None,
+    duration_max: int | None = None,
+) -> tuple[int | None, str | None]:
     duration = _coerce_int(value)
     if duration is None:
         return None, f"{spec.name} duration 必须是整数，收到: {value!r}"
-    if spec.duration_min <= duration <= spec.duration_max:
+    if supported_durations:
+        if duration in supported_durations:
+            return duration, None
+        return None, f"{spec.name} duration 只支持 {', '.join(str(item) for item in sorted(supported_durations))} 秒"
+    minimum = duration_min if duration_min is not None else spec.duration_min
+    maximum = duration_max if duration_max is not None else spec.duration_max
+    if minimum <= duration <= maximum:
         return duration, None
-    return None, f"{spec.name} duration 只支持 {spec.duration_min}-{spec.duration_max} 秒"
+    return None, f"{spec.name} duration 只支持 {minimum}-{maximum} 秒"
 
 
-def _json_video_task_payload_resolution(resolution: str, spec: JsonVideoTaskSpec) -> str:
-    if spec.resolution_output == "upper":
+def _json_video_task_payload_resolution(resolution: str, spec: JsonVideoTaskSpec, extra: dict[str, Any]) -> str:
+    output = str(extra.get("resolution_output") or extra.get("size_output") or spec.resolution_output).strip().lower()
+    if output == "upper":
         return resolution.upper()
     return resolution
 
@@ -1004,19 +1132,19 @@ def _ark_image_role(value: Any) -> str:
     return role if role in _ARK_IMAGE_ROLES else "reference_image"
 
 
-async def _ark_image_url(project_id: str, ref: str | None) -> tuple[str | None, str | None]:
-    text = str(ref or "").strip()
-    if not text:
-        return None, "图片引用为空"
-    if text.startswith("data:image/"):
-        return text, None
-    if _is_remote_url(text):
-        return text, None
-    local_ref = _project_media_path_from_url(project_id, text) or text
-    data_url = await _ref_to_data_url(local_ref)
-    if data_url:
-        return data_url, None
-    return None, f"图片引用无法读取或转换: {text}"
+async def _ark_image_url(
+    project_id: str,
+    ref: str | None,
+    provider: MediaProvider,
+    extra_override: dict[str, Any] | None,
+) -> tuple[str | None, str | None]:
+    return await _image_url_or_data_url_for_ref(
+        project_id,
+        str(ref or ""),
+        provider,
+        extra_override,
+        default_transport="data_url",
+    )
 
 
 async def _build_ark_video_payload(
@@ -1047,7 +1175,7 @@ async def _build_ark_video_payload(
 
     reference_warnings: list[str] = []
     if first_frame_url:
-        url, warning = await _ark_image_url(project_id, first_frame_url)
+        url, warning = await _ark_image_url(project_id, first_frame_url, provider, extra_override)
         if warning:
             reference_warnings.append(warning)
         elif url:
@@ -1056,7 +1184,7 @@ async def _build_ark_video_payload(
     roles = extra.get("reference_image_roles")
     role_list = roles if isinstance(roles, list) else []
     for idx, ref in enumerate(reference_images or []):
-        url, warning = await _ark_image_url(project_id, ref)
+        url, warning = await _ark_image_url(project_id, ref, provider, extra_override)
         if warning:
             reference_warnings.append(warning)
             continue
@@ -1065,7 +1193,7 @@ async def _build_ark_video_payload(
             content.append({"type": "image_url", "image_url": {"url": url}, "role": role})
 
     if last_frame_url:
-        url, warning = await _ark_image_url(project_id, last_frame_url)
+        url, warning = await _ark_image_url(project_id, last_frame_url, provider, extra_override)
         if warning:
             reference_warnings.append(warning)
         elif url:
@@ -1121,19 +1249,22 @@ async def _build_ark_video_payload(
     return payload, result_meta or None
 
 
-async def _xai_image_input(project_id: str, ref: str | None) -> tuple[dict[str, str] | None, str | None]:
-    text = str(ref or "").strip()
-    if not text:
-        return None, "图片引用为空"
-    if text.startswith("data:image/"):
-        return {"url": text}, None
-    if _is_remote_url(text):
-        return {"url": text}, None
-    local_ref = _project_media_path_from_url(project_id, text) or text
-    data_url = await _ref_to_data_url(local_ref)
-    if data_url:
-        return {"url": data_url}, None
-    return None, f"图片引用无法读取或转换: {text}"
+async def _xai_image_input(
+    project_id: str,
+    ref: str | None,
+    provider: MediaProvider,
+    extra_override: dict[str, Any] | None,
+) -> tuple[dict[str, str] | None, str | None]:
+    url, warning = await _image_url_or_data_url_for_ref(
+        project_id,
+        str(ref or ""),
+        provider,
+        extra_override,
+        default_transport="data_url",
+    )
+    if warning or not url:
+        return None, warning or "图片引用为空"
+    return {"url": url}, None
 
 
 async def _image_file_input(project_id: str, ref: str | None) -> tuple[tuple[str, bytes, str] | None, str | None]:
@@ -1278,7 +1409,7 @@ async def _build_xai_video_payload(
         })
 
     source_kind, source_ref = image_candidates[0]
-    image, image_error = await _xai_image_input(project_id, source_ref)
+    image, image_error = await _xai_image_input(project_id, source_ref, provider, extra_override)
     if image_error or not image:
         return None, _with_video_model_doc_hint({
             "error": image_error or "源图无法读取",
@@ -1380,23 +1511,87 @@ async def _build_grok_1_5_video_payload(
     return data, image_file, {"source_image_kind": source_kind, "source_image_ref": source_ref}
 
 
-def _json_video_task_put(payload: dict[str, Any], spec: JsonVideoTaskSpec, field: str, value: Any) -> None:
-    payload_field = spec.payload_fields.get(field)
+def _json_video_task_set_path(payload: dict[str, Any], path: str, value: Any) -> None:
+    parts = [part for part in str(path or "").split(".") if part]
+    if not parts:
+        return
+    current = payload
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[parts[-1]] = value
+
+
+def _json_video_task_payload_fields(spec: JsonVideoTaskSpec, extra: dict[str, Any]) -> dict[str, str]:
+    fields = dict(spec.payload_fields)
+    configured = extra.get("payload_fields") or extra.get("payload_field_paths")
+    if isinstance(configured, dict):
+        for key, value in configured.items():
+            if key in fields and isinstance(value, str) and value.strip():
+                fields[key] = value.strip()
+    resolution_field = extra.get("resolution_payload_field") or extra.get("size_payload_field")
+    if isinstance(resolution_field, str) and resolution_field.strip():
+        fields["resolution"] = resolution_field.strip()
+    return fields
+
+
+def _json_video_task_field_types(spec: JsonVideoTaskSpec, extra: dict[str, Any]) -> dict[str, str]:
+    field_types = dict(spec.field_types)
+    configured = extra.get("field_types") or extra.get("payload_field_types")
+    if isinstance(configured, dict):
+        for key, value in configured.items():
+            if key in field_types and isinstance(value, str) and value.strip():
+                field_types[key] = value.strip()
+    resolution_type = extra.get("resolution_field_type") or extra.get("size_field_type")
+    if isinstance(resolution_type, str) and resolution_type.strip():
+        field_types["resolution"] = resolution_type.strip()
+    return field_types
+
+
+def _json_video_task_put(
+    payload: dict[str, Any],
+    spec: JsonVideoTaskSpec,
+    field: str,
+    value: Any,
+    payload_fields: dict[str, str] | None = None,
+    field_types: dict[str, str] | None = None,
+) -> None:
+    fields = payload_fields or spec.payload_fields
+    types = field_types or spec.field_types
+    payload_field = fields.get(field)
     if not payload_field:
         return
-    field_type = spec.field_types.get(field, "string")
+    field_type = types.get(field, "string")
+    converted: Any
     if field_type == "integer":
         converted = _coerce_int(value)
         if converted is None:
             return
-        payload[payload_field] = converted
+        _json_video_task_set_path(payload, payload_field, converted)
     elif field_type == "string_upper":
-        payload[payload_field] = str(value).upper()
+        _json_video_task_set_path(payload, payload_field, str(value).upper())
     elif field_type == "url_list":
         if isinstance(value, list):
-            payload[payload_field] = [str(item) for item in value if str(item or "").strip()]
+            converted = [str(item) for item in value if str(item or "").strip()]
+            _json_video_task_set_path(payload, payload_field, converted)
     else:
-        payload[payload_field] = str(value)
+        _json_video_task_set_path(payload, payload_field, str(value))
+
+
+def _json_video_task_payload_value(
+    payload: dict[str, Any],
+    spec: JsonVideoTaskSpec,
+    field: str,
+    payload_fields: dict[str, str] | None = None,
+) -> Any:
+    fields = payload_fields or spec.payload_fields
+    payload_field = fields.get(field)
+    if not payload_field:
+        return None
+    return _lookup_path(payload, payload_field)
 
 
 async def _build_json_video_task_payload(
@@ -1412,6 +1607,12 @@ async def _build_json_video_task_payload(
 ) -> tuple[dict[str, Any] | None, list[tuple[str, str]], dict[str, Any] | None]:
     extra = _parse_extra(provider)
     extra.update(extra_override or {})
+    payload_fields = _json_video_task_payload_fields(spec, extra)
+    field_types = _json_video_task_field_types(spec, extra)
+    supported_ratios = _json_video_task_supported_ratios(spec, extra)
+    supported_resolutions = _json_video_task_supported_resolutions(spec, extra)
+    supported_durations = _int_set(extra.get("supported_durations") or extra.get("duration_options"))
+    duration_min, duration_max = _json_video_task_duration_bounds(spec, extra)
 
     model_name = str(extra.pop("model", None) or provider.model_name or "").strip()
     if not model_name:
@@ -1424,6 +1625,9 @@ async def _build_json_video_task_payload(
     duration, duration_error = _json_video_task_duration(
         extra.pop("duration", None) or duration_seconds,
         spec,
+        supported_durations=supported_durations,
+        duration_min=duration_min,
+        duration_max=duration_max,
     )
     if duration_error:
         return None, [], _with_video_model_doc_hint({
@@ -1431,18 +1635,21 @@ async def _build_json_video_task_payload(
             "error_kind": "bad_request",
         })
 
-    ratio = _json_video_task_ratio(extra.pop("ratio", None) or extra.pop("aspect_ratio", None), spec)
+    default_ratio = str(extra.get("default_ratio") or extra.get("default_aspect_ratio") or spec.default_ratio).strip().lower()
+    if default_ratio not in supported_ratios:
+        default_ratio = spec.default_ratio if spec.default_ratio in supported_ratios else sorted(supported_ratios)[0]
+    ratio = _json_video_task_ratio(extra.pop("ratio", None) or extra.pop("aspect_ratio", None), supported_ratios)
     if ratio is None:
-        ratio = spec.default_ratio
+        ratio = default_ratio
 
-    raw_resolution = extra.pop("resolution", None) or spec.default_resolution
-    resolution = _json_video_task_resolution(raw_resolution, spec)
-    if resolution is None or resolution not in spec.supported_resolutions:
+    raw_resolution = extra.pop("resolution", None) or extra.pop("size", None) or extra.get("default_resolution") or extra.get("default_size") or spec.default_resolution
+    resolution = _json_video_task_resolution(raw_resolution, supported_resolutions)
+    if resolution is None or resolution.lower() not in {item.lower() for item in supported_resolutions}:
         return None, [], _unsupported_video_resolution_error(
             spec.display_name,
             model_name,
             raw_resolution,
-            set(spec.supported_resolutions),
+            set(supported_resolutions),
         )
     if (
         spec.long_duration_after is not None
@@ -1453,7 +1660,7 @@ async def _build_json_video_task_payload(
     ):
         return None, [], _with_video_model_doc_hint({
             "error": (
-                f"{spec.display_name} {spec.long_duration_after + 1}-{spec.duration_max} 秒视频"
+                f"{spec.display_name} {spec.long_duration_after + 1}-{duration_max} 秒视频"
                 f"只支持 resolution='{spec.long_duration_resolution}'"
             ),
             "error_kind": "bad_request",
@@ -1487,19 +1694,28 @@ async def _build_json_video_task_payload(
         })
 
     payload: dict[str, Any] = {}
-    _json_video_task_put(payload, spec, "prompt", clean_prompt)
-    _json_video_task_put(payload, spec, "model", model_name)
-    _json_video_task_put(payload, spec, "ratio", ratio)
-    _json_video_task_put(payload, spec, "duration", duration)
-    _json_video_task_put(payload, spec, "resolution", _json_video_task_payload_resolution(resolution, spec))
+    _json_video_task_put(payload, spec, "prompt", clean_prompt, payload_fields, field_types)
+    _json_video_task_put(payload, spec, "model", model_name, payload_fields, field_types)
+    _json_video_task_put(payload, spec, "ratio", ratio, payload_fields, field_types)
+    _json_video_task_put(payload, spec, "duration", duration, payload_fields, field_types)
+    _json_video_task_put(
+        payload,
+        spec,
+        "resolution",
+        _json_video_task_payload_resolution(resolution, spec, extra),
+        payload_fields,
+        field_types,
+    )
     if "seed" in extra:
         seed = _coerce_int(extra.pop("seed"))
         if seed is not None and seed > 0:
-            _json_video_task_put(payload, spec, "seed", seed)
+            _json_video_task_put(payload, spec, "seed", seed, payload_fields, field_types)
 
     return payload, image_candidates, {
         "source_image_count": len(image_candidates),
         "source_image_refs": [ref for _, ref in image_candidates],
+        "payload_fields": payload_fields,
+        "field_types": field_types,
     }
 
 
@@ -1632,6 +1848,119 @@ def _first_text(*values: Any) -> str | None:
         if text:
             return text
     return None
+
+
+def _json_video_task_api_error(spec: JsonVideoTaskSpec, data: dict[str, Any], endpoint: str) -> dict[str, Any] | None:
+    code = data.get("code")
+    if code is None:
+        return None
+    code_text = str(code).strip().lower()
+    if code_text in {"0", "200", "success", "ok"}:
+        return None
+    msg = _first_text(data.get("msg"), data.get("message"), _lookup_path(data, "error.message"))
+    detail = data.get("data")
+    if isinstance(detail, dict):
+        detail_text = _first_text(
+            detail.get("详情"),
+            detail.get("detail"),
+            detail.get("message"),
+            detail.get("error"),
+        )
+        if detail_text and detail_text not in str(msg or ""):
+            msg = f"{msg or spec.display_name}: {detail_text}"
+    error_kind = "provider_failed"
+    numeric_code = _coerce_int(code)
+    if numeric_code is not None:
+        error_kind = _http_error_kind(numeric_code)
+    return {
+        "error": msg or f"{spec.display_name} 返回业务错误 code={code}",
+        "error_kind": error_kind,
+        "error_source": "external_media_provider",
+        "provider_msg": json.dumps(data, ensure_ascii=False)[:800],
+        "endpoint": endpoint,
+        "raw": data,
+    }
+
+
+def _image_transport_mode(provider: MediaProvider, extra_override: dict[str, Any] | None, default: str = "data_url") -> str:
+    extra = _parse_extra(provider)
+    extra.update(extra_override or {})
+    raw = str(
+        extra.get("image_transport")
+        or extra.get("reference_image_transport")
+        or extra.get("image_input")
+        or default
+    ).strip().lower().replace("-", "_")
+    if raw in {"public_url", "url", "remote_url", "http_url", "https_url"}:
+        return "public_url"
+    return "data_url"
+
+
+def _public_media_url_for_ref(project_id: str, ref: str, public_base_url: str | None) -> tuple[str | None, str | None]:
+    text = str(ref or "").strip()
+    if not text:
+        return None, "图片引用为空"
+    if _is_remote_url(text):
+        return text, None
+
+    base = str(public_base_url or "").strip().rstrip("/")
+    local_url: str | None = None
+    if text.startswith("/api/media/") or text.startswith("/api/uploads/"):
+        local_url = text
+    elif text.startswith("generated_images/"):
+        local_url = f"/api/media/{project_id}/{text}"
+    elif text.startswith("uploads/"):
+        local_url = f"/api/uploads/{project_id}/file/{text}"
+    else:
+        path_text = _project_media_path_from_url(project_id, text) or text
+        try:
+            path = Path(path_text).expanduser()
+            if path.is_absolute() and path.exists() and path.is_file():
+                project_root = (settings.storage_path_resolved / project_id).resolve()
+                rel = path.resolve().relative_to(project_root).as_posix()
+                if rel.startswith("uploads/"):
+                    local_url = f"/api/uploads/{project_id}/file/{rel}"
+                else:
+                    local_url = f"/api/media/{project_id}/{rel}"
+        except Exception:
+            local_url = None
+
+    if local_url and base:
+        return f"{base}{local_url}", None
+    if local_url:
+        return None, (
+            "当前 provider 选择了公网 URL 图片输入模式。"
+            "请在 provider.params.public_base_url 配置站点外网根地址，或传入 http(s) 图片 URL。"
+        )
+    return None, f"图片引用不是公网 URL，且无法转换为项目媒体 URL: {text}"
+
+
+async def _image_url_or_data_url_for_ref(
+    project_id: str,
+    ref: str,
+    provider: MediaProvider,
+    extra_override: dict[str, Any] | None,
+    *,
+    default_transport: str = "data_url",
+) -> tuple[str | None, str | None]:
+    mode = _image_transport_mode(provider, extra_override, default_transport)
+    if mode == "public_url":
+        extra = _parse_extra(provider)
+        extra.update(extra_override or {})
+        return _public_media_url_for_ref(project_id, ref, _first_text(extra.get("public_base_url"), extra.get("site_base_url")))
+
+    text = str(ref or "").strip()
+    if not text:
+        return None, "图片引用为空"
+    if text.startswith("data:image/"):
+        return text, None
+    if _is_remote_url(text):
+        return text, None
+    local_ref = _project_media_path_from_url(project_id, text) or text
+    data_url = await _ref_to_data_url(local_ref)
+    if data_url:
+        return data_url, None
+    return None, f"图片引用无法读取或转换为 data URL: {text}"
 
 
 def _suno_payload_data(data: dict[str, Any]) -> dict[str, Any]:
@@ -3033,11 +3362,65 @@ async def _call_json_video_task(
                             "endpoint": _json_video_task_upload_endpoint(provider.base_url, spec),
                         })
                     uploaded_urls.append(uploaded_url)
+            elif image_candidates and spec.source_image_transport == "public_url_list":
+                for _, ref in image_candidates:
+                    public_url, url_error = await _image_url_or_data_url_for_ref(
+                        project_id,
+                        ref,
+                        provider,
+                        extra_override,
+                        default_transport="public_url",
+                    )
+                    if url_error or not public_url:
+                        return _with_video_model_doc_hint({
+                            "error": url_error or "参考图无法转换为公网 URL",
+                            "error_kind": "bad_request",
+                            "endpoint": endpoint,
+                        })
+                    uploaded_urls.append(public_url)
+            elif image_candidates and spec.source_image_transport == "data_url_list":
+                for _, ref in image_candidates:
+                    data_url, data_error = await _image_url_or_data_url_for_ref(
+                        project_id,
+                        ref,
+                        provider,
+                        extra_override,
+                        default_transport="data_url",
+                    )
+                    if data_error or not data_url:
+                        return _with_video_model_doc_hint({
+                            "error": data_error or f"参考图无法读取或转换为 data URL: {ref}",
+                            "error_kind": "bad_request",
+                            "endpoint": endpoint,
+                        })
+                    uploaded_urls.append(data_url)
+            elif image_candidates and spec.source_image_transport == "configurable_url_or_data_url_list":
+                for _, ref in image_candidates:
+                    image_url, image_error = await _image_url_or_data_url_for_ref(
+                        project_id,
+                        ref,
+                        provider,
+                        extra_override,
+                        default_transport="data_url",
+                    )
+                    if image_error or not image_url:
+                        return _with_video_model_doc_hint({
+                            "error": image_error or f"参考图无法转换: {ref}",
+                            "error_kind": "bad_request",
+                            "endpoint": endpoint,
+                        })
+                    uploaded_urls.append(image_url)
             elif image_candidates and spec.source_image_transport != "none":
                 uploaded_urls = [ref for _, ref in image_candidates]
 
+            payload_fields = (payload_meta or {}).get("payload_fields")
+            if not isinstance(payload_fields, dict):
+                payload_fields = None
+            field_types = (payload_meta or {}).get("field_types")
+            if not isinstance(field_types, dict):
+                field_types = None
             if uploaded_urls and spec.source_images_field:
-                _json_video_task_put(payload, spec, "images", uploaded_urls)
+                _json_video_task_put(payload, spec, "images", uploaded_urls, payload_fields, field_types)
 
             created = await client.post(endpoint, json=payload, headers=headers)
             if created.status_code >= 400:
@@ -3048,6 +3431,9 @@ async def _call_json_video_task(
             create_data, create_error = _response_json(created, endpoint)
             if create_error:
                 return create_error
+            api_error = _json_video_task_api_error(spec, create_data or {}, endpoint)
+            if api_error:
+                return api_error
             task_id = _first_path_text(create_data or {}, spec.task_id_paths)
             if not task_id:
                 return {
@@ -3062,7 +3448,7 @@ async def _call_json_video_task(
             queued_result = {
                 "ok": True,
                 "provider": provider.name,
-                "model": payload.get(spec.payload_fields.get("model", "model")) or provider.model_name,
+                "model": _json_video_task_payload_value(payload, spec, "model", payload_fields) or provider.model_name,
                 "status": "running" if status in spec.running_statuses else "queued",
                 "job_id": task_id,
                 "endpoint": endpoint,
@@ -3070,9 +3456,9 @@ async def _call_json_video_task(
                 "source_image_count": (payload_meta or {}).get("source_image_count", 0),
                 "source_image_refs": (payload_meta or {}).get("source_image_refs", []),
                 "request": {
-                    "duration": payload.get(spec.payload_fields.get("duration", "duration")),
-                    "ratio": payload.get(spec.payload_fields.get("ratio", "ratio")),
-                    "resolution": payload.get(spec.payload_fields.get("resolution", "resolution")),
+                    "duration": _json_video_task_payload_value(payload, spec, "duration", payload_fields),
+                    "ratio": _json_video_task_payload_value(payload, spec, "ratio", payload_fields),
+                    "resolution": _json_video_task_payload_value(payload, spec, "resolution", payload_fields),
                     "images_count": len(uploaded_urls),
                 },
                 "raw": create_data,
@@ -3133,18 +3519,28 @@ async def _poll_json_video_task(
                 if query_error:
                     query_error.update({"job_id": task_id, "status": status or "unknown"})
                     return query_error
+                api_error = _json_video_task_api_error(spec, query_data or {}, query_endpoint)
+                if api_error:
+                    api_error.update({"job_id": task_id, "status": status or "unknown"})
+                    return api_error
 
                 latest_data = query_data or {}
                 status = str(_lookup_path(latest_data, spec.status_path) or status or "unknown").strip().lower()
                 progress = _lookup_path(latest_data, spec.progress_path) if spec.progress_path else None
+                status_group = str(_lookup_path(latest_data, "status_group") or "").strip()
+                is_final = _coerce_bool(_lookup_path(latest_data, "is_final"))
                 polls.append({
                     "status": status,
                     "progress": progress,
+                    "status_group": status_group or None,
+                    "is_final": is_final,
                 })
                 await _notify_progress(progress_callback, {
                     "job_id": task_id,
                     "status": status,
                     "progress": progress,
+                    "status_group": status_group or None,
+                    "is_final": is_final,
                     "poll_count": len(polls),
                     "provider": provider.name,
                     "model": provider.model_name,
@@ -3152,7 +3548,9 @@ async def _poll_json_video_task(
                 })
 
                 remote_url = _first_path_text(latest_data, spec.result_url_paths) or _video_url_from_response(latest_data)
-                if remote_url and status not in spec.failed_statuses:
+                status_failed = status in spec.failed_statuses or status_group == "失败"
+                status_done = status in spec.done_statuses or status_group == "已完成"
+                if remote_url and not status_failed:
                     downloaded: dict[str, Any] = {}
                     if save_locally:
                         downloaded = await _download_video_result(project_id, str(remote_url))
@@ -3176,11 +3574,26 @@ async def _poll_json_video_task(
                         "download_error": downloaded.get("download_error"),
                     }
 
-                if status in spec.failed_statuses:
+                if status_failed:
                     provider_msg = _json_video_task_provider_message(spec, latest_data)
                     return {
                         "error": provider_msg,
                         "error_kind": "provider_failed",
+                        "provider": provider.name,
+                        "model": provider.model_name,
+                        "job_id": task_id,
+                        "status": status,
+                        "endpoint": query_endpoint,
+                        "provider_msg": provider_msg,
+                        "raw": latest_data,
+                        "polls": polls,
+                    }
+
+                if is_final is True or status_done:
+                    provider_msg = _json_video_task_provider_message(spec, latest_data)
+                    return {
+                        "error": provider_msg,
+                        "error_kind": "bad_response",
                         "provider": provider.name,
                         "model": provider.model_name,
                         "job_id": task_id,
@@ -3250,6 +3663,52 @@ async def _poll_t8_grok_video_3_task(
 ) -> dict[str, Any]:
     return await _poll_json_video_task(
         spec=_T8_GROK_VIDEO_3_SPEC,
+        provider=provider,
+        project_id=project_id,
+        task_id=task_id,
+        extra_override=extra_override,
+        save_locally=save_locally,
+        progress_callback=progress_callback,
+    )
+
+
+async def _call_lingke_media_generate(
+    provider: MediaProvider,
+    project_id: str,
+    prompt: str,
+    first_frame_url: str | None,
+    last_frame_url: str | None,
+    duration_seconds: int,
+    reference_images: list[str] | None,
+    extra_override: dict[str, Any],
+    save_locally: bool,
+    wait_for_completion: bool = False,
+) -> dict[str, Any]:
+    return await _call_json_video_task(
+        spec=_LINGKE_MEDIA_GENERATE_SPEC,
+        provider=provider,
+        project_id=project_id,
+        prompt=prompt,
+        first_frame_url=first_frame_url,
+        last_frame_url=last_frame_url,
+        duration_seconds=duration_seconds,
+        reference_images=reference_images,
+        extra_override=extra_override,
+        save_locally=save_locally,
+        wait_for_completion=wait_for_completion,
+    )
+
+
+async def _poll_lingke_media_generate_task(
+    provider: MediaProvider,
+    project_id: str,
+    task_id: str,
+    extra_override: dict[str, Any] | None,
+    save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    return await _poll_json_video_task(
+        spec=_LINGKE_MEDIA_GENERATE_SPEC,
         provider=provider,
         project_id=project_id,
         task_id=task_id,
@@ -3457,7 +3916,41 @@ async def _poll_t8_grok_video_3_adapter(
     )
 
 
+async def _poll_lingke_media_generate_adapter(
+    provider: MediaProvider,
+    project_id: str,
+    job_id: str,
+    extra_override: dict[str, Any] | None,
+    save_locally: bool,
+    progress_callback: ProgressCallback | None = None,
+) -> dict[str, Any]:
+    return await _poll_lingke_media_generate_task(
+        provider=provider,
+        project_id=project_id,
+        task_id=job_id,
+        extra_override=extra_override,
+        save_locally=save_locally,
+        progress_callback=progress_callback,
+    )
+
+
 _VIDEO_PROVIDER_ADAPTERS: tuple[VideoProviderAdapter, ...] = (
+    VideoProviderAdapter(
+        name="lingke_media_generate",
+        display_name=_LINGKE_MEDIA_GENERATE_SPEC.display_name,
+        api_formats=_LINGKE_MEDIA_GENERATE_SPEC.api_formats,
+        model_names=frozenset(),
+        endpoint_for=_lingke_media_generate_endpoint,
+        generate=_call_lingke_media_generate,
+        poll=_poll_lingke_media_generate_adapter,
+        requires_base_url=True,
+        source_images_min=_LINGKE_MEDIA_GENERATE_SPEC.source_images_min,
+        source_images_max=_LINGKE_MEDIA_GENERATE_SPEC.source_images_max,
+        field_types=_LINGKE_MEDIA_GENERATE_SPEC.field_types,
+        supported_resolutions=_LINGKE_MEDIA_GENERATE_SPEC.supported_resolutions,
+        supported_ratios=_LINGKE_MEDIA_GENERATE_SPEC.supported_ratios,
+        source_image_transport=_LINGKE_MEDIA_GENERATE_SPEC.source_image_transport,
+    ),
     VideoProviderAdapter(
         name="t8_grok_video_3",
         display_name=_T8_GROK_VIDEO_3_SPEC.display_name,
@@ -3515,7 +4008,7 @@ _VIDEO_PROVIDER_ADAPTERS: tuple[VideoProviderAdapter, ...] = (
         },
         supported_resolutions=frozenset(_XAI_VIDEO_RESOLUTIONS),
         supported_ratios=frozenset({"16:9", "9:16"}),
-        source_image_transport="json_image_url",
+        source_image_transport="json_configurable_url_or_data_url",
     ),
     VideoProviderAdapter(
         name="volcengine_ark",
@@ -3540,7 +4033,7 @@ _VIDEO_PROVIDER_ADAPTERS: tuple[VideoProviderAdapter, ...] = (
         },
         supported_resolutions=frozenset({"480p", "720p", "1080p"}),
         supported_ratios=frozenset(_ARK_RATIOS),
-        source_image_transport="json_data_url_or_url",
+        source_image_transport="json_configurable_url_or_data_url",
     ),
 )
 _VIDEO_PROVIDER_ADAPTERS_BY_NAME = {adapter.name: adapter for adapter in _VIDEO_PROVIDER_ADAPTERS}

@@ -24,12 +24,15 @@ import { useViewModeStore } from "@/stores/viewModeStore"
 import {
   chatStream,
   cancelChat,
+  dequeueChat,
   enqueueChat,
+  getChatQueueStatus,
   getAgentTokenUsage,
   uploadFile,
   listProjectAssets,
   callTool,
   api,
+  requestWorkflowRefresh,
   getApiBaseSync,
   resolveMediaUrl,
   resolveAssetLibraryPreviewUrl,
@@ -113,6 +116,8 @@ type SlashRunStatus = {
   message?: string
 }
 
+type AgentCollaborationMode = "default" | "plan" | "workflow_build"
+
 const TOKEN_MONITOR_SETTING_KEY = "ui.show_token_monitor"
 
 const LOCAL_SLASH_COMMANDS = new Set([
@@ -193,6 +198,41 @@ function slashLabel(status: SlashRunStatus): string {
   return `${status.command}${action}`
 }
 
+function parseProjectStateJson(project: ProjectRecord | null): Record<string, unknown> {
+  const raw = project?.state_json
+  if (!raw) return {}
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw
+  if (typeof raw !== "string") return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function normalizeCollaborationMode(value: unknown): AgentCollaborationMode {
+  const raw = String(value || "").trim().toLowerCase()
+  if (raw === "plan" || raw === "workflow_build") return raw
+  return "default"
+}
+
+function collaborationModeFromProject(project: ProjectRecord | null): AgentCollaborationMode {
+  return normalizeCollaborationMode(parseProjectStateJson(project).agent_collaboration_mode)
+}
+
+function collaborationModeLabel(mode: AgentCollaborationMode): string {
+  if (mode === "plan") return "Plan Mode"
+  if (mode === "workflow_build") return "工作流搭建模式"
+  return "默认制作模式"
+}
+
+function collaborationModeClass(mode: AgentCollaborationMode): string {
+  if (mode === "plan") return "border-sky-400/25 bg-sky-500/10 text-sky-200"
+  if (mode === "workflow_build") return "border-amber-300/25 bg-amber-500/10 text-amber-100"
+  return "border-white/10 bg-white/[0.04] text-zinc-400"
+}
+
 const BLUEPRINT_EVENT_LABEL: Record<string, string> = {
   blueprint_draft_started: "开始生成项目蓝图",
   blueprint_section_started: "开始生成蓝图片段",
@@ -254,6 +294,30 @@ function isTokenUsageEvent(event: ChatStreamEvent): event is {
     typeof data.session_totals === "object" &&
     !Array.isArray(data.session_totals)
   )
+}
+
+const RUN_EVENT_TYPES = new Set<string>([
+  "agent_round",
+  "agent_round_done",
+  "subagent_round",
+  "tool_start",
+  "tool_done",
+  "text_delta",
+  "interaction_input_requested",
+  "proposed_plan",
+  "confirm_required",
+  "queued",
+  "merged_messages",
+  "queued_turn_started",
+  "cancel_requested",
+])
+
+function isRunProgressEvent(event: ChatStreamEvent): boolean {
+  return RUN_EVENT_TYPES.has(String(event.type))
+}
+
+function isRunTerminalEvent(event: ChatStreamEvent): boolean {
+  return event.type === "done" || event.type === "error" || event.type === "cancelled"
 }
 
 function numericUsageValue(value: unknown): number | null {
@@ -622,6 +686,90 @@ function ToolBubbleCard({ tool }: { tool: ToolBubble }) {
       {elapsed && <span className="text-gray-600">{elapsed}</span>}
     </div>
   )
+}
+
+function workflowSpecPreviewFromToolResult(result: unknown): Record<string, unknown> | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null
+  const outer = result as Record<string, unknown>
+  const nested = outer.result && typeof outer.result === "object" && !Array.isArray(outer.result)
+    ? outer.result as Record<string, unknown>
+    : null
+  const candidate = typeof outer.artifact_ref === "string" ? outer : nested
+  const artifactRef = typeof candidate?.artifact_ref === "string" ? candidate.artifact_ref.trim() : ""
+  const preview = candidate?.preview
+  if (!artifactRef.startsWith("workflow_spec:") || !preview || typeof preview !== "object" || Array.isArray(preview)) {
+    return null
+  }
+  return {
+    artifact_ref: artifactRef,
+    preview,
+    validation: candidate?.validation,
+    self_check: candidate?.self_check,
+  }
+}
+
+function workflowToolNameFromResult(tool: string, result: unknown): string {
+  if (tool.startsWith("workflow.")) return tool
+  if (!result || typeof result !== "object" || Array.isArray(result)) return ""
+  const deferred = (result as Record<string, unknown>)._deferred_tool
+  return typeof deferred === "string" ? deferred.trim() : ""
+}
+
+function shouldRefreshWorkflowForTool(tool: string, result: unknown): boolean {
+  const workflowTool = workflowToolNameFromResult(tool, result)
+  if (workflowTool.startsWith("workflow.")) return true
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false
+  const resultObj = result as Record<string, unknown>
+  return Boolean(
+    resultObj.active_workflow_runtime
+    || resultObj.active_workflow_runtimes
+    || resultObj.workflow_input_values
+    || resultObj.runtime,
+  )
+}
+
+function workflowSpecToolAgent(event: ChatStreamEvent): string {
+  if (!("agent" in event)) return ""
+  return typeof event.agent === "string" ? event.agent.trim() : ""
+}
+
+function isWorkflowSpecToolEvent(event: ChatStreamEvent): boolean {
+  if ((event.type === "tool_start" || event.type === "tool_done") && workflowSpecToolAgent(event) === "workflow_spec") {
+    return true
+  }
+  if (event.type !== "tool_start") return false
+  const content = String(event.content ?? "")
+  return String(event.tool || "") === "tool.execute" && /workflow_spec|工作流.*模板|流程图/.test(content)
+}
+
+function isWorkflowSpecOnlyRound(event: ChatStreamEvent): boolean {
+  if (event.type !== "agent_round") return false
+  const agents = Array.isArray(event.tool_agents) ? event.tool_agents.map((item) => String(item).trim()).filter(Boolean) : []
+  return agents.length > 0 && agents.every((agent) => agent === "workflow_spec")
+}
+
+function workflowMetadataFromCanvasPayload(payload: Record<string, unknown>): Record<string, unknown> | null {
+  const candidates = [
+    payload.workflow,
+    payload.input && typeof payload.input === "object" && !Array.isArray(payload.input)
+      ? (payload.input as Record<string, unknown>).workflow
+      : null,
+    payload.input_json && typeof payload.input_json === "object" && !Array.isArray(payload.input_json)
+      ? (payload.input_json as Record<string, unknown>).workflow
+      : null,
+  ]
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+      return candidate as Record<string, unknown>
+    }
+  }
+  return null
+}
+
+function isWorkflowManagedCanvasPayload(payload: Record<string, unknown>): boolean {
+  const workflow = workflowMetadataFromCanvasPayload(payload)
+  if (!workflow) return false
+  return Boolean(workflow.template_id || workflow.instance_id || workflow.step_id || workflow.template_step_id)
 }
 
 function AgentRoundCard({ round }: { round: AgentRound }) {
@@ -1920,6 +2068,7 @@ export function ChatPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const streamCancelRef = useRef<(() => void) | null>(null)
+  const activeStreamRef = useRef(false)
   const pendingProjectSwitchRef = useRef<string | null>(null)
   const projectListLoadingRef = useRef(false)
   const handleStreamEventRef = useRef<(event: ChatStreamEvent) => void>(() => {})
@@ -1928,6 +2077,8 @@ export function ChatPanel() {
   const [stopping, setStopping] = useState(false)
   const [slashRunStatus, setSlashRunStatus] = useState<SlashRunStatus | null>(null)
   const [showTokenMonitor, setShowTokenMonitor] = useState(true)
+  const [localStreamActive, setLocalStreamActive] = useState(false)
+  const [collaborationMode, setCollaborationMode] = useState<AgentCollaborationMode>("default")
 
   // 细粒度订阅:setInput 重渲只触发 input 相关 UI,不会让 messages / 各 action 引起的 setState
   // 把整个 ChatPanel 重渲一次。整体 useChatStore() 解构会让任意 store 字段变都重渲所有订阅者,
@@ -1938,6 +2089,10 @@ export function ChatPanel() {
   const lastFailedMessage = useChatStore((s) => s.lastFailedMessage)
   const tokenUsage = useChatStore((s) => s.tokenUsage)
   const appendMessage = useChatStore((s) => s.appendMessage)
+  const markQueuedUserMessage = useChatStore((s) => s.markQueuedUserMessage)
+  const removeQueuedUserMessage = useChatStore((s) => s.removeQueuedUserMessage)
+  const refreshQueuedUserMessagePositions = useChatStore((s) => s.refreshQueuedUserMessagePositions)
+  const ensureAssistantAfterQueuedUser = useChatStore((s) => s.ensureAssistantAfterQueuedUser)
   const loadHistory = useChatStore((s) => s.loadHistory)
   const setStreaming = useChatStore((s) => s.setStreaming)
   const appendToLastAssistant = useChatStore((s) => s.appendToLastAssistant)
@@ -1977,6 +2132,18 @@ export function ChatPanel() {
   const loadNodes = useCanvasStore((s) => s.loadNodes)
   const setCurrentProject = useProjectStore((s) => s.setCurrentProject)
   const updateCurrentProject = useProjectStore((s) => s.updateCurrentProject)
+
+  useEffect(() => {
+    setCollaborationMode(collaborationModeFromProject(currentProject))
+  }, [currentProject])
+
+  useEffect(() => {
+    activeStreamRef.current = streaming
+  }, [streaming])
+
+  const isStreamActive = useCallback(() => {
+    return activeStreamRef.current || useChatStore.getState().streaming
+  }, [])
   const projectSlashCompletions = useMemo(
     () => (wantsProjectSelectionCompletion(input) ? buildProjectSlashCompletions(projects, currentProject?.id) : []),
     [currentProject?.id, input, projects],
@@ -2230,6 +2397,21 @@ export function ChatPanel() {
       }
       return
     }
+    if (event.type === "subagent_round") {
+      const rawText = String(event.content ?? "").trim()
+      if (rawText) {
+        const agentLabel = event.agent === "image_editor" ? "图片编辑" : String(event.agent || "子 Agent")
+        const roundNo = -(Date.now() + Number(event.step || 0))
+        addAgentRound({
+          round: roundNo,
+          content: rawText,
+          source: "model",
+          tools: event.tool ? [String(event.tool)] : [agentLabel],
+        })
+        completeAgentRound(roundNo)
+      }
+      return
+    }
     if (event.type === "blueprint_tree_changed") {
       applyBlueprintTreeEvent(event as unknown as BlueprintTreeEvent, currentProject?.id)
       return
@@ -2247,6 +2429,16 @@ export function ChatPanel() {
       const text = formatBlueprintEventSummary(event)
       if (text) appendToLastAssistant(text)
       if (event.type === "blueprint_approved") setViewMode("canvas")
+      return
+    }
+    if (event.type === "mode_updated") {
+      const raw = event as Record<string, unknown>
+      const nextMode = normalizeCollaborationMode(raw.collaboration_mode ?? raw.mode)
+      setCollaborationMode(nextMode)
+      if (currentProject?.id) {
+        const state = { ...parseProjectStateJson(currentProject), agent_collaboration_mode: nextMode }
+        updateCurrentProject({ state_json: state })
+      }
       return
     }
     if (event.type === "slash_command") {
@@ -2267,8 +2459,10 @@ export function ChatPanel() {
         round: event.round,
         source: event.source,
         tools: event.tools,
+        tool_agents: event.tool_agents,
         content: event.content,
       })
+      if (isWorkflowSpecOnlyRound(event)) return
       completeAgentRound(0)
       const roundNo = Number(event.round)
       const tools = Array.isArray(event.tools) ? event.tools.map(String) : []
@@ -2287,6 +2481,7 @@ export function ChatPanel() {
       return
     }
     if (event.type === "tool_start" && event.tool) {
+      if (isWorkflowSpecToolEvent(event)) return
       const tool = String(event.tool)
       console.info("[chat-ui:tool_start]", { round: event.round, tool, content: event.content })
       addToolBubble(tool)
@@ -2297,6 +2492,17 @@ export function ChatPanel() {
       const tool = String(event.tool)
       const result = event.result
       console.info("[chat-ui:tool_done]", { round: event.round, tool, result })
+      const workflowSpecPreview = workflowSpecPreviewFromToolResult(result)
+      if (workflowSpecPreview) {
+        window.dispatchEvent(new CustomEvent("openreel:workflow-spec-preview", {
+          detail: workflowSpecPreview,
+        }))
+        return
+      }
+      if (shouldRefreshWorkflowForTool(tool, result)) {
+        requestWorkflowRefresh({ projectId: currentProject?.id })
+      }
+      if (isWorkflowSpecToolEvent(event)) return
       const summary = summarizeAgentRoundToolResult(tool, result)
       const resultObj = result as Record<string, unknown> | null
       const awaitingConfirmation = Boolean(resultObj?.requires_user_confirm) && !resultObj?.error
@@ -2351,25 +2557,28 @@ export function ChatPanel() {
     }
     if (event.type === "canvas_action" && event.payload) {
       const payload = event.payload as Record<string, unknown>
-      if (event.action === "clear_all" || event.action === "delete_node" || event.action === "add_edge") {
+      if (event.action === "clear_all" || event.action === "delete_node" || event.action === "add_edge" || event.action === "delete_edge" || event.action === "remove_edge") {
         applyCanvasAction(String(event.action), payload)
         return
       }
       const nodeId = String(payload.id ?? "")
       if (!nodeId) return
+      const workflowManaged = isWorkflowManagedCanvasPayload(payload)
       if (event.action === "create_node") {
         setViewMode("canvas")
-        setLastAssistantNode({
-          nodeId,
-          type: String(payload.type ?? ""),
-          title: String(payload.title ?? ""),
-          status: "running",
-        })
+        if (!workflowManaged) {
+          setLastAssistantNode({
+            nodeId,
+            type: String(payload.type ?? ""),
+            title: String(payload.title ?? ""),
+            status: "running",
+          })
+        }
         applyCanvasAction("create_node", payload)
       } else if (event.action === "update_node") {
         setViewMode("canvas")
         const status = String(payload.status ?? "")
-        if (status === "completed" || status === "failed") {
+        if (!workflowManaged && (status === "completed" || status === "failed")) {
           updateLastAssistantNode(nodeId, { status })
         }
         applyCanvasAction("update_node", payload)
@@ -2418,16 +2627,40 @@ export function ChatPanel() {
     if (event.type === "queued") {
       const cnt = event.queued_count as number | undefined
       if (typeof cnt === "number") setQueuedCount(cnt)
-      const text = event.error
-        ? `错误：${event.error}`
-        : `已加入后续处理，当前任务结束后会继续处理（队列 ${cnt ?? "?"} 条）。`
-      respondSystem(text)
+      if (event.error) respondSystem(`排队失败：${event.error}`)
       return
     }
     if (event.type === "merged_messages") {
       const cnt = event.count as number | undefined
-      setQueuedCount(0)
-      respondSystem(`开始处理刚才追加的 ${cnt ?? "?"} 条消息。`)
+      if (typeof cnt === "number") setQueuedCount(cnt)
+      return
+    }
+    if (event.type === "queued_turn_started") {
+      const clientId = typeof event.client_user_message_id === "string" ? event.client_user_message_id : ""
+      const display = String(event.message ?? "").trim()
+      const remaining = typeof event.queued_remaining === "number" ? event.queued_remaining : 0
+      setQueuedCount(Math.max(0, remaining))
+      if (clientId) {
+        const exists = useChatStore
+          .getState()
+          .messages
+          .some((message) => message.metadata?.clientUserMessageId === clientId)
+        if (!exists && display) {
+          appendMessage({
+            role: "user",
+            content: display,
+            id: clientId,
+            createdAt: new Date().toISOString(),
+            metadata: {
+              clientUserMessageId: clientId,
+              queueStatus: "processing",
+            },
+          })
+        }
+        markQueuedUserMessage(clientId, { queueStatus: "processing", queuePosition: null })
+        ensureAssistantAfterQueuedUser(clientId)
+        refreshQueuedUserMessagePositions()
+      }
       return
     }
     if (event.type === "cancel_requested") {
@@ -2543,7 +2776,38 @@ export function ChatPanel() {
   }, [appendMessage])
 
   useEffect(() => {
-    if (!currentProject?.id || streaming) return
+    if (!currentProject?.id) {
+      setQueuedCount(0)
+      setLocalStreamActive(false)
+      activeStreamRef.current = false
+      setStreaming(false)
+      return
+    }
+    let cancelled = false
+    const projectId = currentProject.id
+    void getChatQueueStatus(projectId)
+      .then((status) => {
+        if (cancelled) return
+        if (typeof status.queued === "number") setQueuedCount(status.queued)
+        const active = Boolean(status.streaming || status.running)
+        if (active) {
+          activeStreamRef.current = true
+          setStreaming(true)
+          ensureLiveAssistantPlaceholder()
+        } else {
+          activeStreamRef.current = false
+          setStreaming(false)
+          setStopping(false)
+        }
+      })
+      .catch(console.error)
+    return () => {
+      cancelled = true
+    }
+  }, [currentProject?.id, ensureLiveAssistantPlaceholder, setStreaming])
+
+  useEffect(() => {
+    if (!currentProject?.id || localStreamActive) return
     const projectId = currentProject.id
     const es = new EventSource(`${getApiBaseSync()}/api/chat/events/${projectId}`)
 
@@ -2551,6 +2815,10 @@ export function ChatPanel() {
       try {
         const event = JSON.parse(e.data) as ChatStreamEvent
         if (event.type === "subscribed") return
+        if (isRunProgressEvent(event)) {
+          activeStreamRef.current = true
+          setStreaming(true)
+        }
         if (
           event.type !== "done" &&
           event.type !== "canvas_action" &&
@@ -2560,7 +2828,11 @@ export function ChatPanel() {
           ensureLiveAssistantPlaceholder()
         }
         handleStreamEventRef.current(event)
-        if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
+        if (isRunTerminalEvent(event)) {
+          streamCancelRef.current = null
+          activeStreamRef.current = false
+          setStreaming(false)
+          setStopping(false)
           void Promise.all([
             api.getProjectMessages(projectId),
             api.getProjectNodes(projectId),
@@ -2605,7 +2877,8 @@ export function ChatPanel() {
     ensureLiveAssistantPlaceholder,
     loadHistory,
     loadNodes,
-    streaming,
+    localStreamActive,
+    setStreaming,
   ])
 
   const respondAssistant = (text: string) => {
@@ -2728,6 +3001,7 @@ export function ChatPanel() {
             "**可用命令(本地直调,不消耗 LLM tokens)**\n\n" +
             "- `/help` — 显示此帮助\n" +
             "- `/plan [目标|execute|exit]` — 进入只读 Plan Mode、执行最近计划或退出(后端确定性执行)\n" +
+            "- `/workflow [exit]` — 进入或退出工作流搭建模式(后端确定性执行)\n" +
             "- `/reset [failed|full|confirm|cancel]` — 清理失败节点或确认重置(后端确定性执行)\n" +
             "- `/doctor` — 项目诊断快照(后端确定性执行)\n" +
             "- `/status` — 系统状态(模型/工具/MCP)\n" +
@@ -2735,21 +3009,27 @@ export function ChatPanel() {
             "- `/model` — 当前模型映射\n" +
             "- `/project [new|switch|delete]` — 查看/新建/切换/删除项目(后端确定性执行)\n" +
             "- `/mcp` — 外部 MCP server 连接状态\n" +
-            "- `/clear` — 清空模型可见聊天上下文，保留蓝图、任务和画布\n\n" +
+            "- `/clear` — 清空模型可见对话、任务和流程运行态，保留画布节点和资产\n\n" +
             "↑↓ 选择 / Enter 或 Tab 补全 / Esc 关闭",
           )
           return true
 
         case "/clear":
-          useChatStore.getState().clearMessages()
-          // 清模型可见聊天上下文和轻量会话焦点；蓝图、计划、任务、面板和画布都必须保留。
           if (currentProject?.id) {
             try {
               const { clearProjectSession } = await import("@/lib/api")
-              await clearProjectSession(currentProject.id)
-            } catch { /* 忽略 */ }
+              const result = await clearProjectSession(currentProject.id)
+              useChatStore.getState().clearMessages()
+              respondAssistant(
+                `对话上下文已清空，画布节点和资产已保留。已归档 ${result.archived_messages ?? 0} 条消息，清理 ${result.cleared_tasks ?? 0} 个任务。`,
+              )
+            } catch (error) {
+              respondAssistant(`清空上下文失败：${error instanceof Error ? error.message : String(error)}`)
+            }
+          } else {
+            useChatStore.getState().clearMessages()
+            respondAssistant("本地对话已清空。")
           }
-          respondAssistant("对话上下文已清空，项目蓝图、计划、任务、面板和画布都已保留。")
           return true
 
         case "/status": {
@@ -2795,6 +3075,8 @@ export function ChatPanel() {
       await cancelChat(currentProject.id, reason)
       streamCancelRef.current?.()
       streamCancelRef.current = null
+      activeStreamRef.current = false
+      setLocalStreamActive(false)
       setStreaming(false)
       respondSystem("已停止当前生成。")
     } catch (err) {
@@ -2815,6 +3097,8 @@ export function ChatPanel() {
   ) => {
     if (!currentProject) return
     const clientUserMessageId = `${Date.now()}-u`
+    activeStreamRef.current = true
+    setLocalStreamActive(true)
     appendMessage({
       role: "user",
       content: displayContent,
@@ -2849,6 +3133,8 @@ export function ChatPanel() {
         handleStreamEvent(event)
         if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
           streamCancelRef.current = null
+          activeStreamRef.current = false
+          setLocalStreamActive(false)
           setStreaming(false)
           setStopping(false)
           if (slashMeta) {
@@ -2882,6 +3168,8 @@ export function ChatPanel() {
         })
       }
       setLastFailed(userMessage)
+      activeStreamRef.current = false
+      setLocalStreamActive(false)
       setStreaming(false)
     }
   }
@@ -2890,7 +3178,7 @@ export function ChatPanel() {
     message: string,
     decisionInputs?: Record<string, unknown> | null,
   ) => {
-    if (!currentProject || streaming) return
+    if (!currentProject || isStreamActive()) return
     if (pendingAttachments.some((a) => a.status === "uploading")) {
       respondSystem("参考图还在上传，上传完成后再提交。")
       return
@@ -2910,7 +3198,7 @@ export function ChatPanel() {
     pendingAction: PendingActionPayload,
     decision: "confirm" | "cancel",
   ) => {
-    if (!currentProject || streaming) return
+    if (!currentProject || isStreamActive()) return
     const confirmed = decision === "confirm"
     markLastAssistantPendingActionStatus(confirmed ? "confirmed" : "cancelled")
     const userMessage = confirmed
@@ -2940,6 +3228,7 @@ export function ChatPanel() {
 
   const handleSend = async () => {
     if (!currentProject) return
+    const streamActive = isStreamActive()
     const latest = messages[messages.length - 1]
     if (latest?.role === "assistant" && latest.interactionInput) return
     if (latest?.role === "assistant" && latest.pendingAction && (latest.pendingAction.status ?? "pending") === "pending") return
@@ -2963,7 +3252,7 @@ export function ChatPanel() {
 
     const slashMeta = readyAttachments.length === 0 ? parseSlashMeta(userMessage) : null
     if (slashMeta) {
-      if (streaming) {
+      if (streamActive) {
         respondSystem("当前项目已有任务在执行，slash command 不会排队。等它结束后再发送。")
         return
       }
@@ -2975,28 +3264,54 @@ export function ChatPanel() {
       return
     }
 
-    if (streaming) {
+    if (streamActive) {
       if (isStopMessage(userMessage)) {
         await stopCurrentGeneration(userMessage)
         return
       }
+      const clientUserMessageId = `${Date.now()}-u`
+      const referencedNodeIds = selectedCanvasNodeIdsForPrompt()
+      appendMessage({
+        role: "user",
+        content: displayContent,
+        id: clientUserMessageId,
+        createdAt: new Date().toISOString(),
+        metadata: {
+          clientUserMessageId,
+          queueStatus: "sending",
+          ...(readyAttachments.length > 0 ? { attachments: readyAttachments } : {}),
+          ...(referencedNodeIds.length > 0 ? { referencedNodeIds } : {}),
+        },
+      })
       try {
         const queued = await enqueueChat(
           currentProject.id,
           userMessage,
           readyAttachments,
-          `${Date.now()}-u`,
-          selectedCanvasNodeIdsForPrompt(),
+          clientUserMessageId,
+          referencedNodeIds,
         )
         if (queued.error || queued.ok === false) {
+          markQueuedUserMessage(clientUserMessageId, {
+            queueStatus: "failed",
+            queueError: queued.error ? String(queued.error) : "排队失败，请稍后再试。",
+          })
           respondSystem(queued.error ? `排队失败：${queued.error}` : "排队失败，请稍后再试。")
         } else {
           const count = queued.queued_count ?? queuedCount + 1
           setQueuedCount(count)
-          respondSystem(`已加入后续处理（队列 ${count} 条）。`)
+          markQueuedUserMessage(clientUserMessageId, {
+            queueStatus: "queued",
+            queuePosition: count,
+            queueError: null,
+          })
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
+        markQueuedUserMessage(clientUserMessageId, {
+          queueStatus: "failed",
+          queueError: errMsg,
+        })
         respondSystem(`排队失败：${errMsg}`)
       }
       return
@@ -3005,12 +3320,49 @@ export function ChatPanel() {
     await sendChatToBackend(userMessage, readyAttachments, displayContent, null, null, selectedCanvasNodeIdsForPrompt())
   }
 
+  const handleCancelQueuedMessage = useCallback(async (message: ChatMessage) => {
+    if (!currentProject) return
+    const clientId = typeof message.metadata?.clientUserMessageId === "string"
+      ? message.metadata.clientUserMessageId
+      : ""
+    if (!clientId) return
+    const status = typeof message.metadata?.queueStatus === "string" ? message.metadata.queueStatus : ""
+    if (status === "failed") {
+      removeQueuedUserMessage(clientId)
+      return
+    }
+    if (status !== "queued") return
+    markQueuedUserMessage(clientId, { queueStatus: "cancelling", queuePosition: null })
+    try {
+      const result = await dequeueChat(currentProject.id, clientId)
+      if (typeof result.queued_count === "number") setQueuedCount(result.queued_count)
+      if (result.removed) {
+        removeQueuedUserMessage(clientId)
+        refreshQueuedUserMessagePositions()
+        return
+      }
+      markQueuedUserMessage(clientId, {
+        queueStatus: "processing",
+        queuePosition: null,
+        queueError: result.error ? String(result.error) : null,
+      })
+      respondSystem("这条追加消息已经开始处理，不能删除。")
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      markQueuedUserMessage(clientId, {
+        queueStatus: "queued",
+        queueError: errMsg,
+      })
+      respondSystem(`删除失败：${errMsg}`)
+    }
+  }, [currentProject, markQueuedUserMessage, refreshQueuedUserMessagePositions, removeQueuedUserMessage])
+
   const handleProposedPlanExecute = useCallback(async () => {
-    if (!currentProject || streaming) return
+    if (!currentProject || isStreamActive()) return
     await sendChatToBackend("/plan execute", [], "执行上一条计划", { command: "/plan", action: "execute" })
   // sendChatToBackend captures current store actions from this render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentProject, streaming])
+  }, [currentProject, isStreamActive])
 
   const handleSlashSelect = (cmd: SlashCommandDef) => {
     const insertText = slashCompletionText(cmd)
@@ -3020,9 +3372,9 @@ export function ChatPanel() {
       setInput("")
       if (isLocalSlashCommand(insertText)) {
         void handleSlashCommand(insertText)
-      } else if (currentProject && !streaming) {
+      } else if (currentProject && !isStreamActive()) {
         void sendChatToBackend(insertText, [], insertText, parseSlashMeta(insertText))
-      } else if (streaming) {
+      } else if (isStreamActive()) {
         respondSystem("当前项目已有任务在执行，slash command 不会排队。等它结束后再发送。")
       }
     }
@@ -3088,6 +3440,12 @@ export function ChatPanel() {
     (latestMessage.pendingAction.status ?? "pending") === "pending"
       ? latestMessage.id
       : null
+  const liveAssistantIndex = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index]?.role === "assistant") return index
+    }
+    return -1
+  }, [messages])
 
   const sendDisabled =
     !currentProject ||
@@ -3151,9 +3509,7 @@ export function ChatPanel() {
           <MemoMessage
             key={msg.id}
             msg={msg}
-            // streaming "思考中" 占位只对最后一条空 content 的 assistant 生效;
-            // 其他消息一律传 false,避免 streaming 切换让全部气泡重渲。
-            streaming={streaming && idx === messages.length - 1}
+            streaming={streaming && idx === liveAssistantIndex}
             planActionsDisabled={streaming}
             interactionInputDisabled={
               streaming ||
@@ -3164,6 +3520,7 @@ export function ChatPanel() {
             onProposedPlanExecute={handleProposedPlanExecute}
             onInteractionInputSubmit={handleInteractionInputSubmit}
             onPendingActionResolve={handlePendingActionResolve}
+            onCancelQueuedMessage={handleCancelQueuedMessage}
           />
         ))}
         <div ref={messagesEndRef} />
@@ -3183,6 +3540,11 @@ export function ChatPanel() {
 
       <div className="border-t border-white/10 bg-[var(--studio-panel)] px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-[0_-18px_40px_rgba(0,0,0,0.28)] sm:px-4">
         <TokenMonitorBar snapshot={tokenUsage} visible={showTokenMonitor} />
+        <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+          <span className={`inline-flex items-center rounded-md border px-2 py-1 ${collaborationModeClass(collaborationMode)}`}>
+            模式 · {collaborationModeLabel(collaborationMode)}
+          </span>
+        </div>
         {(streaming || queuedCount > 0 || slashRunStatus) && (
           <div className="mb-2 flex items-center justify-between rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-zinc-300">
             <div className="flex items-center gap-2">
@@ -3371,6 +3733,7 @@ interface MemoMessageProps {
   onProposedPlanExecute: () => void
   onInteractionInputSubmit: (message: string, decisionInputs?: Record<string, unknown> | null) => void
   onPendingActionResolve: (action: PendingActionPayload, decision: "confirm" | "cancel") => void
+  onCancelQueuedMessage: (message: ChatMessage) => void
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {
@@ -3402,6 +3765,31 @@ function messageAttachments(metadata: Record<string, unknown> | undefined): Uplo
   return raw
     .map((item) => (item && typeof item === "object" ? item as UploadedAttachment : null))
     .filter((item): item is UploadedAttachment => Boolean(item?.filename && item?.rel_path))
+}
+
+function queuedUserStatus(metadata: Record<string, unknown> | undefined): { label: string; className: string } | null {
+  const status = typeof metadata?.queueStatus === "string" ? metadata.queueStatus : ""
+  const position = typeof metadata?.queuePosition === "number" ? metadata.queuePosition : null
+  const error = typeof metadata?.queueError === "string" ? metadata.queueError : ""
+  if (status === "sending") {
+    return { label: "正在加入队列", className: "border-indigo-200/70 bg-indigo-100/70 text-indigo-700" }
+  }
+  if (status === "queued") {
+    return {
+      label: position && position > 0 ? `已排队 · 第 ${position} 条` : "已排队",
+      className: "border-zinc-300/80 bg-white/55 text-zinc-600",
+    }
+  }
+  if (status === "cancelling") {
+    return { label: "正在删除", className: "border-zinc-300/80 bg-white/55 text-zinc-600" }
+  }
+  if (status === "processing") {
+    return { label: "正在处理这条追加消息", className: "border-emerald-200/80 bg-emerald-100/70 text-emerald-700" }
+  }
+  if (status === "failed") {
+    return { label: error ? `排队失败：${error}` : "排队失败", className: "border-red-200/80 bg-red-100/80 text-red-700" }
+  }
+  return null
 }
 
 function MessageAttachmentStrip({ attachments }: { attachments: UploadedAttachment[] }) {
@@ -3605,6 +3993,7 @@ function MessageBubbleImpl({
   onProposedPlanExecute,
   onInteractionInputSubmit,
   onPendingActionResolve,
+  onCancelQueuedMessage,
 }: MemoMessageProps) {
   if (msg.role === "system") {
     return (
@@ -3630,6 +4019,9 @@ function MessageBubbleImpl({
   )
   const submittedDecision = msg.role === "user" ? recordValue(msg.metadata?.decisionInputs) : null
   const attachments = msg.role === "user" ? messageAttachments(msg.metadata) : []
+  const queueStatus = msg.role === "user" ? queuedUserStatus(msg.metadata) : null
+  const rawQueueStatus = msg.role === "user" && typeof msg.metadata?.queueStatus === "string" ? msg.metadata.queueStatus : ""
+  const canCancelQueued = rawQueueStatus === "queued" || rawQueueStatus === "failed"
 
   return (
     <motion.div
@@ -3701,6 +4093,20 @@ function MessageBubbleImpl({
           )
         ) : msg.role === "assistant" && streaming && !hasLiveProgress ? (
           <WorkingIndicator label="正在理解你的请求" />
+        ) : null}
+        {queueStatus ? (
+          <div className={`mt-2 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium ${queueStatus.className}`}>
+            <span>{queueStatus.label}</span>
+            {canCancelQueued ? (
+              <button
+                type="button"
+                onClick={() => onCancelQueuedMessage(msg)}
+                className="rounded-full px-1.5 py-0.5 text-[11px] font-semibold text-current underline-offset-2 hover:underline"
+              >
+                删除
+              </button>
+            ) : null}
+          </div>
         ) : null}
         {attachments.length > 0 ? <MessageAttachmentStrip attachments={attachments} /> : null}
         {msg.role === "assistant" && streaming && (msg.content || hasLiveProgress) && (

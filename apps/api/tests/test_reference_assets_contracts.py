@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api import routes_assets
+from app.api import routes_assets, routes_projects
 from app.config import settings
 from app.db import session as db_session
 from app.db.models import Asset, Project, WorkflowNode
@@ -407,3 +407,121 @@ async def test_asset_library_categories_move_and_add_to_canvas(monkeypatch, tmp_
     output = json.loads(node.output_json or "{}")
     assert output["type"] == "image"
     assert output["local_url"].startswith("/api/assets/project-1/preview?")
+
+
+@pytest.mark.asyncio
+async def test_project_media_history_lists_only_explicit_node_media(monkeypatch, tmp_path) -> None:
+    await _setup_asset_db(monkeypatch, tmp_path)
+    generated_dir = tmp_path / "storage" / "project-1" / "generated_images"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    generated_path = generated_dir / "history-image.png"
+    generated_path.write_bytes(
+        base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+    )
+    orphan_path = generated_dir / "orphan-image.png"
+    orphan_path.write_bytes(generated_path.read_bytes())
+    image_ops_dir = generated_dir / "image_ops"
+    image_ops_dir.mkdir(parents=True, exist_ok=True)
+    edit_preview_path = image_ops_dir / "edit-preview-source-node.png"
+    edit_preview_path.write_bytes(generated_path.read_bytes())
+
+    async with db_session.session_scope() as session:
+        session.add(WorkflowNode(
+            id="source-node",
+            project_id="project-1",
+            type="image",
+            title="历史角色图",
+            status="completed",
+            position_x=0,
+            position_y=0,
+            prompt="红衣角色，电影光",
+            input_json=json.dumps({"prompt": "红衣角色，电影光"}, ensure_ascii=False),
+            output_json=json.dumps({
+                "type": "image",
+                "status": "completed",
+                "local_url": "/api/media/project-1/generated_images/history-image.png",
+            }, ensure_ascii=False),
+        ))
+        await session.commit()
+
+        items = await routes_projects._list_project_media_history_items("project-1", session)
+        filenames = {entry["filename"] for entry in items}
+        assert "orphan-image.png" not in filenames
+        assert "edit-preview-source-node.png" not in filenames
+        item = next(entry for entry in items if entry["filename"] == "history-image.png")
+
+        assert item["kind"] == "image"
+        assert item["prompt"] == "红衣角色，电影光"
+        assert item["source_node_id"] == "source-node"
+
+        restored = await routes_projects.restore_project_media_history_item(
+            "project-1",
+            item["id"],
+            routes_projects.ProjectMediaHistoryRestoreRequest(x=10, y=20),
+            session,
+        )
+        restored_node = restored["node"]
+        assert restored_node["type"] == "image"
+        assert restored_node["status"] == "completed"
+        assert restored_node["prompt"] == "红衣角色，电影光"
+
+        deleted = await routes_projects.delete_project_media_history_item("project-1", item["id"], session)
+
+    assert deleted["deleted"] is True
+    assert not generated_path.exists()
+    assert orphan_path.exists()
+    assert edit_preview_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_project_media_history_keeps_node_media_after_canvas_delete(monkeypatch, tmp_path) -> None:
+    await _setup_asset_db(monkeypatch, tmp_path)
+    generated_dir = tmp_path / "storage" / "project-1" / "generated_images"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    generated_path = generated_dir / "deleted-node-image.png"
+    generated_path.write_bytes(
+        base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+    )
+
+    async with db_session.session_scope() as session:
+        session.add(WorkflowNode(
+            id="delete-source-node",
+            project_id="project-1",
+            display_id=9,
+            type="image",
+            title="删除后可恢复",
+            status="completed",
+            position_x=0,
+            position_y=0,
+            prompt="蓝色场景",
+            input_json=json.dumps({"prompt": "蓝色场景"}, ensure_ascii=False),
+            output_json=json.dumps({
+                "type": "image",
+                "status": "completed",
+                "local_url": "/api/media/project-1/generated_images/deleted-node-image.png",
+            }, ensure_ascii=False),
+        ))
+        await session.commit()
+
+    result = await canvas_tools.delete_canvas(
+        project_id="project-1",
+        scope="selected",
+        node_ids=["9"],
+    )
+
+    assert result["ok"] is True
+    assert result["deleted_files"] == []
+    assert generated_path.exists()
+
+    async with db_session.session_scope() as session:
+        items = await routes_projects._list_project_media_history_items("project-1", session)
+        item = next(entry for entry in items if entry["filename"] == "deleted-node-image.png")
+        restored = await routes_projects.restore_project_media_history_item(
+            "project-1",
+            item["id"],
+            routes_projects.ProjectMediaHistoryRestoreRequest(x=10, y=20),
+            session,
+        )
+
+    assert restored["node"]["type"] == "image"
+    assert restored["node"]["prompt"] == "蓝色场景"

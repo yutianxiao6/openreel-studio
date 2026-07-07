@@ -9,6 +9,7 @@ services:
       DRAMA_PROMPT_DUMP_ENABLED: "true"
       DRAMA_PROMPT_DUMP_FULL: "true"
       DRAMA_PROMPT_DUMP_DIR: /workspace/data/prompt_dumps
+      DRAMA_NODE_RUN_TIMEOUT_SECONDS: "600"
       DRAMA_VIDEO_POLL_TIMEOUT_SECONDS: "1200"
       OPENREEL_SKILLS_DIR: /workspace/skills
     volumes:
@@ -16,7 +17,9 @@ services:
       - ./storage:/workspace/storage
       - ./assets:/workspace/assets
       - ./config:/workspace/config
+      - ./plugins:/workspace/plugins
       - ./skills:/workspace/skills
+      - ./workflow_templates:/workspace/workflow_templates
     restart: unless-stopped
 
   web:

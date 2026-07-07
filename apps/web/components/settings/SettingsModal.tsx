@@ -12,9 +12,12 @@ export interface RuntimeConfig {
   $schema_version: number
   llm_providers: LlmProviderEntry[]
   media_providers: MediaProviderEntry[]
+  model_tier_defaults: Record<ModelTier, string | null>
   model_assignments: Record<string, string | null>
   app_settings: Record<string, unknown>
 }
+
+export type ModelTier = "strong" | "balanced" | "small"
 
 export interface LlmProviderEntry {
   name: string
@@ -28,7 +31,7 @@ export interface LlmProviderEntry {
   supports_prompt_cache?: boolean | null
   supports_vision?: boolean | null
   tokenizer?: string | null
-  is_default: boolean
+  tier?: ModelTier
   enabled: boolean
   notes?: string | null
   params?: Record<string, unknown>

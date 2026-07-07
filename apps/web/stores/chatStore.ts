@@ -225,6 +225,8 @@ export interface ChatMessage {
   metadata?: Record<string, unknown>
 }
 
+export type QueuedUserMessageStatus = "sending" | "queued" | "cancelling" | "processing" | "failed"
+
 interface ChatStore {
   messages: ChatMessage[]
   streaming: boolean
@@ -234,6 +236,13 @@ interface ChatStore {
   unfinishedNodes: UnfinishedNode[]
   tokenUsage: TokenUsageSnapshot | null
   appendMessage: (msg: ChatMessage) => void
+  markQueuedUserMessage: (
+    clientUserMessageId: string,
+    patch: { queueStatus: QueuedUserMessageStatus; queuePosition?: number | null; queueError?: string | null },
+  ) => void
+  removeQueuedUserMessage: (clientUserMessageId: string) => void
+  refreshQueuedUserMessagePositions: () => void
+  ensureAssistantAfterQueuedUser: (clientUserMessageId: string) => void
   appendToLastAssistant: (delta: string) => void
   setLastAssistantNode: (node: NodeBubble) => void
   updateLastAssistantNode: (nodeId: string, patch: Partial<NodeBubble>) => void
@@ -256,7 +265,7 @@ interface ChatStore {
   clearPendingAttachments: () => void
   clearMessages: () => void
   resetProjectRuntime: (options?: { clearMessages?: boolean }) => void
-  loadHistory: (raw: { id: string; role: string; content: string; created_at: string }[]) => void
+  loadHistory: (raw: { id: string; role: string; content: string; created_at: string; metadata_json?: string | null }[]) => void
   setLastFailed: (msg: string | null) => void
   setActiveChecklist: (items: ChecklistItem[]) => void
   updateChecklistItem: (stepId: string, patch: Partial<ChecklistItem>) => void
@@ -270,6 +279,17 @@ function findLastAssistantIndex(messages: ChatMessage[]): number {
     if (messages[i].role === "assistant") return i
   }
   return -1
+}
+
+function messageClientUserId(message: ChatMessage): string | null {
+  const value = message.metadata?.clientUserMessageId
+  return typeof value === "string" && value.trim() ? value : null
+}
+
+function isUnpersistedQueuedUserMessage(message: ChatMessage): boolean {
+  if (message.role !== "user") return false
+  const status = message.metadata?.queueStatus
+  return status === "sending" || status === "queued" || status === "cancelling" || status === "processing"
 }
 
 export function summarizeAgentRoundToolResult(tool: string, result: unknown): AgentRoundToolResult {
@@ -299,7 +319,7 @@ export function summarizeAgentRoundToolResult(tool: string, result: unknown): Ag
   return { tool, status: "completed", summary: result == null ? "执行完成" : String(result).slice(0, 240) }
 }
 
-export const useChatStore = create<ChatStore>((set) => ({
+export const useChatStore = create<ChatStore>((set, get) => ({
   messages: [],
   streaming: false,
   pendingAttachments: [],
@@ -309,6 +329,72 @@ export const useChatStore = create<ChatStore>((set) => ({
   tokenUsage: null,
 
   appendMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
+
+  markQueuedUserMessage: (clientUserMessageId, patch) =>
+    set((s) => ({
+      messages: s.messages.map((message) => {
+        if (messageClientUserId(message) !== clientUserMessageId) return message
+        return {
+          ...message,
+          metadata: {
+            ...(message.metadata ?? {}),
+            queueStatus: patch.queueStatus,
+            ...(patch.queuePosition === undefined ? {} : { queuePosition: patch.queuePosition }),
+            ...(patch.queueError === undefined ? {} : { queueError: patch.queueError }),
+          },
+        }
+      }),
+    })),
+
+  removeQueuedUserMessage: (clientUserMessageId) =>
+    set((s) => ({
+      messages: s.messages.filter((message) => {
+        if (messageClientUserId(message) === clientUserMessageId) return false
+        if (message.metadata?.queuedClientUserMessageId === clientUserMessageId) return false
+        return true
+      }),
+    })),
+
+  refreshQueuedUserMessagePositions: () =>
+    set((s) => {
+      let position = 0
+      return {
+        messages: s.messages.map((message) => {
+          if (message.role !== "user" || message.metadata?.queueStatus !== "queued") return message
+          position += 1
+          return {
+            ...message,
+            metadata: {
+              ...(message.metadata ?? {}),
+              queuePosition: position,
+            },
+          }
+        }),
+      }
+    }),
+
+  ensureAssistantAfterQueuedUser: (clientUserMessageId) =>
+    set((s) => {
+      const idx = s.messages.findIndex((message) => messageClientUserId(message) === clientUserMessageId)
+      if (idx === -1) return s
+      const next = [...s.messages]
+      const following = next[idx + 1]
+      if (
+        following?.role === "assistant" &&
+        following.metadata?.queuedClientUserMessageId === clientUserMessageId
+      ) {
+        return s
+      }
+      next.splice(idx + 1, 0, {
+        role: "assistant",
+        content: "",
+        id: `queued-${clientUserMessageId}-a`,
+        createdAt: new Date().toISOString(),
+        nodes: [],
+        metadata: { queuedClientUserMessageId: clientUserMessageId },
+      })
+      return { messages: next }
+    }),
 
   appendToLastAssistant: (delta) =>
     set((s) => {
@@ -584,7 +670,14 @@ export const useChatStore = create<ChatStore>((set) => ({
           rounds,
         }
       })
-    set({ messages: msgs })
+    const persistedClientIds = new Set(
+      msgs.map(messageClientUserId).filter((value): value is string => Boolean(value)),
+    )
+    const localQueuedMessages = get().messages.filter((message) => {
+      const clientId = messageClientUserId(message)
+      return clientId && isUnpersistedQueuedUserMessage(message) && !persistedClientIds.has(clientId)
+    })
+    set({ messages: [...msgs, ...localQueuedMessages] })
   },
 
   setLastFailed: (msg) => set({ lastFailedMessage: msg }),

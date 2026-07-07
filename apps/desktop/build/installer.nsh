@@ -80,9 +80,12 @@ Var openReelPreserveDir
     CreateDirectory "$openReelPreserveDir"
     !insertmacro OpenReelMoveRuntimeDir "data"
     !insertmacro OpenReelMoveRuntimeDir "storage"
+    !insertmacro OpenReelMoveRuntimeDir "assets"
     !insertmacro OpenReelMoveRuntimeDir "config"
     !insertmacro OpenReelMoveRuntimeDir "logs"
+    !insertmacro OpenReelMoveRuntimeDir "plugins"
     !insertmacro OpenReelMoveRuntimeDir "skills"
+    !insertmacro OpenReelMoveRuntimeDir "workflow_templates"
   ${EndIf}
 !macroend
 
@@ -91,9 +94,12 @@ Var openReelPreserveDir
   ${AndIf} ${FileExists} "$openReelPreserveDir\*.*"
     !insertmacro OpenReelRestoreRuntimeDir "data"
     !insertmacro OpenReelRestoreRuntimeDir "storage"
+    !insertmacro OpenReelRestoreRuntimeDir "assets"
     !insertmacro OpenReelRestoreRuntimeDir "config"
     !insertmacro OpenReelRestoreRuntimeDir "logs"
+    !insertmacro OpenReelRestoreRuntimeDir "plugins"
     !insertmacro OpenReelRestoreRuntimeDir "skills"
+    !insertmacro OpenReelRestoreRuntimeDir "workflow_templates"
     RMDir "$openReelPreserveDir"
   ${EndIf}
 !macroend

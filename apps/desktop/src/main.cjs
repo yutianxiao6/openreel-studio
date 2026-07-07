@@ -54,6 +54,21 @@ function mkdirp(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+function copyMissingDirectoryEntries(sourceRoot, targetRoot) {
+  if (!sourceRoot || !fs.existsSync(sourceRoot)) {
+    return;
+  }
+  mkdirp(targetRoot);
+  for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
+    const source = path.join(sourceRoot, entry.name);
+    const target = path.join(targetRoot, entry.name);
+    if (fs.existsSync(target)) {
+      continue;
+    }
+    fs.cpSync(source, target, { recursive: true });
+  }
+}
+
 function repoRoot() {
   return path.resolve(__dirname, "..", "..", "..");
 }
@@ -66,6 +81,14 @@ function desktopSkillsRoot(root) {
     return path.join(repoRoot(), "skills");
   }
   return path.join(root, "skills");
+}
+
+function bundledDefaultRoot(name) {
+  if (!isPackaged) {
+    return null;
+  }
+  const target = path.join(process.resourcesPath, "defaults", name);
+  return fs.existsSync(target) ? target : null;
 }
 
 function writeLogStream(logDir, name) {
@@ -274,6 +297,8 @@ function desktopDirs() {
     storage: path.join(root, "storage"),
     assets: path.join(root, "assets"),
     config: path.join(root, "config"),
+    plugins: path.join(root, "plugins"),
+    workflowTemplates: path.join(root, "workflow_templates"),
     logs: path.join(root, "logs"),
     skills,
     skillWorkflows: path.join(skills, "workflows"),
@@ -281,6 +306,8 @@ function desktopDirs() {
     skillReview: path.join(skills, "review"),
   };
   Object.values(dirs).forEach(mkdirp);
+  copyMissingDirectoryEntries(bundledDefaultRoot("plugins"), dirs.plugins);
+  copyMissingDirectoryEntries(bundledDefaultRoot("workflow_templates"), dirs.workflowTemplates);
   app.setPath("userData", dirs.userData);
   return dirs;
 }

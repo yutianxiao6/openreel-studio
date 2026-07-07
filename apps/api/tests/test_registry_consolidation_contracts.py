@@ -1,5 +1,7 @@
 from agent_plan_contract_helpers import *  # noqa: F401,F403
 
+from app.mcp_tools import skill_tools
+
 @pytest.mark.asyncio
 async def test_tool_search_finds_deferred_project_create_tool() -> None:
     result = await tool_meta_tools.tool_search(query="new blank project", category="project")
@@ -35,7 +37,8 @@ async def test_tool_search_empty_query_lists_visible_deferred_catalog() -> None:
     assert result["returned"] == result["total"]
     assert names == catalog_names
     assert "assets.save_to_project" in names
-    assert "skill.video_production" in names
+    assert "skill.video_production" not in names
+    assert "skill.search" not in names
     assert "node.create" not in names
     assert "assets.set_library_path" not in names
     for name in names:
@@ -270,9 +273,12 @@ async def test_project_mentor_video_workflow_keeps_moved_prompt_details() -> Non
     assert workflow["topic"] == "video_workflow"
     assert "interaction.request_input" in workflow["guidance"]
     assert "节点优先流程" in workflow["guidance"]
+    assert "skill.search 查内置和用户 workflow" in workflow["guidance"]
     assert "15秒短视频通常不问分集分段" in workflow["guidance"]
     assert "text/image/video/audio" in workflow["guidance"]
-    assert "skill.video_production" in workflow["guidance"]
+    assert "skill.get 读取内置 `video_production` markdown skill" in workflow["guidance"]
+    assert "独立 prompt skill" in workflow["guidance"]
+    assert "node.run" in workflow["guidance"]
     assert "自动连线" in workflow["guidance"]
     assert "canvas.connect_nodes" not in workflow["guidance"]
     assert "start_tree_draft" not in workflow["guidance"]
@@ -293,7 +299,7 @@ async def test_project_mentor_video_workflow_full_is_mode_index_not_step_dump() 
     assert "## 默认骨架" in guide
     assert "## 优先级" in guide
     assert "节点优先流程" in guide
-    assert "用户点名的 skill 或自定义完整流程" in guide
+    assert "用户自定义 workflow" in guide
     assert "不是灵感参考" in guide
     assert "详细剧本 text -> 主要人物图 image -> 分集/分段故事 text" in guide
     assert "剧本、分集和分段 text 只写故事情节" in guide
@@ -305,140 +311,125 @@ async def test_project_mentor_video_workflow_full_is_mode_index_not_step_dump() 
     assert "人物设定集+3视图" in guide
     assert "无人物场景四宫格四视图" in guide
     assert "分镜图或故事模板图" in guide
-    assert "不要把 prompt 模板检索作为默认" in guide
+    assert "独立 prompt skill" in guide
+    assert "编译阶段把这些写法吸收进每步 `prompt_template`" in guide
+    assert "standalone worker 只读取当前模块需要的一份" in guide
+    assert "每个节点是独立任务单元" in guide
 
     summary = await tool_meta_tools.tool_execute(
         project_id="project-1",
         name="skill.project_mentor",
         input={"topic": "video_workflow", "detail": "summary"},
     )
-    assert "skill.video_production" in summary["guidance"]
+    assert "video_production" in summary["guidance"]
+    assert "skill.get" in summary["guidance"]
     assert "只补问阻塞事实" in summary["guidance"]
     assert "写入剧本/规划 text 节点" in summary["guidance"]
+    assert "独立 prompt skill" in summary["guidance"]
+    assert "node.run" in summary["guidance"]
 
 
 @pytest.mark.asyncio
 async def test_video_production_skill_guides_reference_driven_short_video_nodes() -> None:
-    tool = registry.get("skill.video_production")
-    assert tool is not None
+    assert registry.get("skill.video_production") is None
 
-    full = await tool.handler(detail="full", request="一个修士变身，国漫3D风格，15秒")
-    guide = full["guidance"]
-    model_summary = full["model_summary"]
+    found = await skill_tools.skill_search(
+        query="视频制作 默认视频流程 短剧",
+        category="workflow",
+        scope="builtin",
+    )
+    assert found["ok"] is True
+    assert any(item["name"] == "video_production" for item in found["skills"])
 
-    assert full["request"] == "一个修士变身，国漫3D风格，15秒"
-    assert full["skill_path"].endswith("apps/api/app/skills/video_production/SKILL.md")
-    assert not full["skill_path"].startswith("/")
-    assert full["guidance_hash"]
-    assert full["cache_key"].startswith("skill.video_production:full:")
-    assert "不要把它作为 file.read_text 的读取目标" in full["reference_policy"]
-    assert full["context_fragment"]["role"] == "user"
-    assert full["context_fragment"]["type"] == "skill"
-    assert full["context_fragment"]["markers"] == ["<skill>", "</skill>"]
-    assert full["context_fragment"]["body_field"] == "guidance"
-    assert full["context_fragment"]["path"] == full["skill_path"]
-    assert "视频制作 Skill" in guide
-    assert "一段 `segment`：15 秒" in guide
-    assert "一集 `episode`：2-3 分钟" in guide
-    assert "没有可用剧本节点时，第一步先写故事剧本" in guide
-    assert "剧本只写故事情节、动作、对白" in guide
-    assert "剧本不写运镜、景别、构图" in guide
-    assert "剧本可以自然分段表达故事" in guide
-    assert "时间戳属于最终 video prompt" in guide
-    assert "15 秒视频也要有完整故事" in guide
-    assert "# 故事剧本：《标题》" in guide
-    assert "## 故事正文" in guide
-    assert "## 对白" in guide
-    assert "人物数量、角色外观、场景规划" in guide
-    assert "最终视频必须有具体画幅" in guide
-    assert "用户继续输入自定义修改" in guide
-    assert "通用 Task Tracking" in guide
-    assert "15 秒完整成片" in guide
-    assert "task.create(items=" in guide
-    assert "每个阶段开始时 `task.update" in guide
-    assert "调用 `agent.review` 做只读第二视角" in guide
-    assert "运行 `node.run` 前先检查待运行批次" in guide
-    assert "没有证据的建议只作为参考" in guide
-    assert "人物图参考上一步详细剧本" in guide
-    assert "官方设定集角色视觉参考表" in guide
-    assert "严格参考提供的参考图，不可自行改动" in guide
-    assert "正面、侧面、背面全身三面图" in guide
-    assert "毛孔级写实特写" in guide
-    assert "服装和装备的详细部件" in guide
-    assert "色彩搭配色板" in guide
-    assert "边缘简短世界观文字" in guide
-    assert 'fields.resolution="2560x1440"' in guide
-    assert "不写 2k/4k/8k" in guide
-    assert "最高规格时写 `3840x2160`" in guide
-    assert "武器、重点服装、法器、道具" in guide
-    assert "1 集时不创建分集节点" in guide
-    assert "1 段时不创建分段节点" in guide
-    assert "场景按故事发生地点创建，不能按分镜逐镜头创建场景" in guide
-    assert "四宫格四视图" in guide
-    assert "2x2四宫格" in guide
-    assert "格1 全景建立镜头" in guide
-    assert "格4 道具细节/俯视布局" in guide
-    assert "只画环境和道具，不出现人物" in guide
-    assert "2x2、2x3 或 3x3 宫格" in guide
-    assert "2x2 适合运动平缓" in guide
-    assert "3x3 适合动作、打斗" in guide
-    assert "分镜 image 的 `fields.references`" in guide
-    assert "时间戳、分镜第几格、镜头变化、景别、转场" in guide
+    summary = await skill_tools.skill_get_skill(
+        "video_production",
+        category="workflow",
+        scope="builtin",
+    )
+    assert summary["ok"] is True
+    assert summary["detail"] == "summary"
+    assert summary["content_available"] is True
+    assert summary["workflow_template_match_hint"]["skill_name"] == "video_production"
+
+    full = await skill_tools.skill_get_skill(
+        "video_production",
+        category="workflow",
+        scope="builtin",
+        detail="full",
+    )
+    guide = full["content"]
+
+    assert full["ok"] is True
+    assert full["detail"] == "full"
+    assert full["source"] == "python_package"
+    assert full["source_root"] == "builtin_default"
+    assert "skill.video_production" not in guide
+    assert "视频制作入口指南" in guide
+    assert "skill.search" in guide
+    assert "skill.get" in guide
+    assert "general_short_drama_workflow" in guide
+    assert "不重新生成 spec" in guide
+    assert "workflow_spec` 返回 blocked" in guide
+    assert "workflow.run_step" in guide
+    assert "workflow.run_next" in guide
+    assert "workflow.run_all" in guide
+    assert "script_writing" in guide
+    assert "character_prompt" in guide
+    assert "scene_prompt" in guide
+    assert "shot_grid_prompt" in guide
+    assert "video_prompt" in guide
+    assert "Prompt Skill 索引" in guide
+    assert "默认模板" in guide
+    assert "剧情/主题 `plot`" in guide
+    assert "durationSeconds" in guide
+    assert "final_video" not in guide
+    assert "直接文生视频" in guide
+    assert "task.create(items=" not in guide
+    assert "`node.run`" in guide
+    assert "agent.review" in guide
     assert "fields.content" in guide
-    assert "node.run(text)` 只保存已有内容" in guide
-    assert "普通 15 秒视频的最小完整节点图" in guide
-    assert "task` 只做进度账本" in guide
+    assert "`task` 只记录进度" in guide
     assert "role:\"visual_reference\"" in guide
     assert "role:\"source_image\"" in guide
-    assert "parent_node_id` 只做画布分组" in guide
-    assert "prompt 文本只写创作描述" in guide
-    assert "人物、场景、分镜、视频的 `fields.references`" in guide
-    assert "媒体后端失败时汇报 blocked/failed" in guide
-    assert "详细剧本 text -> 主要人物 image -> 分集/分段故事 text" in model_summary
-    assert "15 秒完整成片" in model_summary
-    assert "task.create(items=" in model_summary
-    assert "image/video 运行前先自查待运行节点的 prompt" in model_summary
-    assert "最终视频必须有具体 `aspect_ratio`" in model_summary
-    assert "fields.content 固定格式" in model_summary
-    assert "# 故事剧本：《标题》" in model_summary
-    assert "默认 15 秒为一段 segment" in model_summary
-    assert "默认 2-3 分钟为一集 episode" in model_summary
-    assert "剧本里不写运镜、景别、构图" in model_summary
-    assert "1 集不创建分集节点，1 段不创建分段节点" in model_summary
-    assert "人物图 prompt 使用“官方设定集角色视觉参考表”模板" in model_summary
-    assert "严格参考提供的参考图，不可自行改动" in model_summary
-    assert 'fields.aspect_ratio="16:9"' in model_summary
-    assert 'fields.resolution="2560x1440"' in model_summary
-    assert "场景图 prompt 使用固定格式" in model_summary
-    assert "格1 全景建立镜头" in model_summary
-    assert "自由选择 2x2、2x3 或 3x3 宫格" in model_summary
-    assert "分镜 image 的 `fields.references` 指向本段故事、相关人物 image 和场景 image" in model_summary
-    assert "视频 prompt 使用时间戳、分镜第几格" in model_summary
-    assert "grok-imagine-video-1.5" not in model_summary
-    assert "duration_seconds" in model_summary
-    assert "task 只是进度账本" in model_summary
-    assert "`parent_node_id` 只做画布分组" in model_summary
-    assert "role:\"visual_reference\"" in model_summary
-    assert "role:\"source_image\"" in model_summary
-    assert "不作为 `file.read_text` 目标" in model_summary
+    assert "`parent_node_id` 用于画布分组" not in guide
+    assert "prompt 开头直接写几宫格" not in guide
+    assert "官方设定集角色视觉参考表" not in guide
+    assert "毛孔级写实特写" not in guide
+    assert "grok-imagine-video-1.5" not in guide
+    assert "duration_seconds" in guide
+    assert "role:\"visual_reference\"" in guide
+    assert "role:\"source_image\"" in guide
+    assert "`path` 只做诊断来源" in guide
 
 
 @pytest.mark.asyncio
 async def test_video_production_hands_off_explicit_story_template_requests() -> None:
-    tool = registry.get("skill.video_production")
-    assert tool is not None
+    found = await skill_tools.skill_search(
+        query="故事模板图 视频",
+        category="workflow",
+        scope="builtin",
+    )
+    assert found["ok"] is True
+    assert any(item["name"] == "video_production" for item in found["skills"])
 
-    result = await tool.handler(detail="summary", request="使用故事模板的提示词重新生成分镜")
+    result = await skill_tools.skill_get_skill(
+        "video_production",
+        category="workflow",
+        scope="builtin",
+        detail="full",
+    )
 
-    assert result["related_skill"]["tool"] == "skill.story_template_method"
-    assert result["related_skill"]["input"] == {"detail": "full"}
-    assert "不要重复读取 skill.video_production" in result["next_action"]
+    assert "story_template_method" in result["content"]
+    assert "故事模板图/视觉开发板" in result["content"]
+    assert "related_skill" not in result
 
 
 def test_video_production_skill_uses_markdown_as_single_source() -> None:
     module_source = Path("app/skills/video_production/__init__.py").read_text(encoding="utf-8")
 
-    assert "SKILL.md" in module_source
+    assert "register(" not in module_source
+    assert "skill.video_production" not in module_source
+    assert "skill.search / skill.get" in module_source
     assert "_FULL_GUIDE" not in module_source
     assert "_MODEL_SUMMARY" not in module_source
     assert "## 核心流程" not in module_source
@@ -1033,7 +1024,7 @@ async def test_agent_low_level_tools_are_unregistered_but_high_level_collab_rema
     collab = await tool_meta_tools.tool_search(query="agent", category="collab")
     collab_names = {item["name"] for item in collab["tools"]}
     assert "agent.review" not in collab_names
-    assert {"agent.map_reduce", "agent.pipeline", "agent.hierarchical"} <= collab_names
+    assert {"agent.run", "agent.map_reduce", "agent.pipeline", "agent.hierarchical"} <= collab_names
 
     high_level = await tool_meta_tools.tool_describe(
         ["agent.map_reduce", "agent.pipeline", "agent.hierarchical"]
@@ -1070,7 +1061,7 @@ async def test_team_protocol_tools_are_unregistered_after_collab_consolidation()
 
     collab = await tool_meta_tools.tool_search(query="agent", category="collab")
     collab_names = {item["name"] for item in collab["tools"]}
-    assert {"agent.map_reduce", "agent.pipeline", "agent.hierarchical"} <= collab_names
+    assert {"agent.run", "agent.map_reduce", "agent.pipeline", "agent.hierarchical"} <= collab_names
     assert not set(UNREGISTERED_TEAM_TOOL_NAMES) & collab_names
 
 @pytest.mark.asyncio
@@ -1657,6 +1648,65 @@ async def test_tool_execute_rejects_core_project_reset() -> None:
     assert result["ok"] is False
     assert result["error_kind"] == "core_tool_should_be_called_directly"
     assert result["tool"] == "project.reset"
+
+
+@pytest.mark.asyncio
+async def test_tool_execute_rejects_inline_workflow_run_objects() -> None:
+    result = await tool_meta_tools.tool_execute(
+        project_id="test",
+        name="workflow.run_all",
+        input={
+            "workflow": {
+                "id": "inline",
+                "name": "Inline",
+                "steps": [{"id": "story", "title": "Story", "node_type": "text"}],
+            },
+            "inputs": {"plot": "雨夜"},
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["_deferred_tool"] == "workflow.run_all"
+    assert result["error_kind"] == "workflow_inline_requires_workflow_spec"
+    assert "template_id" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_tool_execute_rejects_unauthorized_workflow_template_runs() -> None:
+    result = await tool_meta_tools.tool_execute(
+        project_id="test",
+        name="workflow.run_all",
+        input={
+            "template_id": "general_short_drama_workflow",
+            "inputs": {"plot": "雨夜", "durationSeconds": 30, "style": "冷色"},
+        },
+        _state={},
+    )
+
+    assert result["ok"] is False
+    assert result["_deferred_tool"] == "workflow.run_all"
+    assert result["error_kind"] == "workflow_ref_requires_workflow_spec"
+    assert "workflow_spec" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_tool_execute_allows_workflow_template_after_workflow_spec_authorization() -> None:
+    result = await tool_meta_tools.tool_execute(
+        project_id="test",
+        name="workflow.run_all",
+        input={
+            "template_id": "missing_after_auth",
+            "inputs": {"plot": "雨夜"},
+        },
+        _state={
+            "_workflow_spec_authorized_refs": [
+                {"template_id": "missing_after_auth", "authorized_by": "workflow_spec"}
+            ]
+        },
+    )
+
+    assert result.get("error_kind") != "workflow_ref_requires_workflow_spec"
+
 
 @pytest.mark.asyncio
 async def test_tool_execute_records_target_permission_denial() -> None:

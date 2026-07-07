@@ -11,9 +11,13 @@ import {
   type Node,
   type NodeChange,
 } from "reactflow"
+import {
+  nodeReadableText,
+  textPreviewFromNode,
+} from "@/lib/nodeDisplay"
 
 export type LayoutStrategy = "vertical" | "horizontal" | "grid" | "timeline" | "iteration" | "tree"
-export type NodeSurface = "project_panel" | "draft_canvas"
+export type NodeSurface = "project_panel" | "draft_canvas" | "workflow_runtime"
 
 export interface LayoutHint {
   strategy?: LayoutStrategy
@@ -46,12 +50,15 @@ interface CanvasState {
       type: string
       title: string
       status: string
-      position_x: number
-      position_y: number
+      position_x?: number | null
+      position_y?: number | null
       version?: number
       supersedes_id?: string | null
+      input?: unknown
+      output?: unknown
+      position?: { x?: number | null; y?: number | null } | null
       output_json?: string | null
-      input_json?: string | null
+      input_json?: unknown
       model_config_json?: string | null
       prompt?: string | null
       render_state?: string | null
@@ -238,9 +245,13 @@ function ratioFromAspectValue(value: unknown): number | null {
   return null
 }
 
+function hasMediaUrl(...values: unknown[]): boolean {
+  return values.some((value) => typeof value === "string" && value.trim().length > 0)
+}
+
 function ratioFromPreviewObject(preview?: Record<string, unknown>): number | null {
   if (!preview) return null
-  const direct =
+  return (
     ratioFromSize(numericDimension(preview.width), numericDimension(preview.height)) ||
     ratioFromAspectValue(preview.aspect_ratio) ||
     ratioFromAspectValue(preview.ratio) ||
@@ -249,39 +260,65 @@ function ratioFromPreviewObject(preview?: Record<string, unknown>): number | nul
     ratioFromAspectValue(preview.size_final) ||
     ratioFromAspectValue(preview.resolution) ||
     ratioFromAspectValue(preview.output_size)
-  if (direct) return direct
+  )
+}
 
-  if (Array.isArray(preview.stages)) {
-    for (const stage of preview.stages) {
-      if (!stage || typeof stage !== "object" || Array.isArray(stage)) continue
-      const item = stage as Record<string, unknown>
-      const stageRatio = ratioFromPreviewObject(item)
-      if (stageRatio) return stageRatio
-    }
+function isImageStageName(name: unknown): boolean {
+  return /图|首帧|尾帧|模板|参考|image|storyboard/i.test(String(name ?? "")) && !/提示词|prompt/i.test(String(name ?? ""))
+}
+
+function mediaStageForNode(preview: Record<string, unknown> | undefined, nodeType: unknown): Record<string, unknown> | undefined {
+  if (preview?.type !== "fusion" || !Array.isArray(preview.stages)) return undefined
+  for (const stage of preview.stages) {
+    if (!stage || typeof stage !== "object" || Array.isArray(stage)) continue
+    const item = stage as Record<string, unknown>
+    if (!hasMediaUrl(item.local_url, item.url, item.remote_url)) continue
+    if (nodeType === "image" && isImageStageName(item.name)) return item
+    if (nodeType === "video" && /视频|video|clip/i.test(String(item.name ?? ""))) return item
   }
+  return undefined
+}
 
-  for (const key of ["image", "video", "result", "output", "asset", "metadata"]) {
-    const nested = preview[key]
-    if (!nested || typeof nested !== "object" || Array.isArray(nested)) continue
-    const nestedRatio = ratioFromPreviewObject(nested as Record<string, unknown>)
-    if (nestedRatio) return nestedRatio
+function hasOutputPreview(preview: Record<string, unknown> | undefined, nodeType: unknown): boolean {
+  if (!preview) return false
+  if (mediaStageForNode(preview, nodeType)) return true
+  if (nodeType === "image") {
+    return (
+      (preview.type === "image" || preview.type === "image_grid" || preview.type === "storyboard") &&
+      hasMediaUrl(preview.local_url, preview.url, preview.remote_url, preview.composite_url)
+    )
   }
+  if (nodeType === "video") {
+    return preview.type === "video" && hasMediaUrl(preview.local_url, preview.url, preview.remote_url)
+  }
+  return false
+}
 
-  const grid = preview.grid && typeof preview.grid === "object" && !Array.isArray(preview.grid)
+function outputPreviewRatio(preview: Record<string, unknown> | undefined, nodeType: unknown): number | null {
+  if (!hasOutputPreview(preview, nodeType)) return null
+  const stage = mediaStageForNode(preview, nodeType)
+  if (stage) return ratioFromPreviewObject(stage)
+
+  const grid = preview?.grid && typeof preview.grid === "object" && !Array.isArray(preview.grid)
     ? preview.grid as Record<string, unknown>
     : undefined
-  const cells = Array.isArray(preview.cells) ? preview.cells as Record<string, unknown>[] : []
+  const cells = Array.isArray(preview?.cells) ? preview.cells as Record<string, unknown>[] : []
   const cell = cells.find((item) => numericDimension(item.width) && numericDimension(item.height))
   const gridCols = numericDimension(grid?.cols) || 1
   const gridRows = numericDimension(grid?.rows) || 1
   return (
+    ratioFromPreviewObject(preview) ||
     (cell ? ratioFromSize((numericDimension(cell.width) || 1) * gridCols, (numericDimension(cell.height) || 1) * gridRows) : null) ||
-    (preview.type === "image_grid" ? ratioFromSize(gridCols, gridRows) : null)
+    (preview?.type === "image_grid" ? ratioFromSize(gridCols, gridRows) : null)
   )
 }
 
-function mediaNodeDimensionsFromPreview(preview?: Record<string, unknown>): { width: number; height: number } {
-  const ratio = ratioFromPreviewObject(preview) || NODE_CARD_WIDTH / NODE_CARD_HEIGHT
+function mediaNodeDimensionsFromPreview(
+  preview: Record<string, unknown> | undefined,
+  nodeType: unknown,
+): { width: number; height: number } {
+  const ratio = outputPreviewRatio(preview, nodeType)
+  if (!ratio) return { width: NODE_CARD_WIDTH, height: NODE_CARD_HEIGHT }
 
   let width = Math.sqrt(MEDIA_TARGET_AREA * ratio)
   const minWidthForRatio = Math.max(MEDIA_MIN_WIDTH, MEDIA_MIN_HEIGHT * ratio)
@@ -307,8 +344,7 @@ function nodeVisualSize(node: Node): { width: number; height: number } {
     }
   }
   if (isAutoSizedMediaType(data?.type)) {
-    const size = mediaNodeDimensionsFromPreview(data?.preview)
-    return { width: size.width, height: size.height }
+    return mediaNodeDimensionsFromPreview(data?.preview, data?.type)
   }
   return {
     width: Math.max(NODE_MIN_WIDTH, Math.min(NODE_MAX_WIDTH, Number(node.width ?? NODE_CARD_WIDTH) || NODE_CARD_WIDTH)),
@@ -463,19 +499,38 @@ function arrangeCanvas(nodes: Node[], edges: Edge[], manualLayout: boolean): { n
   return manualLayout ? keepManualCanvas(nodes, edges) : layoutCanvas(nodes, edges)
 }
 
-function hasStoredPosition(raw: { position_x?: number | null; position_y?: number | null }): boolean {
-  const x = Number(raw.position_x ?? 0)
-  const y = Number(raw.position_y ?? 0)
-  return Number.isFinite(x) && Number.isFinite(y) && (Math.abs(x) > 0.01 || Math.abs(y) > 0.01)
+function hasStoredPosition(raw: {
+  position?: { x?: number | null; y?: number | null } | null
+  position_x?: number | null
+  position_y?: number | null
+}): boolean {
+  const position = rawNodePosition(raw)
+  return position !== null
 }
 
-function storedPositionsAreUsable(rawNodes: { position_x?: number | null; position_y?: number | null }[]): boolean {
+function hasNonOriginStoredPosition(raw: {
+  position?: { x?: number | null; y?: number | null } | null
+  position_x?: number | null
+  position_y?: number | null
+}): boolean {
+  const position = rawNodePosition(raw)
+  if (!position) return false
+  return Math.abs(position.x) > 0.01 || Math.abs(position.y) > 0.01
+}
+
+function storedPositionsAreUsable(rawNodes: {
+  position?: { x?: number | null; y?: number | null } | null
+  position_x?: number | null
+  position_y?: number | null
+}[]): boolean {
   if (rawNodes.length <= 1) return rawNodes.some(hasStoredPosition)
   const positioned = rawNodes.filter(hasStoredPosition)
   if (positioned.length !== rawNodes.length) return false
+  if (positioned.some(hasNonOriginStoredPosition)) return true
   const buckets = new Set(positioned.map((node) => {
-    const x = Math.round(Number(node.position_x ?? 0) / 40)
-    const y = Math.round(Number(node.position_y ?? 0) / 40)
+    const position = rawNodePosition(node) ?? { x: 0, y: 0 }
+    const x = Math.round(position.x / 40)
+    const y = Math.round(position.y / 40)
     return `${x}:${y}`
   }))
   return buckets.size >= Math.ceil(rawNodes.length * 0.7)
@@ -538,26 +593,10 @@ function hasManualNodeDimensions(node: Node | undefined, storedDimensions: Recor
   const data = node.data as { type?: unknown; canvasSizeMode?: unknown } | undefined
   const stored = storedDimensions[node.id]
   if (isAutoSizedMediaType(data?.type)) {
-    const manualSize = data?.canvasSizeMode === "manual"
-      ? {
-          width: numericDimension((node.data as { canvasWidth?: unknown })?.canvasWidth),
-          height: numericDimension((node.data as { canvasHeight?: unknown })?.canvasHeight),
-        }
-      : stored?.mode === "manual"
-      ? stored
-      : undefined
-    return Boolean(manualSize && mediaManualDimensionsMatchPreview(node, manualSize))
+    return data?.canvasSizeMode === "manual" || stored?.mode === "manual"
   }
   return data?.canvasSizeMode === "manual"
     || Boolean(stored)
-}
-
-function mediaManualDimensionsMatchPreview(node: Node, dimensions: { width?: number; height?: number }): boolean {
-  const data = node.data as { preview?: Record<string, unknown> } | undefined
-  const previewRatio = ratioFromPreviewObject(data?.preview)
-  const dimensionRatio = ratioFromSize(dimensions.width, dimensions.height)
-  if (!previewRatio || !dimensionRatio) return true
-  return Math.abs(dimensionRatio - previewRatio) / previewRatio < 0.06
 }
 
 function clampNodeDimension(width: number, height: number): StoredNodeDimensions {
@@ -581,7 +620,7 @@ function applyAutoMediaNodeDimensions(
   if (!isAutoSizedMediaType(data?.type) || hasManualNodeDimensions(node, storedDimensions)) {
     return node
   }
-  const size = mediaNodeDimensionsFromPreview(data?.preview)
+  const size = mediaNodeDimensionsFromPreview(data?.preview, data?.type)
   const nextData = { ...(node.data as Record<string, unknown>) }
   delete nextData.canvasWidth
   delete nextData.canvasHeight
@@ -600,7 +639,7 @@ function applyStoredNodeDimensions(
   const dimensions = storedDimensions[node.id]
   if (!dimensions) return node
   const data = node.data as { type?: unknown } | undefined
-  if (isAutoSizedMediaType(data?.type) && (dimensions.mode !== "manual" || !mediaManualDimensionsMatchPreview(node, dimensions))) {
+  if (isAutoSizedMediaType(data?.type) && dimensions.mode !== "manual") {
     return node
   }
   const width = Math.max(NODE_MIN_WIDTH, Math.min(NODE_MAX_WIDTH, dimensions.width))
@@ -652,13 +691,117 @@ function parseObjectJson(raw: unknown): Record<string, unknown> | undefined {
   }
 }
 
+function rawNodeInput(raw: { input?: unknown; input_json?: unknown }): Record<string, unknown> | undefined {
+  return parseObjectJson(raw.input ?? raw.input_json)
+}
+
+function rawNodeOutput(raw: { output?: unknown; output_json?: string | null }): unknown {
+  if (raw.output !== undefined) return raw.output
+  if (!raw.output_json) return undefined
+  return parseJsonValue(raw.output_json) ?? raw.output_json
+}
+
+function rawNodePosition(raw: {
+  position?: { x?: number | null; y?: number | null } | null
+  position_x?: number | null
+  position_y?: number | null
+}): { x: number; y: number } | null {
+  const x = Number(raw.position?.x ?? raw.position_x)
+  const y = Number(raw.position?.y ?? raw.position_y)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  return { x, y }
+}
+
+function firstText(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
+function parseJsonValue(raw: string): unknown {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const items = value
+    .map((item) => String(item ?? "").trim())
+    .filter(Boolean)
+  return items.length ? Array.from(new Set(items)) : undefined
+}
+
+function workflowReferenceList(value: unknown): Array<Record<string, string>> | undefined {
+  if (!Array.isArray(value)) return undefined
+  const refs: Array<Record<string, string>> = []
+  for (const item of value) {
+    if ((typeof item === "string" && item.trim()) || typeof item === "number" || typeof item === "boolean") {
+      refs.push({ ref: String(item).trim(), role: "context" })
+      continue
+    }
+    const obj = parseObjectJson(item)
+    const rawRef = obj?.ref ?? obj?.reference ?? obj?.value ?? obj?.node_id ?? obj?.nodeId
+    const ref = typeof rawRef === "string"
+      ? rawRef.trim()
+      : typeof rawRef === "number" || typeof rawRef === "boolean"
+      ? String(rawRef)
+      : ""
+    if (!ref) continue
+    const role = typeof obj?.role === "string" && obj.role.trim() ? obj.role.trim() : "context"
+    refs.push({ ref, role })
+  }
+  return refs.length ? refs : undefined
+}
+
+function fieldsFromInput(input: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!input) return undefined
+  return parseObjectJson(input.fields) ?? input
+}
+
+function workflowMetadataFromInput(input: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!input) return {}
+  const fields = fieldsFromInput(input)
+  const workflow = parseObjectJson(fields?.workflow ?? input.workflow)
+  const refs = workflowReferenceList(fields?.references ?? input.references)
+  const dependsOn = stringList(fields?.depends_on ?? input.depends_on ?? workflow?.depends_on)
+  const prompt = firstText(
+    fields?.prompt,
+    fields?.content,
+    fields?.description,
+    input.prompt,
+    input.content,
+    input.description,
+    workflow?.acceptance,
+  )
+  const result: Record<string, unknown> = { input }
+  if (workflow) result.workflow = workflow
+  if (prompt) result.workflowStepPrompt = prompt
+  if (refs) result.workflowReferences = refs
+  if (dependsOn) result.workflowDependsOn = dependsOn
+  return result
+}
+
+function workflowMetadataFromPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const explicitInput = parseObjectJson(payload.input_json ?? payload.input)
+  if (explicitInput) return workflowMetadataFromInput(explicitInput)
+  if (payload.workflow || payload.references || payload.depends_on || payload.fields) {
+    return workflowMetadataFromInput(payload)
+  }
+  return {}
+}
+
 function normalizeSurface(raw: unknown): NodeSurface | undefined {
-  return raw === "draft_canvas" || raw === "project_panel" ? raw : undefined
+  return raw === "draft_canvas" || raw === "project_panel" || raw === "workflow_runtime" ? raw : undefined
 }
 
 function surfaceFromRawNode(raw: {
   surface?: string | null
-  input_json?: string | null
+  input?: unknown
+  input_json?: unknown
   model_config_json?: string | null
 }): NodeSurface {
   const direct = normalizeSurface(raw.surface)
@@ -668,7 +811,7 @@ function surfaceFromRawNode(raw: {
   const fromModel = normalizeSurface(modelConfig?.surface ?? modelConfig?._surface)
   if (fromModel) return fromModel
 
-  const input = parseObjectJson(raw.input_json)
+  const input = rawNodeInput(raw)
   const fromInput = normalizeSurface(input?.surface ?? input?._surface)
   if (fromInput) return fromInput
 
@@ -733,6 +876,9 @@ function mediaPreviewHints(data: Record<string, unknown>): Record<string, unknow
   if (width) hints.width = width
   if (height) hints.height = height
   for (const key of ["aspect_ratio", "ratio", "size", "size_requested", "size_final", "resolution", "output_size"]) {
+    if (data[key] != null) hints[key] = data[key]
+  }
+  for (const key of ["panorama", "is_panorama", "projection", "panorama_capture", "capture_mode"]) {
     if (data[key] != null) hints[key] = data[key]
   }
   return hints
@@ -812,10 +958,10 @@ function preserveExistingNodeLayout(
   }
 }
 
-function promptFromRawNode(raw: { prompt?: string | null; input_json?: string | null }): string | undefined {
+function promptFromRawNode(raw: { prompt?: string | null; input?: unknown; input_json?: unknown }): string | undefined {
   const direct = normalizedPrompt(raw.prompt)
   if (direct) return direct
-  const input = parseObjectJson(raw.input_json)
+  const input = rawNodeInput(raw)
   return normalizedPrompt(input?.prompt)
 }
 
@@ -831,17 +977,19 @@ function normalizeRenderState(value: unknown): string | undefined {
 function renderStateFromRawNode(raw: {
   type?: string | null
   status?: string | null
+  input?: unknown
+  output?: unknown
   output_json?: string | null
-  input_json?: string | null
+  input_json?: unknown
   render_state?: string | null
 }): string | undefined {
   if (raw.type !== "image") return undefined
   const direct = normalizeRenderState(raw.render_state)
   if (direct) return direct
-  const input = parseObjectJson(raw.input_json)
+  const input = rawNodeInput(raw)
   const fromInput = normalizeRenderState(input?.render_state)
   if (fromInput) return fromInput
-  return raw.status === "completed" && raw.output_json ? "fresh" : undefined
+  return raw.status === "completed" && rawNodeOutput(raw) ? "fresh" : undefined
 }
 
 function renderStateFromPayload(
@@ -868,24 +1016,6 @@ function promptPreviewFromNodeType(nodeType: unknown, prompt: unknown): Record<s
     type: type === "video" ? "video_prompt" : type === "audio" ? "audio_prompt" : "image_prompt",
     prompt: currentPrompt,
   }
-}
-
-function textPreviewFromInput(input: unknown, prompt: unknown): Record<string, unknown> | undefined {
-  const data = parseObjectJson(input)
-  const nestedInput = parseObjectJson(data?.input_json ?? data?.input)
-  const fields = parseObjectJson(data?.fields)
-  const nestedFields = parseObjectJson(nestedInput?.fields)
-  for (const source of [data, fields, nestedInput, nestedFields]) {
-    if (!source) continue
-    for (const key of ["content", "text", "summary", "description"]) {
-      const value = source[key]
-      if (typeof value === "string" && value.trim()) {
-        return { type: "text", text: value.trim() }
-      }
-    }
-  }
-  const currentPrompt = normalizedPrompt(prompt)
-  return currentPrompt ? { type: "text", text: currentPrompt } : undefined
 }
 
 function applyCurrentPromptToPreview(
@@ -940,24 +1070,39 @@ function normalizePreviewForNode(
   preview: unknown,
   prompt: unknown,
   input?: unknown,
+  output?: unknown,
 ): Record<string, unknown> | undefined {
   const normalized = applyCurrentPromptToPreview(preview, prompt) ?? promptPreviewFromNodeType(nodeType, prompt)
   if (normalized) return normalizeFusionPreviewErrors(normalized)
-  if (String(nodeType ?? "") === "text") return textPreviewFromInput(input, prompt)
+  if (String(nodeType ?? "") === "text") return textPreviewFromNode({ type: "text", input, output, prompt: normalizedPrompt(prompt) })
   return undefined
 }
 
+function previewTextForNodeData(
+  nodeType: unknown,
+  input: unknown,
+  output: unknown,
+  prompt: unknown,
+  fallback?: unknown,
+): string | undefined {
+  const text = nodeReadableText({
+    type: String(nodeType ?? ""),
+    input,
+    output,
+    prompt: normalizedPrompt(prompt),
+  })
+  return text || normalizedPrompt(fallback)
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function parseOutputPreview(outputJson: unknown): Record<string, unknown> | undefined {
+function parseOutputPreview(outputJson: unknown, nodeType?: unknown): Record<string, unknown> | undefined {
   if (!outputJson) return undefined
   try {
     const data = typeof outputJson === "string" ? JSON.parse(outputJson) : outputJson
     if (!data || typeof data !== "object") return undefined
-    for (const key of ["content", "text", "summary", "description"]) {
-      const value = data[key]
-      if (typeof value === "string" && value.trim()) {
-        return { type: "text", text: value.trim() }
-      }
+    if (String(nodeType ?? "") === "text") {
+      const preview = textPreviewFromNode({ type: "text", output: data })
+      if (preview) return preview
     }
     // Fusion node — multi-stage payload (prompt + image + ...)
     if (data.type === "fusion" && Array.isArray(data.stages)) {
@@ -1207,7 +1352,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 	    set((s) => {
 	      const nodes = s.nodes.map((n) => {
         if (n.id !== id) return n
-        const nextData = { ...n.data, ...data }
+        const nextData = { ...n.data, ...data, ...workflowMetadataFromPayload(data as Record<string, unknown>) }
         const nextRenderState = renderStateFromPayload(
           data as Record<string, unknown>,
           nextData.type ?? n.type,
@@ -1217,9 +1362,16 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         if (nextRenderState) nextData.renderState = nextRenderState
         nextData.preview = mergeMediaPreviewHints(
           nextData.type ?? n.type,
-          normalizePreviewForNode(nextData.type ?? n.type, nextData.preview, nextData.prompt, data),
+          normalizePreviewForNode(nextData.type ?? n.type, nextData.preview, nextData.prompt, nextData.input, nextData.output),
           data as Record<string, unknown>,
           nextData,
+        )
+        nextData.previewText = previewTextForNodeData(
+          nextData.type ?? n.type,
+          nextData.input,
+          nextData.output,
+          nextData.prompt,
+          nextData.previewText,
         )
         return applyAutoMediaNodeDimensions({ ...n, data: nextData }, storedDimensions)
       })
@@ -1331,25 +1483,46 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       ))
       return
     }
-	    if (action === "add_edge") {
+    if (action === "add_edge") {
       const id = String(payload.id ?? "")
       const source = String(payload.source_node_id ?? payload.source ?? "")
       const target = String(payload.target_node_id ?? payload.target ?? "")
       if (!id || !source || !target) return
-	      const newEdge: Edge = {
-	        id,
-	        source,
-	        target,
-	      }
-	      set((s) => ({
-	        ...keepManualCanvas(
-	          layoutLocalMindMap(s.nodes, [...s.edges, newEdge], new Set([source, target])),
-	          [...s.edges, newEdge],
-	        ),
-	        manualLayout: s.manualLayout,
-	      }))
-	      return
-	    }
+      const newEdge: Edge = {
+        id,
+        source,
+        target,
+      }
+      set((s) => {
+        const edges = s.edges.some((edge) => edge.id === id || (edge.source === source && edge.target === target))
+          ? s.edges
+          : [...s.edges, newEdge]
+        return {
+          ...keepManualCanvas(
+            layoutLocalMindMap(s.nodes, edges, new Set([source, target])),
+            edges,
+          ),
+          manualLayout: s.manualLayout,
+        }
+      })
+      return
+    }
+    if (action === "delete_edge" || action === "remove_edge") {
+      const id = String(payload.id ?? "")
+      const source = String(payload.source_node_id ?? payload.source ?? "")
+      const target = String(payload.target_node_id ?? payload.target ?? "")
+      set((s) => ({
+        ...keepManualCanvas(
+          s.nodes,
+          s.edges.filter((edge) => {
+            if (id && edge.id === id) return false
+            return !(source && target && edge.source === source && edge.target === target)
+          }),
+        ),
+        manualLayout: s.manualLayout,
+      }))
+      return
+    }
     if (action === "create_node") {
       const id = String(payload.id ?? "")
       if (!id) return
@@ -1360,10 +1533,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         set((s) => arrangeCanvas(
           s.nodes.map((n) => {
             if (n.id !== id) return n
+            const hasPayloadOutput = Object.prototype.hasOwnProperty.call(payload, "output")
+            const nextOutput = hasPayloadOutput ? payload.output : n.data.output
             return applyAutoMediaNodeDimensions({
               ...n,
               data: {
                 ...n.data,
+                ...workflowMetadataFromPayload(payload as Record<string, unknown>),
                 type: payload.type ?? n.data.type,
                 publicId: payload.display_id ?? payload._canvas_display_id ?? n.data.publicId,
                 title: payload.title ?? n.data.title,
@@ -1383,9 +1559,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
                     payload.preview ?? n.data.preview,
                     payload.prompt ?? n.data.prompt,
                     payload.input_json ?? payload.input ?? payload,
+                    nextOutput,
                   ),
                   payload,
                   n.data,
+                ),
+                input: payload.input_json ?? payload.input ?? n.data.input,
+                output: nextOutput,
+                workflowRuntimeOutput: hasPayloadOutput ? nextOutput : n.data.workflowRuntimeOutput,
+                previewText: previewTextForNodeData(
+                  payload.type ?? n.data.type,
+                  payload.input_json ?? payload.input ?? n.data.input,
+                  nextOutput,
+                  payload.prompt ?? n.data.prompt,
+                  n.data.previewText,
                 ),
               },
             }, storedDimensions)
@@ -1447,11 +1634,21 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           title: payload.title,
           status: payload.status ?? "running",
           prompt: normalizedPrompt(payload.prompt),
+          input: payload.input_json ?? payload.input,
+          output: payload.output,
+          workflowRuntimeOutput: payload.output,
+          ...workflowMetadataFromPayload(payload as Record<string, unknown>),
           renderState: renderStateFromPayload(payload as Record<string, unknown>, payload.type, payload.status, payload.preview),
           preview: mergeMediaPreviewHints(
             payload.type,
-            normalizePreviewForNode(payload.type, payload.preview, payload.prompt, payload.input_json ?? payload.input ?? payload),
+            normalizePreviewForNode(payload.type, payload.preview, payload.prompt, payload.input_json ?? payload.input ?? payload, payload.output),
             payload,
+          ),
+          previewText: previewTextForNodeData(
+            payload.type,
+            payload.input_json ?? payload.input,
+            payload.output,
+            payload.prompt,
           ),
           group_id: groupId,
           group_label: hint?.group_label,
@@ -1481,10 +1678,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       set((s) => {
         const nodes = s.nodes.map((n) => {
           if (n.id !== id) return n
-          // 防御性 preview 合并:旧 fusion(含已生成的人物设定/提示词阶段)+
-          // 新简易 image preview → 把 url 注入 fusion stages 找到的图阶段,而非整段替换。
-          // 修复"图来了又消失"bug:之前 _emit_node_canvas_event 推扁平 image preview
-          // 浅合并会覆盖正在显示的 fusion stages。
+          // 保持 fusion 阶段结构稳定：单张图片更新只写入对应图阶段，不整段替换 stages。
           const prevData = n.data as {
             status?: string
             prompt?: string | null
@@ -1532,7 +1726,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           }
           const prevPreview = prevData.preview
           const nextPreview = nextPayload.preview
-          const outputPreview = parseOutputPreview((payload as Record<string, unknown>).output)
+          const nextType = (payload as Record<string, unknown>).type ?? n.data.type
+          const outputPreview = parseOutputPreview((payload as Record<string, unknown>).output, nextType)
           let mergedPreview: unknown = nextPreview ?? outputPreview
           if (
             prevPreview?.type === "fusion" &&
@@ -1572,8 +1767,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
               delete stages[idx].diagnostics
               mergedPreview = { ...prevPreview, stages }
             } else {
-              // fusion 已经有 completed 图阶段,扁平 image preview 是后端 node.run 的兜底事件,
-              // 不要让它整段替换已有的 fusion 结构(否则前一张图会"消失")。保留原 fusion。
               mergedPreview = prevPreview
             }
           }
@@ -1601,7 +1794,17 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           const nextPrompt = Object.prototype.hasOwnProperty.call(dataPatch, "prompt")
             ? dataPatch.prompt
             : prevData.prompt
-          const nextType = dataPatch.type ?? n.data.type
+          dataPatch.input = dataPatch.input_json ?? dataPatch.input ?? n.data.input
+          dataPatch.output = Object.prototype.hasOwnProperty.call(dataPatch, "output") ? dataPatch.output : n.data.output
+          dataPatch.workflowRuntimeOutput = dataPatch.output ?? n.data.workflowRuntimeOutput
+          dataPatch.previewText = previewTextForNodeData(
+            nextType,
+            dataPatch.input,
+            dataPatch.output,
+            nextPrompt,
+            n.data.previewText,
+          )
+          Object.assign(dataPatch, workflowMetadataFromPayload(dataPatch))
           const nextRenderState = renderStateFromPayload(
             dataPatch,
             nextType,
@@ -1618,7 +1821,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           if (mergedPreview !== undefined || Object.prototype.hasOwnProperty.call(dataPatch, "prompt") || hasMediaHintPatch) {
             dataPatch.preview = mergeMediaPreviewHints(
               nextType,
-              normalizePreviewForNode(nextType, mergedPreview ?? prevPreview, nextPrompt, dataPatch),
+              normalizePreviewForNode(nextType, mergedPreview ?? prevPreview, nextPrompt, dataPatch.input, dataPatch.output),
               dataPatch,
             )
           }
@@ -1658,18 +1861,27 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     )
 
     const nodes: Node[] = []
+    let visibleOrdinal = 0
     for (const n of rawNodes) {
+      const input = rawNodeInput(n)
+      const output = rawNodeOutput(n)
       const prompt = promptFromRawNode(n)
+      const surface = surfaceFromRawNode(n)
+      const rawPublicId = n.display_id ?? undefined
+      const fallbackPublicId = surface === "workflow_runtime" ? undefined : ++visibleOrdinal
+      const publicId = surface === "workflow_runtime" ? undefined : rawPublicId ?? fallbackPublicId
       const preview = mergeMediaPreviewHints(
         n.type,
-        normalizePreviewForNode(n.type, parseOutputPreview(n.output_json), prompt, n.input_json),
-        n.input_json,
+        normalizePreviewForNode(n.type, parseOutputPreview(output, n.type), prompt, input ?? n.input_json, output),
+        input ?? n.input_json,
         n.model_config_json,
       )
+      const previewText = previewTextForNodeData(n.type, input, output, prompt)
       const existing = currentNodes.get(n.id)
 	      const rawHasPosition = !forceLayout && hasStoredPosition(n)
+      const storedPosition = rawNodePosition(n)
 	      const position = rawHasPosition
-	        ? { x: n.position_x || CANVAS_ORIGIN_X, y: n.position_y || CANVAS_ORIGIN_Y }
+	        ? storedPosition ?? { x: CANVAS_ORIGIN_X, y: CANVAS_ORIGIN_Y }
 	        : preserveExistingLayout && existing
 	        ? existing.position
 	        : !forceLayout && manualLayout && existing
@@ -1684,20 +1896,25 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
         position,
-        data: {
-          nodeId: n.id,
-          publicId: n.display_id ?? undefined,
-          type: n.type,
-          title: n.title,
-          status: n.status,
-          version: n.version ?? 1,
-          superseded: supersededIds.has(n.id),
-          supersedes_id: n.supersedes_id ?? undefined,
-          surface: surfaceFromRawNode(n),
-          prompt,
-          renderState: renderStateFromRawNode(n),
-          error_message: n.error_message ?? errorMessageFromUnknown(n.output_json),
-	          preview,
+	        data: {
+	          nodeId: n.id,
+	          publicId,
+	          type: n.type,
+	          title: n.title,
+	          status: n.status,
+	          version: n.version ?? 1,
+	          superseded: supersededIds.has(n.id),
+	          supersedes_id: n.supersedes_id ?? undefined,
+	          surface,
+	          prompt,
+	          input,
+	          output,
+	          workflowRuntimeOutput: output,
+	          ...workflowMetadataFromInput(input),
+	          renderState: renderStateFromRawNode(n),
+	          error_message: n.error_message ?? errorMessageFromUnknown(output ?? n.output_json),
+            previewText,
+		          preview,
 	        },
 	      }
       const nextNode = applyStoredNodeDimensions(

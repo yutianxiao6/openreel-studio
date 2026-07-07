@@ -30,6 +30,7 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 
 _SCRIPT_SUFFIXES = {".txt", ".md", ".docx", ".rtf"}
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+_VIDEO_SUFFIXES = {".mp4", ".webm", ".mov", ".m4v"}
 _DOC_SUFFIXES = {".pdf", ".doc", ".csv", ".json", ".yaml", ".yml"}
 
 
@@ -37,6 +38,8 @@ def _classify(filename: str, mime_type: str | None) -> str:
     suffix = Path(filename).suffix.lower()
     if suffix in _IMAGE_SUFFIXES or (mime_type or "").startswith("image/"):
         return "image"
+    if suffix in _VIDEO_SUFFIXES or (mime_type or "").startswith("video/"):
+        return "video"
     if suffix in _SCRIPT_SUFFIXES:
         return "script"
     if suffix in _DOC_SUFFIXES:

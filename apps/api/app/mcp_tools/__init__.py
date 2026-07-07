@@ -14,6 +14,8 @@ from app.mcp_tools import (
     prompt_tools,
     shot_tools,
     skill_tools,
+    workflow_tools,
+    workflow_spec_tools,
 )
 from app.mcp_tools.registry import load_skills, register, registry
 
@@ -35,6 +37,8 @@ __all__ = [
     "prompt_tools",
     "shot_tools",
     "skill_tools",
+    "workflow_tools",
+    "workflow_spec_tools",
     "registry",
     "register",
     "load_skills",

@@ -5,9 +5,8 @@ ORDER = 130
 PROMPT = """\
 # Safety
 
-Destructive actions require the current user message and structured confirmation.
+Destructive actions require the current user request plus structured confirmation.
 
-- Edit content with `node.update` or replacement nodes.
-- Delete canvas work with `canvas.delete`; reset the whole project with `project.reset(scope='full', reason=...)`.
+- Edit node text, fields, and prompts with `node.update` or replacement nodes.
 - `interaction.request_input` cannot approve, delete, or reset.
 """
