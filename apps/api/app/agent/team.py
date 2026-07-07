@@ -1,9 +1,9 @@
-"""Agent Team — persistent teammates with protocols, autonomy, and isolation.
+"""Agent Team - persistent teammates with protocols, autonomy, and isolation.
 
-Combines three mechanisms from Claude Code's harness design:
-- Team Protocols (s10): request-response FSM for shutdown and plan approval
-- Autonomous Agents (s11): idle polling, auto-claim from task board
-- Execution Isolation (s12): each task binds to a state snapshot for rollback
+Combines three internal harness mechanisms:
+- Team protocols: request-response FSM for shutdown and plan approval
+- Autonomous workers: idle polling, auto-claim from task board
+- Execution isolation: each task binds to a state snapshot for rollback
 
 Teammates are persistent (survive across messages), have roles, and
 communicate via the MessageBus. They auto-claim unclaimed tasks from

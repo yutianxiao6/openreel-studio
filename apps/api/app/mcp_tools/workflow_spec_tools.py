@@ -1,8 +1,8 @@
 """Workflow spec artifact tools.
 
 The larger workflow_tools module owns runtime/materialization behavior. This
-module owns the model-facing spec read/write pipe so spec authoring stays close
-to the Codex-style single patch primitive.
+module owns the model-facing spec read/write pipe so spec authoring stays on a
+single validated patch primitive.
 """
 from __future__ import annotations
 

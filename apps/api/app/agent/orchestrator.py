@@ -1,4 +1,4 @@
-"""Agent Orchestrator — pure Agent Loop (Claude Code style).
+"""Agent Orchestrator - pure tool-driven Agent Loop.
 
 Every user message enters the same loop: LLM decides whether to call tools
 or respond with text. Loop continues until the LLM produces a text-only

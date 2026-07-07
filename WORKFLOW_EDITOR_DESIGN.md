@@ -1,4 +1,28 @@
-# 工作流编辑器设计方案
+# 工作流编辑器设计方案 / Workflow Editor Design
+
+## English Summary
+
+The workflow panel is a dedicated editor for reusable executable workflows. The
+creative canvas remains focused on user-visible products: scripts, character
+images, scene references, storyboard images, video prompts, videos, and audio.
+
+This design separates three views:
+
+- Template structure: reusable workflow blocks, nested loops, dependencies, and
+  layout hints without runtime status.
+- Runtime instance graph: concrete expanded steps for the current project,
+  including progress, output, failures, and run controls.
+- Creative canvas: product nodes only.
+
+Loop blocks stay collapsed at the current level. Users open a loop to edit its
+child workflow once; every runtime instance reuses that child layout. Execution
+dependencies, read-only context links, dynamic media references, visual ordering,
+and previous-instance continuity are separate relationship types.
+
+The goal is a workflow editor that is understandable to non-technical users
+while preserving a precise backend protocol.
+
+## 中文正文
 
 ## 目标
 
@@ -109,9 +133,9 @@
 
 用户在子流程里拖动节点，位置保存到循环块的 `steps[].ui.position`。运行实例根据这套位置自动偏移排布。
 
-## ArtChat 模板的正确展示
+## 通用分镜模板的正确展示
 
-ArtChat 宫格分镜模板当前看起来分成两段，是因为：
+通用宫格分镜模板容易被错误展示成两段并行流程，通常是因为：
 
 - `主要人物集合` 是文本集合步骤，用来得到角色列表。
 - `主要人物参考图集合` 是 `foreach` 循环块，用角色列表动态生成多张人物图。
@@ -141,7 +165,7 @@ ArtChat 宫格分镜模板当前看起来分成两段，是因为：
 
 循环内部模式：
 
-- 显示面包屑，例如 `ArtChat 宫格分镜 / 按集/段制作`。
+- 显示面包屑，例如 `通用宫格分镜 / 按集/段制作`。
 - 编辑这份子流程一次，所有运行实例复用。
 - 支持新增、删除、移动、连接内部节点。
 - 支持返回顶层。
@@ -169,8 +193,8 @@ ArtChat 宫格分镜模板当前看起来分成两段，是因为：
 {
   "templates": [
     {
-      "id": "artchat_grid_storyboard_workflow_spec",
-      "name": "ArtChat 宫格分镜工作流 Spec",
+      "id": "grid_storyboard_workflow_spec",
+      "name": "通用宫格分镜工作流 Spec",
       "author_graph": {},
       "compiled_graph": {},
       "runtime_preview": {}
@@ -219,9 +243,9 @@ ArtChat 宫格分镜模板当前看起来分成两段，是因为：
 - 节点详情展示运行输出。
 - 单步运行和一键执行从实例图触发。
 
-### 阶段 4：ArtChat 模板迁移
+### 阶段 4：通用模板结构整理
 
-- 把 ArtChat 模板改成清晰的 `collection + loop + nested steps` 结构。
+- 把通用分镜模板整理成清晰的 `collection + loop + nested steps` 结构。
 - `episode_segments` 使用 `layout_after` 表达视觉顺序。
 - 分镜图使用 `reference_selectors` 按出场人物选择人物参考图。
 
@@ -234,7 +258,7 @@ ArtChat 宫格分镜模板当前看起来分成两段，是因为：
 ## 验收标准
 
 - 模板结构里不出现“完成/未运行”等运行状态。
-- ArtChat 模板顶层不再看起来像两条并行段落。
+- 通用分镜模板顶层不再看起来像两条并行段落。
 - 进入“按集/段制作”后能看到段落子流程。
 - 用户拖动循环内部节点后，所有运行实例复用同一布局。
 - 2 集 4 段运行实例能按 8 个段落分组展示。

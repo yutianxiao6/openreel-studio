@@ -1,4 +1,4 @@
-"""Codex-style workflow spec patch/apply service.
+"""Patch/apply service for workflow specs.
 
 The model-facing tool should expose one write pipe. This module owns loading,
 patching, compiling, validating, auditing, and saving workflow specs so the

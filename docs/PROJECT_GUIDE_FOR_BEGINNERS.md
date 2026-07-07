@@ -1,4 +1,29 @@
-# OpenReel Studio 新手项目说明
+# OpenReel Studio 新手项目说明 / Beginner Project Guide
+
+## English Overview
+
+This guide is for developers, product designers, and contributors who are new to
+OpenReel Studio. It explains the project structure, core concepts, request flow,
+and the main files to inspect when changing the web UI, API, Agent loop,
+workflow runtime, skills, plugins, packaging, or documentation.
+
+The Chinese section below is the detailed guide. New English contributors should
+use it together with `README.md`, `SETUP.md`, `BLUEPRINT_OPERATING_MODEL.md`,
+`docs/workflow-spec-protocol.md`, and `docs/workflow-build-patch-design.md`.
+
+Key ideas:
+
+- The visible canvas nodes are the source of truth for creative output.
+- The API owns project state, tool execution, workflow runtime, media services,
+  traces, and local storage.
+- Workflow templates describe reusable inputs, steps, dependencies, loops, and
+  visible canvas products.
+- Skills hold production methods and prompt-writing guidance outside the stable
+  system prompt.
+- Runtime data, generated media, local config, traces, and secrets stay out of
+  Git commits.
+
+## 中文正文
 
 这份文档面向第一次接触 OpenReel Studio 的开发者、产品同学和设计同学。目标不是替代代码注释或架构规范，而是先把项目的结构、核心概念、请求流向和常见改动入口讲清楚，让新手知道“这个项目是什么、代码在哪里、改某个功能应该先看哪里”。
 
@@ -686,7 +711,7 @@ cd apps/api && PYTHONPATH=. uv run pytest -q
 - `AGENTS.md`
 - `BLUEPRINT_OPERATING_MODEL.md`
 - `docs/workflow-spec-protocol.md`
-- `docs/workflow-build-codex-style-design.md`
+- `docs/workflow-build-patch-design.md`
 - `docs/AGENT_QUALITY_ACCEPTANCE.md`
 
 ## 16. 常见误区
@@ -747,7 +772,7 @@ git diff --check
 - `AGENTS.md`：Agent 工作规则和工程边界。
 - `BLUEPRINT_OPERATING_MODEL.md`：节点优先创作模型和工具合同。
 - `docs/workflow-spec-protocol.md`：workflow spec 协议。
-- `docs/workflow-build-codex-style-design.md`：工作流搭建模式设计。
+- `docs/workflow-build-patch-design.md`：工作流搭建模式设计。
 - `docs/AGENT_QUALITY_ACCEPTANCE.md`：Agent 质量验收标准。
 - `docs/DESKTOP_PACKAGING.md`：桌面打包说明。
 

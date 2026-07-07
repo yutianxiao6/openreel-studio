@@ -717,7 +717,7 @@ class ToolRegistry:
             })
         return result
 
-    # ── Tier 设计(参考 Claude Code skill.load_content 机制) ─────────────
+    # ── Tier 设计 ─────────────────────────────────────────────────────
     # Tier 1: 完整 schema 始终注入 — 创作主路径,频繁调用,不绕弯
     # Tier 2: 只露 {name, description}; node-first 默认路径不再依赖
     # tool.search/tool.describe/tool.execute 发现业务流程。

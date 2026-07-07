@@ -89,9 +89,8 @@ def estimate_tokens(messages: list[dict]) -> int:
 def _estimate_text_tokens(messages: list[dict]) -> int:
     """Rough text-only token estimate for compacted tail retention.
 
-    This mirrors Codex remote compaction v2: images remain independent content
-    items and do not consume the text truncation budget used to decide which
-    recent messages survive compaction.
+    Images remain independent content items and do not consume the text
+    truncation budget used to decide which recent messages survive compaction.
     """
     total_chars = 0
     for msg in messages:
@@ -115,8 +114,8 @@ def micro_compact(messages: list[dict]) -> list[dict]:
     already-sent tool messages breaks prompt-cache prefixes; completed rounds
     are summarized separately before being persisted to chat history.
 
-    This still supports the legacy Anthropic-style tool_result blocks used by
-    the tutorial harness.
+    This still supports legacy list-form tool_result blocks used by older
+    tutorial harnesses.
     Vision image context is persisted history, not a tool result; keep it
     stable during a run so prompt-cache prefixes do not drift mid-loop.
     Keeps the most recent KEEP_RECENT_TOOL_RESULTS intact.

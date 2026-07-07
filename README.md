@@ -178,7 +178,7 @@ Important workflow docs:
 
 - [docs/WORKFLOW_MANUAL_BUILD_TUTORIAL.md](./docs/WORKFLOW_MANUAL_BUILD_TUTORIAL.md)
 - [docs/workflow-spec-protocol.md](./docs/workflow-spec-protocol.md)
-- [docs/workflow-build-codex-style-design.md](./docs/workflow-build-codex-style-design.md)
+- [docs/workflow-build-patch-design.md](./docs/workflow-build-patch-design.md)
 - [WORKFLOW_SPEC_PROTOCOL.md](./WORKFLOW_SPEC_PROTOCOL.md)
 - [WORKFLOW_EDITOR_DESIGN.md](./WORKFLOW_EDITOR_DESIGN.md)
 
@@ -464,12 +464,16 @@ Every npm release requires a unique package version.
 
 ## Documentation
 
+Project-facing documentation should include both English and Chinese sections.
+OpenReel design notes should focus on this project's product goals, protocols,
+and implementation.
+
 - [docs/PROJECT_GUIDE_FOR_BEGINNERS.md](./docs/PROJECT_GUIDE_FOR_BEGINNERS.md)
 - [SETUP.md](./SETUP.md)
 - [docs/WORKFLOW_MANUAL_BUILD_TUTORIAL.md](./docs/WORKFLOW_MANUAL_BUILD_TUTORIAL.md)
 - [WORKFLOW_SPEC_PROTOCOL.md](./WORKFLOW_SPEC_PROTOCOL.md)
 - [docs/workflow-spec-protocol.md](./docs/workflow-spec-protocol.md)
-- [docs/workflow-build-codex-style-design.md](./docs/workflow-build-codex-style-design.md)
+- [docs/workflow-build-patch-design.md](./docs/workflow-build-patch-design.md)
 - [docs/AGENT_QUALITY_ACCEPTANCE.md](./docs/AGENT_QUALITY_ACCEPTANCE.md)
 - [docs/DESKTOP_PACKAGING.md](./docs/DESKTOP_PACKAGING.md)
 
@@ -626,7 +630,7 @@ ChatPanel 或 Canvas UI
 
 - [docs/WORKFLOW_MANUAL_BUILD_TUTORIAL.md](./docs/WORKFLOW_MANUAL_BUILD_TUTORIAL.md)
 - [docs/workflow-spec-protocol.md](./docs/workflow-spec-protocol.md)
-- [docs/workflow-build-codex-style-design.md](./docs/workflow-build-codex-style-design.md)
+- [docs/workflow-build-patch-design.md](./docs/workflow-build-patch-design.md)
 - [WORKFLOW_SPEC_PROTOCOL.md](./WORKFLOW_SPEC_PROTOCOL.md)
 - [WORKFLOW_EDITOR_DESIGN.md](./WORKFLOW_EDITOR_DESIGN.md)
 
@@ -892,12 +896,14 @@ npm publish --access public
 
 ## 文档
 
+面向项目和用户的文档应同时包含英文和中文说明。OpenReel 的设计说明应聚焦本项目自身的产品目标、协议和实现。
+
 - [docs/PROJECT_GUIDE_FOR_BEGINNERS.md](./docs/PROJECT_GUIDE_FOR_BEGINNERS.md)
 - [SETUP.md](./SETUP.md)
 - [docs/WORKFLOW_MANUAL_BUILD_TUTORIAL.md](./docs/WORKFLOW_MANUAL_BUILD_TUTORIAL.md)
 - [WORKFLOW_SPEC_PROTOCOL.md](./WORKFLOW_SPEC_PROTOCOL.md)
 - [docs/workflow-spec-protocol.md](./docs/workflow-spec-protocol.md)
-- [docs/workflow-build-codex-style-design.md](./docs/workflow-build-codex-style-design.md)
+- [docs/workflow-build-patch-design.md](./docs/workflow-build-patch-design.md)
 - [docs/AGENT_QUALITY_ACCEPTANCE.md](./docs/AGENT_QUALITY_ACCEPTANCE.md)
 - [docs/DESKTOP_PACKAGING.md](./docs/DESKTOP_PACKAGING.md)
 

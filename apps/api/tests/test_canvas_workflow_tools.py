@@ -2609,7 +2609,6 @@ async def test_general_short_drama_skill_is_default_workflow_source() -> None:
     names = {item["name"] for item in result["skills"]}
 
     assert "general_short_drama_workflow" in names
-    assert "artchat_short_drama_workflow" not in names
 
     loaded = await skill_tools.skill_get_skill(
         name="general_short_drama_workflow",

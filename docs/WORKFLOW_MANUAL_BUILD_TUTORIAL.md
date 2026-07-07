@@ -1,4 +1,48 @@
-# 工作流手动搭建教程
+# 工作流手动搭建教程 / Manual Workflow Building Tutorial
+
+## English Overview
+
+This tutorial explains how to build a workflow from the current OpenReel Studio
+frontend and how the visible buttons map to the backend workflow protocol.
+
+Use the workflow panel to edit reusable templates. Use the workflow run dock on
+the canvas to add a runtime instance, fill this run's inputs, run one step, run
+the next ready step, run all remaining steps, pause, delete, or inspect step
+output.
+
+The main frontend concepts are:
+
+- `Input`: defines values the user fills before a run, such as plot, duration,
+  segment length, style, or a source video node.
+- `Generate Text`: asks the model to write or transform plain text.
+- `Extract Collection`: extracts a list of structured objects, such as
+  characters, scenes, shots, segments, or keyframes. Users write natural
+  language; the backend injects the structured output contract.
+- `Split Segments`: creates a duration-based segment plan.
+- `Loop`: repeats child steps for each item in a collection.
+- `Text/Image/Video/Audio Node`: creates or updates a visible canvas product.
+- `Plugin Action`: runs an installed workflow plugin.
+- `Review`: checks quality or consistency.
+
+Recommended build order:
+
+1. Create the `Input` step and define required fields.
+2. Add a text step that turns the inputs into a complete script or task brief.
+3. Add collection steps for unknown counts, such as characters or segments.
+4. Add loops over those collections.
+5. Place visible product nodes inside or after the loops.
+6. Add dynamic references only after stable matching fields such as `name` and
+   `reuse_key` exist.
+7. Save the workflow, then run it step by step once before using run-all.
+
+For dynamic image references, do not manually connect every future image.
+Instead, make the upstream collection and downstream plan share stable fields
+such as `name` or `reuse_key`, then let the workflow spec select matching
+candidate images at runtime with `references`.
+
+The full detailed tutorial is provided in Chinese below.
+
+## 中文正文
 
 这篇教程面向想在前端自己搭建 workflow 的用户。它按当前前端已经有的按钮、右侧栏和后端 `openreel.workflow.authoring.v1` 协议来写，目标是让用户知道每一步该点哪里、填什么、最终在后端会变成什么执行关系。
 

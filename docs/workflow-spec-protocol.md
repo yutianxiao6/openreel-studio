@@ -4,6 +4,23 @@ OpenReel workflow spec describes a reusable creation workflow. The preferred
 authoring format is `openreel.workflow.authoring.v1`; the backend compiles it to
 the runtime workflow format used by canvas execution.
 
+## 中文摘要
+
+OpenReel workflow spec 描述可复用创作流程。推荐作者格式是
+`openreel.workflow.authoring.v1`，后端会把它编译成画布运行时使用的
+`openreel.workflow.v1`。
+
+这份协议的重点是：
+
+- 用 `inputs` 定义运行前输入。
+- 用 `steps` 定义处理步骤和画布产物。
+- 用 `needs` 表示真实执行依赖。
+- 用 `collection` 和 `loop` 表示动态集合和遍历。
+- 用 `references` 表示按字段动态选择视觉参考。
+- 用 `output.canvas=true` 表示用户能在画布上看到的产物。
+
+普通用户不需要手写 JSON；前端编辑器和工作流搭建模式会生成这些字段。
+
 ## Authoring Schema
 
 ```json

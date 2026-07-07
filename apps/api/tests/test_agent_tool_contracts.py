@@ -433,7 +433,7 @@ def test_agent_loop_tool_schemas_are_provider_safe_for_arrays() -> None:
 
 
 @pytest.mark.asyncio
-async def test_interaction_request_input_accepts_codex_style_questions() -> None:
+async def test_interaction_request_input_accepts_structured_questions() -> None:
     result = await interaction_tools.request_input(
         project_id="project-1",
         questions=[
@@ -585,7 +585,7 @@ def test_registered_tool_descriptions_are_present_and_concise() -> None:
 
     assert missing == [], f"Tools without descriptions: {missing}"
 
-def test_core_tool_descriptions_follow_codex_style_short_contract() -> None:
+def test_core_tool_descriptions_follow_short_contract() -> None:
     ctx = PromptContext(project_id="core-tool-style", user_message="hello", state={})
     tools = registry.get_tools_for_agent_loop(namespaces=select_tool_namespaces(ctx))
     old_contract_markers = ("边界：", "用法：", "示例：")

@@ -302,7 +302,7 @@ def test_always_prompt_sections_are_contracts_not_manuals() -> None:
         assert stat.chars <= 700, stat.name
         assert not any(marker in text for marker in manual_markers), stat.name
 
-def test_working_loop_stays_domain_neutral_like_codex_core_prompt() -> None:
+def test_working_loop_stays_domain_neutral_with_core_prompt() -> None:
     assert "Latest user" in working_loop.PROMPT
     assert "canvas state" in working_loop.PROMPT
     assert "existing workflow templates" in working_loop.PROMPT

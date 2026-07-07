@@ -307,7 +307,7 @@ class TaskGraph:
                 )
 
     def _clear_other_in_progress(self, active_task: Task) -> None:
-        """Keep the visible checklist Codex-like: one active step per project."""
+        """Keep the visible checklist simple: one active step per project."""
         for f in self.dir.glob("task_*.json"):
             data = json.loads(f.read_text(encoding="utf-8"))
             if data.get("id") == active_task.id:

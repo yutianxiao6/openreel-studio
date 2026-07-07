@@ -1,4 +1,15 @@
-# OpenReel Studio - 快速开始
+# OpenReel Studio - 快速开始 / Quick Start
+
+## English Summary
+
+This guide explains how to prepare a local OpenReel Studio development
+environment, install dependencies, configure environment variables, start the API
+and web services, change ports, configure API keys safely, initialize the
+database, and use the production Docker deployment path.
+
+The Chinese section below contains the detailed step-by-step instructions.
+
+## 中文正文
 
 ## 环境要求
 

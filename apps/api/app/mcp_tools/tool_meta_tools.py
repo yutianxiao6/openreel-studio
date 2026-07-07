@@ -1,6 +1,6 @@
 """按需加载分发器 — Agent 通过 tool.search / describe / execute 使用 Tier 2 工具。
 
-设计参考 Claude Code 的 skill.load_content 机制:
+设计说明:
 - 启动时 LLM 只看到稳定核心工具的完整 schema
 - Tier 2 工具(memory/agent/scene/shot/asset/canvas/media/file 等)留在 deferred pool
 - 模型需要时 search → describe → execute
@@ -111,7 +111,7 @@ _STATIC_SEARCH_HINTS: dict[str, str] = {
         "guide project mentor video workflow blueprint tree T2V I2V storyboard shot images story template "
         "text-to-video image-to-video keyframes first frame last frame multi reference @图片 uploaded image style reference asset library "
         "blueprint revision audit trace debugging node repair rerun failed node blueprint plan source path production audit model_written "
-        "prompt_source dependency_missing pending_video_blueprint_request Claude Code architecture "
+        "prompt_source dependency_missing pending_video_blueprint_request agent architecture "
         "项目规则 视频工作流 蓝图修订 制作审查 交付审查 "
         "失败节点 原地修复 节点修复 重跑 蓝图执行计划 执行计划 排障 "
         "文生视频 图生视频 首尾帧 多图参考 参考图 风格参考 宫格分镜 单张分镜 "
@@ -138,12 +138,12 @@ _STATIC_SEARCH_HINTS: dict[str, str] = {
         "delegate subagent specialist workflow_spec workflow template selector node_producer image_editor node produce prompt fields run image video text audio generate character reference edit crop brush doodle fill cover mask segment background transparent alpha rounded icon annotate text arrow "
         "preview commit 工作流 模板选择 现有模板 节点生产 节点补全 提示词编写 运行节点 图片生成 视频提示词 人物图 复杂参考图 图片编辑 子agent 子 Agent 专职 委派 裁剪 涂鸦 画笔 覆盖 遮挡 填充 分割 抠图 透明背景 图标圆角 网格 透明色块 文字 箭头 标注"
     ),
-    "file.workspace_delete": "delete workspace file directory recursive force no shell codex-like filesystem 删除工作区文件 目录 不执行命令",
-    "file.workspace_list": "list workspace files directory recursive no shell codex-like filesystem 列出工作区文件 不执行命令",
-    "file.workspace_patch": "patch workspace text file exact replacement no shell codex-like apply patch 修改工作区文本 不执行命令",
-    "file.workspace_read": "read workspace file text base64 line range no shell codex-like filesystem 读取工作区文件 不执行命令",
+    "file.workspace_delete": "delete workspace file directory recursive force no shell filesystem 删除工作区文件 目录 不执行命令",
+    "file.workspace_list": "list workspace files directory recursive no shell filesystem 列出工作区文件 不执行命令",
+    "file.workspace_patch": "patch workspace text file exact replacement no shell apply patch 修改工作区文本 不执行命令",
+    "file.workspace_read": "read workspace file text base64 line range no shell filesystem 读取工作区文件 不执行命令",
     "file.workspace_search": "search workspace file names content glob recursive no shell fuzzy file search 查找工作区文件 不执行命令",
-    "file.workspace_write": "write workspace text file append overwrite create dirs no shell codex-like filesystem 写工作区文件 不执行命令",
+    "file.workspace_write": "write workspace text file append overwrite create dirs no shell filesystem 写工作区文件 不执行命令",
     "memory.recall": "recall memory project facts 历史事实 项目记忆 查询记忆",
     "memory.save_fact": "save project memory fact pinned constraint 项目记忆 保存事实 不可变约束",
     "task.create": "create visible progress task manual tracking explicit user request long running multi step 创建任务 任务跟踪 手动跟踪 长耗时 多步骤",

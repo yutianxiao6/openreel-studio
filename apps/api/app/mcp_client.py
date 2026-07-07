@@ -4,9 +4,9 @@ On startup, reads mcp_servers.json (or env MCP_SERVERS_CONFIG), launches each
 configured server process (stdio transport), fetches its tool list, and registers
 proxy handlers into the shared registry under the `ext.<server_name>.<tool>` namespace.
 
-This is what makes the Agent behave like Claude Code: it can call tools from
-arbitrary external MCP servers (filesystem, brave-search, databases, etc.)
-without any code changes — just add a config entry.
+This lets the Agent call tools from arbitrary external MCP servers
+(filesystem, search, databases, etc.) without code changes; add a config entry
+to register another server.
 """
 from __future__ import annotations
 

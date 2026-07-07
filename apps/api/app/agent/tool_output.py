@@ -1,4 +1,4 @@
-"""Codex-style separation for tool results.
+"""Structured separation for tool results.
 
 Tool handlers still return their local raw result. The agent loop wraps that
 result at the boundary so model context, raw artifacts, trace diagnostics, and

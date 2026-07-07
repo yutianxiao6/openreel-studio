@@ -1,6 +1,6 @@
 """Workflow template selector subagent role contract.
 
-This keeps the workflow selector role close to Codex-style mode templates:
+This keeps the workflow selector role close to the mode prompt templates:
 agent_tools owns the generic subagent loop, while this module owns the
 workflow-specific role prompt, tool boundary, and task-message shape.
 """

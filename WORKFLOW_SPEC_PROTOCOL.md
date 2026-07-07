@@ -2,6 +2,19 @@
 
 This document defines the target workflow protocol for OpenReel Studio. The protocol separates model/user authoring, backend compilation, runtime execution, and UI graph presentation.
 
+## 中文摘要
+
+本文定义 OpenReel Studio 的目标 workflow spec 协议。协议把用户/模型编写的作者 spec、后端编译后的可执行模板、当前项目的运行实例图，以及前端展示用的图结构分开。
+
+核心原则：
+
+- 作者 spec 面向用户和 Agent，要求短、可读、稳定。
+- 编译 spec 面向后端校验和执行。
+- 运行实例图只描述当前项目本次运行状态。
+- 创作画布上的产物节点是用户可见真相源。
+- UI 排布顺序不等于执行依赖。
+- 动态循环在模板里只描述一次，运行时再展开成具体实例。
+
 ## Design Principles
 
 - Authoring specs are for humans and Agents.
@@ -235,9 +248,9 @@ Cross-instance continuity. The backend rewrites this to the previous instance's 
 | `prompt` | `prompt_template` |
 | `output.canvas` | `surface` and `visibility` |
 
-## ArtChat Grid Example
+## Generic Grid Storyboard Example
 
-The ArtChat grid workflow should be represented as:
+The generic grid storyboard workflow should be represented as:
 
 ```json
 {
@@ -307,7 +320,7 @@ Compatibility rules:
 3. Add template graph generation for root and nested scopes.
 4. Add runtime graph generation for expanded instances.
 5. Update workflow spec artifact preview to return authoring summary, compiled summary, and graph preview without returning huge specs to the main Agent.
-6. Keep legacy `steps` and existing runner behavior during migration.
+6. Keep legacy `steps` and existing runner behavior while compatibility support remains active.
 
 ## Frontend Work Items
 
@@ -326,5 +339,5 @@ Compatibility rules:
 - Runtime mode displays expanded instances and execution state.
 - Editing a child workflow once affects all runtime instances.
 - `layout_after` can make one loop appear after another without changing execution readiness.
-- ArtChat grid template visually reads as a single production flow.
+- The generic grid storyboard template visually reads as a single production flow.
 - Old specs remain importable and runnable.

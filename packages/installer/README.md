@@ -4,6 +4,11 @@ Official npm installer for OpenReel Studio.
 
 Use this package to download the latest desktop installer, or to bootstrap a Linux server deployment from the official GitHub Release.
 
+## 中文摘要
+
+这是 OpenReel Studio 的官方 npm 安装器。它可以下载最新桌面安装包，也可以
+从正式 GitHub Release 引导 Linux 服务器部署。
+
 ```bash
 npx openreel-studio-installer
 ```

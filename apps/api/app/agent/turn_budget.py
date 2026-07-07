@@ -1,9 +1,9 @@
 """Turn-level tool-call budgets for the Agent Loop.
 
-Codex keeps turn accounting in the tool runtime/registry layer instead of
-burying every guard inside the prompt.  This module mirrors that boundary for
-OpenReel: it classifies a tool call, records the attempt, and returns a
-terminal decision when the current turn is no longer making bounded progress.
+OpenReel keeps turn accounting in the tool runtime/registry layer instead of
+burying every guard inside the prompt. This module classifies a tool call,
+records the attempt, and returns a terminal decision when the current turn is no
+longer making bounded progress.
 """
 from __future__ import annotations
 

@@ -1,12 +1,25 @@
-# Workflow Build Codex-Style Design
+# Workflow Build Patch Design / 工作流搭建补丁写入设计
 
 Date: 2026-07-06
 
+## 中文摘要
+
+Workflow Build Mode 是一个专门搭建和修改可复用 workflow spec 的模式。
+它不参与普通视频制作，也不把完整 workflow 内容塞进主 Agent 上下文。
+
+本设计把模型可见的写入路径收敛为一个补丁式写入工具：
+`workflow.spec.apply_patch`。模型先读取必要的 skill、模板摘要或当前 artifact，
+然后一次性创建、替换或局部修改 workflow spec。写入工具负责校验协议、生成画布
+投影、保存 artifact 或用户模板，并返回短引用、输入字段和校验结果。
+
+这样做的目标是减少工具编排成本，让模型把注意力放在 workflow 结构是否正确，而
+不是记住一串 start/append/commit/promote 工具调用顺序。
+
 ## Purpose
 
-Workflow Build Mode should feel like Codex editing a file: the model reads the
-minimum context it needs, applies one validated change, and gets a structured
-result. The current workflow authoring path exposes too many write tools
+Workflow Build Mode should behave like a focused spec editor: the model reads
+the minimum context it needs, applies one validated change, and gets a
+structured result. The current workflow authoring path exposes too many write tools
 (`workflow.spec.start`, `workflow.spec.append_steps`, `workflow.spec.commit`,
 `workflow.spec.patch`, `workflow.template.clone_to_artifact`,
 `workflow.template.promote`). That makes the model learn tool choreography
@@ -14,22 +27,7 @@ instead of workflow design.
 
 This design keeps the existing workflow protocol, compiler, artifact store,
 template store, audit, runtime, and frontend behavior. It changes the
-model-visible authoring interface to one Codex-style patch/apply pipe.
-
-## Source Baseline
-
-The design follows the official `openai/codex` CLI pattern observed in the
-cloned source at `/tmp/openai-codex-src`, commit `be33f80`.
-
-Relevant Codex patterns:
-
-- File reads and searches are environment or shell actions, not many separate
-  model-learned write tools.
-- File edits go through one `apply_patch` tool.
-- The patch handler parses and verifies input before writing.
-- The same write path emits begin/update/end events and approval state.
-- Host filesystem RPCs exist, but they are application infrastructure, not the
-  primary model-facing editing API.
+model-visible authoring interface to one patch/apply pipe owned by OpenReel.
 
 ## Current Problems
 
@@ -124,8 +122,8 @@ Notes:
 - `workflow.template.promote` and `workflow.template.clone_to_artifact` become
   internal service operations used by `workflow.spec.apply_patch`.
 - Old spec tools should be removed from model-visible core. If temporarily kept
-  for migration, tests must assert they are not in the Workflow Build Mode core
-  profile.
+  for compatibility tests, tests must assert they are not in the Workflow Build
+  Mode core profile.
 
 ## New Tool Contract
 
@@ -571,9 +569,9 @@ Pass criteria:
 - user experience pass with no internal tool choreography in final message
 - observability pass with trace evidence and saved artifacts/templates
 
-## Migration Notes
+## Compatibility Notes
 
-- This is not a workflow protocol migration. Existing templates remain valid.
+- This does not change the workflow protocol. Existing templates remain valid.
 - Existing artifacts remain readable through `workflow.spec.read`.
 - New writes should produce immutable artifact revisions or template versions.
 - Old visible write tools should not remain in prompts as compatibility hints.
@@ -590,5 +588,5 @@ After implementation, a Workflow Build Mode turn should usually look like:
 4. optional `workflow.canvas.inspect`
 5. final response with saved template/artifact reference
 
-That matches the Codex editing model: read, apply one validated patch, report
-the durable result.
+That matches the project editing model: read the minimum required context,
+apply one validated patch, and report the durable result.
