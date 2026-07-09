@@ -10,6 +10,8 @@ export interface VideoEditPanelMediaNode {
   title: string
   type: "video" | "audio" | "image"
   src: string
+  sourceNodeId?: string
+  synthetic?: boolean
 }
 
 interface VideoEditPanelProps {
@@ -487,7 +489,31 @@ export default function VideoEditPanel({
   )
   const videoItems = useMemo(() => mediaNodes.filter((item) => item.type === "video" && item.src), [mediaNodes])
   const audioItems = useMemo(() => mediaNodes.filter((item) => item.type === "audio" && item.src), [mediaNodes])
-  const mediaById = useMemo(() => new Map(mediaNodes.map((item) => [item.id, item])), [mediaNodes])
+  const sourceVideoItem = useMemo(
+    () => videoItems.find((item) => item.id === nodeId) || videoItems[0],
+    [nodeId, videoItems],
+  )
+  const embeddedAudioItem = useMemo<VideoEditPanelMediaNode | null>(() => (
+    sourceVideoItem
+      ? {
+          id: `embedded-audio:${sourceVideoItem.id}`,
+          sourceNodeId: sourceVideoItem.id,
+          synthetic: true,
+          type: "audio",
+          title: `${sourceVideoItem.title || "视频"} 原声`,
+          src: sourceVideoItem.src,
+        }
+      : null
+  ), [sourceVideoItem])
+  const audioTimelineItems = useMemo(
+    () => audioItems.length > 0 ? audioItems : embeddedAudioItem ? [embeddedAudioItem] : [],
+    [audioItems, embeddedAudioItem],
+  )
+  const mediaById = useMemo(() => {
+    const entries = [...mediaNodes]
+    if (embeddedAudioItem) entries.push(embeddedAudioItem)
+    return new Map(entries.map((item) => [item.id, item]))
+  }, [embeddedAudioItem, mediaNodes])
   const selectedVideoClip = useMemo(
     () => videoClips.find((clip) => clip.id === selectedClipId) || videoClips[0],
     [selectedClipId, videoClips],
@@ -503,6 +529,7 @@ export default function VideoEditPanel({
   const currentVideoItem = currentVideoClip ? mediaById.get(currentVideoClip.id) : undefined
   const currentAudioItem = currentAudioClip ? mediaById.get(currentAudioClip.id) : undefined
   const selectedVideoItem = selectedVideoClip ? mediaById.get(selectedVideoClip.id) : undefined
+  const hasSeparateAudioAtPlayhead = Boolean(currentAudioItem && !currentAudioItem.synthetic)
   const timelineDuration = useMemo(() => {
     const lastClipEnd = Math.max(
       0,
@@ -538,14 +565,14 @@ export default function VideoEditPanel({
 
   useEffect(() => {
     setAudioClips((current) => {
-      const valid = current.filter((clip) => audioItems.some((item) => item.id === clip.id))
+      const valid = current.filter((clip) => audioTimelineItems.some((item) => item.id === clip.id))
       if (valid.length > 0) return valid
-      const primary = audioItems[0]
+      const primary = audioTimelineItems[0]
       return primary
         ? [{ id: primary.id, start: 0, duration: sourceDuration || DEFAULT_CLIP_SECONDS }]
         : []
     })
-  }, [audioItems, sourceDuration])
+  }, [audioTimelineItems, sourceDuration])
 
   useEffect(() => {
     setSelectedClipId(nodeId)
@@ -645,7 +672,7 @@ export default function VideoEditPanel({
       video.currentTime = localTime
       void video.play()
     }
-    if (currentAudioClip) {
+    if (currentAudioClip && currentAudioItem && !currentAudioItem.synthetic) {
       const audio = audioRef.current
       if (audio) {
         audio.currentTime = clamp(currentTime - currentAudioClip.start, 0, currentAudioClip.duration)
@@ -653,7 +680,7 @@ export default function VideoEditPanel({
       }
     }
     setPlaying(true)
-  }, [currentAudioClip, currentTime, currentVideoClip, mediaById, playing])
+  }, [currentAudioClip, currentAudioItem, currentTime, currentVideoClip, mediaById, playing])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -860,7 +887,7 @@ export default function VideoEditPanel({
                     <video
                       ref={videoRef}
                       src={currentVideoItem.src || videoUrl}
-                      muted={audioClips.length > 0}
+                      muted={hasSeparateAudioAtPlayhead}
                       preload="metadata"
                       className="h-full w-full object-contain [color-scheme:dark]"
                       onLoadedMetadata={(event) => {
@@ -891,7 +918,9 @@ export default function VideoEditPanel({
                   {currentVideoItem?.title || selectedVideoItem?.title || "当前画面"}
                 </div>
               </div>
-              {currentAudioItem && <audio ref={audioRef} src={currentAudioItem.src} preload="metadata" />}
+              {currentAudioItem && !currentAudioItem.synthetic && (
+                <audio ref={audioRef} src={currentAudioItem.src} preload="metadata" />
+              )}
             </div>
 
             <div className="flex h-12 items-center justify-between border-t border-white/10 bg-[#0d121a] px-3">
