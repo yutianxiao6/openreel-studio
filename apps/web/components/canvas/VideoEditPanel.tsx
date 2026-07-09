@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react"
+import type { PointerEvent as ReactPointerEvent } from "react"
 import { runProjectMediaOperation } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -25,6 +25,17 @@ interface VideoEditPanelProps {
 type BusyAction = "frame" | "tail" | "split" | "trim" | "concat-video" | "concat-audio" | null
 type TimelineTool = "select" | "blade" | "trim"
 
+interface TimelineClipState {
+  id: string
+  start: number
+  duration: number
+}
+
+const TRACK_LABEL_WIDTH = 76
+const DEFAULT_CLIP_SECONDS = 4
+const DEFAULT_TIMELINE_SECONDS = 12
+const DEFAULT_PX_PER_SECOND = 84
+
 function formatTime(value: number): string {
   if (!Number.isFinite(value) || value < 0) return "0:00"
   const total = Math.max(0, Math.floor(value))
@@ -40,43 +51,21 @@ function formatTimePrecise(value: number): string {
   return `${String(minutes).padStart(2, "0")}:${seconds.toFixed(2).padStart(5, "0")}`
 }
 
-function clampTime(value: number, duration: number): number {
-  const max = Number.isFinite(duration) && duration > 0 ? duration : Math.max(value, 0)
-  if (!Number.isFinite(value)) return 0
-  return Math.min(Math.max(value, 0), max)
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min
+  return Math.min(Math.max(value, min), max)
 }
 
-function reorder(ids: string[], draggedId: string, targetId: string): string[] {
-  if (draggedId === targetId) return ids
-  const from = ids.indexOf(draggedId)
-  const to = ids.indexOf(targetId)
-  if (from < 0 || to < 0) return ids
-  const next = [...ids]
-  const [item] = next.splice(from, 1)
-  next.splice(to, 0, item)
-  return next
+function clipEnd(clip: TimelineClipState): number {
+  return clip.start + clip.duration
 }
 
-function timelineTicks(duration: number): number[] {
-  const max = Number.isFinite(duration) && duration > 0 ? duration : 30
-  const count = 7
-  return Array.from({ length: count }, (_, index) => (max / (count - 1)) * index)
-}
-
-function waveformBars(seed: string, count = 52): number[] {
-  let value = seed.split("").reduce((sum, char) => sum + char.charCodeAt(0), 23)
+function waveformBars(seed: string, count = 72): number[] {
+  let value = seed.split("").reduce((sum, char) => sum + char.charCodeAt(0), 37)
   return Array.from({ length: count }, () => {
     value = (value * 1664525 + 1013904223) % 4294967296
-    return 0.22 + (value / 4294967296) * 0.72
+    return 0.18 + (value / 4294967296) * 0.78
   })
-}
-
-function trackInsertOrder(order: string[], id: string, beforeId?: string): string[] {
-  const clean = order.filter((item) => item !== id)
-  if (!beforeId) return [...clean, id]
-  const index = clean.indexOf(beforeId)
-  if (index < 0) return [...clean, id]
-  return [...clean.slice(0, index), id, ...clean.slice(index)]
 }
 
 function videoFrameTimes(duration: number, count: number): number[] {
@@ -87,6 +76,16 @@ function videoFrameTimes(duration: number, count: number): number[] {
     const ratio = index / (safeCount - 1)
     return Math.min(Math.max(duration * ratio, 0), Math.max(duration - 0.05, 0))
   })
+}
+
+function timeFromPointer(
+  event: PointerEvent | ReactPointerEvent,
+  container: HTMLElement,
+  pxPerSecond: number,
+): number {
+  const rect = container.getBoundingClientRect()
+  const scrollLeft = container.scrollLeft || 0
+  return Math.max(0, (event.clientX - rect.left + scrollLeft - TRACK_LABEL_WIDTH) / pxPerSecond)
 }
 
 function VideoThumbnailStrip({
@@ -112,6 +111,7 @@ function VideoThumbnailStrip({
       video.preload = "auto"
       video.playsInline = true
       video.src = src
+
       const canvas = document.createElement("canvas")
       canvas.width = 160
       canvas.height = 90
@@ -122,14 +122,14 @@ function VideoThumbnailStrip({
         video.onloadedmetadata = () => resolve()
         video.onerror = () => reject(new Error("video metadata unavailable"))
       })
+
       const duration = Number(video.duration || 0)
       const times = videoFrameTimes(duration, count)
       const nextFrames: string[] = []
       for (const time of times) {
         if (cancelled) return
         await new Promise<void>((resolve, reject) => {
-          const finish = () => resolve()
-          video.onseeked = finish
+          video.onseeked = () => resolve()
           video.onerror = () => reject(new Error("video seek unavailable"))
           video.currentTime = time
         })
@@ -155,7 +155,7 @@ function VideoThumbnailStrip({
             key={`${frame.slice(0, 24)}-${index}`}
             src={frame}
             alt=""
-            className="h-full min-w-0 flex-1 object-cover opacity-88"
+            className="h-full min-w-0 flex-1 object-cover opacity-90"
             draggable={false}
           />
         ))}
@@ -180,38 +180,6 @@ function VideoThumbnailStrip({
   )
 }
 
-function OperationButton({
-  children,
-  disabled,
-  active,
-  tone = "neutral",
-  onClick,
-}: {
-  children: ReactNode
-  disabled?: boolean
-  active?: boolean
-  tone?: "neutral" | "primary"
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-8 items-center justify-center rounded-md border px-2.5 text-[11px] font-semibold transition",
-        tone === "primary"
-          ? "border-cyan-200/40 bg-cyan-200 text-cyan-950 shadow-[0_10px_24px_rgba(103,232,249,0.16)] hover:bg-cyan-100"
-          : "border-white/10 bg-white/[0.045] text-zinc-200 hover:border-white/18 hover:bg-white/[0.085]",
-        active && tone !== "primary" && "border-cyan-200/35 bg-cyan-300/12 text-cyan-100",
-        disabled && "cursor-not-allowed opacity-40 hover:border-white/10 hover:bg-white/[0.045]",
-      )}
-    >
-      {children}
-    </button>
-  )
-}
-
 function ToolButton({
   label,
   glyph,
@@ -230,127 +198,165 @@ function ToolButton({
       aria-label={label}
       onClick={onClick}
       className={cn(
-        "flex h-8 items-center justify-center gap-1 rounded-md border px-2.5 text-[11px] font-semibold transition",
+        "inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-semibold transition",
         active
-          ? "border-cyan-200/40 bg-cyan-300/16 text-cyan-100"
+          ? "border-cyan-200/45 bg-cyan-300/16 text-cyan-100"
           : "border-white/10 bg-white/[0.035] text-zinc-300 hover:bg-white/[0.08]",
       )}
     >
       <span className="text-[10px] text-zinc-500">{glyph}</span>
-      <span>{label}</span>
+      {label}
     </button>
   )
 }
 
-function AssetCard({
-  item,
+function ActionButton({
+  children,
+  disabled,
   active,
+  onClick,
+}: {
+  children: React.ReactNode
+  disabled?: boolean
+  active?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "h-8 rounded-md border px-2.5 text-[11px] font-semibold transition",
+        active
+          ? "border-cyan-200/45 bg-cyan-200 text-cyan-950"
+          : "border-white/10 bg-white/[0.045] text-zinc-200 hover:bg-white/[0.085]",
+        disabled && "cursor-not-allowed opacity-40 hover:bg-white/[0.045]",
+      )}
+    >
+      {children}
+    </button>
+  )
+}
+
+function MediaBinItem({
+  item,
   onInsert,
 }: {
   item: VideoEditPanelMediaNode
-  active?: boolean
   onInsert: (item: VideoEditPanelMediaNode) => void
 }) {
   return (
     <div
       draggable
       onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = "copyMove"
+        event.dataTransfer.effectAllowed = "copy"
         event.dataTransfer.setData("openreel/media-id", item.id)
-        event.dataTransfer.setData("text/plain", item.id)
       }}
       onDoubleClick={() => onInsert(item)}
-      className={cn(
-        "group overflow-hidden rounded-md border bg-[#111720] transition",
-        active ? "border-cyan-200/50 shadow-[0_0_0_1px_rgba(103,232,249,0.18)]" : "border-white/10 hover:border-white/18",
-      )}
+      className="group flex cursor-grab items-center gap-2 rounded-md border border-white/10 bg-white/[0.035] p-2 active:cursor-grabbing"
     >
-      <div className="relative aspect-video overflow-hidden bg-black">
+      <div className="relative h-10 w-14 shrink-0 overflow-hidden rounded bg-black">
         {item.type === "video" ? (
-          <video src={item.src} muted preload="metadata" className="h-full w-full object-cover opacity-90 transition group-hover:opacity-100" />
+          <video src={item.src} muted preload="metadata" className="h-full w-full object-cover opacity-85" />
         ) : (
-          <div className="flex h-full items-end justify-center gap-1 px-4 py-4">
-            {waveformBars(item.id, 14).map((height, index) => (
+          <div className="flex h-full items-end justify-center gap-0.5 px-2 py-2">
+            {waveformBars(item.id, 12).map((height, index) => (
               <span
                 key={index}
-                className="w-1.5 rounded-full bg-amber-200/80"
+                className="w-1 rounded-full bg-amber-200/80"
                 style={{ height: `${height * 100}%` }}
               />
             ))}
           </div>
         )}
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation()
-            onInsert(item)
-          }}
-          className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded bg-zinc-100 text-xs font-black text-zinc-950 opacity-0 shadow-lg transition group-hover:opacity-100"
-          title="插入轨道"
-          aria-label="插入轨道"
-        >
-          +
-        </button>
       </div>
-      <div className="px-2 py-1.5">
-        <div className="truncate text-[11px] font-medium text-zinc-100">{item.title || "未命名"}</div>
-        <div className="mt-0.5 text-[10px] text-zinc-500">{item.type === "video" ? "视频素材" : "音频素材"}</div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[11px] font-medium text-zinc-100">{item.title || "未命名素材"}</div>
+        <div className="mt-0.5 text-[10px] text-zinc-500">{item.type === "video" ? "视频" : "音频"} · 双击插入</div>
       </div>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation()
+          onInsert(item)
+        }}
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-zinc-100 text-xs font-black text-zinc-950 opacity-0 transition group-hover:opacity-100"
+        title="插入轨道"
+        aria-label="插入轨道"
+      >
+        +
+      </button>
     </div>
   )
 }
 
 function TimelineClip({
+  clip,
   item,
-  index,
-  total,
+  kind,
+  pxPerSecond,
   selected,
-  draggedId,
-  tool,
-  duration,
   trimStart,
   trimEnd,
-  onDragStart,
-  onDropOn,
-  onInsertBefore,
-  onSeekPercent,
-  onTrimAroundPercent,
-  onTrimEdgePercent,
+  currentTime,
+  onSelect,
+  onDragStartTime,
+  onTrimEdge,
 }: {
+  clip: TimelineClipState
   item: VideoEditPanelMediaNode
-  index: number
-  total: number
+  kind: "video" | "audio"
+  pxPerSecond: number
   selected?: boolean
-  draggedId: string | null
-  tool: TimelineTool
-  duration: number
-  trimStart: number
-  trimEnd: number
-  onDragStart: (id: string | null) => void
-  onDropOn: (id: string) => void
-  onInsertBefore: (id: string, beforeId: string) => void
-  onSeekPercent: (percent: number) => void
-  onTrimAroundPercent: (percent: number) => void
-  onTrimEdgePercent: (edge: "start" | "end", percent: number) => void
+  trimStart?: number
+  trimEnd?: number
+  currentTime: number
+  onSelect: () => void
+  onDragStartTime: (start: number) => void
+  onTrimEdge?: (edge: "start" | "end", seconds: number) => void
 }) {
-  const widthPercent = Math.max(18, 100 / Math.max(total, 1))
-  const trimLeft = duration > 0 ? Math.max(0, Math.min(100, (trimStart / duration) * 100)) : 0
-  const trimRight = duration > 0 ? Math.max(0, Math.min(100, (trimEnd / duration) * 100)) : 100
-  const pointerPercent = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect()
-    if (rect.width <= 0) return 0
-    return Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-  }
-  const beginTrimEdgeDrag = (edge: "start" | "end", event: ReactPointerEvent<HTMLButtonElement>) => {
+  const [dragging, setDragging] = useState(false)
+  const left = clip.start * pxPerSecond
+  const width = Math.max(54, clip.duration * pxPerSecond)
+  const localTrimStart = trimStart != null ? clamp(trimStart - clip.start, 0, clip.duration) : 0
+  const localTrimEnd = trimEnd != null ? clamp(trimEnd - clip.start, 0, clip.duration) : clip.duration
+  const localPlayhead = clamp(currentTime - clip.start, 0, clip.duration)
+
+  const beginMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    const target = event.target as HTMLElement | null
+    if (target?.dataset.trimHandle) return
     event.preventDefault()
     event.stopPropagation()
-    const clip = event.currentTarget.closest("[data-openreel-timeline-clip]") as HTMLElement | null
-    if (!clip) return
-    const rect = clip.getBoundingClientRect()
+    onSelect()
+    const startX = event.clientX
+    const initialStart = clip.start
+    setDragging(true)
+
     const onMove = (moveEvent: PointerEvent) => {
-      if (rect.width <= 0) return
-      const percent = Math.max(0, Math.min(1, (moveEvent.clientX - rect.left) / rect.width))
-      onTrimEdgePercent(edge, percent)
+      const delta = (moveEvent.clientX - startX) / pxPerSecond
+      onDragStartTime(Math.max(0, initialStart + delta))
+    }
+    const onEnd = () => {
+      setDragging(false)
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onEnd)
+    }
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", onEnd)
+  }
+
+  const beginTrim = (edge: "start" | "end", event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!onTrimEdge) return
+    event.preventDefault()
+    event.stopPropagation()
+    onSelect()
+    const startX = event.clientX
+    const initial = edge === "start" ? localTrimStart : localTrimEnd
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = (moveEvent.clientX - startX) / pxPerSecond
+      onTrimEdge(edge, clip.start + clamp(initial + delta, 0, clip.duration))
     }
     const onEnd = () => {
       window.removeEventListener("pointermove", onMove)
@@ -359,186 +365,79 @@ function TimelineClip({
     window.addEventListener("pointermove", onMove)
     window.addEventListener("pointerup", onEnd)
   }
+
   return (
     <div
       data-openreel-timeline-clip="true"
-      draggable
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = "move"
-        event.dataTransfer.setData("text/plain", item.id)
-        event.dataTransfer.setData("openreel/media-id", item.id)
-        onDragStart(item.id)
-      }}
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => {
-        event.preventDefault()
-        const mediaId = event.dataTransfer.getData("openreel/media-id") || event.dataTransfer.getData("text/plain")
-        if (mediaId && mediaId !== item.id) {
-          onInsertBefore(mediaId, item.id)
-          return
-        }
-        onDropOn(item.id)
-      }}
-      onDragEnd={() => onDragStart(null)}
-      onPointerDown={(event) => {
-        if (item.type !== "video") return
-        const percent = pointerPercent(event)
-        if (tool === "trim") {
-          onTrimAroundPercent(percent)
-          return
-        }
-        onSeekPercent(percent)
-      }}
+      onPointerDown={beginMove}
       className={cn(
-        "relative h-full min-w-[150px] cursor-grab overflow-hidden rounded-md border active:cursor-grabbing",
-        item.type === "video" ? "border-cyan-200/35 bg-cyan-300/13" : "border-amber-200/35 bg-amber-300/13",
-        selected && "ring-1 ring-cyan-100/70",
-        draggedId === item.id && "opacity-55",
+        "absolute top-2 h-[58px] overflow-hidden rounded-md border shadow-sm",
+        kind === "video"
+          ? "border-cyan-200/30 bg-cyan-300/10"
+          : "border-amber-200/30 bg-amber-300/10",
+        selected && "ring-1 ring-cyan-100/80",
+        dragging && "cursor-grabbing opacity-85",
+        !dragging && "cursor-grab",
       )}
-      style={{ width: `${widthPercent}%` }}
+      style={{ left, width }}
     >
-      {item.type === "video" ? (
+      {kind === "video" ? (
         <>
-          <VideoThumbnailStrip src={item.src} count={12} />
-          <div className="absolute inset-0 bg-gradient-to-r from-black/12 via-transparent to-black/18" />
+          <VideoThumbnailStrip src={item.src} count={Math.max(4, Math.min(12, Math.round(width / 70)))} />
+          <div className="absolute inset-0 bg-gradient-to-r from-black/10 via-transparent to-black/20" />
           {selected && (
             <div
-              className="absolute bottom-0 top-0 border-x border-emerald-100/90 bg-emerald-300/16 shadow-[0_0_18px_rgba(52,211,153,0.18)]"
+              className="absolute bottom-0 top-0 border-x border-emerald-100/90 bg-emerald-300/16"
               style={{
-                left: `${trimLeft}%`,
-                width: `${Math.max(0, trimRight - trimLeft)}%`,
+                left: `${(localTrimStart / clip.duration) * 100}%`,
+                width: `${Math.max(0, ((localTrimEnd - localTrimStart) / clip.duration) * 100)}%`,
               }}
             >
               <button
                 type="button"
-                onPointerDown={(event) => beginTrimEdgeDrag("start", event)}
-                className="absolute -left-1.5 top-0 h-full w-3 cursor-ew-resize rounded bg-emerald-100/95"
-                title="拖动裁剪起点"
-                aria-label="拖动裁剪起点"
+                data-trim-handle="start"
+                onPointerDown={(event) => beginTrim("start", event)}
+                className="absolute -left-1 top-0 h-full w-2 cursor-ew-resize rounded bg-emerald-100"
+                title="裁剪起点"
+                aria-label="裁剪起点"
               />
               <button
                 type="button"
-                onPointerDown={(event) => beginTrimEdgeDrag("end", event)}
-                className="absolute -right-1.5 top-0 h-full w-3 cursor-ew-resize rounded bg-emerald-100/95"
-                title="拖动裁剪终点"
-                aria-label="拖动裁剪终点"
+                data-trim-handle="end"
+                onPointerDown={(event) => beginTrim("end", event)}
+                className="absolute -right-1 top-0 h-full w-2 cursor-ew-resize rounded bg-emerald-100"
+                title="裁剪终点"
+                aria-label="裁剪终点"
               />
             </div>
           )}
-          <div className="absolute inset-x-2 top-2 flex items-center gap-1.5">
-            <span className="rounded bg-cyan-100/90 px-1.5 py-0.5 text-[10px] font-bold text-cyan-950">V{index + 1}</span>
-            <span className="min-w-0 truncate text-[11px] font-semibold text-cyan-50">{item.title || "视频片段"}</span>
-          </div>
-          <div className="absolute inset-x-2 bottom-2 flex items-center justify-between text-[10px] text-cyan-50/80">
-            <span>{formatTime(0)}</span>
-            <span>{duration > 0 ? formatTime(duration) : "素材"}</span>
-          </div>
         </>
       ) : (
-        <>
-          <div className="absolute inset-x-2 top-2 flex items-center gap-1.5">
-            <span className="rounded bg-amber-100/90 px-1.5 py-0.5 text-[10px] font-bold text-amber-950">A{index + 1}</span>
-            <span className="min-w-0 truncate text-[11px] font-semibold text-amber-50">{item.title || "音频片段"}</span>
-          </div>
-          <div className="absolute inset-x-2 bottom-2 flex h-8 items-center gap-[3px]">
-            {waveformBars(item.id).map((height, bar) => (
-              <span
-                key={bar}
-                className="w-1 rounded-full bg-amber-100/80"
-                style={{ height: `${height * 100}%` }}
-              />
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
-function TimelineTrack({
-  label,
-  type,
-  items,
-  order,
-  draggedId,
-  activeId,
-  tool,
-  duration,
-  trimStart,
-  trimEnd,
-  onDragStart,
-  onDropOn,
-  onAppendItem,
-  onInsertBefore,
-  onSeekPercent,
-  onTrimAroundPercent,
-  onTrimEdgePercent,
-}: {
-  label: string
-  type: "video" | "audio"
-  items: VideoEditPanelMediaNode[]
-  order: string[]
-  draggedId: string | null
-  activeId?: string
-  tool: TimelineTool
-  duration: number
-  trimStart: number
-  trimEnd: number
-  onDragStart: (id: string | null) => void
-  onDropOn: (id: string) => void
-  onAppendItem: (id: string) => void
-  onInsertBefore: (id: string, beforeId: string) => void
-  onSeekPercent: (percent: number) => void
-  onTrimAroundPercent: (percent: number) => void
-  onTrimEdgePercent: (edge: "start" | "end", percent: number) => void
-}) {
-  const itemMap = useMemo(() => new Map(items.map((item) => [item.id, item])), [items])
-  const orderedItems = order.map((id) => itemMap.get(id)).filter((item): item is VideoEditPanelMediaNode => Boolean(item))
-  return (
-    <div className="grid min-h-[76px] grid-cols-[84px_minmax(0,1fr)] border-t border-white/[0.07]">
-      <div className="flex flex-col justify-center gap-1 border-r border-white/[0.07] bg-[#0d1118] px-3">
-        <div className="text-[11px] font-semibold text-zinc-200">{label}</div>
-        <div className="flex items-center gap-1 text-[10px] text-zinc-500">
-          <span className="h-2 w-2 rounded-sm bg-white/20" />
-          <span>{type === "video" ? "可见" : "启用"}</span>
-        </div>
-      </div>
-      <div
-        className="relative flex min-w-0 gap-2 overflow-x-auto bg-[#090d13] p-2"
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={(event) => {
-          event.preventDefault()
-          const mediaId = event.dataTransfer.getData("openreel/media-id") || event.dataTransfer.getData("text/plain")
-          if (mediaId) onAppendItem(mediaId)
-        }}
-      >
-        {orderedItems.length === 0 ? (
-          <div className="flex h-full w-full items-center justify-center rounded-md border border-dashed border-white/10 text-xs text-zinc-600">
-            {type === "video" ? "把视频片段放到这里拼接" : "分离音频后可在这里拼接"}
-          </div>
-        ) : (
-          orderedItems.map((item, index) => (
-            <TimelineClip
-              key={item.id}
-              item={item}
-              index={index}
-              total={orderedItems.length}
-              selected={item.id === activeId}
-              draggedId={draggedId}
-              tool={tool}
-              duration={duration}
-              trimStart={trimStart}
-              trimEnd={trimEnd}
-              onDragStart={onDragStart}
-              onDropOn={onDropOn}
-              onInsertBefore={onInsertBefore}
-              onSeekPercent={onSeekPercent}
-              onTrimAroundPercent={onTrimAroundPercent}
-              onTrimEdgePercent={onTrimEdgePercent}
+        <div className="absolute inset-x-2 bottom-2 flex h-8 items-center gap-[3px]">
+          {waveformBars(item.id, Math.max(24, Math.min(92, Math.round(width / 6)))).map((height, index) => (
+            <span
+              key={index}
+              className="w-1 rounded-full bg-amber-100/80"
+              style={{ height: `${height * 100}%` }}
             />
-          ))
-        )}
+          ))}
+        </div>
+      )}
+      <div className="absolute left-2 top-1.5 flex max-w-[calc(100%-1rem)] items-center gap-1.5">
+        <span className={cn(
+          "rounded px-1.5 py-0.5 text-[10px] font-bold",
+          kind === "video" ? "bg-cyan-100 text-cyan-950" : "bg-amber-100 text-amber-950",
+        )}>
+          {kind === "video" ? "V" : "A"}
+        </span>
+        <span className="truncate text-[11px] font-semibold text-zinc-50">{item.title || "素材"}</span>
       </div>
+      {kind === "video" && selected && (
+        <div
+          className="absolute bottom-0 top-0 w-px bg-white/85"
+          style={{ left: `${(localPlayhead / clip.duration) * 100}%` }}
+        />
+      )}
     </div>
   )
 }
@@ -553,54 +452,175 @@ export default function VideoEditPanel({
   onCommitted,
 }: VideoEditPanelProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
-  const [duration, setDuration] = useState(0)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const timelineRef = useRef<HTMLDivElement | null>(null)
+  const [sourceDuration, setSourceDuration] = useState(DEFAULT_CLIP_SECONDS)
   const [currentTime, setCurrentTime] = useState(0)
-  const [startSeconds, setStartSeconds] = useState(0)
-  const [endSeconds, setEndSeconds] = useState(0)
+  const [playing, setPlaying] = useState(false)
+  const [tool, setTool] = useState<TimelineTool>("select")
+  const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const [busy, setBusy] = useState<BusyAction>(null)
   const [error, setError] = useState<string | null>(null)
-  const [videoOrder, setVideoOrder] = useState<string[]>([])
-  const [audioOrder, setAudioOrder] = useState<string[]>([])
-  const [draggedVideoId, setDraggedVideoId] = useState<string | null>(null)
-  const [draggedAudioId, setDraggedAudioId] = useState<string | null>(null)
-  const [timelineTool, setTimelineTool] = useState<TimelineTool>("select")
-  const [playing, setPlaying] = useState(false)
+  const [selectedClipId, setSelectedClipId] = useState(nodeId)
+  const [videoClips, setVideoClips] = useState<TimelineClipState[]>([])
+  const [audioClips, setAudioClips] = useState<TimelineClipState[]>([])
+  const [trimStart, setTrimStart] = useState(0)
+  const [trimEnd, setTrimEnd] = useState(DEFAULT_CLIP_SECONDS)
 
   const videoItems = useMemo(() => mediaNodes.filter((item) => item.type === "video" && item.src), [mediaNodes])
   const audioItems = useMemo(() => mediaNodes.filter((item) => item.type === "audio" && item.src), [mediaNodes])
-  const activeVideo = useMemo(
-    () => videoItems.find((item) => item.id === nodeId) || videoItems[0],
-    [nodeId, videoItems],
+  const mediaById = useMemo(() => new Map(mediaNodes.map((item) => [item.id, item])), [mediaNodes])
+  const selectedVideoClip = useMemo(
+    () => videoClips.find((clip) => clip.id === selectedClipId) || videoClips[0],
+    [selectedClipId, videoClips],
   )
-  const ticks = useMemo(() => timelineTicks(duration), [duration])
-  const playheadPercent = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0
+  const currentVideoClip = useMemo(
+    () => videoClips.find((clip) => currentTime >= clip.start && currentTime <= clipEnd(clip)) || selectedVideoClip,
+    [currentTime, selectedVideoClip, videoClips],
+  )
+  const currentAudioClip = useMemo(
+    () => audioClips.find((clip) => currentTime >= clip.start && currentTime <= clipEnd(clip)),
+    [audioClips, currentTime],
+  )
+  const currentVideoItem = currentVideoClip ? mediaById.get(currentVideoClip.id) : undefined
+  const currentAudioItem = currentAudioClip ? mediaById.get(currentAudioClip.id) : undefined
+  const selectedVideoItem = selectedVideoClip ? mediaById.get(selectedVideoClip.id) : undefined
+  const timelineDuration = useMemo(() => {
+    const lastClipEnd = Math.max(
+      0,
+      ...videoClips.map(clipEnd),
+      ...audioClips.map(clipEnd),
+      sourceDuration,
+    )
+    return Math.max(DEFAULT_TIMELINE_SECONDS, Math.ceil(lastClipEnd + 2))
+  }, [audioClips, sourceDuration, videoClips])
+  const timelineWidth = timelineDuration * pxPerSecond
+  const ticks = useMemo(() => {
+    const step = pxPerSecond >= 120 ? 1 : pxPerSecond >= 72 ? 2 : 5
+    const count = Math.floor(timelineDuration / step) + 1
+    return Array.from({ length: count }, (_, index) => index * step)
+  }, [pxPerSecond, timelineDuration])
 
   useEffect(() => {
-    setVideoOrder((current) => {
-      const ids = videoItems.map((item) => item.id)
-      const preserved = current.filter((id) => ids.includes(id))
-      if (preserved.length > 0) {
-        return preserved.includes(nodeId) || !ids.includes(nodeId) ? preserved : [nodeId, ...preserved]
+    setVideoClips((current) => {
+      const valid = current.filter((clip) => videoItems.some((item) => item.id === clip.id))
+      if (valid.length > 0) {
+        return valid.map((clip) => (
+          clip.id === nodeId
+            ? { ...clip, duration: sourceDuration || clip.duration || DEFAULT_CLIP_SECONDS }
+            : clip
+        ))
       }
-      return ids.includes(nodeId) ? [nodeId] : ids.slice(0, 1)
+      const primary = videoItems.find((item) => item.id === nodeId) || videoItems[0]
+      return primary
+        ? [{ id: primary.id, start: 0, duration: sourceDuration || DEFAULT_CLIP_SECONDS }]
+        : []
     })
-  }, [nodeId, videoItems])
+  }, [nodeId, sourceDuration, videoItems])
 
   useEffect(() => {
-    setAudioOrder((current) => {
-      const ids = audioItems.map((item) => item.id)
-      return current.filter((id) => ids.includes(id))
-    })
+    setAudioClips((current) => current.filter((clip) => audioItems.some((item) => item.id === clip.id)))
   }, [audioItems])
 
   useEffect(() => {
-    setError(null)
-    setDuration(0)
+    setSelectedClipId(nodeId)
     setCurrentTime(0)
-    setStartSeconds(0)
-    setEndSeconds(0)
+    setTrimStart(0)
+    setTrimEnd(sourceDuration || DEFAULT_CLIP_SECONDS)
     setPlaying(false)
-  }, [nodeId, videoUrl])
+    setError(null)
+  }, [nodeId, sourceDuration])
+
+  useEffect(() => {
+    if (!currentVideoClip) return
+    const nextStart = clamp(trimStart, currentVideoClip.start, clipEnd(currentVideoClip) - 0.05)
+    const nextEnd = clamp(trimEnd, nextStart + 0.05, clipEnd(currentVideoClip))
+    if (nextStart !== trimStart) setTrimStart(nextStart)
+    if (nextEnd !== trimEnd) setTrimEnd(nextEnd)
+  }, [currentVideoClip, trimEnd, trimStart])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !currentVideoClip) return
+    const localTime = clamp(currentTime - currentVideoClip.start, 0, currentVideoClip.duration)
+    if (Math.abs((video.currentTime || 0) - localTime) > 0.08) {
+      video.currentTime = localTime
+    }
+  }, [currentTime, currentVideoClip])
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio || !currentAudioClip) {
+      audio?.pause()
+      return
+    }
+    const localTime = clamp(currentTime - currentAudioClip.start, 0, currentAudioClip.duration)
+    if (Math.abs((audio.currentTime || 0) - localTime) > 0.08) {
+      audio.currentTime = localTime
+    }
+    if (playing) {
+      void audio.play().catch(() => undefined)
+    } else {
+      audio.pause()
+    }
+  }, [currentAudioClip, currentTime, playing])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const isTyping = ["input", "textarea", "select"].includes(target?.tagName?.toLowerCase() || "") || target?.isContentEditable
+      if (isTyping) return
+      if (!(event.ctrlKey || event.metaKey)) return
+      if (event.key === "=" || event.key === "+") {
+        event.preventDefault()
+        setPxPerSecond((value) => Math.min(180, value + 14))
+      }
+      if (event.key === "-") {
+        event.preventDefault()
+        setPxPerSecond((value) => Math.max(42, value - 14))
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
+
+  const seekTo = (time: number) => {
+    setCurrentTime(clamp(time, 0, timelineDuration))
+  }
+
+  const beginPlayheadDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const container = timelineRef.current
+    if (!container) return
+    event.preventDefault()
+    const update = (pointerEvent: PointerEvent | ReactPointerEvent) => {
+      seekTo(timeFromPointer(pointerEvent, container, pxPerSecond))
+    }
+    update(event)
+    const onMove = (moveEvent: PointerEvent) => update(moveEvent)
+    const onEnd = () => {
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onEnd)
+    }
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", onEnd)
+  }
+
+  const togglePlayback = () => {
+    const video = videoRef.current
+    if (!video) return
+    if (playing) {
+      video.pause()
+      audioRef.current?.pause()
+      setPlaying(false)
+      return
+    }
+    const clip = currentVideoClip
+    if (!clip) return
+    const localTime = clamp(currentTime - clip.start, 0, clip.duration)
+    video.currentTime = localTime
+    void video.play()
+    setPlaying(true)
+  }
 
   const runOperation = async (action: BusyAction, input: Parameters<typeof runProjectMediaOperation>[1]) => {
     if (!action || busy) return
@@ -616,99 +636,75 @@ export default function VideoEditPanel({
     }
   }
 
-  const seekTo = (value: number) => {
-    const next = clampTime(value, duration)
-    setCurrentTime(next)
-    if (videoRef.current) videoRef.current.currentTime = next
-  }
-
-  const updateStart = (value: number) => {
-    const next = Math.min(clampTime(value, duration), Math.max(endSeconds - 0.1, 0))
-    setStartSeconds(next)
-    if (currentTime < next) seekTo(next)
-  }
-
-  const updateEnd = (value: number) => {
-    const max = duration || Math.max(value, startSeconds + 0.1)
-    const next = Math.max(clampTime(value, max), startSeconds + 0.1)
-    setEndSeconds(next)
-    if (currentTime > next) seekTo(next)
-  }
-
-  const togglePlayback = () => {
-    const video = videoRef.current
-    if (!video) return
-    if (video.paused) {
-      void video.play()
-      setPlaying(true)
-    } else {
-      video.pause()
-      setPlaying(false)
-    }
-  }
-
   const insertMediaItem = (item: VideoEditPanelMediaNode) => {
+    const duration = Math.max(sourceDuration || DEFAULT_CLIP_SECONDS, DEFAULT_CLIP_SECONDS)
+    const start = Math.max(0, currentTime)
     if (item.type === "video") {
-      setVideoOrder((current) => trackInsertOrder(current, item.id))
+      setVideoClips((current) => {
+        const exists = current.some((clip) => clip.id === item.id)
+        return exists
+          ? current.map((clip) => clip.id === item.id ? { ...clip, start } : clip)
+          : [...current, { id: item.id, start, duration }]
+      })
+      setSelectedClipId(item.id)
       return
     }
-    setAudioOrder((current) => trackInsertOrder(current, item.id))
+    setAudioClips((current) => {
+      const exists = current.some((clip) => clip.id === item.id)
+      return exists
+        ? current.map((clip) => clip.id === item.id ? { ...clip, start } : clip)
+        : [...current, { id: item.id, start, duration }]
+    })
   }
 
-  const appendTrackItem = (type: "video" | "audio", id: string) => {
-    const exists = type === "video"
-      ? videoItems.some((item) => item.id === id)
-      : audioItems.some((item) => item.id === id)
-    if (!exists) return
-    if (type === "video") {
-      setVideoOrder((current) => trackInsertOrder(current, id))
+  const updateClipStart = (kind: "video" | "audio", id: string, start: number) => {
+    const updater = (clips: TimelineClipState[]) => (
+      clips.map((clip) => clip.id === id ? { ...clip, start: Math.max(0, start) } : clip)
+    )
+    if (kind === "video") {
+      setVideoClips(updater)
       return
     }
-    setAudioOrder((current) => trackInsertOrder(current, id))
+    setAudioClips(updater)
   }
 
-  const insertTrackItemBefore = (type: "video" | "audio", id: string, beforeId: string) => {
-    const exists = type === "video"
-      ? videoItems.some((item) => item.id === id)
-      : audioItems.some((item) => item.id === id)
-    if (!exists) return
-    if (type === "video") {
-      setVideoOrder((current) => trackInsertOrder(current, id, beforeId))
+  const setTrimEdge = (edge: "start" | "end", seconds: number) => {
+    if (!selectedVideoClip) return
+    if (edge === "start") {
+      setTrimStart(clamp(seconds, selectedVideoClip.start, trimEnd - 0.05))
       return
     }
-    setAudioOrder((current) => trackInsertOrder(current, id, beforeId))
+    setTrimEnd(clamp(seconds, trimStart + 0.05, clipEnd(selectedVideoClip)))
   }
 
-  const seekPercent = (percent: number) => {
-    if (duration <= 0) return
-    seekTo(duration * Math.max(0, Math.min(1, percent)))
-  }
-
-  const trimAroundPercent = (percent: number) => {
-    if (duration <= 0) return
-    const center = duration * Math.max(0, Math.min(1, percent))
-    const span = Math.min(Math.max(duration * 0.22, 1.2), 6)
-    let start = Math.max(0, center - span / 2)
-    let end = Math.min(duration, start + span)
-    start = Math.max(0, end - span)
-    setStartSeconds(start)
-    setEndSeconds(end)
+  const trimAroundTime = (time: number) => {
+    if (!selectedVideoClip) return
+    const center = clamp(time, selectedVideoClip.start, clipEnd(selectedVideoClip))
+    const span = Math.min(Math.max(selectedVideoClip.duration * 0.25, 1.2), selectedVideoClip.duration)
+    let start = clamp(center - span / 2, selectedVideoClip.start, clipEnd(selectedVideoClip))
+    let end = clamp(start + span, selectedVideoClip.start, clipEnd(selectedVideoClip))
+    start = Math.max(selectedVideoClip.start, end - span)
+    setTrimStart(start)
+    setTrimEnd(end)
     seekTo(start)
   }
 
-  const setTrimEdgePercent = (edge: "start" | "end", percent: number) => {
-    if (duration <= 0) return
-    const time = duration * Math.max(0, Math.min(1, percent))
-    if (edge === "start") {
-      updateStart(Math.min(time, endSeconds - 0.1))
+  const handleTimelineBackgroundDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null
+    if (target?.closest("[data-openreel-timeline-clip]")) return
+    const container = timelineRef.current
+    if (!container) return
+    const time = timeFromPointer(event, container, pxPerSecond)
+    if (tool === "trim") {
+      trimAroundTime(time)
       return
     }
-    updateEnd(Math.max(time, startSeconds + 0.1))
+    beginPlayheadDrag(event)
   }
 
-  const canTrim = endSeconds > startSeconds + 0.05
-  const videoConcatIds = videoOrder.filter((id) => videoItems.some((item) => item.id === id))
-  const audioConcatIds = audioOrder.filter((id) => audioItems.some((item) => item.id === id))
+  const canTrim = selectedVideoClip && trimEnd > trimStart + 0.05
+  const videoConcatIds = videoClips.map((clip) => clip.id).filter((id) => videoItems.some((item) => item.id === id))
+  const audioConcatIds = audioClips.map((clip) => clip.id).filter((id) => audioItems.some((item) => item.id === id))
   const isBusy = Boolean(busy)
 
   return (
@@ -725,13 +721,8 @@ export default function VideoEditPanel({
           <div className="flex h-7 w-7 items-center justify-center rounded-md bg-cyan-300 text-[11px] font-black text-cyan-950">VE</div>
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold text-zinc-100">{title || "视频剪辑"}</div>
-            <div className="text-[10px] text-zinc-500">{formatTimePrecise(currentTime)} / {formatTimePrecise(duration)}</div>
+            <div className="text-[10px] text-zinc-500">{formatTimePrecise(currentTime)} / {formatTimePrecise(timelineDuration)}</div>
           </div>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <ToolButton label="选择" glyph="S" active={timelineTool === "select"} onClick={() => setTimelineTool("select")} />
-          <ToolButton label="切割" glyph="B" active={timelineTool === "blade"} onClick={() => setTimelineTool("blade")} />
-          <ToolButton label="裁剪" glyph="T" active={timelineTool === "trim"} onClick={() => setTimelineTool("trim")} />
         </div>
         <button
           type="button"
@@ -742,109 +733,112 @@ export default function VideoEditPanel({
         </button>
       </div>
 
-      <div className="grid h-[calc(100%-3rem)] grid-rows-[minmax(0,1fr)_260px] bg-[#070b10]">
-        <div className="grid min-h-0 grid-cols-[268px_minmax(380px,1fr)_304px] border-b border-white/10 max-xl:grid-cols-[230px_minmax(340px,1fr)_280px] max-lg:grid-cols-1 max-lg:overflow-y-auto">
-          <aside className="min-h-0 border-r border-white/10 bg-[#0c1118]">
-            <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
-              <div className="text-[12px] font-semibold text-zinc-100">素材</div>
-              <div className="rounded bg-white/[0.055] px-1.5 py-0.5 text-[10px] text-zinc-400">{mediaNodes.length}</div>
-            </div>
-            <div className="flex h-[calc(100%-2.5rem)] flex-col overflow-hidden">
-              <div className="grid grid-cols-2 gap-2 overflow-y-auto p-3">
-                {videoItems.map((item) => (
-                  <AssetCard key={item.id} item={item} active={item.id === nodeId} onInsert={insertMediaItem} />
-                ))}
-                {audioItems.map((item) => (
-                  <AssetCard key={item.id} item={item} onInsert={insertMediaItem} />
-                ))}
-                {mediaNodes.length === 0 && (
-                  <div className="col-span-2 rounded-md border border-dashed border-white/10 px-3 py-8 text-center text-xs text-zinc-500">
-                    画布上的视频和音频会出现在这里
-                  </div>
-                )}
-              </div>
-            </div>
-          </aside>
-
+      <div className="grid h-[calc(100%-2.75rem)] grid-rows-[minmax(0,1fr)_190px] bg-[#070b10]">
+        <div className="grid min-h-0 grid-cols-[minmax(520px,1fr)_320px] border-b border-white/10 max-lg:grid-cols-1 max-lg:overflow-y-auto">
           <main className="flex min-h-0 flex-col bg-[#090d13]">
-            <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
-              <div className="text-[12px] font-semibold text-zinc-100">播放器</div>
-              <div className="flex items-center gap-2 text-[10px] text-zinc-500">
-                <span>原始比例</span>
-                <span className="rounded border border-white/10 px-1.5 py-0.5">Fit</span>
-              </div>
-            </div>
             <div className="flex min-h-0 flex-1 items-center justify-center bg-black p-4">
               <div className="relative flex h-full max-h-full w-full items-center justify-center overflow-hidden rounded-md border border-white/10 bg-black shadow-inner">
-                <video
-                  ref={videoRef}
-                  src={videoUrl}
-                  preload="metadata"
-                  className="h-full w-full object-contain [color-scheme:dark]"
-                  onLoadedMetadata={(event) => {
-                    const nextDuration = Number(event.currentTarget.duration || 0)
-                    setDuration(Number.isFinite(nextDuration) ? nextDuration : 0)
-                    setEndSeconds(Number.isFinite(nextDuration) && nextDuration > 0 ? nextDuration : 0)
-                  }}
-                  onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-                  onPlay={() => setPlaying(true)}
-                  onPause={() => setPlaying(false)}
-                  onEnded={() => setPlaying(false)}
-                />
+                {currentVideoItem ? (
+                  <video
+                    ref={videoRef}
+                    src={currentVideoItem.src || videoUrl}
+                    preload="metadata"
+                    className="h-full w-full object-contain [color-scheme:dark]"
+                    onLoadedMetadata={(event) => {
+                      const nextDuration = Number(event.currentTarget.duration || 0)
+                      const safeDuration = Number.isFinite(nextDuration) && nextDuration > 0 ? nextDuration : DEFAULT_CLIP_SECONDS
+                      if (currentVideoItem.id === nodeId) {
+                        setSourceDuration(safeDuration)
+                        setTrimEnd(safeDuration)
+                      }
+                    }}
+                    onTimeUpdate={(event) => {
+                      if (!currentVideoClip || !playing) return
+                      const next = currentVideoClip.start + event.currentTarget.currentTime
+                      setCurrentTime(clamp(next, 0, timelineDuration))
+                    }}
+                    onPlay={() => setPlaying(true)}
+                    onPause={() => setPlaying(false)}
+                    onEnded={() => {
+                      setPlaying(false)
+                      audioRef.current?.pause()
+                    }}
+                  />
+                ) : (
+                  <div className="text-xs text-zinc-500">播放头不在视频片段上</div>
+                )}
                 <div className="pointer-events-none absolute left-3 top-3 rounded bg-black/55 px-2 py-1 text-[10px] font-medium text-zinc-300">
-                  {activeVideo?.title || "当前视频"}
+                  {currentVideoItem?.title || selectedVideoItem?.title || "当前画面"}
                 </div>
               </div>
+              {currentAudioItem && <audio ref={audioRef} src={currentAudioItem.src} preload="metadata" />}
             </div>
-            <div className="border-t border-white/10 bg-[#0d121a] px-3 py-2">
-              <div className="flex items-center gap-3">
+
+            <div className="flex h-12 items-center justify-between border-t border-white/10 bg-[#0d121a] px-3">
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={togglePlayback}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-[13px] font-black text-zinc-950 transition hover:bg-white"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-[12px] font-black text-zinc-950 transition hover:bg-white"
                   title={playing ? "暂停" : "播放"}
                   aria-label={playing ? "暂停" : "播放"}
                 >
                   {playing ? "II" : "▶"}
                 </button>
-                <div className="w-[72px] text-[11px] font-semibold text-cyan-100">{formatTimePrecise(currentTime)}</div>
-                <input
-                  type="range"
-                  min={0}
-                  max={Math.max(duration, 0.1)}
-                  step={0.01}
-                  value={clampTime(currentTime, duration)}
-                  onChange={(event) => seekTo(Number(event.target.value))}
-                  className="min-w-0 flex-1 accent-cyan-200"
-                />
-                <div className="w-[72px] text-right text-[11px] text-zinc-500">{formatTimePrecise(duration)}</div>
+                <span className="w-[76px] text-[11px] font-semibold text-cyan-100">{formatTimePrecise(currentTime)}</span>
+                <ToolButton label="选择" glyph="S" active={tool === "select"} onClick={() => setTool("select")} />
+                <ToolButton label="切割" glyph="B" active={tool === "blade"} onClick={() => setTool("blade")} />
+                <ToolButton label="裁剪" glyph="T" active={tool === "trim"} onClick={() => setTool("trim")} />
+                <ActionButton
+                  disabled={isBusy}
+                  onClick={() => void runOperation("frame", {
+                    operation: "video.export_frame",
+                    source_node_id: nodeId,
+                    frame_mode: "time",
+                    time_seconds: Math.max(0, currentTime - (currentVideoClip?.start || 0)),
+                    title: `${title || "视频"} ${formatTime(currentTime)} 画面`,
+                  })}
+                >
+                  定格
+                </ActionButton>
+              </div>
+              <div className="hidden items-center gap-2 text-[10px] text-zinc-500 sm:flex">
+                <span>Ctrl + / - 缩放</span>
+                <span className="rounded border border-white/10 px-1.5 py-0.5">{Math.round(pxPerSecond)} px/s</span>
               </div>
             </div>
           </main>
 
           <aside className="min-h-0 border-l border-white/10 bg-[#0c1118]">
             <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
-              <div className="text-[12px] font-semibold text-zinc-100">检查器</div>
+              <div className="text-[12px] font-semibold text-zinc-100">功能区</div>
               <div className={cn("h-2 w-2 rounded-full", isBusy ? "bg-cyan-300" : "bg-emerald-300/80")} />
             </div>
             <div className="space-y-4 overflow-y-auto p-3">
+              <section>
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[11px] font-semibold text-zinc-300">素材</div>
+                  <div className="text-[10px] text-zinc-500">{mediaNodes.length}</div>
+                </div>
+                <div className="space-y-2">
+                  {videoItems.map((item) => (
+                    <MediaBinItem key={item.id} item={item} onInsert={insertMediaItem} />
+                  ))}
+                  {audioItems.map((item) => (
+                    <MediaBinItem key={item.id} item={item} onInsert={insertMediaItem} />
+                  ))}
+                  {mediaNodes.length === 0 && (
+                    <div className="rounded-md border border-dashed border-white/10 px-3 py-5 text-center text-xs text-zinc-500">
+                      画布上的视频和音频会出现在这里
+                    </div>
+                  )}
+                </div>
+              </section>
+
               <section className="rounded-md border border-white/10 bg-white/[0.035] p-3">
                 <div className="mb-3 text-[11px] font-semibold text-zinc-300">生成到画布</div>
                 <div className="grid grid-cols-2 gap-2">
-                  <OperationButton
-                    active={busy === "frame"}
-                    disabled={isBusy}
-                    onClick={() => void runOperation("frame", {
-                      operation: "video.export_frame",
-                      source_node_id: nodeId,
-                      frame_mode: "time",
-                      time_seconds: currentTime,
-                      title: `${title || "视频"} ${formatTime(currentTime)} 画面`,
-                    })}
-                  >
-                    当前帧
-                  </OperationButton>
-                  <OperationButton
+                  <ActionButton
                     active={busy === "tail"}
                     disabled={isBusy}
                     onClick={() => void runOperation("tail", {
@@ -855,8 +849,8 @@ export default function VideoEditPanel({
                     })}
                   >
                     尾帧
-                  </OperationButton>
-                  <OperationButton
+                  </ActionButton>
+                  <ActionButton
                     active={busy === "split"}
                     disabled={isBusy}
                     onClick={() => void runOperation("split", {
@@ -865,60 +859,23 @@ export default function VideoEditPanel({
                     })}
                   >
                     分音轨
-                  </OperationButton>
-                  <OperationButton
+                  </ActionButton>
+                  <ActionButton
                     active={busy === "trim"}
                     disabled={isBusy || !canTrim}
-                    tone="primary"
                     onClick={() => void runOperation("trim", {
                       operation: "video.trim",
-                      source_node_id: nodeId,
-                      range: { start_seconds: startSeconds, end_seconds: endSeconds },
-                      title: `${title || "视频"} 片段`,
+                      source_node_id: selectedVideoClip?.id || nodeId,
+                      range: {
+                        start_seconds: Math.max(0, trimStart - (selectedVideoClip?.start || 0)),
+                        end_seconds: Math.max(0.05, trimEnd - (selectedVideoClip?.start || 0)),
+                      },
+                      title: `${selectedVideoItem?.title || title || "视频"} 片段`,
                     })}
                   >
                     导出片段
-                  </OperationButton>
-                </div>
-              </section>
-
-              <section className="rounded-md border border-white/10 bg-white/[0.035] p-3">
-                <div className="mb-3 flex items-center justify-between">
-                  <div className="text-[11px] font-semibold text-zinc-300">裁剪范围</div>
-                  <div className="text-[10px] text-zinc-500">{formatTime(startSeconds)} - {formatTime(endSeconds)}</div>
-                </div>
-                <div className="space-y-3">
-                  <label className="block">
-                    <span className="mb-1 block text-[10px] text-zinc-500">起点</span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={Math.max(duration, 0.1)}
-                      step={0.01}
-                      value={clampTime(startSeconds, duration)}
-                      onChange={(event) => updateStart(Number(event.target.value))}
-                      className="w-full accent-emerald-200"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mb-1 block text-[10px] text-zinc-500">终点</span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={Math.max(duration, 0.1)}
-                      step={0.01}
-                      value={clampTime(endSeconds, duration)}
-                      onChange={(event) => updateEnd(Number(event.target.value))}
-                      className="w-full accent-rose-200"
-                    />
-                  </label>
-                </div>
-              </section>
-
-              <section className="rounded-md border border-white/10 bg-white/[0.035] p-3">
-                <div className="mb-3 text-[11px] font-semibold text-zinc-300">轨道合成</div>
-                <div className="grid gap-2">
-                  <OperationButton
+                  </ActionButton>
+                  <ActionButton
                     active={busy === "concat-video"}
                     disabled={isBusy || videoConcatIds.length < 2}
                     onClick={() => void runOperation("concat-video", {
@@ -927,9 +884,9 @@ export default function VideoEditPanel({
                       title: "拼接视频",
                     })}
                   >
-                    拼接视频轨
-                  </OperationButton>
-                  <OperationButton
+                    拼接视频
+                  </ActionButton>
+                  <ActionButton
                     active={busy === "concat-audio"}
                     disabled={isBusy || audioConcatIds.length < 2}
                     onClick={() => void runOperation("concat-audio", {
@@ -938,8 +895,18 @@ export default function VideoEditPanel({
                       title: "拼接音频",
                     })}
                   >
-                    拼接音频轨
-                  </OperationButton>
+                    拼接音频
+                  </ActionButton>
+                </div>
+              </section>
+
+              <section className="rounded-md border border-white/10 bg-white/[0.035] p-3">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="text-[11px] font-semibold text-zinc-300">当前裁剪</div>
+                  <div className="text-[10px] text-zinc-500">{formatTimePrecise(trimStart)} - {formatTimePrecise(trimEnd)}</div>
+                </div>
+                <div className="text-[11px] leading-5 text-zinc-500">
+                  选中“裁剪”后点击画面轴可设定范围，也可以拖动画面片段上的浅绿色手柄微调。
                 </div>
               </section>
 
@@ -958,98 +925,101 @@ export default function VideoEditPanel({
           </aside>
         </div>
 
-        <section className="min-h-0 bg-[#080c12]">
-          <div className="flex h-10 items-center justify-between border-b border-white/10 bg-[#0b0f16] px-3">
-            <div className="flex items-center gap-1.5">
-              <ToolButton label="选择" glyph="S" active={timelineTool === "select"} onClick={() => setTimelineTool("select")} />
-              <ToolButton label="切割" glyph="B" active={timelineTool === "blade"} onClick={() => setTimelineTool("blade")} />
-              <ToolButton label="裁剪" glyph="T" active={timelineTool === "trim"} onClick={() => setTimelineTool("trim")} />
-              <div className="ml-2 h-5 w-px bg-white/10" />
-              <OperationButton
-                disabled={isBusy}
-                onClick={() => void runOperation("frame", {
-                  operation: "video.export_frame",
-                  source_node_id: nodeId,
-                  frame_mode: "time",
-                  time_seconds: currentTime,
-                  title: `${title || "视频"} ${formatTime(currentTime)} 画面`,
-                })}
-              >
-                定格画面
-              </OperationButton>
-            </div>
-            <div className="flex items-center gap-2 text-[11px] text-zinc-500">
-              <span>吸附</span>
-              <span className="rounded bg-cyan-300/14 px-1.5 py-0.5 text-cyan-100">开</span>
-              <span className="ml-2">缩放</span>
-              <input type="range" min={0} max={100} defaultValue={42} className="w-24 accent-cyan-200" />
-            </div>
-          </div>
-
-          <div className="relative h-[calc(100%-2.5rem)] overflow-hidden">
-            <div className="grid h-7 grid-cols-[84px_minmax(0,1fr)] border-b border-white/[0.07] bg-[#0d1118]">
+        <section
+          ref={timelineRef}
+          className="relative min-h-0 overflow-auto bg-[#080c12]"
+          onPointerDown={handleTimelineBackgroundDown}
+          onWheel={(event) => {
+            if (!event.ctrlKey && !event.metaKey) return
+            event.preventDefault()
+            setPxPerSecond((value) => clamp(value + (event.deltaY < 0 ? 12 : -12), 42, 180))
+          }}
+        >
+          <div className="relative min-h-full" style={{ width: TRACK_LABEL_WIDTH + timelineWidth }}>
+            <div className="sticky top-0 z-20 grid h-7 border-b border-white/[0.07] bg-[#0d1118]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
               <div className="border-r border-white/[0.07]" />
               <div className="relative">
                 {ticks.map((tick) => (
                   <div
                     key={tick}
                     className="absolute top-0 h-full border-l border-white/[0.08] pl-1 text-[10px] leading-7 text-zinc-500"
-                    style={{ left: `${duration > 0 ? (tick / duration) * 100 : 0}%` }}
+                    style={{ left: tick * pxPerSecond }}
                   >
                     {formatTime(tick)}
                   </div>
                 ))}
               </div>
             </div>
-            <div className="relative h-[calc(100%-1.75rem)] overflow-y-auto">
-              <div className="pointer-events-none absolute bottom-0 top-0 z-20 w-px bg-cyan-100 shadow-[0_0_0_1px_rgba(34,211,238,0.28),0_0_18px_rgba(34,211,238,0.45)]" style={{ left: `calc(84px + ${playheadPercent}% * (100% - 84px) / 100)` }}>
-                <div className="-ml-1.5 h-3 w-3 rounded-sm bg-cyan-100" />
+
+            <div className="relative grid h-[76px] border-b border-white/[0.07]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
+              <div className="flex flex-col justify-center border-r border-white/[0.07] bg-[#0d1118] px-3">
+                <div className="text-[11px] font-semibold text-zinc-200">画面轴</div>
+                <div className="mt-1 text-[10px] text-zinc-500">拖动定位</div>
               </div>
-              <TimelineTrack
-                label="V1"
-                type="video"
-                items={videoItems}
-                order={videoOrder}
-                draggedId={draggedVideoId}
-                activeId={nodeId}
-                tool={timelineTool}
-                duration={duration}
-                trimStart={startSeconds}
-                trimEnd={endSeconds}
-                onDragStart={setDraggedVideoId}
-                onDropOn={(id) => {
-                  if (!draggedVideoId) return
-                  setVideoOrder((current) => reorder(current, draggedVideoId, id))
-                  setDraggedVideoId(null)
-                }}
-                onAppendItem={(id) => appendTrackItem("video", id)}
-                onInsertBefore={(id, beforeId) => insertTrackItemBefore("video", id, beforeId)}
-                onSeekPercent={seekPercent}
-                onTrimAroundPercent={trimAroundPercent}
-                onTrimEdgePercent={setTrimEdgePercent}
-              />
-              <TimelineTrack
-                label="A1"
-                type="audio"
-                items={audioItems}
-                order={audioOrder}
-                draggedId={draggedAudioId}
-                tool={timelineTool}
-                duration={duration}
-                trimStart={0}
-                trimEnd={duration}
-                onDragStart={setDraggedAudioId}
-                onDropOn={(id) => {
-                  if (!draggedAudioId) return
-                  setAudioOrder((current) => reorder(current, draggedAudioId, id))
-                  setDraggedAudioId(null)
-                }}
-                onAppendItem={(id) => appendTrackItem("audio", id)}
-                onInsertBefore={(id, beforeId) => insertTrackItemBefore("audio", id, beforeId)}
-                onSeekPercent={seekPercent}
-                onTrimAroundPercent={trimAroundPercent}
-                onTrimEdgePercent={setTrimEdgePercent}
-              />
+              <div className="relative bg-[#090d13]">
+                {videoClips.map((clip) => {
+                  const item = mediaById.get(clip.id)
+                  if (!item || item.type !== "video") return null
+                  return (
+                    <TimelineClip
+                      key={clip.id}
+                      clip={clip}
+                      item={item}
+                      kind="video"
+                      pxPerSecond={pxPerSecond}
+                      selected={clip.id === selectedClipId}
+                      trimStart={clip.id === selectedClipId ? trimStart : undefined}
+                      trimEnd={clip.id === selectedClipId ? trimEnd : undefined}
+                      currentTime={currentTime}
+                      onSelect={() => {
+                        setSelectedClipId(clip.id)
+                        setTrimStart(clip.start)
+                        setTrimEnd(clipEnd(clip))
+                      }}
+                      onDragStartTime={(start) => updateClipStart("video", clip.id, start)}
+                      onTrimEdge={setTrimEdge}
+                    />
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="relative grid h-[76px] border-b border-white/[0.07]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
+              <div className="flex flex-col justify-center border-r border-white/[0.07] bg-[#0d1118] px-3">
+                <div className="text-[11px] font-semibold text-zinc-200">音频轴</div>
+                <div className="mt-1 text-[10px] text-zinc-500">拖动对齐</div>
+              </div>
+              <div className="relative bg-[#090d13]">
+                {audioClips.length === 0 && (
+                  <div className="absolute inset-2 flex items-center justify-center rounded-md border border-dashed border-white/10 text-xs text-zinc-600">
+                    将音频拖到这里对齐画面
+                  </div>
+                )}
+                {audioClips.map((clip) => {
+                  const item = mediaById.get(clip.id)
+                  if (!item || item.type !== "audio") return null
+                  return (
+                    <TimelineClip
+                      key={clip.id}
+                      clip={clip}
+                      item={item}
+                      kind="audio"
+                      pxPerSecond={pxPerSecond}
+                      currentTime={currentTime}
+                      onSelect={() => undefined}
+                      onDragStartTime={(start) => updateClipStart("audio", clip.id, start)}
+                    />
+                  )
+                })}
+              </div>
+            </div>
+
+            <div
+              className="absolute bottom-0 top-0 z-30 w-px cursor-ew-resize bg-cyan-100 shadow-[0_0_0_1px_rgba(34,211,238,0.28),0_0_18px_rgba(34,211,238,0.45)]"
+              style={{ left: TRACK_LABEL_WIDTH + currentTime * pxPerSecond }}
+              onPointerDown={beginPlayheadDrag}
+            >
+              <div className="-ml-1.5 h-3 w-3 rounded-sm bg-cyan-100" />
             </div>
           </div>
         </section>
