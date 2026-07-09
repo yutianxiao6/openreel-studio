@@ -1,0 +1,44 @@
+{
+  "version": "openreel.image_provider_catalog.v1",
+  "protocols": {
+    "openai_images_generations": {
+      "version": "openreel.image_provider.v1",
+      "id": "openai_images_generations",
+      "display_name": "OpenAI-compatible images.generations",
+      "strip_base_suffixes": ["/images/generations", "/v1"],
+      "image_transport": "data_url",
+      "default_params": {
+        "size": "1024x1024"
+      },
+      "model_profiles": [
+        { "match": "gpt-image-1", "default_params": { "size": "1024x1024" } },
+        { "match": "gpt-image-2", "default_params": { "size": "1024x1024" } },
+        { "match": "dall-e-3", "default_params": { "size": "1792x1024", "quality": "hd" } },
+        { "match": "dall-e-2", "default_params": { "size": "1024x1024" } }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/images/generations",
+        "auth": "bearer",
+        "merge_extra": true,
+        "body": {
+          "model": "$model",
+          "prompt": "$prompt",
+          "n": "$count",
+          "size": "$size",
+          "quality": "$quality",
+          "negative_prompt": "$negative_prompt",
+          "response_format": "$response_format",
+          "image": "$reference_image_input"
+        }
+      },
+      "result": {
+        "images_path": "data",
+        "url_path": "url",
+        "b64_path": "b64_json",
+        "image_url_paths": ["data.0.url", "images.0.url", "url"],
+        "b64_paths": ["data.0.b64_json", "b64_json"]
+      }
+    }
+  }
+}

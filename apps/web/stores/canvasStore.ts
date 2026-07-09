@@ -1466,7 +1466,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       ),
       manualLayout: true,
     })),
-  selectNode: (id) => set({ selectedNodeId: id }),
+  selectNode: (id) =>
+    set((s) => ({
+      selectedNodeId: id,
+      nodes: s.nodes.map((node) => (
+        node.selected === (id === node.id) ? node : { ...node, selected: id === node.id }
+      )),
+    })),
   applyCanvasAction: (action, payload) => {
     if (action === "clear_all") {
       console.warn("[openreel:canvas clear_all]", { payload, previousNodes: get().nodes.length })

@@ -89,6 +89,32 @@ async def _lookup_llm_provider(provider_name: str):
         return row if row and row.enabled else None
 
 
+async def _lookup_llm_provider_by_override(value: str):
+    """Resolve a node-level model override to a configured LLM provider when possible."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    by_name = await _lookup_llm_provider(text)
+    if by_name is not None:
+        return by_name
+
+    from app.db.models import LlmProvider
+    async with session_scope() as session:
+        r = await session.exec(select(LlmProvider).where(LlmProvider.enabled == True))  # noqa: E712
+        rows = list(r.all())
+    normalized = text.split("/", 1)[1] if "/" in text else text
+    for row in rows:
+        provider = str(getattr(row, "provider", "") or "")
+        model_name = str(getattr(row, "model_name", "") or "")
+        candidates = {
+            model_name,
+            f"{provider}/{model_name}" if provider and model_name and "/" not in model_name else model_name,
+        }
+        if text in candidates or normalized == model_name:
+            return row
+    return None
+
+
 def _llm_provider_metadata(provider_row: Any | None) -> dict[str, Any]:
     if provider_row is None:
         return {}
@@ -132,6 +158,9 @@ async def _resolve_config(
 ) -> dict[str, Any]:
     """优先级：node_override > model_configs.llm_provider_name > settings 默认。"""
     if node_override:
+        provider_row = await _lookup_llm_provider_by_override(node_override)
+        if provider_row is not None:
+            return _config_from_provider_row(provider_row)
         return {
             "model": node_override,
             "temperature": 0.7,
@@ -181,26 +210,13 @@ async def _resolve_config(
     provider_row = await _lookup_llm_provider(cfg_row.llm_provider_name) if cfg_row else None
 
     if provider_row is not None:
-        provider = provider_row.provider
-        model_name = provider_row.model_name
-        # litellm 模型 id 形如 "deepseek/deepseek-chat"；只在没有 / 时才加前缀
-        model = model_name if "/" in model_name else f"{provider}/{model_name}"
-        max_tokens = (
-            cfg_row.max_tokens
-            if cfg_row and cfg_row.max_tokens
-            else provider_row.max_output_tokens
-            or 8192
+        return _config_from_provider_row(
+            provider_row,
+            temperature=cfg_row.temperature if cfg_row else 0.7,
+            top_p=cfg_row.top_p if cfg_row else 1.0,
+            fallback_model=cfg_row.fallback_model if cfg_row else None,
+            max_tokens=cfg_row.max_tokens if cfg_row and cfg_row.max_tokens else None,
         )
-        return {
-            "model": model,
-            "temperature": cfg_row.temperature if cfg_row else 0.7,
-            "max_tokens": max_tokens,
-            "top_p": cfg_row.top_p if cfg_row else 1.0,
-            "fallback_model": cfg_row.fallback_model if cfg_row else None,
-            "api_base": provider_row.base_url,
-            "api_key": provider_row.api_key,
-            "model_metadata": _llm_provider_metadata(provider_row),
-        }
 
     # 兜底：用 settings 里的默认 model（无 base_url/key，靠 env）
     return {
@@ -270,6 +286,29 @@ def _resolve_key_reference(value: str | None) -> str | None:
     if not value or not value.startswith("${") or not value.endswith("}"):
         return value
     return os.getenv(value[2:-1]) or None
+
+
+def _config_from_provider_row(
+    provider_row: Any,
+    *,
+    temperature: float = 0.7,
+    top_p: float = 1.0,
+    fallback_model: str | None = None,
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
+    provider = provider_row.provider
+    model_name = provider_row.model_name
+    model = model_name if "/" in model_name else f"{provider}/{model_name}"
+    return {
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens or provider_row.max_output_tokens or 8192,
+        "top_p": top_p,
+        "fallback_model": fallback_model,
+        "api_base": provider_row.base_url,
+        "api_key": provider_row.api_key,
+        "model_metadata": _llm_provider_metadata(provider_row),
+    }
 
 
 def _completion_kwargs(cfg: dict, *, with_tools: list | None = None,

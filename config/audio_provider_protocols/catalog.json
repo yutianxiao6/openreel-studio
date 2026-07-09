@@ -1,0 +1,172 @@
+{
+  "version": "openreel.audio_provider_catalog.v1",
+  "protocols": {
+    "openai_audio_speech": {
+      "version": "openreel.audio_provider.v1",
+      "id": "openai_audio_speech",
+      "display_name": "OpenAI-compatible audio.speech",
+      "strip_base_suffixes": ["/audio/speech", "/v1"],
+      "default_params": {
+        "voice": "alloy",
+        "response_format": "mp3"
+      },
+      "model_profiles": [
+        { "match": "tts-1", "default_params": { "voice": "alloy", "response_format": "mp3" } },
+        { "match": "tts-1-hd", "default_params": { "voice": "alloy", "response_format": "mp3" } },
+        { "match": "gpt-4o-mini-tts", "default_params": { "voice": "alloy", "response_format": "mp3" } }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/v1/audio/speech",
+        "auth": "bearer",
+        "merge_extra": true,
+        "required_context": ["input"],
+        "body": {
+          "model": "$model",
+          "input": "$input",
+          "voice": "$voice",
+          "response_format": "$response_format",
+          "speed": "$speed",
+          "instructions": "$instructions"
+        }
+      },
+      "result": {
+        "type": "binary",
+        "format_param": "response_format"
+      }
+    },
+    "newapi_suno_music": {
+      "version": "openreel.audio_provider.v1",
+      "id": "newapi_suno_music",
+      "display_name": "New API Suno Music",
+      "strip_base_suffixes": ["/suno/submit/music", "/suno", "/v1"],
+      "default_params": {
+        "mv": "chirp-v4",
+        "make_instrumental": false
+      },
+      "model_profiles": [
+        { "match": "suno_music" },
+        { "match": "V5", "default_params": { "mv": "chirp-v4" } }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/suno/submit/music",
+        "auth": "bearer",
+        "merge_extra": true,
+        "required_context": ["prompt"],
+        "success_path": "code",
+        "success_values": ["success", "0", "200", "ok"],
+        "task_id_paths": ["data", "task_id", "taskId", "id", "job_id"],
+        "body": {
+          "gpt_description_prompt": "$prompt",
+          "prompt": "$lyrics",
+          "tags": "$style",
+          "title": "$title",
+          "make_instrumental": "$instrumental",
+          "mv": "$mv",
+          "notify_hook": "$notify_hook"
+        }
+      },
+      "poll": {
+        "method": "GET",
+        "path": "/suno/fetch/{task_id}",
+        "auth": "bearer",
+        "interval_seconds": 8,
+        "timeout_seconds": 1200,
+        "success_path": "code",
+        "success_values": ["success", "0", "200", "ok"],
+        "status_path": "data.status",
+        "progress_path": "data.progress",
+        "succeeded": ["success"],
+        "failed": ["fail", "failed", "error", "cancelled", "canceled", "expired"],
+        "running": ["in_progress", "pending", "queued", "running", "processing", "submitted", "created"]
+      },
+      "result": {
+        "type": "audio_items",
+        "complete_on_audio_items": false,
+        "items_paths": ["data.data"],
+        "url_paths": ["audio_url", "source_audio_url", "stream_audio_url", "url", "mp3_url", "wav_url"],
+        "id_paths": ["id", "clip_id"],
+        "title_paths": ["title", "name"],
+        "source_url_paths": ["source_audio_url"],
+        "stream_url_paths": ["stream_audio_url", "audio_url"],
+        "image_url_paths": ["image_url", "image_large_url"],
+        "duration_paths": ["duration", "metadata.duration"],
+        "tags_paths": ["tags", "display_tags", "metadata.tags"],
+        "message_paths": ["data.fail_reason", "data.error", "data.message", "message", "msg", "error.message", "error"]
+      }
+    },
+    "suno_compatible_generate": {
+      "version": "openreel.audio_provider.v1",
+      "id": "suno_compatible_generate",
+      "display_name": "Suno-compatible generate task",
+      "strip_base_suffixes": ["/api/v1/generate", "/api/v1", "/generate", "/v1"],
+      "default_params": {
+        "customMode": false
+      },
+      "model_profiles": [
+        { "match": "V5" },
+        { "match": "V5_5" }
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/generate",
+        "auth": "bearer",
+        "merge_extra": true,
+        "required_context": ["prompt"],
+        "success_path": "code",
+        "success_values": ["0", "200", "success", "ok"],
+        "task_id_paths": ["data.taskId", "data.task_id", "data.id", "data.job_id", "taskId", "task_id", "id", "job_id"],
+        "body": {
+          "prompt": "$prompt",
+          "customMode": "$customMode",
+          "model": "$model",
+          "instrumental": "$instrumental",
+          "title": "$title",
+          "style": "$style",
+          "negativeTags": "$negativeTags",
+          "callBackUrl": "$callBackUrl"
+        }
+      },
+      "poll": {
+        "method": "GET",
+        "path": "/api/v1/generate/record-info?taskId={task_id}",
+        "auth": "bearer",
+        "interval_seconds": 8,
+        "timeout_seconds": 1200,
+        "success_path": "code",
+        "success_values": ["0", "200", "success", "ok"],
+        "status_path": "data.status",
+        "progress_path": "data.progress",
+        "succeeded": ["success", "succeeded", "completed", "complete", "done"],
+        "failed": ["failed", "failure", "error", "cancelled", "canceled", "expired", "create_task_failed", "generate_audio_failed", "submit_failed"],
+        "running": ["pending", "queued", "running", "processing", "in_progress", "submitted", "created", "text_success", "first_success"]
+      },
+      "result": {
+        "type": "audio_items",
+        "items_paths": [
+          "data.response.sunoData",
+          "data.response.suno_data",
+          "response.sunoData",
+          "response.suno_data",
+          "data",
+          "audios",
+          "audio",
+          "items",
+          "records",
+          "result",
+          "results"
+        ],
+        "url_paths": ["audioUrl", "audio_url", "audio.audioUrl", "audio.audio_url", "sourceAudioUrl", "source_audio_url", "streamAudioUrl", "stream_audio_url", "url", "mp3_url", "wav_url"],
+        "id_paths": ["id", "audioId", "audio_id"],
+        "title_paths": ["title", "name"],
+        "source_url_paths": ["sourceAudioUrl", "source_audio_url"],
+        "stream_url_paths": ["streamAudioUrl", "stream_audio_url"],
+        "image_url_paths": ["imageUrl", "image_url", "coverUrl", "cover_url"],
+        "duration_paths": ["duration", "duration_seconds"],
+        "tags_paths": ["tags"],
+        "message_paths": ["data.error", "data.message", "data.msg", "error.message", "error", "message", "msg", "reason", "detail"]
+      }
+    }
+  }
+}

@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type MouseEvent } from "react"
 import { motion } from "framer-motion"
 import {
   callTool,
+  getVideoProviderProtocols,
   getRuntimeConfigFile,
   getProjectNodeDetails,
   getProjectNodes,
@@ -15,12 +16,11 @@ import {
   uploadProjectNodeMedia,
 } from "@/lib/api"
 import {
-  VIDEO_MODEL_OPTIONS,
   VIDEO_RESOLUTION_OPTIONS,
   defaultVideoResolutionForModel,
-  isKnownVideoModel,
   videoSupportedResolutionsForModel,
 } from "@/lib/videoModelOptions"
+import { videoReferenceImageLimit } from "@/lib/videoProtocolLimits"
 import {
   inputFieldsFromNodeInput,
   nodePromptText,
@@ -28,7 +28,6 @@ import {
 } from "@/lib/nodeDisplay"
 import { MarkdownView } from "@/components/common/MarkdownView"
 import { useCanvasStore } from "@/stores/canvasStore"
-import { useChatStore } from "@/stores/chatStore"
 import { useProjectStore } from "@/stores/projectStore"
 import { getNodeStyle } from "./nodeStyles"
 import type { StageData } from "./SmartNode"
@@ -66,22 +65,96 @@ interface EditableNodeDraft {
   aspect_ratio: string
   resolution: string
   quality: string
+  clarity: string
   duration_seconds: string
+  video_mode: string
   instrumental: boolean
   custom_mode: boolean
   reference_images: string[]
+  reference_videos: string[]
+  reference_audios: string[]
 }
 
-interface AudioProviderOption {
+interface MediaProviderOption {
   kind: string
   name: string
   model_name: string
   api_format: string
+  params?: Record<string, unknown>
   is_active?: boolean
   enabled?: boolean
 }
 
+type AudioProviderOption = MediaProviderOption
+
+interface LlmProviderOption {
+  name: string
+  provider: string
+  model_name: string
+  tier?: string
+  enabled?: boolean
+  supports_vision?: boolean | null
+  params?: Record<string, unknown>
+}
+
+interface RuntimeModelDefaults {
+  model_tier_defaults?: Record<string, string | null | undefined>
+  model_assignments?: Record<string, string | null | undefined>
+}
+
 type AudioProviderMode = "tts" | "music" | "unknown"
+
+interface VideoDurationSummary {
+  min?: number | string | null
+  max?: number | string | null
+  allowed_values?: Array<number | string> | null
+  step?: number | string | null
+}
+
+interface VideoProtocolModeSummary {
+  label?: string
+  prompt_required?: boolean | null
+  min_images?: number | null
+  max_images?: number | null
+  min_videos?: number | null
+  max_videos?: number | null
+  min_audios?: number | null
+  max_audios?: number | null
+  min_total_media?: number | null
+  max_total_media?: number | null
+  required_roles?: string[]
+  allowed_roles?: string[]
+  supported_ratios?: string[]
+  supported_resolutions?: string[]
+  default_ratio?: string
+  default_resolution?: string
+  duration?: VideoDurationSummary
+}
+
+interface VideoProtocolProfileSummary {
+  match?: string
+  label?: string
+  supported_ratios?: string[]
+  supported_resolutions?: string[]
+  default_ratio?: string
+  default_resolution?: string
+  duration?: VideoDurationSummary
+  modes?: Record<string, VideoProtocolModeSummary> | string[]
+  supported_modes?: string[]
+}
+
+interface VideoProtocolSummary {
+  id: string
+  display_name?: string
+  model_names?: string[]
+  model_profiles?: VideoProtocolProfileSummary[]
+  modes?: Record<string, VideoProtocolModeSummary>
+  supported_ratios?: string[]
+  supported_resolutions?: string[]
+  default_ratio?: string
+  default_resolution?: string
+  duration?: VideoDurationSummary
+}
 
 const EDITABLE_NODE_TYPES = new Set(["text", "image", "video", "audio"])
 
@@ -151,13 +224,39 @@ const EMPTY_DRAFT: EditableNodeDraft = {
   aspect_ratio: "",
   resolution: "",
   quality: "",
+  clarity: "",
   duration_seconds: "",
+  video_mode: "",
   instrumental: true,
   custom_mode: false,
   reference_images: [],
+  reference_videos: [],
+  reference_audios: [],
 }
 
 const VIDEO_ASPECT_RATIO_OPTIONS = ["16:9", "9:16", "3:2", "2:3", "1:1"]
+const IMAGE_ASPECT_RATIO_OPTIONS = [
+  { label: "横版", value: "16:9" },
+  { label: "竖版", value: "9:16" },
+  { label: "方图", value: "1:1" },
+]
+const IMAGE_QUALITY_OPTIONS = [
+  { label: "高质量", value: "high" },
+  { label: "标准", value: "medium" },
+  { label: "草稿", value: "low" },
+]
+const IMAGE_CLARITY_OPTIONS = [
+  { label: "自然", value: "natural" },
+  { label: "细节", value: "detailed" },
+  { label: "锐利", value: "sharp" },
+]
+const VIDEO_MODE_LABELS: Record<string, string> = {
+  text_to_video: "文生视频",
+  first_frame: "图生视频",
+  first_last_frame: "首尾帧",
+  multimodal_reference: "多参考",
+}
+const VIDEO_MODE_ORDER = ["text_to_video", "first_frame", "first_last_frame", "multimodal_reference"]
 
 interface Props {
   nodeId: string
@@ -167,7 +266,8 @@ interface Props {
   onDelete?: (nodeId: string) => void | Promise<void>
   onRequestStoryRevision?: (nodeId: string) => void | Promise<void>
   actionDisabled?: boolean
-  presentation?: "drawer" | "modal"
+  presentation?: "drawer" | "modal" | "anchored"
+  anchorStyle?: CSSProperties
   editRequestKey?: string | number | null
 }
 
@@ -223,6 +323,7 @@ interface MediaItem {
 interface MediaHistoryEntry {
   id: string
   index: number
+  current?: boolean
   created_at?: string
   type?: string
   prompt?: string
@@ -270,6 +371,32 @@ interface ReferenceItem {
   kind: "url" | "file" | "reference" | "node" | "asset" | "text"
   value: string
   label: string
+}
+
+interface ReferenceMentionCandidate {
+  mention: string
+  label: string
+  ref: string
+  source: "node" | "reference"
+  previewUrl?: string
+}
+
+interface ReferenceImageMention {
+  mention: string
+  label: string
+  ref: string
+  source: "node" | "reference"
+  index?: number
+}
+
+type CanvasGraphNode = {
+  id: string
+  data?: Record<string, unknown>
+}
+
+type CanvasGraphEdge = {
+  source?: string | null
+  target?: string | null
 }
 
 interface ProjectNodeIndexItem {
@@ -341,15 +468,6 @@ function mediaProgressFromOutput(output: unknown): MediaProgressInfo | null {
     percent,
     label: `${percent}%`,
   }
-}
-
-function MediaProgressText({ progress }: { progress: MediaProgressInfo }) {
-  return (
-    <div className="mt-2 inline-flex items-center gap-1.5 rounded bg-blue-950/45 px-2 py-1 text-[11px] font-semibold text-blue-200 ring-1 ring-blue-300/15">
-      <span>进度</span>
-      <span className="tabular-nums">{progress.label}</span>
-    </div>
-  )
 }
 
 function clamp01(value: number): number {
@@ -505,6 +623,334 @@ function uniqueReferenceItems(items: ReferenceItem[], projectId?: string | null)
     unique.push(item)
   }
   return unique
+}
+
+function canvasNodeData(node: CanvasGraphNode | null | undefined): Record<string, unknown> {
+  return asObj(node?.data) || {}
+}
+
+function canvasNodeType(node: CanvasGraphNode | null | undefined): string {
+  return String(canvasNodeData(node).type || "").trim()
+}
+
+function canvasNodeTitle(node: CanvasGraphNode | null | undefined): string {
+  const data = canvasNodeData(node)
+  return String(data.title || data.label || node?.id || "").trim()
+}
+
+function canvasNodePublicId(node: CanvasGraphNode | null | undefined): string {
+  const value = canvasNodeData(node).publicId
+  if (value === undefined || value === null) return ""
+  return String(value).trim()
+}
+
+function canvasNodeReferenceValue(node: CanvasGraphNode): string {
+  const publicId = canvasNodePublicId(node)
+  return publicId ? `node:${publicId}` : `node:${node.id}`
+}
+
+function canvasNodeInput(node: CanvasGraphNode | null | undefined): Record<string, unknown> {
+  return asObj(parseJson(canvasNodeData(node).input)) || {}
+}
+
+function canvasNodeWorkflow(node: CanvasGraphNode | null | undefined): Record<string, unknown> {
+  const data = canvasNodeData(node)
+  const input = canvasNodeInput(node)
+  return asObj(parseJson(data.workflow)) || asObj(parseJson(input.workflow)) || {}
+}
+
+function canvasNodeAliasValues(node: CanvasGraphNode): unknown[] {
+  const data = canvasNodeData(node)
+  const input = canvasNodeInput(node)
+  const workflow = canvasNodeWorkflow(node)
+  const stepId = String(workflow.step_id || input.stage || "").trim()
+  return [
+    node.id,
+    `node:${node.id}`,
+    data.nodeId,
+    data.publicId,
+    input.stage,
+    input.source_node_id,
+    input.sourceNodeId,
+    workflow.step_id,
+    workflow.template_step_id,
+    workflow.source_node_id,
+    stepId.endsWith("_canvas") ? stepId.slice(0, -7) : "",
+  ]
+}
+
+function canvasImagePreviewUrl(node: CanvasGraphNode | null | undefined, projectId?: string | null): string {
+  if (!node || canvasNodeType(node) !== "image") return ""
+  const data = canvasNodeData(node)
+  return (
+    firstReferenceImageUrl(data.preview, projectId)
+    || firstReferenceImageUrl(data.output, projectId)
+    || firstReferenceImageUrl(data.workflowRuntimeOutput, projectId)
+    || firstReferenceImageUrl(data.input, projectId)
+    || firstReferenceImageUrl(data, projectId)
+  )
+}
+
+function addCanvasNodeLookup(lookup: Map<string, CanvasGraphNode>, key: unknown, node: CanvasGraphNode) {
+  const text = String(key ?? "").trim()
+  if (!text) return
+  if (!lookup.has(text)) lookup.set(text, node)
+  const stripped = stripNodeReferenceMarker(text)
+  if (stripped && !lookup.has(stripped)) lookup.set(stripped, node)
+}
+
+function buildCanvasNodeLookup(nodes: CanvasGraphNode[]): Map<string, CanvasGraphNode> {
+  const lookup = new Map<string, CanvasGraphNode>()
+  for (const node of nodes) {
+    for (const alias of canvasNodeAliasValues(node)) {
+      addCanvasNodeLookup(lookup, alias, node)
+    }
+    const publicId = canvasNodePublicId(node)
+    if (publicId) {
+      addCanvasNodeLookup(lookup, publicId, node)
+      addCanvasNodeLookup(lookup, `#${publicId}`, node)
+      addCanvasNodeLookup(lookup, `node:${publicId}`, node)
+      addCanvasNodeLookup(lookup, `node:#${publicId}`, node)
+    }
+  }
+  return lookup
+}
+
+function resolveCanvasReferenceNode(value: unknown, lookup: Map<string, CanvasGraphNode>): CanvasGraphNode | undefined {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const text = String(value).trim()
+    if (!text) return undefined
+    return lookup.get(text) || lookup.get(`node:${text}`) || lookup.get(stripNodeReferenceMarker(text))
+  }
+  const obj = asObj(value)
+  if (!obj) return undefined
+  for (const key of [
+    "ref",
+    "reference",
+    "reference_input",
+    "value",
+    "node_id",
+    "nodeId",
+    "source_node_id",
+    "sourceNodeId",
+    "source_step",
+    "from_step",
+    "source",
+    "candidate",
+    "id",
+  ]) {
+    const node = resolveCanvasReferenceNode(obj[key], lookup)
+    if (node) return node
+  }
+  return undefined
+}
+
+function safeReferenceMentionLabel(value: string, fallback: string): string {
+  const raw = (value || fallback || "参考图")
+    .replace(/^[@#]+/, "")
+    .replace(/\.(png|jpe?g|webp|gif|bmp|svg)$/i, "")
+    .replace(/[^\p{L}\p{N}_\-\u4e00-\u9fa5]+/gu, "")
+    .trim()
+  const base = raw || fallback || "参考图"
+  const label = /(图|图片|照片|参考)$/u.test(base) ? base : `${base}图片`
+  return label.slice(0, 18)
+}
+
+function basenameFromReferenceValue(value: string): string {
+  const raw = value.replace(/^upload:/, "").trim()
+  const withoutQuery = raw.split(/[?#]/)[0] || raw
+  const parts = withoutQuery.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || ""
+}
+
+function uniqueReferenceMention(base: string, used: Set<string>): string {
+  const first = `@${base}`
+  if (!used.has(first)) {
+    used.add(first)
+    return first
+  }
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `@${base}${index}`
+    if (!used.has(candidate)) {
+      used.add(candidate)
+      return candidate
+    }
+  }
+  const fallback = `@${base}${used.size + 1}`
+  used.add(fallback)
+  return fallback
+}
+
+function referenceMentionCandidateKey(candidate: Pick<ReferenceMentionCandidate, "ref">): string {
+  return stripNodeReferenceMarker(candidate.ref).toLowerCase()
+}
+
+function buildReferenceMentionCandidates(
+  node: NodeFull,
+  draft: EditableNodeDraft,
+  canvasNodes: CanvasGraphNode[],
+  canvasEdges: CanvasGraphEdge[],
+  projectId?: string | null,
+): ReferenceMentionCandidate[] {
+  const nodeLookup = buildCanvasNodeLookup(canvasNodes)
+  const candidates: ReferenceMentionCandidate[] = []
+  const seenRefs = new Set<string>()
+  const usedMentions = new Set<string>()
+
+  const addCandidate = (
+    labelSource: string,
+    ref: string,
+    source: ReferenceMentionCandidate["source"],
+    previewUrl?: string,
+  ) => {
+    const normalizedRef = ref.trim()
+    if (!normalizedRef) return
+    const key = stripNodeReferenceMarker(normalizedRef).toLowerCase()
+    if (seenRefs.has(key)) return
+    seenRefs.add(key)
+    const label = safeReferenceMentionLabel(labelSource, `参考图${candidates.length + 1}`)
+    candidates.push({
+      mention: uniqueReferenceMention(label, usedMentions),
+      label,
+      ref: normalizedRef,
+      source,
+      previewUrl,
+    })
+  }
+
+  const addNodeCandidate = (sourceNode: CanvasGraphNode, ref: string = canvasNodeReferenceValue(sourceNode)) => {
+    if (sourceNode.id === node.id) return
+    if (canvasNodeType(sourceNode) !== "image") return
+    addCandidate(canvasNodeTitle(sourceNode), ref, "node", canvasImagePreviewUrl(sourceNode, projectId))
+  }
+
+  for (const edge of canvasEdges) {
+    if (String(edge.target || "") !== node.id) continue
+    const sourceNode = canvasNodes.find((item) => item.id === String(edge.source || ""))
+    if (!sourceNode) continue
+    addNodeCandidate(sourceNode)
+  }
+
+  referenceValuesForMentions(node, draft).forEach((value, index) => {
+    const sourceNode = resolveCanvasReferenceNode(value, nodeLookup)
+    if (sourceNode) {
+      addNodeCandidate(sourceNode, canvasNodeReferenceValue(sourceNode))
+      return
+    }
+    const normalized = normalizeReferenceValue(value, `参考图${index + 1}`)
+    if (!normalized) return
+    if (normalized.kind === "node") {
+      const sourceNode = nodeLookup.get(normalized.value)
+        || nodeLookup.get(`node:${normalized.value}`)
+        || nodeLookup.get(stripNodeReferenceMarker(normalized.value))
+      if (sourceNode) {
+        addNodeCandidate(sourceNode, value)
+        return
+      }
+    }
+    const fallback = basenameFromReferenceValue(value) || normalized.label || `参考图${index + 1}`
+    const previewUrl = resolveReferenceImageUrl(projectId, value, true)
+    addCandidate(fallback, value, "reference", previewUrl)
+  })
+
+  return candidates
+}
+
+function referenceImageMentionsFromPrompt(
+  prompt: string,
+  candidates: ReferenceMentionCandidate[],
+  referenceImages: string[],
+): ReferenceImageMention[] {
+  if (!prompt || candidates.length === 0) return []
+  const result: ReferenceImageMention[] = []
+  const seen = new Set<string>()
+  const refOrder = new Map<string, number>()
+  referenceImages.forEach((ref, index) => {
+    refOrder.set(stripNodeReferenceMarker(ref).toLowerCase(), index + 1)
+  })
+  for (const candidate of candidates) {
+    if (!candidate.mention || !prompt.includes(candidate.mention)) continue
+    const key = `${candidate.mention}:${referenceMentionCandidateKey(candidate)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push({
+      mention: candidate.mention,
+      label: candidate.label,
+      ref: candidate.ref,
+      source: candidate.source,
+      index: refOrder.get(referenceMentionCandidateKey(candidate)),
+    })
+  }
+  return result
+}
+
+function referenceMentionCandidateRefs(candidates: ReferenceMentionCandidate[]): string[] {
+  return Array.from(new Set(candidates.map((item) => item.ref.trim()).filter(Boolean)))
+}
+
+function referenceValueStrings(value: unknown, depth = 0): string[] {
+  if (value == null || value === "" || depth > 4) return []
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const text = String(value).trim()
+    return text ? [text] : []
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => referenceValueStrings(item, depth + 1))
+  }
+  const obj = asObj(value)
+  if (!obj) return []
+  const keys = [
+    "ref",
+    "reference",
+    "reference_input",
+    "value",
+    "node_id",
+    "nodeId",
+    "source_node_id",
+    "sourceNodeId",
+    "source_step",
+    "from_step",
+    "source",
+    "candidate",
+    "candidates",
+    "id",
+    "rel_path",
+    "path",
+    "source_path",
+    "url",
+    "local_url",
+    "remote_url",
+  ]
+  return keys.flatMap((key) => referenceValueStrings(obj[key], depth + 1))
+}
+
+function referenceValuesForMentions(node: NodeFull, draft: EditableNodeDraft): string[] {
+  const input = rawNodeInput(node.input)
+  const fields = asObj(input.fields) || {}
+  const output = asObj(parseJson(node.output)) || {}
+  const values = [
+    draft.reference_images,
+    input.reference_images,
+    input.references,
+    input.depends_on,
+    fields.reference_images,
+    fields.references,
+    fields.depends_on,
+    output.reference_images,
+    output.references,
+  ].flatMap((item) => referenceValueStrings(item))
+  return Array.from(new Set(values.map((item) => item.trim()).filter(Boolean)))
+}
+
+function referenceDisplayCount(
+  refs: string[],
+  implicitRefs: string[],
+  projectId?: string | null,
+): number {
+  const items = [...refs, ...implicitRefs]
+    .map((value) => normalizeReferenceValue(value, "引用图"))
+    .filter((ref): ref is ReferenceItem => Boolean(ref))
+  return uniqueReferenceItems(items, projectId).length
 }
 
 function normalizeReference(ref: unknown): ReferenceItem | null {
@@ -780,6 +1226,67 @@ function collectMedia(output: unknown): MediaItem[] {
 
   if (!obj) return items
 
+  const pushImageList = (value: unknown, fallbackLabel: string) => {
+    if (!Array.isArray(value)) return
+    value.forEach((item, index) => {
+      const image = asObj(item)
+      if (image) {
+        pushImage(
+          pickUrl(image),
+          firstText(image.label, image.title, image.name) || `${fallbackLabel} ${index + 1}`,
+          typeof image.prompt === "string" ? image.prompt : undefined,
+          image.width,
+          image.height,
+        )
+      } else if (typeof item === "string") {
+        pushImage(item, `${fallbackLabel} ${index + 1}`)
+      }
+    })
+  }
+
+  const pushVideoList = (value: unknown, fallbackLabel: string) => {
+    if (!Array.isArray(value)) return
+    value.forEach((item, index) => {
+      const video = asObj(item)
+      if (video) {
+        pushVideo(
+          pickUrl(video),
+          typeof video.poster === "string" ? video.poster : undefined,
+          firstText(video.label, video.title, video.name) || `${fallbackLabel} ${index + 1}`,
+          typeof video.prompt === "string" ? video.prompt : undefined,
+          video.width,
+          video.height,
+        )
+      } else if (typeof item === "string") {
+        pushVideo(item, undefined, `${fallbackLabel} ${index + 1}`)
+      }
+    })
+  }
+
+  const pushAudioList = (value: unknown, fallbackLabel: string) => {
+    if (!Array.isArray(value)) return
+    value.forEach((item, index) => {
+      const audio = asObj(item)
+      if (audio) {
+        pushAudio(
+          pickUrl(audio),
+          firstText(audio.label, audio.title, audio.name) || `${fallbackLabel} ${index + 1}`,
+          typeof audio.prompt === "string" ? audio.prompt : undefined,
+        )
+      } else if (typeof item === "string") {
+        pushAudio(item, `${fallbackLabel} ${index + 1}`)
+      }
+    })
+  }
+
+  pushImageList(obj.images, "图片")
+  pushImageList(obj.image_outputs, "图片")
+  pushImageList(obj.output_images, "图片")
+  pushVideoList(obj.videos, "视频")
+  pushVideoList(obj.video_outputs, "视频")
+  pushAudioList(obj.audios, "音频")
+  pushAudioList(obj.audio_outputs, "音频")
+
   // Direct image-shaped payload
   if (obj.type === "image") {
     pushImage(pickUrl(obj), "图片", undefined, obj.width, obj.height)
@@ -857,9 +1364,25 @@ function collectMedia(output: unknown): MediaItem[] {
 
 function mediaHistoryEntriesFromOutput(output: unknown, kind: "image" | "video" | "audio"): MediaHistoryEntry[] {
   const obj = asObj(parseJson(output))
+  const entries: MediaHistoryEntry[] = []
+  if (isSuccessfulMediaHistoryOutput(output)) {
+    const currentMedia = collectMedia(output).filter((mediaItem) => mediaItem.kind === kind)
+    if (currentMedia.length > 0) {
+      entries.push({
+        id: "current",
+        index: -1,
+        current: true,
+        created_at: firstText(obj?.created_at, obj?.updated_at, obj?.completed_at) || undefined,
+        type: firstText(obj?.type) || undefined,
+        prompt: pickPromptText("", {}, obj || {}),
+        output,
+        media: currentMedia,
+      })
+    }
+  }
   const raw = obj?.history ?? obj?.media_history
-  if (!Array.isArray(raw)) return []
-  return raw
+  if (!Array.isArray(raw)) return entries
+  const historyEntries = raw
     .map((item, index): MediaHistoryEntry | null => {
       const entry = asObj(item)
       const entryOutput = entry && Object.prototype.hasOwnProperty.call(entry, "output")
@@ -887,6 +1410,7 @@ function mediaHistoryEntriesFromOutput(output: unknown, kind: "image" | "video" 
       }
     })
     .filter((item): item is MediaHistoryEntry => Boolean(item))
+  return [...entries, ...historyEntries]
 }
 
 function isSuccessfulMediaHistoryOutput(output: unknown): boolean {
@@ -904,9 +1428,10 @@ function isSuccessfulMediaHistoryOutput(output: unknown): boolean {
       if (!stageObj || collectMedia(stageObj).length === 0) continue
       mediaStages += 1
       const stageStatus = typeof stageObj.status === "string" ? stageObj.status.trim().toLowerCase() : ""
-      if (stageStatus && !["completed", "success", "succeeded", "done"].includes(stageStatus)) return false
-      if (typeof stageObj.error === "string" && stageObj.error.trim()) return false
-      if (typeof stageObj.error_message === "string" && stageObj.error_message.trim()) return false
+      const stageDone = ["completed", "success", "succeeded", "done"].includes(stageStatus)
+      if (stageStatus && !stageDone) return false
+      if (!stageDone && typeof stageObj.error === "string" && stageObj.error.trim()) return false
+      if (!stageDone && typeof stageObj.error_message === "string" && stageObj.error_message.trim()) return false
     }
     return mediaStages > 0
   }
@@ -925,9 +1450,7 @@ function formatHistoryTime(value?: string): string {
   })
 }
 
-const STORY_REVISION_NODE_TYPES = new Set(["text"])
-
-const MEDIA_RERUN_NODE_TYPES = new Set(["image", "video", "audio"])
+const MEDIA_RERUN_NODE_TYPES = new Set(["text", "image", "video", "audio"])
 
 function CopyIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
   return (
@@ -942,6 +1465,69 @@ function CheckIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
       <path d="M5 12.5l4.2 4.2L19 7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function PlusIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function XIcon({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M7 7l10 10M17 7 7 17" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function ImageIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="14" rx="2.4" />
+      <path d="m7 16 3.6-3.8 2.7 2.8 1.7-1.8L19 17" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="15.6" cy="9.2" r="1.2" />
+    </svg>
+  )
+}
+
+function UploadIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+      <path d="M12 15V5" strokeLinecap="round" />
+      <path d="m8 9 4-4 4 4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 16.5v1.2A2.3 2.3 0 0 0 7.3 20h9.4a2.3 2.3 0 0 0 2.3-2.3v-1.2" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function ArrowUpIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+      <path d="M12 19V6" strokeLinecap="round" />
+      <path d="m7 11 5-5 5 5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function SparkIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path d="M13 3 11.2 8.2 6 10l5.2 1.8L13 17l1.8-5.2L20 10l-5.2-1.8L13 3Z" strokeLinejoin="round" />
+      <path d="M5.5 15.5 4.6 18l-2.5.9 2.5.9.9 2.5.9-2.5 2.5-.9-2.5-.9-.9-2.5Z" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function ChatBubbleIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path d="M5 6.8A3.8 3.8 0 0 1 8.8 3h6.4A3.8 3.8 0 0 1 19 6.8v4.7a3.8 3.8 0 0 1-3.8 3.8H11l-4.5 4.2v-4.4A3.8 3.8 0 0 1 5 11.5V6.8Z" strokeLinejoin="round" />
+      <path d="M8.5 8h7M8.5 11h4.8" strokeLinecap="round" />
     </svg>
   )
 }
@@ -1042,38 +1628,139 @@ function prettyJson(value: unknown): string {
   }
 }
 
-function NodeDebugSection({ node }: { node: NodeFull }) {
-  const [open, setOpen] = useState(false)
+function nodeAdvancedHistoryKinds(node: NodeFull): Array<"image" | "video" | "audio"> {
+  return (["image", "video", "audio"] as const)
+    .filter((kind) => mediaHistoryEntriesFromOutput(node.output, kind).length > 0)
+}
+
+function nodeAdvancedHistoryCount(node: NodeFull): number {
+  if (node.type === "text") {
+    return textChatHistoryFromPayload(nodeInputFields(node.input), node.output, node.prompt || "").length
+  }
+  return nodeAdvancedHistoryKinds(node)
+    .reduce((count, kind) => count + mediaHistoryEntriesFromOutput(node.output, kind).length, 0)
+}
+
+function NodeRawDataBlock({ node }: { node: NodeFull }) {
   return (
-    <section className="rounded-lg border border-dashed border-amber-500/25 bg-amber-950/10">
+    <div className="space-y-3">
+      <div className="grid gap-2 text-[11px] text-zinc-400 sm:grid-cols-2">
+        <span>节点 ID: {node.id}</span>
+        {node.version != null && <span>版本: {node.version}</span>}
+        {node.created_at && <span>创建: {node.created_at}</span>}
+        {node.updated_at && <span>更新: {node.updated_at}</span>}
+      </div>
+      {[
+        ["input", node.input],
+        ["output", node.output],
+        ["prompt", node.prompt],
+      ].map(([label, value]) => (
+        <div key={String(label)}>
+          <div className="mb-1 text-[11px] uppercase tracking-wide text-zinc-500">{String(label)}</div>
+          <pre className="max-h-72 overflow-auto rounded-md border border-white/[0.08] bg-black/45 p-2 text-[11px] leading-5 text-zinc-200">
+            {prettyJson(value)}
+          </pre>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function NodeAdvancedSurface({
+  node,
+  displayError,
+  mediaProgress,
+  switchingHistoryId,
+  onSwitchHistory,
+}: {
+  node: NodeFull
+  displayError: string
+  mediaProgress: MediaProgressInfo | null
+  switchingHistoryId?: string | null
+  onSwitchHistory: (entry: MediaHistoryEntry) => void | Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [rawOpen, setRawOpen] = useState(false)
+  const historyKinds = nodeAdvancedHistoryKinds(node)
+  const historyCount = nodeAdvancedHistoryCount(node)
+  const busy = node.status === "running" || node.status === "queued"
+  const chips = [
+    displayError ? "错误" : "",
+    mediaProgress ? "进度" : "",
+    historyCount > 0 ? `历史 ${historyCount}` : "",
+    "原始数据",
+  ].filter(Boolean)
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-white/[0.08] bg-[#10151d]/86">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center justify-between px-3 py-2 text-left text-[12px] font-medium text-amber-100/90 hover:bg-amber-500/10"
+        className="flex w-full items-center justify-between gap-3 px-3.5 py-3 text-left transition hover:bg-white/[0.04]"
       >
-        <span>开发原始数据</span>
-        <span className="text-[11px] text-amber-200/60">{open ? "收起" : "展开"}</span>
+        <span className="min-w-0">
+          <span className="block text-[12px] font-semibold text-zinc-200">高级与诊断</span>
+          <span className="mt-1 flex flex-wrap gap-1.5">
+            {chips.map((chip) => (
+              <span key={chip} className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-zinc-500">
+                {chip}
+              </span>
+            ))}
+          </span>
+        </span>
+        <span className="shrink-0 text-[11px] text-zinc-500">{open ? "收起" : "展开"}</span>
       </button>
       {open && (
-        <div className="space-y-3 border-t border-amber-500/15 p-3">
-          <div className="grid gap-2 text-[11px] text-amber-100/70 sm:grid-cols-2">
-            <span>节点 ID: {node.id}</span>
-            {node.version != null && <span>版本: {node.version}</span>}
-            {node.created_at && <span>创建: {node.created_at}</span>}
-            {node.updated_at && <span>更新: {node.updated_at}</span>}
-          </div>
-          {[
-            ["input", node.input],
-            ["output", node.output],
-            ["prompt", node.prompt],
-          ].map(([label, value]) => (
-            <div key={String(label)}>
-              <div className="mb-1 text-[11px] uppercase tracking-wide text-amber-200/70">{String(label)}</div>
-              <pre className="max-h-72 overflow-auto rounded-md border border-amber-500/15 bg-black/45 p-2 text-[11px] leading-5 text-amber-50/80">
-                {prettyJson(value)}
-              </pre>
-            </div>
+        <div className="space-y-3 border-t border-white/[0.08] p-3.5">
+          {displayError && (
+            <Section title="运行错误">
+              <div className="rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-[13px] text-red-300 whitespace-pre-wrap break-words">
+                {displayError}
+              </div>
+            </Section>
+          )}
+          {mediaProgress && (
+            <Section title="运行进度">
+              <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
+                <div
+                  className="h-full rounded-full bg-cyan-300"
+                  style={{ width: `${mediaProgress.percent}%` }}
+                />
+              </div>
+              <div className="mt-2 text-[12px] text-zinc-400">{mediaProgress.label}</div>
+            </Section>
+          )}
+          {historyKinds.map((kind) => (
+            <MediaHistorySection
+              key={kind}
+              kind={kind}
+              output={node.output}
+              busy={busy}
+              switchingId={switchingHistoryId}
+              onSwitch={onSwitchHistory}
+            />
           ))}
+          {node.type === "text" && (
+            <TextHistorySection
+              input={nodeInputFields(node.input)}
+              rawOutput={node.output}
+              nodePrompt={node.prompt || ""}
+            />
+          )}
+          <Section title="原始数据">
+            <button
+              type="button"
+              onClick={() => setRawOpen((value) => !value)}
+              className="rounded-md border border-white/[0.1] bg-white/[0.04] px-3 py-2 text-xs font-medium text-zinc-200 transition hover:bg-white/[0.08]"
+            >
+              {rawOpen ? "隐藏 input / output / prompt" : "查看 input / output / prompt"}
+            </button>
+            {rawOpen && (
+              <div className="mt-3">
+                <NodeRawDataBlock node={node} />
+              </div>
+            )}
+          </Section>
         </div>
       )}
     </section>
@@ -1331,21 +2018,29 @@ function RefThumbnail({
   ref,
   projectId,
   setLightbox,
+  canvasLookup,
   compact = false,
 }: {
   ref: ReferenceItem
   projectId?: string | null
   setLightbox: (v: { src: string; alt?: string } | null) => void
+  canvasLookup?: Map<string, CanvasGraphNode>
   compact?: boolean
 }) {
   const refTitle = ref.kind === "node" ? ref.label : `${ref.kind}:${ref.value}`
-  // 异步把节点/资产引用解析到真实图片 url；失败时展示等待状态，不再调用不存在的 asset.get 工具。
+  const localNode = ref.kind === "node" && canvasLookup ? resolveCanvasReferenceNode(ref.value, canvasLookup) : undefined
+  const localResolved = localNode ? canvasImagePreviewUrl(localNode, projectId) : ""
+  // 异步把节点/资产引用解析到真实图片 url；本地画布已含上游输出时直接渲染，只把接口请求作为兜底。
   const [resolved, setResolved] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   useEffect(() => {
     let cancelled = false
     setResolved(null)
     setFailed(false)
+    if (localResolved) {
+      setResolved(localResolved)
+      return () => { cancelled = true }
+    }
     ;(async () => {
       try {
         if (ref.kind === "url") {
@@ -1403,21 +2098,22 @@ function RefThumbnail({
       }
     })()
     return () => { cancelled = true }
-  }, [ref.kind, ref.value, projectId])
+  }, [ref.kind, ref.value, projectId, localResolved])
 
-  if (resolved) {
+  const displaySrc = localResolved || resolved
+  if (displaySrc) {
     return (
       <button
-        onClick={() => setLightbox({ src: resolved, alt: ref.label })}
+        onClick={() => setLightbox({ src: displaySrc, alt: ref.label })}
         className={compact
-          ? "group relative block h-7 w-7 overflow-hidden rounded bg-black/40 ring-1 ring-white/[0.12] transition hover:ring-cyan-200/70"
-          : "group relative block overflow-hidden rounded-lg bg-black/40 ring-1 ring-white/[0.08]"}
+          ? "group relative block h-8 w-8 overflow-hidden rounded-md bg-black/45 ring-1 ring-white/[0.13] shadow-[0_6px_16px_rgba(0,0,0,0.24)] transition hover:-translate-y-0.5 hover:ring-zinc-100/55"
+          : "group relative block h-14 w-14 overflow-hidden rounded-lg bg-black/40 ring-1 ring-white/[0.08]"}
         title={ref.label}
       >
         <img
-          src={resolved}
+          src={displaySrc}
           alt={ref.label}
-          className={compact ? "h-full w-full object-cover" : "w-full h-20 object-cover"}
+          className="h-full w-full object-cover"
           onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0.3" }}
         />
         {!compact && (
@@ -1432,7 +2128,7 @@ function RefThumbnail({
   if (failed) {
     return (
       <span
-        className="flex min-h-20 items-center rounded-lg bg-white/[0.03] px-2 py-1 text-[11px] text-gray-400 ring-1 ring-white/[0.08]"
+        className="flex min-h-14 items-center rounded-lg bg-white/[0.03] px-2 py-1 text-[11px] text-gray-400 ring-1 ring-white/[0.08]"
         title={`${refTitle} 暂无可预览图片`}
       >
         {ref.kind === "text" ? ref.value : "引用图等待产出"}
@@ -1441,7 +2137,7 @@ function RefThumbnail({
   }
   // loading
   return (
-    <div className="flex h-20 items-center justify-center rounded-lg bg-black/40 ring-1 ring-white/[0.08]" title={refTitle}>
+    <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-black/40 ring-1 ring-white/[0.08]" title={refTitle}>
       <div className="w-4 h-4 border-2 border-teal-400 border-t-transparent rounded-full animate-spin" />
     </div>
   )
@@ -1456,9 +2152,11 @@ function ReferenceThumbStrip({
   projectId?: string | null
   setLightbox: (v: { src: string; alt?: string } | null) => void
 }) {
+  const canvasNodes = useCanvasStore((s) => s.nodes) as CanvasGraphNode[]
+  const canvasLookup = useMemo(() => buildCanvasNodeLookup(canvasNodes), [canvasNodes])
   const normalized = uniqueReferenceItems((refs || [])
     .filter(isVisualReferenceRole)
-    .map(normalizeReference)
+    .map((ref) => normalizeReferenceForCanvas(ref, "引用图", canvasLookup))
     .filter((ref): ref is ReferenceItem => Boolean(ref && ref.kind !== "text")), projectId)
   if (normalized.length === 0) return null
   return (
@@ -1469,6 +2167,7 @@ function ReferenceThumbStrip({
           ref={ref}
           projectId={projectId}
           setLightbox={setLightbox}
+          canvasLookup={canvasLookup}
           compact
         />
       ))}
@@ -1578,6 +2277,52 @@ function textNodeBodyText(input: Record<string, unknown>, rawOutput: unknown, no
   return nodeReadableText({ type: "text", input, output: rawOutput, prompt: nodePrompt })
 }
 
+interface TextChatHistoryEntry {
+  id: string
+  prompt: string
+  content: string
+  current?: boolean
+  model?: string
+  created_at?: string
+}
+
+function textChatHistoryFromPayload(input: Record<string, unknown>, rawOutput: unknown, nodePrompt = ""): TextChatHistoryEntry[] {
+  const output = asObj(parseJson(rawOutput)) || {}
+  const rawHistory = input.text_chat_history ?? input.chat_history ?? output.text_chat_history ?? output.chat_history
+  const entries = Array.isArray(rawHistory) ? rawHistory
+    .map((item, index): TextChatHistoryEntry | null => {
+      const entry = asObj(item)
+      if (!entry) return null
+      const prompt = firstText(entry.prompt, entry.input, entry.user)
+      const content = firstText(entry.content, entry.reply, entry.response, entry.output)
+      if (!prompt && !content) return null
+      return {
+        id: firstText(entry.id) || `text-chat-${index}`,
+        prompt,
+        content,
+        model: firstText(entry.model),
+        created_at: firstText(entry.created_at, entry.completed_at),
+      }
+    })
+    .filter((item): item is TextChatHistoryEntry => Boolean(item)) : []
+  const currentContent = textNodeBodyText(input, rawOutput, nodePrompt)
+  if (!currentContent) return entries
+  const currentPrompt = firstText(output.prompt, input.prompt, nodePrompt)
+  const duplicate = entries.some((entry) => entry.content === currentContent && entry.prompt === currentPrompt)
+  if (duplicate) return entries
+  return [
+    ...entries,
+    {
+      id: "text-current",
+      prompt: currentPrompt,
+      content: currentContent,
+      current: true,
+      model: firstText(output.model, input.model),
+      created_at: firstText(output.created_at, output.completed_at, input.updated_at),
+    },
+  ]
+}
+
 function TextNodeStructuredDetails({
   input,
   rawOutput,
@@ -1598,22 +2343,57 @@ function TextNodeStructuredDetails({
   return (
     <div className="space-y-3">
       {hasContent ? (
-        <Section title="正文">
+        <Section title="文本预览">
           <PromptBlock>{outputText}</PromptBlock>
           <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
         </Section>
       ) : (
-        <Section title="正文">
+        <Section title="文本预览">
           <ImagePlaceholder label="等待文本内容" />
           <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
         </Section>
       )}
-      {!hasContent && nodePrompt && (
-        <Section title="提示词">
+      {nodePrompt && (
+        <Section title="当前提示词">
           <PromptBlock>{nodePrompt}</PromptBlock>
         </Section>
       )}
     </div>
+  )
+}
+
+function TextHistorySection({
+  input,
+  rawOutput,
+  nodePrompt,
+}: {
+  input: Record<string, unknown>
+  rawOutput: unknown
+  nodePrompt: string
+}) {
+  const entries = textChatHistoryFromPayload(input, rawOutput, nodePrompt)
+  if (entries.length === 0) return null
+  return (
+    <Section title={`文本生成历史 (${entries.length})`}>
+      <div className="space-y-2">
+        {entries.slice().reverse().map((entry, index) => (
+          <div key={`${entry.id}-${index}`} className="rounded-lg border border-white/[0.08] bg-black/25 p-3 text-[12px] leading-5 text-zinc-300">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[10px] text-zinc-500">
+              <span>{entry.current ? "当前结果" : entry.created_at ? formatHistoryTime(entry.created_at) : `历史 ${entries.length - index}`}</span>
+              {entry.model && <span>{entry.model}</span>}
+            </div>
+            {entry.prompt && (
+              <div className="mb-2 rounded-md border border-white/[0.06] bg-white/[0.035] px-2.5 py-2 text-zinc-400">
+                {entry.prompt}
+              </div>
+            )}
+            <div className="whitespace-pre-wrap break-words text-zinc-100">
+              {entry.content || "无正文记录"}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Section>
   )
 }
 
@@ -1631,9 +2411,17 @@ function firstBool(defaultValue: boolean, ...values: unknown[]): boolean {
 
 function audioProviderModeFromFormat(apiFormat?: string | null): AudioProviderMode {
   const format = String(apiFormat || "").trim().toLowerCase()
+  if (format === "audio_http_v1") return "unknown"
   if (["openai_tts", "tts", "openai_speech", "openai_audio_speech"].includes(format)) return "tts"
   if (["suno_compatible", "suno", "suno_api"].includes(format)) return "music"
   return "unknown"
+}
+
+function audioProviderModeFromProvider(provider?: AudioProviderOption): AudioProviderMode {
+  const protocolId = String(provider?.params?.audio_protocol_id || "").trim().toLowerCase()
+  if (protocolId.includes("suno") || protocolId.includes("music")) return "music"
+  if (protocolId.includes("speech") || protocolId.includes("tts")) return "tts"
+  return audioProviderModeFromFormat(provider?.api_format)
 }
 
 function audioProviderTypeLabel(mode: AudioProviderMode): string {
@@ -1646,12 +2434,484 @@ function resolveAudioProvider(
   value: string,
   providers: AudioProviderOption[],
 ): AudioProviderOption | undefined {
+  return resolveMediaProvider(value, providers)
+}
+
+function mediaProvidersForKind(
+  providers: MediaProviderOption[],
+  kind: "image" | "video" | "audio",
+): MediaProviderOption[] {
+  return providers.filter((provider) => provider.kind === kind && provider.enabled !== false)
+}
+
+function resolveMediaProvider(
+  value: string,
+  providers: MediaProviderOption[],
+): MediaProviderOption | undefined {
   const enabled = providers.filter((provider) => provider.enabled !== false)
   const selected = value.trim()
   if (selected) {
     return enabled.find((provider) => provider.name === selected || provider.model_name === selected)
   }
   return enabled.find((provider) => provider.is_active) || enabled[0]
+}
+
+function mediaProviderSelectValue(value: string, provider?: MediaProviderOption): string {
+  return provider?.name || value.trim()
+}
+
+function mediaProviderDisplayLabel(provider: MediaProviderOption): string {
+  const title = provider.name.trim()
+  const model = provider.model_name.trim()
+  if (title && model && title !== model) return `${title} · ${model}`
+  return title || model || "未命名模型"
+}
+
+function mediaProviderSelectOptions(
+  providers: MediaProviderOption[],
+  currentValue: string,
+  selectedProvider?: MediaProviderOption,
+): Array<{ label: string; value: string; disabled?: boolean }> {
+  const current = currentValue.trim()
+  if (providers.length === 0) {
+    return current
+      ? [{ label: `当前: ${current}`, value: current }]
+      : [{ label: "未配置可用模型", value: "", disabled: true }]
+  }
+  return [
+    ...(current && !selectedProvider ? [{ label: `当前: ${current}`, value: current }] : []),
+    ...providers.map((provider) => ({
+      label: mediaProviderDisplayLabel(provider),
+      value: provider.name,
+    })),
+  ]
+}
+
+function mediaProviderHint(provider?: MediaProviderOption, error?: string | null): string {
+  if (error) return error
+  if (provider) return mediaProviderDisplayLabel(provider)
+  return "设置里还没有启用的生成模型。"
+}
+
+function enabledLlmProviders(providers: LlmProviderOption[]): LlmProviderOption[] {
+  return providers.filter((provider) => provider.enabled !== false)
+}
+
+function resolveLlmProvider(
+  value: string,
+  providers: LlmProviderOption[],
+): LlmProviderOption | undefined {
+  const enabled = enabledLlmProviders(providers)
+  const selected = value.trim()
+  if (!selected) return enabled[0]
+  return enabled.find((provider) => {
+    const model = provider.model_name.trim()
+    const prefixed = model.includes("/") ? model : `${provider.provider}/${model}`
+    return provider.name === selected || model === selected || prefixed === selected
+  })
+}
+
+function llmProviderDisplayLabel(provider: LlmProviderOption): string {
+  const title = provider.name.trim()
+  const model = provider.model_name.trim()
+  if (title && model && title !== model) return `${title} · ${model}`
+  return title || model || "未命名模型"
+}
+
+function llmProviderSelectOptions(
+  providers: LlmProviderOption[],
+  currentValue: string,
+  selectedProvider?: LlmProviderOption,
+): Array<{ label: string; value: string; disabled?: boolean }> {
+  const enabled = enabledLlmProviders(providers)
+  const current = currentValue.trim()
+  if (enabled.length === 0) {
+    return current
+      ? [{ label: `当前: ${current}`, value: current }]
+      : [{ label: "未配置可用文本模型", value: "", disabled: true }]
+  }
+  return [
+    ...(current && !selectedProvider ? [{ label: `当前: ${current}`, value: current }] : []),
+    ...enabled.map((provider) => ({
+      label: llmProviderDisplayLabel(provider),
+      value: provider.name,
+    })),
+  ]
+}
+
+function defaultLlmProviderName(
+  providers: LlmProviderOption[],
+  defaults?: RuntimeModelDefaults,
+): string {
+  const enabled = enabledLlmProviders(providers)
+  if (enabled.length === 0) return ""
+  const assignments = defaults?.model_assignments || {}
+  const tierDefaults = defaults?.model_tier_defaults || {}
+  const preferred = [
+    assignments.text_generation,
+    assignments.outline_generation,
+    assignments.script_generation,
+    tierDefaults.balanced,
+    tierDefaults.strong,
+    tierDefaults.small,
+  ].map((value) => String(value || "").trim()).filter(Boolean)
+  for (const name of preferred) {
+    if (enabled.some((provider) => provider.name === name)) return name
+  }
+  return enabled[0].name
+}
+
+function llmProviderHint(provider?: LlmProviderOption, error?: string | null): string {
+  if (error) return error
+  if (provider) return llmProviderDisplayLabel(provider)
+  return "设置里还没有启用的文本模型。"
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || "").trim()).filter(Boolean)
+    : []
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  if (value == null || value === "") return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+type SelectOption = {
+  label: string
+  value: string
+  disabled?: boolean
+  hint?: string
+}
+
+function videoProtocolIdFromProvider(provider?: MediaProviderOption): string {
+  return String(
+    provider?.params?.video_protocol_id
+    || provider?.params?.protocol_id
+    || provider?.params?.protocol
+    || "",
+  ).trim()
+}
+
+function videoProtocolForProvider(
+  provider: MediaProviderOption | undefined,
+  protocols: VideoProtocolSummary[],
+): VideoProtocolSummary | undefined {
+  const protocolId = videoProtocolIdFromProvider(provider)
+  if (protocolId) {
+    const exact = protocols.find((protocol) => protocol.id === protocolId)
+    if (exact) return exact
+  }
+  const modelName = String(provider?.model_name || "").trim()
+  if (!modelName) return undefined
+  return protocols.find((protocol) => {
+    if (protocol.model_names?.includes(modelName)) return true
+    return (protocol.model_profiles || []).some((profile) => profile.match === modelName)
+  })
+}
+
+function videoProfileForModel(
+  protocol: VideoProtocolSummary | undefined,
+  modelName: string,
+): VideoProtocolProfileSummary | undefined {
+  const name = modelName.trim()
+  if (!protocol || !name) return undefined
+  return (protocol.model_profiles || []).find((profile) => profile.match === name)
+}
+
+function videoModeEntriesForProvider(
+  protocol?: VideoProtocolSummary,
+  profile?: VideoProtocolProfileSummary,
+): Map<string, VideoProtocolModeSummary> {
+  const modes = protocol?.modes || {}
+  const byCanonical = new Map<string, VideoProtocolModeSummary>()
+  Object.entries(modes).forEach(([mode, config]) => {
+    byCanonical.set(canonicalVideoMode(mode), config)
+  })
+  if (Array.isArray(profile?.modes)) {
+    const allowed = new Set(profile.modes.map((mode) => canonicalVideoMode(String(mode))))
+    Array.from(byCanonical.keys()).forEach((mode) => {
+      if (!allowed.has(mode)) byCanonical.delete(mode)
+    })
+  } else if (profile?.modes && typeof profile.modes === "object") {
+    const overrides = new Map<string, VideoProtocolModeSummary>()
+    Object.entries(profile.modes).forEach(([mode, config]) => {
+      const canonical = canonicalVideoMode(mode)
+      overrides.set(canonical, { ...(byCanonical.get(canonical) || {}), ...config })
+    })
+    byCanonical.clear()
+    overrides.forEach((config, mode) => byCanonical.set(mode, config))
+  }
+  if (profile?.supported_modes?.length) {
+    const allowed = new Set(profile.supported_modes.map((mode) => canonicalVideoMode(mode)))
+    Array.from(byCanonical.keys()).forEach((mode) => {
+      if (!allowed.has(mode)) byCanonical.delete(mode)
+    })
+  }
+  return byCanonical
+}
+
+function mergeVideoDurationRule(...items: Array<VideoDurationSummary | undefined>): VideoDurationSummary {
+  return items.reduce<VideoDurationSummary>((acc, item) => {
+    if (!item || typeof item !== "object") return acc
+    return { ...acc, ...item }
+  }, {})
+}
+
+function videoModeLimitHint(mode: string, config?: VideoProtocolModeSummary, durationRule?: VideoDurationSummary): string | undefined {
+  const lines: string[] = []
+  const fullLabel = String(config?.label || "").trim()
+  if (fullLabel && fullLabel !== VIDEO_MODE_LABELS[mode]) lines.push(fullLabel)
+  const duration = videoDurationHint(durationRule || {})
+  if (duration) lines.push(duration.replace(/^当前模型支持/, "时长"))
+  const minImages = finiteNumber(config?.min_images)
+  const maxImages = finiteNumber(config?.max_images)
+  if ((minImages === undefined || minImages === 0) && maxImages === 0) {
+    lines.push("不使用参考图")
+  } else if (minImages !== undefined && maxImages !== undefined && minImages === maxImages) {
+    lines.push(`需要 ${minImages} 张参考图`)
+  } else {
+    if (minImages !== undefined && minImages > 0) lines.push(`至少 ${minImages} 张参考图`)
+    if (maxImages !== undefined) lines.push(`最多 ${maxImages} 张参考图`)
+  }
+  const maxVideos = finiteNumber(config?.max_videos)
+  const maxAudios = finiteNumber(config?.max_audios)
+  if (maxVideos && maxVideos > 0) lines.push(`最多 ${maxVideos} 个视频参考`)
+  if (maxAudios && maxAudios > 0) lines.push(`最多 ${maxAudios} 个音频参考`)
+  return lines.length ? lines.join("\n") : undefined
+}
+
+function videoProtocolModeOptions(
+  protocol?: VideoProtocolSummary,
+  profile?: VideoProtocolProfileSummary,
+): SelectOption[] {
+  const byCanonical = videoModeEntriesForProvider(protocol, profile)
+  const sortedModes = [
+    ...VIDEO_MODE_ORDER.filter((mode) => byCanonical.has(mode)),
+    ...Array.from(byCanonical.keys()).filter((mode) => !VIDEO_MODE_ORDER.includes(mode)),
+  ]
+  const options = sortedModes.map((mode) => {
+    const config = byCanonical.get(mode)
+    const duration = mergeVideoDurationRule(protocol?.duration, profile?.duration, config?.duration)
+    return {
+      label: VIDEO_MODE_LABELS[mode] || config?.label || mode,
+      value: mode,
+      hint: videoModeLimitHint(mode, config, duration),
+    }
+  })
+  if (options.length > 0) return options
+  if (Object.keys(protocol?.modes || {}).length > 0) return []
+  return VIDEO_MODE_ORDER.map((mode) => ({ label: VIDEO_MODE_LABELS[mode], value: mode }))
+}
+
+function canonicalVideoMode(value: string): string {
+  const mode = value.trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_")
+  if (["t2v", "txt2video", "text2video"].includes(mode)) return "text_to_video"
+  if (["i2v", "image_to_video", "source_image", "single_image"].includes(mode)) return "first_frame"
+  if (["first_last", "first_and_last_frame", "first_last_frames"].includes(mode)) return "first_last_frame"
+  if (["reference_to_video", "reference_video", "omni_reference", "omni_reference_video"].includes(mode)) return "multimodal_reference"
+  return mode
+}
+
+function effectiveVideoMode(value: string, options: Array<{ value: string }>): string {
+  const canonical = canonicalVideoMode(value)
+  if (options.some((item) => item.value === canonical)) return canonical
+  return options[0]?.value || ""
+}
+
+function videoModeConfig(
+  protocol: VideoProtocolSummary | undefined,
+  mode: string,
+  profile?: VideoProtocolProfileSummary,
+): VideoProtocolModeSummary | undefined {
+  return videoModeEntriesForProvider(protocol, profile).get(canonicalVideoMode(mode))
+}
+
+function videoDurationRuleForProvider(
+  protocol: VideoProtocolSummary | undefined,
+  profile: VideoProtocolProfileSummary | undefined,
+  mode: string,
+): VideoDurationSummary {
+  const modeConfig = videoModeConfig(protocol, mode, profile)
+  return mergeVideoDurationRule(protocol?.duration, profile?.duration, modeConfig?.duration)
+}
+
+function videoDurationBounds(rule: VideoDurationSummary): { min?: number; max?: number; step?: number; allowed: number[] } {
+  const allowed = Array.isArray(rule.allowed_values)
+    ? rule.allowed_values.map(finiteNumber).filter((item): item is number => item !== undefined && item > 0)
+    : []
+  const allowedMin = allowed.length ? Math.min(...allowed) : undefined
+  const allowedMax = allowed.length ? Math.max(...allowed) : undefined
+  const min = finiteNumber(rule.min) ?? allowedMin
+  const max = finiteNumber(rule.max) ?? allowedMax
+  const step = finiteNumber(rule.step) || 1
+  return { min, max, step, allowed, }
+}
+
+function normalizeVideoDurationForRule(value: string, rule: VideoDurationSummary): string {
+  const text = value.trim()
+  if (!text) return text
+  const parsed = finiteNumber(text)
+  if (parsed === undefined) return text
+  const bounds = videoDurationBounds(rule)
+  let next = Math.round(parsed)
+  if (bounds.min !== undefined && next < bounds.min) next = bounds.min
+  if (bounds.max !== undefined && next > bounds.max) next = bounds.max
+  if (bounds.allowed.length > 0 && !bounds.allowed.includes(next)) {
+    next = bounds.allowed.reduce((best, candidate) => (
+      Math.abs(candidate - next) < Math.abs(best - next) ? candidate : best
+    ), bounds.allowed[0])
+  }
+  return String(next)
+}
+
+function videoDurationHint(rule: VideoDurationSummary): string | undefined {
+  const bounds = videoDurationBounds(rule)
+  const parts: string[] = []
+  if (bounds.min !== undefined && bounds.max !== undefined) parts.push(`${bounds.min}-${bounds.max} 秒`)
+  else if (bounds.min !== undefined) parts.push(`不少于 ${bounds.min} 秒`)
+  else if (bounds.max !== undefined) parts.push(`不超过 ${bounds.max} 秒`)
+  if (bounds.allowed.length > 0) parts.push(`可选 ${bounds.allowed.join(" / ")} 秒`)
+  return parts.length ? `当前模型支持 ${parts.join("，")}` : undefined
+}
+
+function videoReferenceRuleHint(
+  modeConfig: VideoProtocolModeSummary | undefined,
+  referenceCount: number,
+): { quota?: string; title?: string; invalid: boolean; limit?: number; remaining?: number; overLimit?: boolean; uploadBlocked?: boolean } {
+  if (!modeConfig) return { invalid: false }
+  const minImages = finiteNumber(modeConfig.min_images)
+  const minTotal = finiteNumber(modeConfig.min_total_media)
+  const limit = videoReferenceImageLimit(modeConfig)
+  const parts: string[] = []
+  if ((minImages === undefined || minImages === 0) && limit === 0) {
+    parts.push("不使用参考图")
+  } else if (minImages !== undefined && limit !== undefined && minImages === limit) {
+    parts.push(`需要 ${minImages} 张图`)
+  } else {
+    if (minImages !== undefined && minImages > 0) parts.push(`至少 ${minImages} 张图`)
+    if (limit !== undefined) parts.push(`最多 ${limit} 张图`)
+  }
+  if (minTotal !== undefined && minTotal > 0) parts.push(`至少 ${minTotal} 个参考`)
+  const overLimit = limit !== undefined && referenceCount > limit
+  const effectiveCount = limit !== undefined ? Math.min(referenceCount, limit) : referenceCount
+  const remaining = limit !== undefined ? Math.max(0, limit - effectiveCount) : undefined
+  const invalid = (minImages !== undefined && referenceCount < minImages)
+    || (minTotal !== undefined && referenceCount < minTotal)
+  return {
+    quota: limit !== undefined ? `${effectiveCount}/${limit}` : undefined,
+    title: parts.length
+      ? `${parts.join("，")}；当前 ${referenceCount} 张图${overLimit ? `，实际使用前 ${effectiveCount} 张` : ""}`
+      : undefined,
+    invalid,
+    limit,
+    remaining,
+    overLimit,
+    uploadBlocked: limit !== undefined && remaining === 0,
+  }
+}
+
+function videoSupportedRatiosForProvider(
+  protocol: VideoProtocolSummary | undefined,
+  profile: VideoProtocolProfileSummary | undefined,
+  mode: string,
+): string[] {
+  const modeConfig = videoModeConfig(protocol, mode, profile)
+  return (
+    stringArray(modeConfig?.supported_ratios).length ? stringArray(modeConfig?.supported_ratios)
+      : stringArray(profile?.supported_ratios).length ? stringArray(profile?.supported_ratios)
+      : stringArray(protocol?.supported_ratios).length ? stringArray(protocol?.supported_ratios)
+      : VIDEO_ASPECT_RATIO_OPTIONS
+  ).filter((item) => item !== "adaptive")
+}
+
+function videoSupportedResolutionsForProvider(
+  protocol: VideoProtocolSummary | undefined,
+  profile: VideoProtocolProfileSummary | undefined,
+  mode: string,
+  fallbackModelName: string,
+): string[] {
+  const modeConfig = videoModeConfig(protocol, mode, profile)
+  const values = stringArray(modeConfig?.supported_resolutions).length ? stringArray(modeConfig?.supported_resolutions)
+    : stringArray(profile?.supported_resolutions).length ? stringArray(profile?.supported_resolutions)
+    : stringArray(protocol?.supported_resolutions).length ? stringArray(protocol?.supported_resolutions)
+    : videoSupportedResolutionsForModel(fallbackModelName)
+  return values.length ? values : videoSupportedResolutionsForModel(fallbackModelName)
+}
+
+function defaultVideoResolutionForProvider(
+  protocol: VideoProtocolSummary | undefined,
+  profile: VideoProtocolProfileSummary | undefined,
+  mode: string,
+  fallbackModelName: string,
+): string {
+  const modeConfig = videoModeConfig(protocol, mode, profile)
+  const direct = String(modeConfig?.default_resolution || profile?.default_resolution || protocol?.default_resolution || "").trim()
+  const supported = videoSupportedResolutionsForProvider(protocol, profile, mode, fallbackModelName)
+  if (direct && supported.includes(direct)) return direct
+  return supported.includes("720p") ? "720p" : supported[0] || defaultVideoResolutionForModel(fallbackModelName)
+}
+
+function videoResolutionSelectOptions(
+  selectedResolution: string,
+  supportedResolutions: string[],
+): Array<{ label: string; value: string; disabled?: boolean }> {
+  const current = selectedResolution.trim()
+  const knownValues = new Set<string>(VIDEO_RESOLUTION_OPTIONS.map((item) => item.value))
+  const customSupported = supportedResolutions
+    .filter((value) => value && !knownValues.has(value))
+    .map((value) => ({ label: value, value, disabled: false }))
+  return [
+    ...(current && !supportedResolutions.includes(current)
+      ? [{ label: `当前: ${current}`, value: current, disabled: true }]
+      : []),
+    ...VIDEO_RESOLUTION_OPTIONS.map((item) => {
+      const supported = supportedResolutions.includes(item.value)
+      return {
+        label: `${item.label}${item.placeholder ? " (占位)" : ""}${supported ? "" : " (不支持)"}`,
+        value: item.value,
+        disabled: !supported,
+      }
+    }),
+    ...customSupported,
+  ]
+}
+
+function normalizeVideoDraftForMode(
+  draft: EditableNodeDraft,
+  protocol: VideoProtocolSummary | undefined,
+  profile: VideoProtocolProfileSummary | undefined,
+  mode: string,
+  fallbackModelName: string,
+): Pick<EditableNodeDraft, "video_mode" | "resolution" | "aspect_ratio" | "duration_seconds"> {
+  const supported = videoSupportedResolutionsForProvider(protocol, profile, mode, fallbackModelName)
+  const resolution = supported.includes(draft.resolution)
+    ? draft.resolution
+    : defaultVideoResolutionForProvider(protocol, profile, mode, fallbackModelName)
+  const ratios = videoSupportedRatiosForProvider(protocol, profile, mode)
+  const currentRatio = normalizeVideoAspectRatio(draft.aspect_ratio)
+  const aspect_ratio = ratios.includes(currentRatio) ? currentRatio : ratios[0] || currentRatio
+  const duration_seconds = normalizeVideoDurationForRule(
+    draft.duration_seconds,
+    videoDurationRuleForProvider(protocol, profile, mode),
+  )
+  return { video_mode: mode, resolution, aspect_ratio, duration_seconds }
+}
+
+function videoReferenceLimitForDraft(
+  draft: EditableNodeDraft,
+  providers: MediaProviderOption[],
+  protocols: VideoProtocolSummary[],
+): number | undefined {
+  const selectedProvider = resolveMediaProvider(draft.model, mediaProvidersForKind(providers, "video"))
+  const modelName = selectedProvider?.model_name || draft.model
+  const protocol = videoProtocolForProvider(selectedProvider, protocols)
+  const profile = videoProfileForModel(protocol, modelName)
+  const modeOptions = videoProtocolModeOptions(protocol, profile)
+  const mode = effectiveVideoMode(draft.video_mode, modeOptions)
+  return videoReferenceImageLimit(videoModeConfig(protocol, mode, profile))
 }
 
 function rawNodeInput(input: unknown): Record<string, unknown> {
@@ -1698,6 +2958,9 @@ function stringArrayFromUnknown(value: unknown): string[] {
       const nodeId = obj.node_id || obj.nodeId || obj.source_node_id || obj.sourceNodeId
       if (typeof nodeId === "string" && nodeId.trim()) return `node:${nodeId.trim()}`
       if (typeof nodeId === "number" || typeof nodeId === "boolean") return `node:${String(nodeId)}`
+      const workflowRef = obj.source_step || obj.from_step || obj.source || obj.candidate
+      if (typeof workflowRef === "string" && workflowRef.trim()) return workflowRef.trim()
+      if (typeof workflowRef === "number" || typeof workflowRef === "boolean") return String(workflowRef)
       const assetId = obj.asset_id || obj.assetId
       if (typeof assetId === "string" && assetId.trim()) return `asset:${assetId.trim()}`
       if (typeof assetId === "number" || typeof assetId === "boolean") return `asset:${String(assetId)}`
@@ -1733,6 +2996,25 @@ function nodeRefIdFromUnknown(value: unknown): string {
     if (typeof nodeId === "string" && nodeId.trim()) return nodeId.trim()
   }
   return ""
+}
+
+function isPersistableReferenceImageValue(value: string): boolean {
+  const text = value.trim()
+  if (!text) return false
+  if (
+    text.startsWith("node:")
+    || text.startsWith("asset:")
+    || text.startsWith("upload:")
+    || text.startsWith("/api/")
+    || text.startsWith("/")
+    || text.startsWith("uploads/")
+    || text.startsWith("generated_images/")
+  ) {
+    return true
+  }
+  if (/^#?\d+$/.test(text)) return true
+  if (isUuidLike(stripNodeReferenceMarker(text))) return true
+  return isImageSource(text)
 }
 
 function referenceListFromUnknown(value: unknown): unknown[] {
@@ -1810,14 +3092,60 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
     resolution: firstText(input.resolution, input.size, output.resolution, output.size)
       || (node.type === "image" ? defaultImageResolutionForAspect(firstText(input.aspect_ratio, output.aspect_ratio) || "16:9") : node.type === "video" ? "720p" : ""),
     quality: firstText(input.quality, output.quality) || (node.type === "image" ? "high" : ""),
+    clarity: firstText(input.clarity, output.clarity) || (node.type === "image" ? "detailed" : ""),
     duration_seconds: firstText(input.duration_seconds, input.duration, output.duration_seconds, output.duration),
+    video_mode: firstText(input.video_mode, input.mode, output.video_mode, output.mode),
     instrumental: firstBool(true, input.instrumental, output.instrumental),
     custom_mode: firstBool(false, input.custom_mode, input.customMode, output.custom_mode, output.customMode),
-    reference_images: Array.from(new Set(referenceImages)),
+    reference_images: Array.from(new Set(referenceImages.filter(isPersistableReferenceImageValue))),
+    reference_videos: Array.from(new Set(stringArrayFromUnknown(input.reference_videos))),
+    reference_audios: Array.from(new Set(stringArrayFromUnknown(input.reference_audios))),
   }
 }
 
-function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: AudioProviderMode = "unknown"): {
+function editableDraftEquals(a: EditableNodeDraft, b: EditableNodeDraft): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+function draftWithConcreteMediaProvider(
+  node: NodeFull,
+  draft: EditableNodeDraft,
+  providers: MediaProviderOption[],
+  llmProviders: LlmProviderOption[] = [],
+  modelDefaults?: RuntimeModelDefaults,
+): EditableNodeDraft {
+  if (draft.model.trim()) return draft
+  if (node.type === "text") {
+    const model = defaultLlmProviderName(llmProviders, modelDefaults)
+    return model ? { ...draft, model } : draft
+  }
+  const kind = node.type === "image" || node.type === "video" || node.type === "audio" ? node.type : null
+  if (!kind) return draft
+  const provider = resolveMediaProvider("", mediaProvidersForKind(providers, kind))
+  return provider ? { ...draft, model: provider.name } : draft
+}
+
+function concreteDraftStateFromNode(
+  node: NodeFull,
+  providers: MediaProviderOption[],
+  llmProviders: LlmProviderOption[] = [],
+  modelDefaults?: RuntimeModelDefaults,
+): { draft: EditableNodeDraft; dirty: boolean } {
+  const raw = draftFromNode(node)
+  const draft = draftWithConcreteMediaProvider(node, raw, providers, llmProviders, modelDefaults)
+  return {
+    draft,
+    dirty: !editableDraftEquals(raw, draft),
+  }
+}
+
+function payloadFromDraft(
+  node: NodeFull,
+  draft: EditableNodeDraft,
+  audioMode: AudioProviderMode = "unknown",
+  referenceMentionCandidates: ReferenceMentionCandidate[] = [],
+  referenceImageLimit?: number,
+): {
   title: string
   prompt: string | null
   input: Record<string, unknown>
@@ -1836,10 +3164,28 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: A
     hasOwnKey(currentRaw, key) || Boolean(currentFields && hasOwnKey(currentFields, key)),
   )
   const outputHasReferenceImages = hasOwnKey(output, "reference_images") || stringArrayFromUnknown(output.reference_images).length > 0
-  const referenceImages = Array.from(new Set(draft.reference_images.map((item) => item.trim()).filter(Boolean)))
-  if (currentHasReferenceFields || outputHasReferenceImages || referenceImages.length > 0) {
+  const rawReferenceImages = node.type === "video"
+    ? Array.from(new Set([
+      ...draft.reference_images,
+      ...referenceMentionCandidateRefs(referenceMentionCandidates),
+    ].map((item) => item.trim()).filter(Boolean)))
+    : Array.from(new Set(draft.reference_images.map((item) => item.trim()).filter(Boolean)))
+  const referenceImages = rawReferenceImages
+  const effectiveReferenceImages = referenceImageLimit !== undefined
+    ? rawReferenceImages.slice(0, Math.max(0, referenceImageLimit))
+    : rawReferenceImages
+  const hadPersistableReferenceImages = [
+    ...stringArrayFromUnknown(currentRaw.reference_images),
+    ...(currentFields ? stringArrayFromUnknown(currentFields.reference_images) : []),
+  ].some(isPersistableReferenceImageValue)
+  const referenceMentions = referenceImageMentionsFromPrompt(prompt, referenceMentionCandidates, effectiveReferenceImages)
+  if (hadPersistableReferenceImages || outputHasReferenceImages || referenceImages.length > 0) {
     nextInput.reference_images = referenceImages
+  } else {
+    delete nextInput.reference_images
   }
+  if (referenceMentions.length > 0) nextInput.reference_image_mentions = referenceMentions
+  else delete nextInput.reference_image_mentions
   const previousEditableRefs = Array.from(new Set([
     ...stringArrayFromUnknown(currentRaw.reference_images),
     ...stringArrayFromUnknown(currentRaw.references),
@@ -1863,16 +3209,23 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: A
     if (currentFieldsHasReferenceImages) {
       nextFields.reference_images = referenceImages
     }
+    if (hasOwnKey(currentFields, "reference_image_mentions") || referenceMentions.length > 0) {
+      if (referenceMentions.length > 0) nextFields.reference_image_mentions = referenceMentions
+      else delete nextFields.reference_image_mentions
+    }
     const cleanedFields = removedReferenceNodeIds.size > 0
       ? removeNodeReferencesFromContainer(nextFields, removedReferenceNodeIds)
       : { next: nextFields, changed: false }
-    if (currentFieldsHasReferenceImages || cleanedFields.changed) {
+    if (currentFieldsHasReferenceImages || hasOwnKey(currentFields, "reference_image_mentions") || referenceMentions.length > 0 || cleanedFields.changed) {
       nextInput.fields = cleanedFields.next
     }
   }
 
   const textContent = draft.content.trim()
   if (node.type === "text") {
+    const model = draft.model.trim()
+    if (model) nextInput.model = model
+    else delete nextInput.model
     nextInput.content = textContent
     if (prompt) nextInput.prompt = prompt
     else delete nextInput.prompt
@@ -1881,13 +3234,25 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: A
   }
 
   if (node.type === "image") {
+    const model = draft.model.trim()
+    if (model) nextInput.model = model
+    else delete nextInput.model
     nextInput.aspect_ratio = draft.aspect_ratio.trim()
     nextInput.resolution = draft.resolution.trim()
     nextInput.quality = draft.quality.trim()
+    const clarity = draft.clarity.trim()
+    if (clarity) nextInput.clarity = clarity
+    else delete nextInput.clarity
   }
 
   if (node.type === "video") {
     nextInput.aspect_ratio = draft.aspect_ratio.trim()
+    const videoMode = draft.video_mode.trim()
+    if (videoMode) nextInput.video_mode = videoMode
+    else {
+      delete nextInput.video_mode
+      delete nextInput.mode
+    }
     const model = draft.model.trim()
     if (model) nextInput.model = model
     else delete nextInput.model
@@ -1900,6 +3265,12 @@ function payloadFromDraft(node: NodeFull, draft: EditableNodeDraft, audioMode: A
       delete nextInput.duration_seconds
       delete nextInput.duration
     }
+    const referenceVideos = Array.from(new Set(draft.reference_videos.map((item) => item.trim()).filter(Boolean)))
+    if (referenceVideos.length > 0) nextInput.reference_videos = referenceVideos
+    else delete nextInput.reference_videos
+    const referenceAudios = Array.from(new Set(draft.reference_audios.map((item) => item.trim()).filter(Boolean)))
+    if (referenceAudios.length > 0) nextInput.reference_audios = referenceAudios
+    else delete nextInput.reference_audios
   }
 
   if (node.type === "audio") {
@@ -2104,6 +3475,20 @@ function DraftField({
   )
 }
 
+function AutoSaveBadge({ saving, dirty }: { saving: boolean; dirty: boolean }) {
+  return (
+    <span className={`rounded-md border px-2 py-1 text-[10px] font-medium ${
+      saving
+        ? "border-cyan-300/20 bg-cyan-300/10 text-cyan-100"
+        : dirty
+          ? "border-amber-300/20 bg-amber-300/10 text-amber-100"
+          : "border-emerald-300/15 bg-emerald-300/8 text-emerald-100"
+    }`}>
+      {saving ? "保存中" : dirty ? "待自动保存" : "已保存"}
+    </span>
+  )
+}
+
 function ChipControl({
   label,
   value,
@@ -2128,10 +3513,10 @@ function ChipControl({
               key={option}
               type="button"
               onClick={() => onChange(option)}
-              className={`rounded-md px-2.5 py-1.5 text-xs transition ${
+              className={`rounded-md border px-2.5 py-1.5 text-xs transition ${
                 active
-                  ? "bg-zinc-100 text-zinc-950"
-                  : "bg-white/[0.06] text-zinc-300 hover:bg-white/[0.1] hover:text-zinc-50"
+                  ? "border-cyan-300/35 bg-cyan-300/12 text-cyan-100"
+                  : "border-transparent bg-white/[0.06] text-zinc-300 hover:bg-white/[0.1] hover:text-zinc-50"
               }`}
             >
               {option}
@@ -2158,7 +3543,7 @@ function SelectControl({
 }: {
   label: string
   value: string
-  options: Array<{ label: string; value: string; disabled?: boolean }>
+  options: SelectOption[]
   onChange: (value: string) => void
   hint?: string
 }) {
@@ -2168,15 +3553,62 @@ function SelectControl({
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-8 w-full rounded-md border border-white/[0.1] bg-[#080c13] px-2 text-xs text-zinc-100 outline-none [color-scheme:dark] focus:border-cyan-300/45"
+        className="h-8 w-full rounded-md border border-white/[0.1] bg-[#080c13] px-2 text-xs text-zinc-100 shadow-inner shadow-black/20 outline-none [color-scheme:dark] focus:border-cyan-300/45 [&>option]:bg-[#080c13] [&>option]:text-zinc-100"
       >
         {options.map((option) => (
-          <option key={`${option.value}:${option.label}`} value={option.value} disabled={option.disabled}>
+          <option
+            key={`${option.value}:${option.label}`}
+            value={option.value}
+            disabled={option.disabled}
+            className="bg-[#080c13] text-zinc-100"
+          >
             {option.label}
           </option>
         ))}
       </select>
       {hint && <div className="text-[10px] text-zinc-600">{hint}</div>}
+    </div>
+  )
+}
+
+function SegmentedControl({
+  label,
+  value,
+  options,
+  onChange,
+  hint,
+}: {
+  label: string
+  value: string
+  options: SelectOption[]
+  onChange: (value: string) => void
+  hint?: string
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-zinc-500">{label}</div>
+      <div className="grid grid-cols-2 gap-1.5 rounded-lg border border-white/[0.08] bg-black/20 p-1 sm:grid-cols-3">
+        {options.map((option) => {
+          const active = value === option.value
+          return (
+            <button
+              key={`${option.value}:${option.label}`}
+              type="button"
+              onClick={() => onChange(option.value)}
+              disabled={option.disabled}
+              title={option.hint || option.label}
+              className={`min-h-8 rounded-md px-2 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-45 ${
+                active
+                  ? "bg-cyan-300 text-slate-950 shadow-[0_8px_18px_rgba(34,211,238,0.16)]"
+                  : "bg-transparent text-zinc-300 hover:bg-white/[0.08] hover:text-zinc-50"
+              }`}
+            >
+              {option.label}
+            </button>
+          )
+        })}
+      </div>
+      {hint && <div className="text-[10px] leading-4 text-zinc-600">{hint}</div>}
     </div>
   )
 }
@@ -2287,99 +3719,476 @@ function ToggleControl({
   )
 }
 
+function normalizeReferenceForCanvas(
+  value: unknown,
+  label: string,
+  canvasLookup?: Map<string, CanvasGraphNode>,
+): ReferenceItem | null {
+  const sourceNode = canvasLookup ? resolveCanvasReferenceNode(value, canvasLookup) : undefined
+  if (sourceNode) {
+    return {
+      kind: "node",
+      value: stripNodeReferenceMarker(canvasNodeReferenceValue(sourceNode)),
+      label: canvasNodeTitle(sourceNode) || label,
+    }
+  }
+  if (typeof value === "string") return normalizeReferenceValue(value, label)
+  return normalizeReference(value)
+}
+
 function ReferenceEditor({
   refs,
+  implicitRefs = [],
+  quota,
+  maxRefs,
   projectId,
+  canvasNodes = [],
   uploading,
+  compact = false,
   setLightbox,
   onChange,
   onUpload,
 }: {
   refs: string[]
+  implicitRefs?: string[]
+  quota?: { label?: string; title?: string; invalid?: boolean; overLimit?: boolean; uploadBlocked?: boolean; remaining?: number }
+  maxRefs?: number
   projectId?: string | null
+  canvasNodes?: CanvasGraphNode[]
   uploading: boolean
+  compact?: boolean
   setLightbox: (v: { src: string; alt?: string } | null) => void
   onChange: (refs: string[]) => void
-  onUpload: (files: FileList | null) => void | Promise<void>
+  onUpload: (files: FileList | File[] | null) => void | Promise<void>
 }) {
-  const [pending, setPending] = useState("")
+  const [blockedPulse, setBlockedPulse] = useState(false)
+  const canvasLookup = useMemo(() => buildCanvasNodeLookup(canvasNodes), [canvasNodes])
   const normalized = refs
-    .map((value) => normalizeReferenceValue(value, "引用图"))
+    .map((value) => normalizeReferenceForCanvas(value, "引用图", canvasLookup))
     .filter((ref): ref is ReferenceItem => Boolean(ref))
-  const displayRefs = uniqueReferenceItems(normalized, projectId)
-  const addPending = () => {
-    const value = pending.trim()
-    if (!value) return
-    onChange(Array.from(new Set([...refs, value])))
-    setPending("")
+  const implicitNormalized = implicitRefs
+    .map((value) => normalizeReferenceForCanvas(value, "引用图", canvasLookup))
+    .filter((ref): ref is ReferenceItem => Boolean(ref))
+  const displayRefs = uniqueReferenceItems([...normalized, ...implicitNormalized], projectId)
+  const visibleRefs = maxRefs !== undefined ? displayRefs.slice(0, Math.max(0, maxRefs)) : displayRefs
+  const explicitIdentities = new Set(normalized.map((ref) => referenceIdentity(ref, projectId)).filter(Boolean))
+  const uploadBlocked = Boolean(quota?.uploadBlocked)
+  const uploadRemaining = quota?.remaining
+  const flashBlocked = () => {
+    setBlockedPulse(true)
+    window.setTimeout(() => setBlockedPulse(false), 420)
   }
   const removeRef = (identity: string) => {
     onChange(refs.filter((value) => {
-      const ref = normalizeReferenceValue(value, "引用图")
+      const ref = normalizeReferenceForCanvas(value, "引用图", canvasLookup)
       return !ref || referenceIdentity(ref, projectId) !== identity
     }))
   }
+  const tileClass = compact
+    ? "flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/[0.1] bg-white/[0.045] text-zinc-300 shadow-[0_6px_16px_rgba(0,0,0,0.16)] transition hover:-translate-y-0.5 hover:border-white/[0.22] hover:bg-white/[0.08] hover:text-zinc-50"
+    : "flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-white/[0.1] bg-white/[0.045] text-zinc-300 shadow-[0_8px_18px_rgba(0,0,0,0.16)] transition hover:-translate-y-0.5 hover:border-white/[0.22] hover:bg-white/[0.08] hover:text-zinc-50"
+  const railClass = compact
+    ? "flex min-h-[36px] items-center gap-1 overflow-x-auto px-0.5 py-0.5"
+    : "flex min-h-[56px] items-center gap-1 overflow-x-auto rounded-lg border border-white/[0.08] bg-black/20 p-1"
 
   return (
-    <div className="space-y-2.5">
-      <div className="flex flex-wrap gap-2">
-        <label className="cursor-pointer rounded-md border border-white/[0.08] bg-white/[0.06] px-2.5 py-1.5 text-xs font-medium text-zinc-100 transition hover:bg-white/[0.1]">
-          {uploading ? "上传中..." : "上传图片"}
+    <div className={compact ? "" : "space-y-2.5"}>
+      <div
+        className={railClass}
+        aria-label="参考图"
+      >
+        {visibleRefs.map((ref) => {
+          const identity = referenceIdentity(ref, projectId)
+          const canRemove = explicitIdentities.has(identity)
+          return (
+            <div key={identity} className="group relative shrink-0">
+              <RefThumbnail
+                ref={ref}
+                projectId={projectId}
+                setLightbox={setLightbox}
+                canvasLookup={canvasLookup}
+                compact={compact}
+              />
+              {canRemove && (
+                <button
+                  type="button"
+                  aria-label="移除参考图"
+                  title="移除参考图"
+                  onClick={() => removeRef(identity)}
+                  className="absolute -right-1 -top-1 flex h-[18px] w-[18px] items-center justify-center rounded-full border border-white/[0.16] bg-black/82 text-zinc-200 opacity-0 shadow-lg transition hover:bg-red-500 hover:text-white group-hover:opacity-100"
+                >
+                  <XIcon className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          )
+        })}
+        <label
+          className={`${tileClass} ${uploadBlocked ? "cursor-not-allowed opacity-70 hover:translate-y-0" : "cursor-pointer"} ${
+            blockedPulse ? "!border-red-400/70 !bg-red-500/12 !text-red-100" : ""
+          }`}
+          title={uploadBlocked ? "参考图已到上限" : uploading ? "上传中" : "上传参考图"}
+          aria-label={uploadBlocked ? "参考图已到上限" : uploading ? "上传中" : "上传参考图"}
+          onClick={(event) => {
+            if (!uploadBlocked) return
+            event.preventDefault()
+            flashBlocked()
+          }}
+        >
+          {uploading ? (
+            <span className="h-4 w-4 rounded-full border-2 border-zinc-500 border-t-zinc-100 animate-spin" />
+          ) : (
+            <ImageIcon />
+          )}
           <input
             type="file"
             accept="image/*"
             multiple
             className="hidden"
+            disabled={uploadBlocked}
             onChange={(event) => {
-              void onUpload(event.currentTarget.files)
+              const files = event.currentTarget.files
+              const cappedFiles = uploadRemaining !== undefined
+                ? Array.from(files || []).slice(0, Math.max(0, uploadRemaining))
+                : files
+              const cappedLength = cappedFiles ? cappedFiles.length : 0
+              if (uploadRemaining !== undefined && files && files.length > cappedLength) flashBlocked()
+              void onUpload(cappedFiles)
               event.currentTarget.value = ""
             }}
           />
         </label>
-        <div className="flex min-w-[190px] flex-1 overflow-hidden rounded-md border border-white/[0.08] bg-black/35">
-          <input
-            value={pending}
-            onChange={(event) => setPending(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault()
-                addPending()
-              }
-            }}
-            placeholder="node:ID / asset:ID / uploads/... / URL"
-            className="min-w-0 flex-1 bg-transparent px-2.5 py-1.5 text-xs text-zinc-100 outline-none [color-scheme:dark] placeholder:text-zinc-500"
-          />
-          <button
-            type="button"
-            onClick={addPending}
-            className="border-l border-white/[0.08] px-3 text-xs text-zinc-300 transition hover:bg-white/[0.08] hover:text-white"
+        {quota?.label && (
+          <span
+            title={quota.title}
+            className={`flex h-8 shrink-0 items-center px-1 text-[10px] font-semibold ${
+              quota.invalid || quota.overLimit ? "text-red-300" : "text-zinc-500"
+            }`}
           >
-            添加
-          </button>
-        </div>
+            {quota.label}
+          </span>
+        )}
       </div>
+    </div>
+  )
+}
 
-      {displayRefs.length > 0 ? (
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {displayRefs.map((ref) => {
-            const identity = referenceIdentity(ref, projectId)
-            return (
-            <div key={identity} className="group relative">
-              <RefThumbnail ref={ref} projectId={projectId} setLightbox={setLightbox} />
-              <button
-                type="button"
-                onClick={() => removeRef(identity)}
-                className="absolute right-1 top-1 rounded bg-black/75 px-1.5 py-0.5 text-[10px] text-zinc-200 opacity-0 transition hover:bg-red-600 group-hover:opacity-100"
-              >
-                移除
-              </button>
-            </div>
-            )
-          })}
-        </div>
-      ) : (
-        <div className="rounded-md border border-dashed border-white/[0.1] bg-black/20 px-3 py-3 text-center text-xs text-zinc-600">
-          暂无引用图
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+function escapeAttribute(value: string): string {
+  return escapeHtml(value).replace(/`/g, "&#96;")
+}
+
+function textSegmentHtml(value: string): string {
+  return escapeHtml(value).replace(/\n/g, "<br>")
+}
+
+function mentionEditorHtml(value: string, candidates: ReferenceMentionCandidate[]): string {
+  if (!value) return ""
+  const mentions = Array.from(new Set(candidates.map((item) => item.mention).filter(Boolean)))
+    .sort((a, b) => b.length - a.length)
+  if (mentions.length === 0) return textSegmentHtml(value)
+  let html = ""
+  let index = 0
+  while (index < value.length) {
+    let matched = ""
+    for (const mention of mentions) {
+      if (value.startsWith(mention, index)) {
+        matched = mention
+        break
+      }
+    }
+    if (matched) {
+      html += `<span contenteditable="false" data-reference-mention="${escapeAttribute(matched)}" class="openreel-reference-mention-chip">${escapeHtml(matched)}</span>`
+      index += matched.length
+      continue
+    }
+    const nextMentionIndex = mentions.reduce((next, mention) => {
+      const found = value.indexOf(mention, index + 1)
+      return found >= 0 ? Math.min(next, found) : next
+    }, value.length)
+    html += textSegmentHtml(value.slice(index, nextMentionIndex))
+    index = nextMentionIndex
+  }
+  return html
+}
+
+function mentionEditorPlainText(element: HTMLElement): string {
+  let text = ""
+  const walk = (node: ChildNode) => {
+    if (node instanceof HTMLElement && node.dataset.referenceMention) {
+      text += node.dataset.referenceMention
+      return
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.textContent || ""
+      return
+    }
+    if (node.nodeName === "BR") {
+      text += "\n"
+      return
+    }
+    node.childNodes.forEach(walk)
+    if (node instanceof HTMLDivElement || node instanceof HTMLParagraphElement) {
+      text += "\n"
+    }
+  }
+  element.childNodes.forEach(walk)
+  return text.replace(/\n+$/g, "")
+}
+
+function caretTextOffset(root: HTMLElement): number {
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0) return mentionEditorPlainText(root).length
+  const range = selection.getRangeAt(0)
+  if (!root.contains(range.startContainer)) return mentionEditorPlainText(root).length
+  const before = range.cloneRange()
+  before.selectNodeContents(root)
+  before.setEnd(range.startContainer, range.startOffset)
+  const holder = document.createElement("div")
+  holder.appendChild(before.cloneContents())
+  return mentionEditorPlainText(holder)
+    .replace(/\u00a0/g, " ")
+    .length
+}
+
+function setCaretTextOffset(root: HTMLElement, offset: number) {
+  const selection = window.getSelection()
+  if (!selection) return
+  const range = document.createRange()
+  let remaining = Math.max(0, offset)
+  let placed = false
+
+  const walk = (node: ChildNode): boolean => {
+    if (node instanceof HTMLElement && node.dataset.referenceMention) {
+      const length = (node.dataset.referenceMention || "").length
+      if (remaining <= length) {
+        range.setStartAfter(node)
+        placed = true
+        return true
+      }
+      remaining -= length
+      return false
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent || ""
+      if (remaining <= text.length) {
+        range.setStart(node, remaining)
+        placed = true
+        return true
+      }
+      remaining -= text.length
+      return false
+    }
+    if (node.nodeName === "BR") {
+      if (remaining <= 1) {
+        range.setStartAfter(node)
+        placed = true
+        return true
+      }
+      remaining -= 1
+      return false
+    }
+    for (const child of Array.from(node.childNodes)) {
+      if (walk(child)) return true
+    }
+    return false
+  }
+
+  for (const child of Array.from(root.childNodes)) {
+    if (walk(child)) break
+  }
+  if (!placed) {
+    range.selectNodeContents(root)
+    range.collapse(false)
+  }
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
+function mentionQueryAtCaret(root: HTMLElement): { start: number; end: number; query: string } | null {
+  const offset = caretTextOffset(root)
+  const text = mentionEditorPlainText(root).slice(0, offset)
+  const at = text.lastIndexOf("@")
+  if (at < 0) return null
+  const query = text.slice(at + 1)
+  if (/[\s\n\r@]/.test(query)) return null
+  return { start: at, end: offset, query }
+}
+
+function filteredMentionCandidates(candidates: ReferenceMentionCandidate[], query: string): ReferenceMentionCandidate[] {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return candidates.slice(0, 8)
+  return candidates
+    .filter((item) =>
+      item.mention.toLowerCase().includes(normalized)
+      || item.label.toLowerCase().includes(normalized)
+      || item.ref.toLowerCase().includes(normalized)
+    )
+    .slice(0, 8)
+}
+
+function MentionCandidateThumbnail({ src }: { src?: string }) {
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    setFailed(false)
+  }, [src])
+
+  if (src && !failed) {
+    return (
+      <img
+        src={src}
+        alt=""
+        className="h-full w-full object-cover"
+        onError={() => setFailed(true)}
+      />
+    )
+  }
+  return <ImageIcon className="h-3.5 w-3.5" />
+}
+
+function PromptMentionEditor({
+  value,
+  candidates,
+  rows = 4,
+  maxRows,
+  placeholder,
+  className = "",
+  onChange,
+}: {
+  value: string
+  candidates: ReferenceMentionCandidate[]
+  rows?: number
+  maxRows?: number
+  placeholder?: string
+  className?: string
+  onChange: (value: string, selected?: ReferenceMentionCandidate) => void
+}) {
+  const editorRef = useRef<HTMLDivElement | null>(null)
+  const focusedRef = useRef(false)
+  const [query, setQuery] = useState<{ start: number; end: number; query: string } | null>(null)
+  const candidateKey = candidates.map((item) => `${item.mention}:${item.ref}`).join("|")
+  const visibleCandidates = useMemo(
+    () => query ? filteredMentionCandidates(candidates, query.query) : [],
+    [candidates, query],
+  )
+
+  const syncHtml = useCallback((nextValue: string, caretOffset?: number) => {
+    const editor = editorRef.current
+    if (!editor) return
+    editor.innerHTML = mentionEditorHtml(nextValue, candidates)
+    if (caretOffset !== undefined) {
+      editor.focus()
+      setCaretTextOffset(editor, caretOffset)
+    }
+  }, [candidates])
+
+  useEffect(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    const current = mentionEditorPlainText(editor)
+    if (!focusedRef.current || current !== value) {
+      editor.innerHTML = mentionEditorHtml(value, candidates)
+    }
+  }, [value, candidates, candidateKey])
+
+  const emitInput = () => {
+    const editor = editorRef.current
+    if (!editor) return
+    const text = mentionEditorPlainText(editor)
+    onChange(text)
+    setQuery(mentionQueryAtCaret(editor))
+  }
+
+  const insertMention = (candidate: ReferenceMentionCandidate) => {
+    const editor = editorRef.current
+    if (!editor) return
+    const current = mentionEditorPlainText(editor)
+    const currentQuery = query || mentionQueryAtCaret(editor)
+    const start = currentQuery?.start ?? current.length
+    const end = currentQuery?.end ?? current.length
+    const suffix = current.slice(end)
+    const needsSpace = suffix.length > 0 && !/^\s/.test(suffix)
+    const nextValue = `${current.slice(0, start)}${candidate.mention}${needsSpace ? " " : ""}${suffix}`
+    const nextCaret = start + candidate.mention.length + (needsSpace ? 1 : 0)
+    onChange(nextValue, candidate)
+    syncHtml(nextValue, nextCaret)
+    setQuery(null)
+  }
+
+  return (
+    <div className="relative">
+      <div
+        ref={editorRef}
+        contentEditable
+        role="textbox"
+        aria-multiline="true"
+        data-placeholder={placeholder || ""}
+        suppressContentEditableWarning
+        spellCheck={false}
+        onFocus={() => {
+          focusedRef.current = true
+          const editor = editorRef.current
+          if (editor) setQuery(mentionQueryAtCaret(editor))
+        }}
+        onBlur={() => {
+          focusedRef.current = false
+          window.setTimeout(() => {
+            if (!focusedRef.current) setQuery(null)
+          }, 120)
+        }}
+        onInput={emitInput}
+        onKeyUp={() => {
+          const editor = editorRef.current
+          if (editor) setQuery(mentionQueryAtCaret(editor))
+        }}
+        onMouseUp={() => {
+          const editor = editorRef.current
+          if (editor) setQuery(mentionQueryAtCaret(editor))
+        }}
+        onKeyDown={(event) => {
+          if (!query || visibleCandidates.length === 0) return
+          if (event.key === "Enter" || event.key === "Tab") {
+            event.preventDefault()
+            insertMention(visibleCandidates[0])
+          } else if (event.key === "Escape") {
+            event.preventDefault()
+            setQuery(null)
+          }
+        }}
+        className={`openreel-mention-editor w-full overflow-y-auto whitespace-pre-wrap break-words border-0 bg-transparent px-3 py-2 text-[13px] leading-5 text-zinc-100 outline-none [color-scheme:dark] ${className}`}
+        style={{
+          minHeight: `${Math.max(2, rows) * 26}px`,
+          maxHeight: maxRows ? `${Math.max(rows, maxRows) * 26}px` : undefined,
+        }}
+      />
+      {query && visibleCandidates.length > 0 && (
+        <div className="absolute bottom-full left-2 z-[120] mb-1 w-[min(320px,calc(100vw-48px))] overflow-hidden rounded-lg border border-white/[0.12] bg-[#111111]/98 p-1 shadow-[0_18px_44px_rgba(0,0,0,0.48)] backdrop-blur-xl">
+          {visibleCandidates.map((candidate) => (
+            <button
+              key={`${candidate.mention}:${candidate.ref}`}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => insertMention(candidate)}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-white/[0.08]"
+            >
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-md border border-white/[0.1] bg-white/[0.05] text-zinc-400">
+                <MentionCandidateThumbnail src={candidate.previewUrl} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-medium text-zinc-100">{candidate.mention}</span>
+                <span className="block truncate text-[10px] text-zinc-500">{candidate.source === "node" ? "画布图片节点" : "参考图"}</span>
+              </span>
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -2389,10 +4198,16 @@ function ReferenceEditor({
 function NodeEditView({
   node,
   draft,
-  audioProviders,
-  audioConfigError,
+  mediaProviders,
+  llmProviders,
+  modelDefaults,
+  videoProtocols,
+  mediaConfigError,
   projectId,
+  canvasNodes,
+  referenceMentionCandidates,
   saving,
+  dirty,
   uploading,
   setLightbox,
   onChange,
@@ -2401,65 +4216,66 @@ function NodeEditView({
 }: {
   node: NodeFull
   draft: EditableNodeDraft
-  audioProviders: AudioProviderOption[]
-  audioConfigError?: string | null
+  mediaProviders: MediaProviderOption[]
+  llmProviders: LlmProviderOption[]
+  modelDefaults?: RuntimeModelDefaults
+  videoProtocols: VideoProtocolSummary[]
+  mediaConfigError?: string | null
   projectId?: string | null
+  canvasNodes: CanvasGraphNode[]
+  referenceMentionCandidates: ReferenceMentionCandidate[]
   saving: boolean
+  dirty: boolean
   uploading: boolean
   setLightbox: (v: { src: string; alt?: string } | null) => void
   onChange: (patch: Partial<EditableNodeDraft>) => void
-  onUploadRefs: (files: FileList | null) => void | Promise<void>
+  onUploadRefs: (files: FileList | File[] | null) => void | Promise<void>
   onSave: () => void | Promise<void>
 }) {
   const isText = node.type === "text"
   const isImage = node.type === "image"
   const isVideo = node.type === "video"
   const isAudio = node.type === "audio"
-  const hasSidePanel = isImage || isVideo || isAudio
-  const mainLabel = isText ? "正文" : isImage ? "图片提示词" : isAudio ? "音频提示词" : "视频提示词"
+  const hasMediaControls = isImage || isVideo || isAudio
+  const mainLabel = isText ? "回复正文" : isImage ? "图片提示词" : isAudio ? "音频提示词" : "视频提示词"
   const mainText = isText ? draft.content : draft.prompt
-  const mainCopyLabel = isText ? "正文" : "提示词"
-  const enabledAudioProviders = audioProviders.filter((provider) => provider.enabled !== false)
+  const mainCopyLabel = isText ? "回复正文" : "提示词"
+  const enabledImageProviders = mediaProvidersForKind(mediaProviders, "image")
+  const enabledVideoProviders = mediaProvidersForKind(mediaProviders, "video")
+  const enabledAudioProviders = mediaProvidersForKind(mediaProviders, "audio")
+  const enabledTextProviders = enabledLlmProviders(llmProviders)
+  const selectedTextProvider = isText ? resolveLlmProvider(draft.model, enabledTextProviders) : undefined
+  const selectedImageProvider = isImage ? resolveMediaProvider(draft.model, enabledImageProviders) : undefined
+  const selectedVideoProvider = isVideo ? resolveMediaProvider(draft.model, enabledVideoProviders) : undefined
   const selectedAudioProvider = isAudio ? resolveAudioProvider(draft.model, enabledAudioProviders) : undefined
-  const selectedAudioMode = audioProviderModeFromFormat(selectedAudioProvider?.api_format)
-  const audioProviderSelectValue = draft.model.trim()
-    ? (selectedAudioProvider?.name || draft.model)
-    : ""
+  const selectedAudioMode = audioProviderModeFromProvider(selectedAudioProvider)
+  const imageProviderSelectValue = mediaProviderSelectValue(draft.model, selectedImageProvider)
+  const videoProviderSelectValue = mediaProviderSelectValue(draft.model, selectedVideoProvider)
+  const audioProviderSelectValue = mediaProviderSelectValue(draft.model, selectedAudioProvider)
+  const imageProviderOptions = mediaProviderSelectOptions(enabledImageProviders, draft.model, selectedImageProvider)
+  const videoProviderOptions = mediaProviderSelectOptions(enabledVideoProviders, draft.model, selectedVideoProvider)
+  const audioProviderOptions = mediaProviderSelectOptions(enabledAudioProviders, draft.model, selectedAudioProvider)
+  const textProviderOptions = llmProviderSelectOptions(enabledTextProviders, draft.model, selectedTextProvider)
+  const hasConfiguredImageProviders = enabledImageProviders.length > 0
+  const hasConfiguredVideoProviders = enabledVideoProviders.length > 0
   const hasConfiguredAudioProviders = enabledAudioProviders.length > 0
-  const audioProviderOptions = [
-    { label: "使用当前激活音频 Provider", value: "" },
-    ...(draft.model && !selectedAudioProvider ? [{ label: `当前: ${draft.model}`, value: draft.model }] : []),
-    ...enabledAudioProviders.map((provider) => {
-      const mode = audioProviderModeFromFormat(provider.api_format)
-      const suffix = provider.is_active ? " · 激活" : ""
-      return {
-        label: `${provider.name} · ${audioProviderTypeLabel(mode)} · ${provider.model_name}${suffix}`,
-        value: provider.name,
-      }
-    }),
-  ]
-  const knownVideoModel = isKnownVideoModel(draft.model)
-  const selectedVideoTemplate = knownVideoModel ? draft.model : ""
-  const videoModelOptions = [
-    { label: "使用当前激活或自定义", value: "" },
-    ...VIDEO_MODEL_OPTIONS.map((item) => ({
-      label: item.label,
-      value: item.modelName,
-    })),
-  ]
-  const supportedVideoResolutions = videoSupportedResolutionsForModel(draft.model)
-  const knownResolution = VIDEO_RESOLUTION_OPTIONS.some((item) => item.value === draft.resolution)
-  const videoResolutionOptions = [
-    ...(draft.resolution && !knownResolution ? [{ label: `当前: ${draft.resolution}`, value: draft.resolution, disabled: true }] : []),
-    ...VIDEO_RESOLUTION_OPTIONS.map((item) => {
-      const supported = supportedVideoResolutions.includes(item.value)
-      return {
-        label: `${item.label}${item.placeholder ? " (占位)" : ""}${supported ? "" : " (不支持)"}`,
-        value: item.value,
-        disabled: !supported,
-      }
-    }),
-  ]
+  const selectedVideoModelName = selectedVideoProvider?.model_name || draft.model
+  const selectedVideoProtocol = videoProtocolForProvider(selectedVideoProvider, videoProtocols)
+  const selectedVideoProfile = videoProfileForModel(selectedVideoProtocol, selectedVideoModelName)
+  const videoModeOptions = videoProtocolModeOptions(selectedVideoProtocol, selectedVideoProfile)
+  const activeVideoMode = effectiveVideoMode(draft.video_mode, videoModeOptions)
+  const supportedVideoResolutions = videoSupportedResolutionsForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode, selectedVideoModelName)
+  const supportedVideoRatios = videoSupportedRatiosForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const videoResolutionOptions = videoResolutionSelectOptions(draft.resolution, supportedVideoResolutions)
+  const activeVideoResolution = draft.resolution || defaultVideoResolutionForProvider(
+    selectedVideoProtocol,
+    selectedVideoProfile,
+    activeVideoMode,
+    selectedVideoModelName,
+  )
+  const activeVideoModeConfig = videoModeConfig(selectedVideoProtocol, activeVideoMode, selectedVideoProfile)
+  const activeVideoDurationRule = videoDurationRuleForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const activeVideoDurationBounds = videoDurationBounds(activeVideoDurationRule)
   const imageAspectRatio = normalizeImageAspectRatio(draft.aspect_ratio)
   const updateImageAspectRatio = (aspect_ratio: string) => {
     const nextAspectRatio = normalizeImageAspectRatio(aspect_ratio)
@@ -2467,42 +4283,321 @@ function NodeEditView({
     onChange({ aspect_ratio: nextAspectRatio, resolution })
   }
   const updateVideoModel = (model: string) => {
-    const supported = videoSupportedResolutionsForModel(model)
-    const resolution = supported.includes(draft.resolution) ? draft.resolution : defaultVideoResolutionForModel(model)
-    onChange({ model, resolution })
+    const selectedProvider = resolveMediaProvider(model, enabledVideoProviders)
+    const modelForResolution = selectedProvider?.model_name || model
+    const protocol = videoProtocolForProvider(selectedProvider, videoProtocols)
+    const profile = videoProfileForModel(protocol, modelForResolution)
+    const modeOptions = videoProtocolModeOptions(protocol, profile)
+    const video_mode = effectiveVideoMode(draft.video_mode, modeOptions)
+    onChange({
+      model,
+      ...normalizeVideoDraftForMode(draft, protocol, profile, video_mode, modelForResolution),
+    })
   }
-  const applyVideoModelTemplate = (model: string) => {
-    updateVideoModel(model)
+  const updateVideoMode = (videoMode: string) => {
+    const mode = effectiveVideoMode(videoMode, videoModeOptions)
+    onChange(normalizeVideoDraftForMode(draft, selectedVideoProtocol, selectedVideoProfile, mode, selectedVideoModelName))
   }
   const updateAudioProvider = (providerName: string) => {
     onChange({ model: providerName })
   }
+  const implicitReferenceImages = referenceMentionCandidateRefs(referenceMentionCandidates)
+  const visibleReferenceImageCount = referenceDisplayCount(draft.reference_images, implicitReferenceImages, projectId)
+  const videoReferenceRule = videoReferenceRuleHint(activeVideoModeConfig, visibleReferenceImageCount)
+  const updatePrompt = (prompt: string, selected?: ReferenceMentionCandidate) => {
+    if (selected && !draft.reference_images.includes(selected.ref)) {
+      onChange({ prompt, reference_images: [...draft.reference_images, selected.ref] })
+      return
+    }
+    onChange({ prompt })
+  }
+
+  if (isText) {
+    return (
+      <div className="grid gap-3">
+        <div className="min-w-0 rounded-lg border border-white/[0.08] bg-[#121722] p-3 shadow-[0_18px_45px_rgba(0,0,0,0.22)]">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-200/70">文本对话</div>
+              <div className="mt-0.5 text-xs text-zinc-500">写提示词、绑定参考图，运行后在预览中查看正文</div>
+            </div>
+            <AutoSaveBadge saving={saving} dirty={dirty} />
+          </div>
+          <div className="grid gap-3">
+            <DraftField label="标题">
+              <input
+                value={draft.title}
+                onChange={(event) => onChange({ title: event.target.value })}
+                className={inputClass}
+              />
+            </DraftField>
+            <SelectControl
+              label="对话模型"
+              value={selectedTextProvider?.name || draft.model || defaultLlmProviderName(enabledTextProviders, modelDefaults)}
+              options={textProviderOptions}
+              onChange={(model) => onChange({ model })}
+              hint={llmProviderHint(selectedTextProvider, mediaConfigError)}
+            />
+            <DraftField
+              label="提示词"
+              action={<CopyTextButton text={draft.prompt} label="提示词" />}
+            >
+              <div className="overflow-visible rounded-md border border-white/[0.1] bg-[#080c13] transition focus-within:border-cyan-300/45 focus-within:bg-[#0b111a]">
+                <div className="border-b border-white/[0.07] p-1.5">
+                  <ReferenceEditor
+                    refs={draft.reference_images}
+                    implicitRefs={implicitReferenceImages}
+                    projectId={projectId}
+                    canvasNodes={canvasNodes}
+                    uploading={uploading}
+                    compact
+                    setLightbox={setLightbox}
+                    onChange={(reference_images) => onChange({ reference_images })}
+                    onUpload={onUploadRefs}
+                  />
+                </div>
+                <PromptMentionEditor
+                  value={draft.prompt}
+                  onChange={updatePrompt}
+                  candidates={referenceMentionCandidates}
+                  rows={6}
+                  className="min-h-[150px] px-2.5 py-2 leading-6"
+                  placeholder="输入这次要让模型回答、续写、改写或整理的内容；参考图会一起发送给模型"
+                />
+              </div>
+            </DraftField>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (isImage) {
+    return (
+      <div className="grid gap-3">
+        <div className="min-w-0 rounded-lg border border-white/[0.08] bg-[#121722] p-3 shadow-[0_18px_45px_rgba(0,0,0,0.22)]">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-200/70">图片生成</div>
+              <div className="mt-0.5 text-xs text-zinc-500">写提示词、选择参考图、设定输出规格</div>
+            </div>
+            <AutoSaveBadge saving={saving} dirty={dirty} />
+          </div>
+
+          <div className="grid gap-3">
+            <DraftField label="标题">
+              <input
+                value={draft.title}
+                onChange={(event) => onChange({ title: event.target.value })}
+                className={inputClass}
+              />
+            </DraftField>
+            <DraftField
+              label="图片提示词"
+              action={<CopyTextButton text={draft.prompt} label="提示词" />}
+            >
+              <div className="overflow-visible rounded-md border border-white/[0.1] bg-[#080c13] transition focus-within:border-cyan-300/45 focus-within:bg-[#0b111a]">
+                <div className="border-b border-white/[0.07] p-1.5">
+                  <ReferenceEditor
+                    refs={draft.reference_images}
+                    implicitRefs={implicitReferenceImages}
+                    projectId={projectId}
+                    canvasNodes={canvasNodes}
+                    uploading={uploading}
+                    compact
+                    setLightbox={setLightbox}
+                    onChange={(reference_images) => onChange({ reference_images })}
+                    onUpload={onUploadRefs}
+                  />
+                </div>
+                <PromptMentionEditor
+                  value={draft.prompt}
+                  onChange={updatePrompt}
+                  candidates={referenceMentionCandidates}
+                  rows={6}
+                  className="min-h-[150px] px-2.5 py-2 font-mono leading-6"
+                  placeholder="描述主体、动作、构图、光线、风格、材质和需要避免的问题"
+                />
+              </div>
+            </DraftField>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-white/[0.08] bg-[#121722] p-3">
+          <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">生成参数</div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <SelectControl
+              label="生成模型"
+              value={imageProviderSelectValue}
+              options={imageProviderOptions}
+              onChange={(model) => onChange({ model })}
+              hint={mediaProviderHint(selectedImageProvider, mediaConfigError)}
+            />
+            <SegmentedControl
+              label="画幅"
+              value={imageAspectRatio}
+              options={IMAGE_ASPECT_RATIO_OPTIONS}
+              onChange={updateImageAspectRatio}
+            />
+            <ImageResolutionControl
+              aspectRatio={imageAspectRatio}
+              resolution={draft.resolution}
+              onChange={(resolution) => onChange({ resolution })}
+            />
+            <div className="grid gap-3">
+              <SegmentedControl
+                label="质量"
+                value={draft.quality}
+                options={IMAGE_QUALITY_OPTIONS}
+                onChange={(quality) => onChange({ quality })}
+              />
+              <SegmentedControl
+                label="清晰度"
+                value={draft.clarity}
+                options={IMAGE_CLARITY_OPTIONS}
+                onChange={(clarity) => onChange({ clarity })}
+                hint="清晰度会作为画面细节要求写入出图提示词。"
+              />
+            </div>
+          </div>
+          {!hasConfiguredImageProviders && (
+            <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-950/15 px-3 py-2 text-xs leading-5 text-amber-100/80">
+              设置里还没有启用的图片模型；需要先在设置中配置并启用模型后才能运行。
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  if (isVideo) {
+    return (
+      <div className="grid gap-3">
+        <div className="min-w-0 rounded-lg border border-white/[0.08] bg-[#121722] p-3 shadow-[0_18px_45px_rgba(0,0,0,0.22)]">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-200/70">视频生成</div>
+              <div className="mt-0.5 text-xs text-zinc-500">选择模式、写提示词、绑定参考材料</div>
+            </div>
+            <AutoSaveBadge saving={saving} dirty={dirty} />
+          </div>
+
+          <div className="grid gap-3">
+            <SegmentedControl
+              label="生成方式"
+              value={activeVideoMode}
+              options={videoModeOptions}
+              onChange={updateVideoMode}
+            />
+
+            <div className="grid gap-3">
+              <DraftField label="标题">
+                <input
+                  value={draft.title}
+                  onChange={(event) => onChange({ title: event.target.value })}
+                  className={inputClass}
+                />
+              </DraftField>
+              <DraftField
+                label="视频提示词"
+                action={<CopyTextButton text={draft.prompt} label="提示词" />}
+              >
+                <div className="overflow-visible rounded-md border border-white/[0.1] bg-[#080c13] transition focus-within:border-cyan-300/45 focus-within:bg-[#0b111a]">
+                  <div className="border-b border-white/[0.07] p-1.5">
+                    <ReferenceEditor
+                      refs={draft.reference_images}
+                      implicitRefs={implicitReferenceImages}
+                      quota={isVideo ? {
+                        label: videoReferenceRule.quota,
+                        title: videoReferenceRule.title,
+                        invalid: videoReferenceRule.invalid,
+                        overLimit: videoReferenceRule.overLimit,
+                        uploadBlocked: videoReferenceRule.uploadBlocked,
+                        remaining: videoReferenceRule.remaining,
+                      } : undefined}
+                      maxRefs={isVideo ? videoReferenceRule.limit : undefined}
+                      projectId={projectId}
+                      canvasNodes={canvasNodes}
+                      uploading={uploading}
+                      compact
+                      setLightbox={setLightbox}
+                      onChange={(reference_images) => onChange({ reference_images })}
+                      onUpload={onUploadRefs}
+                    />
+                  </div>
+                  <PromptMentionEditor
+                    value={draft.prompt}
+                    onChange={updatePrompt}
+                    candidates={referenceMentionCandidates}
+                    rows={6}
+                    className="min-h-[150px] px-2.5 py-2 font-mono leading-6"
+                    placeholder="描述画面主体、动作、镜头运动、光线、风格、节奏和结尾状态"
+                  />
+                </div>
+              </DraftField>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-white/[0.08] bg-[#121722] p-3">
+          <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">生成参数</div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <SelectControl
+              label="生成模型"
+              value={videoProviderSelectValue}
+              options={videoProviderOptions}
+              onChange={updateVideoModel}
+              hint={mediaProviderHint(selectedVideoProvider, mediaConfigError)}
+            />
+            <ChipControl
+              label="画幅"
+              value={normalizeVideoAspectRatio(draft.aspect_ratio)}
+              options={supportedVideoRatios}
+              placeholder="比例"
+              onChange={(aspect_ratio) => onChange({ aspect_ratio })}
+            />
+            <SelectControl
+              label="分辨率"
+              value={activeVideoResolution}
+              options={videoResolutionOptions}
+              onChange={(resolution) => onChange({ resolution })}
+            />
+            <DraftField label="时长">
+              <input
+                type="number"
+                min={activeVideoDurationBounds.min ?? 1}
+                max={activeVideoDurationBounds.max}
+                step={activeVideoDurationBounds.step ?? 1}
+                inputMode="numeric"
+                value={draft.duration_seconds}
+                onChange={(event) => onChange({ duration_seconds: event.target.value })}
+                onBlur={(event) => onChange({ duration_seconds: normalizeVideoDurationForRule(event.target.value, activeVideoDurationRule) })}
+                className={inputClass}
+                placeholder="秒"
+              />
+            </DraftField>
+          </div>
+          {!hasConfiguredVideoProviders && (
+            <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-950/15 px-3 py-2 text-xs leading-5 text-amber-100/80">
+              设置里还没有启用的视频模型；需要先在设置中配置并启用模型后才能运行。
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className={hasSidePanel ? "grid gap-3 lg:grid-cols-[minmax(0,1fr)_300px]" : "grid gap-3"}>
+    <div className="grid gap-3">
       <div className="min-w-0 rounded-lg border border-white/[0.08] bg-[#121722] p-3 shadow-[0_18px_45px_rgba(0,0,0,0.22)]">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-200/70">编辑节点</div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-200/70">节点属性</div>
             <div className="mt-0.5 text-xs text-zinc-500">{node.type}</div>
           </div>
-          <button
-            type="button"
-            onClick={() => void onSave()}
-            disabled={saving}
-            className="rounded-md bg-cyan-500 px-3 py-1.5 text-xs font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            {saving ? "保存中..." : "保存"}
-          </button>
+          <AutoSaveBadge saving={saving} dirty={dirty} />
         </div>
         <div className="grid gap-3">
-          <DraftField label="标题">
-            <input
-              value={draft.title}
-              onChange={(event) => onChange({ title: event.target.value })}
-              className={inputClass}
-            />
-          </DraftField>
           <DraftField
             label={mainLabel}
             action={<CopyTextButton text={mainText} label={mainCopyLabel} />}
@@ -2514,10 +4609,17 @@ function NodeEditView({
               className={`${inputClass} min-h-[220px] resize-y font-mono text-[13px] leading-6`}
             />
           </DraftField>
+          <DraftField label="标题">
+            <input
+              value={draft.title}
+              onChange={(event) => onChange({ title: event.target.value })}
+              className={inputClass}
+            />
+          </DraftField>
         </div>
       </div>
 
-      {hasSidePanel && (
+      {hasMediaControls && (
         <div className="space-y-3">
           <div className="rounded-lg border border-white/[0.08] bg-[#121722] p-3">
             <div className="mb-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">规格</div>
@@ -2525,21 +4627,21 @@ function NodeEditView({
               {isAudio ? (
                 <>
                   <SelectControl
-                    label="音频 Provider"
+                    label="生成模型"
                     value={audioProviderSelectValue}
                     options={audioProviderOptions}
                     onChange={updateAudioProvider}
                     hint={
-                      audioConfigError
-                        ? audioConfigError
+                      mediaConfigError
+                        ? mediaConfigError
                         : selectedAudioProvider
-                          ? `${audioProviderTypeLabel(selectedAudioMode)} · ${selectedAudioProvider.api_format}`
-                          : "请先在设置里的音频 Provider 配置并启用。"
+                          ? `${audioProviderTypeLabel(selectedAudioMode)} · ${mediaProviderHint(selectedAudioProvider)}`
+                          : "设置里还没有启用的音频模型。"
                     }
                   />
                   {!hasConfiguredAudioProviders && (
                     <div className="rounded-md border border-amber-500/20 bg-amber-950/15 px-3 py-2 text-xs leading-5 text-amber-100/80">
-                      需要先在设置的「音频 Provider」里配置并启用 TTS 或音乐 Provider。
+                      设置里还没有启用的音频模型；需要先在设置中配置并启用模型后才能运行。
                     </div>
                   )}
                   {selectedAudioMode === "tts" && (
@@ -2622,24 +4724,52 @@ function NodeEditView({
                   )}
                 </>
               ) : isVideo ? (
-                <ChipControl
-                  label="画幅"
-                  value={normalizeVideoAspectRatio(draft.aspect_ratio)}
-                  options={VIDEO_ASPECT_RATIO_OPTIONS}
-                  placeholder="比例"
-                  onChange={(aspect_ratio) => onChange({ aspect_ratio })}
-                />
+                <>
+                  <SelectControl
+                    label="生成模型"
+                    value={videoProviderSelectValue}
+                    options={videoProviderOptions}
+                    onChange={updateVideoModel}
+                    hint={mediaProviderHint(selectedVideoProvider, mediaConfigError)}
+                  />
+                  {!hasConfiguredVideoProviders && (
+                    <div className="rounded-md border border-amber-500/20 bg-amber-950/15 px-3 py-2 text-xs leading-5 text-amber-100/80">
+                      设置里还没有启用的视频模型；需要先在设置中配置并启用模型后才能运行。
+                    </div>
+                  )}
+                  <ChipControl
+                    label="画幅"
+                    value={normalizeVideoAspectRatio(draft.aspect_ratio)}
+                    options={supportedVideoRatios}
+                    placeholder="比例"
+                    onChange={(aspect_ratio) => onChange({ aspect_ratio })}
+                  />
+                </>
               ) : (
-                <SelectControl
-                  label="画幅"
-                  value={imageAspectRatio}
-                  options={[
-                    { label: "16:9", value: "16:9" },
-                    { label: "9:16", value: "9:16" },
-                    { label: "1:1", value: "1:1" },
-                  ]}
-                  onChange={updateImageAspectRatio}
-                />
+                <>
+                  <SelectControl
+                    label="生成模型"
+                    value={imageProviderSelectValue}
+                    options={imageProviderOptions}
+                    onChange={(model) => onChange({ model })}
+                    hint={mediaProviderHint(selectedImageProvider, mediaConfigError)}
+                  />
+                  {!hasConfiguredImageProviders && (
+                    <div className="rounded-md border border-amber-500/20 bg-amber-950/15 px-3 py-2 text-xs leading-5 text-amber-100/80">
+                      设置里还没有启用的图片模型；需要先在设置中配置并启用模型后才能运行。
+                    </div>
+                  )}
+                  <SelectControl
+                    label="画幅"
+                    value={imageAspectRatio}
+                    options={[
+                      { label: "16:9", value: "16:9" },
+                      { label: "9:16", value: "9:16" },
+                      { label: "1:1", value: "1:1" },
+                    ]}
+                    onChange={updateImageAspectRatio}
+                  />
+                </>
               )}
               {isImage && (
                 <>
@@ -2659,23 +4789,14 @@ function NodeEditView({
               {isVideo && (
                 <>
                   <SelectControl
-                    label="模型模板"
-                    value={selectedVideoTemplate}
-                    options={videoModelOptions}
-                    onChange={applyVideoModelTemplate}
-                    hint="留空时可使用当前激活视频 Provider，或在下面手填 provider 名/模型名。"
+                    label="生成模式"
+                    value={activeVideoMode}
+                    options={videoModeOptions}
+                    onChange={updateVideoMode}
                   />
-                  <DraftField label="模型/Provider">
-                    <input
-                      value={draft.model}
-                      onChange={(event) => updateVideoModel(event.target.value)}
-                      className={inputClass}
-                      placeholder="留空使用当前激活视频 Provider"
-                    />
-                  </DraftField>
                   <SelectControl
                     label="分辨率"
-                    value={draft.resolution || defaultVideoResolutionForModel(draft.model)}
+                    value={activeVideoResolution}
                     options={videoResolutionOptions}
                     onChange={(resolution) => onChange({ resolution })}
                   />
@@ -2700,11 +4821,13 @@ function NodeEditView({
             <div className="rounded-lg border border-white/[0.08] bg-[#121722] p-3">
               <div className="mb-2.5 flex items-center justify-between">
                 <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">引用图</div>
-                <span className="text-[11px] text-zinc-600">{draft.reference_images.length}</span>
+                <span className="text-[11px] text-zinc-600">{visibleReferenceImageCount}</span>
               </div>
               <ReferenceEditor
                 refs={draft.reference_images}
+                implicitRefs={implicitReferenceImages}
                 projectId={projectId}
+                canvasNodes={canvasNodes}
                 uploading={uploading}
                 setLightbox={setLightbox}
                 onChange={(reference_images) => onChange({ reference_images })}
@@ -3047,27 +5170,30 @@ function MediaHistorySection({
         {entries.map((entry) => {
           const primary = entry.media[0]
           const switching = switchingId === entry.id
-          const label = formatHistoryTime(entry.created_at) || `历史 ${entry.index + 1}`
+          const label = entry.current ? "当前结果" : formatHistoryTime(entry.created_at) || `历史 ${entry.index + 1}`
+          const canSwitch = !entry.current && !busy && !switching
           return (
             <div
               key={`${entry.id}-${entry.index}`}
               role="button"
-              tabIndex={busy || switching ? -1 : 0}
-              aria-disabled={busy || switching}
+              tabIndex={canSwitch ? 0 : -1}
+              aria-disabled={!canSwitch}
               onClick={() => {
-                if (!busy && !switching) void onSwitch(entry)
+                if (canSwitch) void onSwitch(entry)
               }}
               onKeyDown={(event) => {
-                if (busy || switching) return
+                if (!canSwitch) return
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault()
                   void onSwitch(entry)
                 }
               }}
               className={`rounded-lg border bg-black/24 p-2 transition ${
-                busy || switching
-                  ? "cursor-not-allowed border-white/[0.07] opacity-60"
-                  : "cursor-pointer border-white/[0.08] hover:border-cyan-200/40 hover:bg-cyan-950/10"
+                canSwitch
+                  ? "cursor-pointer border-white/[0.08] hover:border-cyan-200/40 hover:bg-cyan-950/10"
+                  : entry.current
+                    ? "border-emerald-300/18 bg-emerald-300/[0.035]"
+                    : "cursor-not-allowed border-white/[0.07] opacity-60"
               }`}
             >
               <div className="flex min-h-[66px] gap-2.5">
@@ -3102,8 +5228,12 @@ function MediaHistorySection({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0 truncate text-[11px] text-zinc-400">{label}</div>
-                    <div className="shrink-0 rounded bg-cyan-300/10 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-100">
-                      {switching ? "还原中" : "还原"}
+                    <div className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                      entry.current
+                        ? "bg-emerald-300/10 text-emerald-100"
+                        : "bg-cyan-300/10 text-cyan-100"
+                    }`}>
+                      {entry.current ? "当前" : switching ? "还原中" : "还原"}
                     </div>
                   </div>
                   <div
@@ -3119,6 +5249,564 @@ function MediaHistorySection({
         })}
       </div>
     </Section>
+  )
+}
+
+function NodePanelMediaHistoryStrip({
+  node,
+}: {
+  node: NodeFull
+}) {
+  const kind = node.type === "image" || node.type === "video" || node.type === "audio" ? node.type : null
+  if (!kind) return null
+  const entries = mediaHistoryEntriesFromOutput(node.output, kind)
+  if (entries.length === 0) return null
+
+  const openEntry = (entry: MediaHistoryEntry) => {
+    const preview = asObj(parseJson(entry.output)) || {}
+    window.dispatchEvent(new CustomEvent("openreel:preview-node", {
+      detail: {
+        nodeId: node.id,
+        type: node.type,
+        title: node.title,
+        input: nodeInputFields(node.input),
+        output: entry.output,
+        preview,
+        prompt: entry.prompt || node.prompt || "",
+        readOnly: true,
+      },
+    }))
+  }
+
+  return (
+    <div className="border-t border-white/[0.07] pt-2">
+      <div className="flex min-h-[36px] items-center gap-1 overflow-x-auto px-0.5 py-0.5" aria-label="生成历史">
+        {entries.map((entry) => {
+          const primary = entry.media[0]
+          if (!primary) return null
+          const title = entry.current
+            ? "当前结果"
+            : formatHistoryTime(entry.created_at) || `历史 ${entry.index + 1}`
+          return (
+            <button
+              key={`${entry.id}-${entry.index}`}
+              type="button"
+              title={title}
+              aria-label={title}
+              onClick={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                openEntry(entry)
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+              className={`group relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-white/[0.045] text-zinc-300 shadow-[0_6px_16px_rgba(0,0,0,0.16)] transition hover:-translate-y-0.5 hover:border-white/[0.22] hover:bg-white/[0.08] hover:text-zinc-50 ${
+                entry.current ? "border-emerald-300/25" : "border-white/[0.1]"
+              }`}
+            >
+              {primary.kind === "image" ? (
+                <img src={primary.src} alt="" className="h-full w-full object-cover" draggable={false} />
+              ) : primary.kind === "video" ? (
+                <>
+                  <video poster={primary.poster} muted playsInline preload="metadata" className="h-full w-full object-cover" draggable={false}>
+                    <source src={primary.src} type={videoMimeType(primary.src)} />
+                  </video>
+                  <span className="absolute inset-0 flex items-center justify-center bg-black/18">
+                    <span className="ml-0.5 h-0 w-0 border-y-[5px] border-l-[8px] border-y-transparent border-l-white" />
+                  </span>
+                </>
+              ) : (
+                <SparkIcon className="h-4 w-4" />
+              )}
+              {entry.current && (
+                <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_8px_rgba(110,231,183,0.8)]" />
+              )}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function NodePanelTextHistoryButton({
+  node,
+  input,
+  rawOutput,
+  nodePrompt,
+}: {
+  node: NodeFull
+  input: Record<string, unknown>
+  rawOutput: unknown
+  nodePrompt: string
+}) {
+  const [open, setOpen] = useState(false)
+  const entries = textChatHistoryFromPayload(input, rawOutput, nodePrompt)
+  if (entries.length === 0) return null
+  const openEntry = (entry: TextChatHistoryEntry) => {
+    const output = {
+      type: "text",
+      content: entry.content,
+      prompt: entry.prompt,
+      model: entry.model,
+      created_at: entry.created_at,
+    }
+    window.dispatchEvent(new CustomEvent("openreel:preview-node", {
+      detail: {
+        nodeId: node.id,
+        type: "text",
+        title: node.title,
+        input: { ...input, prompt: entry.prompt, content: entry.content },
+        output,
+        previewText: entry.content,
+        prompt: entry.prompt || nodePrompt,
+        readOnly: true,
+      },
+    }))
+  }
+  return (
+    <div className="border-t border-white/[0.07] pt-2">
+      <button
+        type="button"
+        title="历史对话"
+        aria-label="历史对话"
+        onClick={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          setOpen((value) => !value)
+        }}
+        onPointerDown={(event) => event.stopPropagation()}
+        className={`relative flex h-8 w-8 items-center justify-center rounded-md border bg-white/[0.045] text-zinc-300 shadow-[0_6px_16px_rgba(0,0,0,0.16)] transition hover:-translate-y-0.5 hover:border-white/[0.22] hover:bg-white/[0.08] hover:text-zinc-50 ${
+          open ? "border-sky-200/40 text-sky-100" : "border-white/[0.1]"
+        }`}
+      >
+        <ChatBubbleIcon />
+        <span className="absolute -right-1 -top-1 min-w-[16px] rounded-full border border-black/50 bg-sky-300 px-1 text-center text-[9px] font-semibold leading-4 text-sky-950">
+          {entries.length}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-2 max-h-72 overflow-y-auto rounded-lg border border-white/[0.08] bg-black/28 p-2.5 shadow-inner shadow-black/25">
+          <div className="space-y-2">
+            {entries.slice().reverse().map((entry, index) => (
+              <button
+                key={`${entry.id}-${index}`}
+                type="button"
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  openEntry(entry)
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+                className="block w-full rounded-lg border border-white/[0.07] bg-white/[0.035] p-2.5 text-left text-[12px] leading-5 text-zinc-300 transition hover:border-sky-200/30 hover:bg-sky-300/[0.035]"
+              >
+                <div className="mb-2 flex items-center justify-between gap-2 text-[10px] text-zinc-500">
+                  <span>{entry.current ? "当前结果" : entry.created_at ? formatHistoryTime(entry.created_at) : `历史 ${entries.length - index}`}</span>
+                  {entry.model && <span className="truncate">{entry.model}</span>}
+                </div>
+                {entry.prompt && (
+                  <div className="mb-2 rounded-md bg-black/24 px-2 py-1.5 text-zinc-400">
+                    {entry.prompt}
+                  </div>
+                )}
+                <div className="whitespace-pre-wrap break-words text-zinc-100">{entry.content || "无正文记录"}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function NodeCanvasContextPanel({
+  node,
+  draft,
+  mediaProviders,
+  llmProviders,
+  modelDefaults,
+  videoProtocols,
+  mediaConfigError,
+  projectId,
+  canvasNodes,
+  referenceMentionCandidates,
+  dirty,
+  saving,
+  uploading,
+  uploadingOutput,
+  rerunning,
+  actionDisabled,
+  displayError,
+  setLightbox,
+  onChange,
+  onUploadRefs,
+  onUploadOutput,
+  onRerun,
+}: {
+  node: NodeFull
+  draft: EditableNodeDraft
+  mediaProviders: MediaProviderOption[]
+  llmProviders: LlmProviderOption[]
+  modelDefaults?: RuntimeModelDefaults
+  videoProtocols: VideoProtocolSummary[]
+  mediaConfigError?: string | null
+  projectId?: string | null
+  canvasNodes: CanvasGraphNode[]
+  referenceMentionCandidates: ReferenceMentionCandidate[]
+  dirty: boolean
+  saving: boolean
+  uploading: boolean
+  uploadingOutput: boolean
+  rerunning: boolean
+  actionDisabled: boolean
+  displayError?: string
+  setLightbox: (v: { src: string; alt?: string } | null) => void
+  onChange: (patch: Partial<EditableNodeDraft>) => void
+  onUploadRefs: (files: FileList | File[] | null) => void | Promise<void>
+  onUploadOutput: (files: FileList | null) => void | Promise<void>
+  onRerun?: (nodeId: string) => void | Promise<void>
+  onRequestStoryRevision?: (nodeId: string) => void | Promise<void>
+}) {
+  const isText = node.type === "text"
+  const isImage = node.type === "image"
+  const isVideo = node.type === "video"
+  const isAudio = node.type === "audio"
+  const enabledImageProviders = mediaProvidersForKind(mediaProviders, "image")
+  const enabledVideoProviders = mediaProvidersForKind(mediaProviders, "video")
+  const enabledAudioProviders = mediaProvidersForKind(mediaProviders, "audio")
+  const enabledTextProviders = enabledLlmProviders(llmProviders)
+  const selectedTextProvider = isText ? resolveLlmProvider(draft.model, enabledTextProviders) : undefined
+  const selectedImageProvider = isImage ? resolveMediaProvider(draft.model, enabledImageProviders) : undefined
+  const selectedVideoProvider = isVideo ? resolveMediaProvider(draft.model, enabledVideoProviders) : undefined
+  const selectedAudioProvider = isAudio ? resolveAudioProvider(draft.model, enabledAudioProviders) : undefined
+  const textProviderOptions = llmProviderSelectOptions(enabledTextProviders, draft.model, selectedTextProvider)
+  const selectedAudioMode = audioProviderModeFromProvider(selectedAudioProvider)
+  const imageAspectRatio = normalizeImageAspectRatio(draft.aspect_ratio)
+  const selectedVideoModelName = selectedVideoProvider?.model_name || draft.model
+  const selectedVideoProtocol = videoProtocolForProvider(selectedVideoProvider, videoProtocols)
+  const selectedVideoProfile = videoProfileForModel(selectedVideoProtocol, selectedVideoModelName)
+  const videoModeOptions = videoProtocolModeOptions(selectedVideoProtocol, selectedVideoProfile)
+  const activeVideoMode = effectiveVideoMode(draft.video_mode, videoModeOptions)
+  const supportedVideoResolutions = videoSupportedResolutionsForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode, selectedVideoModelName)
+  const supportedVideoRatios = videoSupportedRatiosForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const videoResolutionOptions = videoResolutionSelectOptions(draft.resolution, supportedVideoResolutions)
+  const activeVideoResolution = draft.resolution || defaultVideoResolutionForProvider(
+    selectedVideoProtocol,
+    selectedVideoProfile,
+    activeVideoMode,
+    selectedVideoModelName,
+  )
+  const activeVideoModeConfig = videoModeConfig(selectedVideoProtocol, activeVideoMode, selectedVideoProfile)
+  const activeVideoDurationRule = videoDurationRuleForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const activeVideoDurationBounds = videoDurationBounds(activeVideoDurationRule)
+  const videoReferenceRule = videoReferenceRuleHint(
+    activeVideoModeConfig,
+    referenceDisplayCount(draft.reference_images, referenceMentionCandidateRefs(referenceMentionCandidates), projectId),
+  )
+  const titleValue = draft.title || node.title || ""
+  const mainText = isText ? draft.content : draft.prompt
+  const mediaRunTarget = isText ? "文本" : isVideo ? "视频" : isAudio ? "音频" : "图片"
+  const canRerun = Boolean((isText || isImage || isVideo || isAudio) && onRerun)
+  const actionBusy = actionDisabled || rerunning || uploadingOutput || node.status === "running" || node.status === "queued"
+  const saveStateLabel = saving ? "保存中" : dirty ? "待自动保存" : "已保存"
+  const saveStateClass = saving
+    ? "bg-cyan-300 shadow-[0_0_14px_rgba(103,232,249,0.55)]"
+    : dirty
+      ? "bg-amber-300 shadow-[0_0_14px_rgba(252,211,77,0.45)]"
+      : "bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.3)]"
+  const compactSelectClass = "h-7 min-w-0 appearance-none rounded-md border border-white/[0.08] bg-[#1f1f1f] px-2 text-[11px] font-medium text-zinc-100 shadow-inner shadow-black/20 outline-none [color-scheme:dark] transition focus:border-white/[0.18] focus:bg-[#262626] focus:text-zinc-50 hover:border-white/[0.14] hover:bg-[#282828] [&>option]:bg-[#1f1f1f] [&>option]:text-zinc-100"
+  const textareaHeightClass = isText ? "min-h-[96px]" : isVideo ? "min-h-[78px]" : "min-h-[88px]"
+  const promptMaxRows = isText ? 7 : isVideo ? 6 : 7
+
+  const updateImageAspectRatio = (aspectRatio: string) => {
+    const nextAspectRatio = normalizeImageAspectRatio(aspectRatio)
+    const resolution = defaultImageResolutionForAspect(nextAspectRatio, imageResolutionTier(draft.resolution))
+    onChange({ aspect_ratio: nextAspectRatio, resolution })
+  }
+  const updateVideoModel = (model: string) => {
+    const selectedProvider = resolveMediaProvider(model, enabledVideoProviders)
+    const modelForResolution = selectedProvider?.model_name || model
+    const protocol = videoProtocolForProvider(selectedProvider, videoProtocols)
+    const profile = videoProfileForModel(protocol, modelForResolution)
+    const modeOptions = videoProtocolModeOptions(protocol, profile)
+    const video_mode = effectiveVideoMode(draft.video_mode, modeOptions)
+    onChange({
+      model,
+      ...normalizeVideoDraftForMode(draft, protocol, profile, video_mode, modelForResolution),
+    })
+  }
+  const updateVideoMode = (videoMode: string) => {
+    const mode = effectiveVideoMode(videoMode, videoModeOptions)
+    onChange(normalizeVideoDraftForMode(draft, selectedVideoProtocol, selectedVideoProfile, mode, selectedVideoModelName))
+  }
+  const implicitReferenceImages = referenceMentionCandidateRefs(referenceMentionCandidates)
+  const updatePrompt = (prompt: string, selected?: ReferenceMentionCandidate) => {
+    if (selected && !draft.reference_images.includes(selected.ref)) {
+      onChange({ prompt, reference_images: [...draft.reference_images, selected.ref] })
+      return
+    }
+    onChange({ prompt })
+  }
+
+  return (
+    <div className="flex max-h-full min-h-0 w-full flex-col gap-2 rounded-xl border border-white/[0.1] bg-[#252525]/96 p-2.5 text-zinc-100 shadow-[0_24px_70px_rgba(0,0,0,0.46)] backdrop-blur-xl">
+      <div className="flex shrink-0 items-center gap-1.5 px-0.5">
+        <span
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.09] bg-white/[0.06] text-zinc-300 shadow-inner shadow-white/[0.03]"
+          title={node.type}
+          aria-hidden="true"
+        >
+          {isImage ? <ImageIcon className="h-3.5 w-3.5" /> : isVideo ? <ArrowUpIcon className="h-3.5 w-3.5 rotate-90" /> : isAudio ? <SparkIcon className="h-3.5 w-3.5" /> : <span className="text-[11px] font-semibold">T</span>}
+        </span>
+        <input
+          value={titleValue}
+          onChange={(event) => onChange({ title: event.target.value })}
+          className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 text-[13px] font-semibold text-zinc-100 outline-none transition placeholder:text-zinc-600 hover:border-white/[0.06] focus:border-white/[0.12] focus:bg-black/18"
+          placeholder="节点标题"
+        />
+        <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${saveStateClass}`} title={saveStateLabel} aria-label={saveStateLabel} />
+      </div>
+
+      {isVideo && (
+        <div className="flex shrink-0 gap-1.5 overflow-x-auto px-0.5 pb-0.5">
+          {videoModeOptions.map((item) => {
+            const active = activeVideoMode === item.value
+            return (
+              <button
+                key={item.value || "auto"}
+                type="button"
+                onClick={() => updateVideoMode(item.value)}
+                title={item.hint || item.label}
+                className={`h-7 shrink-0 rounded-md border px-2 text-[11px] font-medium transition ${
+                  active
+                    ? "border-cyan-300/35 bg-cyan-300/12 text-cyan-100 shadow-[0_8px_18px_rgba(34,211,238,0.10)]"
+                    : "border-white/[0.08] bg-white/[0.045] text-zinc-300 hover:bg-white/[0.09] hover:text-zinc-50"
+                }`}
+              >
+                {item.label}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1 overflow-visible rounded-lg border border-white/[0.08] bg-[#202020] shadow-inner shadow-black/20 transition focus-within:border-zinc-300/45 focus-within:bg-[#292929]">
+        {(isText || isImage || isVideo) && (
+          <div className="shrink-0 px-1.5 pt-1.5">
+            <ReferenceEditor
+              refs={draft.reference_images}
+              implicitRefs={implicitReferenceImages}
+              quota={isVideo ? {
+                label: videoReferenceRule.quota,
+                title: videoReferenceRule.title,
+                invalid: videoReferenceRule.invalid,
+                overLimit: videoReferenceRule.overLimit,
+                uploadBlocked: videoReferenceRule.uploadBlocked,
+                remaining: videoReferenceRule.remaining,
+              } : undefined}
+              maxRefs={isVideo ? videoReferenceRule.limit : undefined}
+              projectId={projectId}
+              canvasNodes={canvasNodes}
+              uploading={uploading}
+              compact
+              setLightbox={setLightbox}
+              onChange={(reference_images) => onChange({ reference_images })}
+              onUpload={onUploadRefs}
+            />
+          </div>
+        )}
+        {isText ? (
+          <div>
+            <PromptMentionEditor
+              value={draft.prompt}
+              onChange={updatePrompt}
+              candidates={referenceMentionCandidates}
+              rows={4}
+              maxRows={promptMaxRows}
+              className="min-h-[104px]"
+              placeholder="输入要让模型回答的内容；上方参考图会一起发送给模型"
+            />
+          </div>
+        ) : (
+          isAudio ? (
+            <textarea
+              value={mainText}
+              onChange={(event) => onChange({ prompt: event.target.value })}
+              rows={4}
+              className={`${textareaHeightClass} w-full resize-y border-0 bg-transparent px-3 py-2 text-[13px] leading-5 text-zinc-100 outline-none [color-scheme:dark] placeholder:text-zinc-500`}
+              placeholder="描述音乐、旁白或声音素材"
+            />
+          ) : (
+            <PromptMentionEditor
+              value={mainText}
+              onChange={updatePrompt}
+              candidates={referenceMentionCandidates}
+              rows={isVideo ? 3 : 4}
+              maxRows={promptMaxRows}
+              className={textareaHeightClass}
+              placeholder={isImage ? "描述你想生成或编辑的图片内容；输入 @ 可选择参考图" : "描述你想生成的画面内容；输入 @ 可选择参考图"}
+            />
+          )
+        )}
+      </div>
+
+      {(isImage || isVideo || isAudio || isText) && (
+        <div className="shrink-0 border-t border-white/[0.06] px-0.5 pt-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+          {(isText || isImage || isVideo || isAudio) && (
+            <select
+              value={
+                isText
+                  ? (selectedTextProvider?.name || draft.model || defaultLlmProviderName(enabledTextProviders, modelDefaults))
+                  : isImage
+                  ? mediaProviderSelectValue(draft.model, selectedImageProvider)
+                  : isVideo
+                    ? mediaProviderSelectValue(draft.model, selectedVideoProvider)
+                    : mediaProviderSelectValue(draft.model, selectedAudioProvider)
+              }
+              onChange={(event) => {
+                if (isVideo) updateVideoModel(event.target.value)
+                else onChange({ model: event.target.value })
+              }}
+              className={`${compactSelectClass} max-w-[240px] flex-1`}
+              title="模型"
+            >
+              {(isText
+                ? textProviderOptions
+                : isImage
+                ? mediaProviderSelectOptions(enabledImageProviders, draft.model, selectedImageProvider)
+                : isVideo
+                  ? mediaProviderSelectOptions(enabledVideoProviders, draft.model, selectedVideoProvider)
+                  : mediaProviderSelectOptions(enabledAudioProviders, draft.model, selectedAudioProvider)
+              ).map((option) => (
+                <option
+                  key={`${option.value}:${option.label}`}
+                  value={option.value}
+                  disabled={option.disabled}
+                  className="bg-[#1f1f1f] text-zinc-100"
+                >
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {isImage && (
+            <>
+              <select
+                value={imageAspectRatio}
+                onChange={(event) => updateImageAspectRatio(event.target.value)}
+                className={`${compactSelectClass} w-[76px]`}
+                title="画幅"
+              >
+                {IMAGE_ASPECT_RATIO_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+              <select
+                value={draft.resolution || defaultImageResolutionForAspect(imageAspectRatio)}
+                onChange={(event) => onChange({ resolution: event.target.value })}
+                className={`${compactSelectClass} w-[150px]`}
+                title="分辨率"
+              >
+                {IMAGE_RESOLUTION_PRESETS[imageAspectRatio].map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            </>
+          )}
+
+          {isVideo && (
+            <>
+              <select
+                value={normalizeVideoAspectRatio(draft.aspect_ratio)}
+                onChange={(event) => onChange({ aspect_ratio: event.target.value })}
+                className={`${compactSelectClass} w-[70px]`}
+                title="画幅"
+              >
+                {supportedVideoRatios.map((item) => <option key={item} value={item}>{item}</option>)}
+              </select>
+              <select
+                value={activeVideoResolution}
+                onChange={(event) => onChange({ resolution: event.target.value })}
+                className={`${compactSelectClass} w-[92px]`}
+                title="分辨率"
+              >
+                {videoResolutionOptions.map((item) => <option key={item.value} value={item.value} disabled={item.disabled}>{item.label}</option>)}
+              </select>
+              <input
+                type="number"
+                min={activeVideoDurationBounds.min ?? 1}
+                max={activeVideoDurationBounds.max}
+                step={activeVideoDurationBounds.step ?? 1}
+                inputMode="numeric"
+                value={draft.duration_seconds}
+                onChange={(event) => onChange({ duration_seconds: event.target.value })}
+                onBlur={(event) => onChange({ duration_seconds: normalizeVideoDurationForRule(event.target.value, activeVideoDurationRule) })}
+                className={`${compactSelectClass} w-14`}
+                placeholder="秒"
+                title="时长"
+              />
+            </>
+          )}
+
+          {isAudio && selectedAudioMode === "music" && (
+            <input
+              value={draft.style}
+              onChange={(event) => onChange({ style: event.target.value })}
+              className={`${compactSelectClass} min-w-[140px] flex-1 placeholder:text-zinc-500`}
+              placeholder="音乐风格"
+            />
+          )}
+          {(isImage || isVideo) && (
+            <label
+              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-transparent bg-transparent text-zinc-300 transition hover:border-white/[0.12] hover:bg-white/[0.06] hover:text-zinc-50"
+              aria-label={uploadingOutput ? "上传中" : "上传成品"}
+              title={uploadingOutput ? "上传中" : "上传成品"}
+            >
+              {uploadingOutput ? (
+                <span className="block h-4 w-4 rounded-full border-2 border-zinc-500 border-t-zinc-100 animate-spin" />
+              ) : (
+                <UploadIcon />
+              )}
+              <input
+                type="file"
+                accept={isVideo ? "video/*,image/*" : "image/*"}
+                className="hidden"
+                onChange={(event) => {
+                  void onUploadOutput(event.currentTarget.files)
+                event.currentTarget.value = ""
+              }}
+            />
+          </label>
+          )}
+          {canRerun && (
+            <button
+              type="button"
+              onClick={() => onRerun?.(node.id)}
+              disabled={actionBusy}
+              aria-label={node.status === "idle" || node.status === "queued" ? `生成${mediaRunTarget}` : `重新生成${mediaRunTarget}`}
+              title={node.status === "idle" || node.status === "queued" ? `生成${mediaRunTarget}` : `重新生成${mediaRunTarget}`}
+              className="ml-auto flex h-7 w-7 items-center justify-center rounded-md bg-zinc-100 text-zinc-950 shadow-[0_10px_24px_rgba(255,255,255,0.12)] transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {rerunning ? <span className="h-3.5 w-3.5 rounded-full border-2 border-zinc-950/35 border-t-transparent animate-spin" /> : <ArrowUpIcon className="h-4 w-4" />}
+            </button>
+          )}
+          </div>
+        </div>
+      )}
+
+      {(mediaConfigError || displayError) && (
+        <div className="rounded-md border border-red-400/20 bg-red-950/35 px-2.5 py-2 text-[11px] leading-4 text-red-200">
+          {displayError || mediaConfigError}
+        </div>
+      )}
+      {isText ? (
+        <NodePanelTextHistoryButton
+          node={node}
+          input={nodeInputFields(node.input)}
+          rawOutput={node.output}
+          nodePrompt={node.prompt || ""}
+        />
+      ) : (
+        <NodePanelMediaHistoryStrip node={node} />
+      )}
+    </div>
   )
 }
 
@@ -3273,13 +5961,6 @@ function TypedRenderer({
             <PromptBlock>{prompt}</PromptBlock>
           </Section>
         )}
-        <MediaHistorySection
-          kind="image"
-          output={outObj}
-          busy={busy}
-          switchingId={switchingHistoryId}
-          onSwitch={onSwitchHistory}
-        />
       </div>
     )
   }
@@ -3318,13 +5999,6 @@ function TypedRenderer({
             <PromptBlock>{prompt}</PromptBlock>
           </Section>
         )}
-        <MediaHistorySection
-          kind="video"
-          output={outObj}
-          busy={busy}
-          switchingId={switchingHistoryId}
-          onSwitch={onSwitchHistory}
-        />
       </div>
     )
   }
@@ -3355,13 +6029,6 @@ function TypedRenderer({
             <PromptBlock>{prompt}</PromptBlock>
           </Section>
         )}
-        <MediaHistorySection
-          kind="audio"
-          output={outObj}
-          busy={busy}
-          switchingId={switchingHistoryId}
-          onSwitch={onSwitchHistory}
-        />
       </div>
     )
   }
@@ -3414,10 +6081,6 @@ function TypedRenderer({
       ? resolveMediaUrl((imageStage.local_url as string) || (imageStage.url as string))
       : (typeof outObj.url === "string" ? resolveMediaUrl(outObj.url as string) : null)
     const spec = pickMediaSpec(outObj, inObj, imageStage as Record<string, unknown> | undefined)
-    const imageStageStatus = (imageStage as Record<string, unknown> | undefined)?.status
-    const imgErr = imageStageStatus === "failed"
-      ? (((imageStage as Record<string, unknown> | undefined)?.error as string) || "")
-      : ""
     const refsChar = pickReferences(inObj, outObj)
 
     return (
@@ -3457,13 +6120,6 @@ function TypedRenderer({
             <ImagePlaceholder label="未出图 - 点击重新生成" />
             <MediaSpecBadges spec={spec} className="mt-1.5" />
             <ReferenceThumbStrip refs={refsChar} projectId={projectId} setLightbox={setLightbox} />
-          </Section>
-        )}
-        {imgErr && (
-          <Section title="图片错误">
-            <div className="rounded border border-red-900/60 bg-red-950/40 px-2.5 py-1.5 text-[12px] text-red-300 whitespace-pre-wrap">
-              {imgErr}
-            </div>
           </Section>
         )}
         {visualPrompt && (
@@ -3875,13 +6531,6 @@ function TypedRenderer({
     const url = imageStage
       ? resolveMediaUrl(imageStage.local_url || imageStage.url)
       : (typeof outObj.url === "string" ? resolveMediaUrl(outObj.url as string) : null)
-    const imageStageStatus = (imageStage as Record<string, unknown> | undefined)?.status
-    const imgErr = imageStageStatus === "failed"
-      ? (
-          ((imageStage as Record<string, unknown> | undefined)?.error as string | undefined) ||
-          (outObj.image_error as string | undefined)
-        )
-      : undefined
     const promptText =
       topPrompt ||
       (inObj.prompt as string) ||
@@ -3908,11 +6557,6 @@ function TypedRenderer({
             <ImagePlaceholder label="未出图 - 点击重新生成" />
             <MediaSpecBadges spec={spec} className="mt-1.5" />
             <ReferenceThumbStrip refs={refsShot} projectId={projectId} setLightbox={setLightbox} />
-          </Section>
-        )}
-        {imgErr && (
-          <Section title="图片错误">
-            <div className="rounded border border-red-900/60 bg-red-950/40 px-2.5 py-1.5 text-[12px] text-red-300 whitespace-pre-wrap">{imgErr}</div>
           </Section>
         )}
         {(continuityNotes.length > 0 || layoutModules.length > 0 || styleTags.length > 0) && (
@@ -4049,29 +6693,85 @@ export default function NodeDetailPanel({
   onDelete,
   onRequestStoryRevision,
   actionDisabled = false,
-  presentation = "modal",
+  presentation = "anchored",
+  anchorStyle,
   editRequestKey = null,
 }: Props) {
   const storeProjectId = useProjectStore((s) => s.currentProject?.id)
   const updateCanvasNode = useCanvasStore((s) => s.updateNode)
-  const appendMessage = useChatStore((s) => s.appendMessage)
+  const canvasNodes = useCanvasStore((s) => s.nodes)
+  const canvasEdges = useCanvasStore((s) => s.edges)
   const currentProjectId = projectId || storeProjectId
   const [data, setData] = useState<NodeFull | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [lightbox, setLightbox] = useState<{ src: string; alt?: string } | null>(null)
   const [videoLightbox, setVideoLightbox] = useState<VideoLightboxState | null>(null)
-  const [debugRawEnabled, setDebugRawEnabled] = useState(false)
-  const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<EditableNodeDraft>(EMPTY_DRAFT)
+  const [draftDirty, setDraftDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [rerunning, setRerunning] = useState(false)
   const [uploadingRefs, setUploadingRefs] = useState(false)
   const [uploadingOutput, setUploadingOutput] = useState(false)
   const [switchingHistoryId, setSwitchingHistoryId] = useState<string | null>(null)
   const [detailReloadTick, setDetailReloadTick] = useState(0)
-  const [audioProviders, setAudioProviders] = useState<AudioProviderOption[]>([])
-  const [audioConfigError, setAudioConfigError] = useState<string | null>(null)
+  const [mediaProviders, setMediaProviders] = useState<MediaProviderOption[]>([])
+  const [llmProviders, setLlmProviders] = useState<LlmProviderOption[]>([])
+  const [modelDefaults, setModelDefaults] = useState<RuntimeModelDefaults>({})
+  const [videoProtocols, setVideoProtocols] = useState<VideoProtocolSummary[]>([])
+  const [mediaConfigError, setMediaConfigError] = useState<string | null>(null)
+  const mountedRef = useRef(false)
+  const dataRef = useRef<NodeFull | null>(null)
+  const draftRef = useRef<EditableNodeDraft>(EMPTY_DRAFT)
+  const draftDirtyRef = useRef(false)
+  const currentProjectIdRef = useRef<string | null | undefined>(currentProjectId)
+  const selectedAudioModeRef = useRef<AudioProviderMode>("unknown")
+  const referenceMentionCandidatesRef = useRef<ReferenceMentionCandidate[]>([])
+  const mediaProvidersRef = useRef<MediaProviderOption[]>([])
+  const llmProvidersRef = useRef<LlmProviderOption[]>([])
+  const modelDefaultsRef = useRef<RuntimeModelDefaults>({})
+  const videoProtocolsRef = useRef<VideoProtocolSummary[]>([])
+  const savingRef = useRef(false)
+  const persistDraftRef = useRef<(updateState?: boolean) => Promise<void>>(async () => undefined)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    dataRef.current = data
+  }, [data])
+
+  useEffect(() => {
+    draftRef.current = draft
+  }, [draft])
+
+  useEffect(() => {
+    draftDirtyRef.current = draftDirty
+  }, [draftDirty])
+
+  useEffect(() => {
+    currentProjectIdRef.current = currentProjectId
+  }, [currentProjectId])
+
+  useEffect(() => {
+    mediaProvidersRef.current = mediaProviders
+  }, [mediaProviders])
+
+  useEffect(() => {
+    llmProvidersRef.current = llmProviders
+  }, [llmProviders])
+
+  useEffect(() => {
+    modelDefaultsRef.current = modelDefaults
+  }, [modelDefaults])
+
+  useEffect(() => {
+    videoProtocolsRef.current = videoProtocols
+  }, [videoProtocols])
 
   useEffect(() => {
     let cancelled = false
@@ -4116,8 +6816,10 @@ export default function NodeDetailPanel({
   }, [currentProjectId, nodeId, detailReloadTick, updateCanvasNode])
 
   useEffect(() => {
-    setEditing(false)
     setDraft(EMPTY_DRAFT)
+    draftRef.current = EMPTY_DRAFT
+    setDraftDirty(false)
+    draftDirtyRef.current = false
     setSaving(false)
     setRerunning(false)
     setUploadingRefs(false)
@@ -4128,33 +6830,63 @@ export default function NodeDetailPanel({
   }, [nodeId])
 
   useEffect(() => {
-    if (data && !editing) setDraft(draftFromNode(data))
-  }, [data, editing])
+    if (data && !draftDirty) {
+      const next = concreteDraftStateFromNode(data, mediaProviders, llmProviders, modelDefaults)
+      setDraft(next.draft)
+      draftRef.current = next.draft
+      setDraftDirty(next.dirty)
+      draftDirtyRef.current = next.dirty
+    }
+  }, [data, draftDirty, mediaProviders, llmProviders, modelDefaults])
 
   useEffect(() => {
     if (!editRequestKey || !data || !EDITABLE_NODE_TYPES.has(data.type)) return
-    setDraft(draftFromNode(data))
-    setEditing(true)
-  }, [data, editRequestKey])
+    const next = concreteDraftStateFromNode(data, mediaProviders, llmProviders, modelDefaults)
+    setDraft(next.draft)
+    draftRef.current = next.draft
+    setDraftDirty(next.dirty)
+    draftDirtyRef.current = next.dirty
+  }, [data, editRequestKey, mediaProviders, llmProviders, modelDefaults])
 
   useEffect(() => {
     let cancelled = false
-    const loadAudioProviders = async () => {
+    const loadMediaProviders = async () => {
       try {
-        const result = await getRuntimeConfigFile<{
-          parsed?: { media_providers?: AudioProviderOption[] }
-        }>(true)
+        const [result, videoProtocolResult] = await Promise.all([
+          getRuntimeConfigFile<{
+            parsed?: {
+              media_providers?: MediaProviderOption[]
+              llm_providers?: LlmProviderOption[]
+              model_tier_defaults?: Record<string, string | null | undefined>
+              model_assignments?: Record<string, string | null | undefined>
+            }
+          }>(true),
+          getVideoProviderProtocols<{
+            ok?: boolean
+            protocols?: VideoProtocolSummary[]
+          }>().catch(() => null),
+        ])
         if (cancelled) return
         const providers = result.parsed?.media_providers || []
-        setAudioProviders(providers.filter((provider) => provider.kind === "audio"))
-        setAudioConfigError(null)
+        const llm = result.parsed?.llm_providers || []
+        setMediaProviders(providers)
+        setLlmProviders(llm)
+        setModelDefaults({
+          model_tier_defaults: result.parsed?.model_tier_defaults || {},
+          model_assignments: result.parsed?.model_assignments || {},
+        })
+        setVideoProtocols(videoProtocolResult?.protocols || [])
+        setMediaConfigError(null)
       } catch (err) {
         if (cancelled) return
-        setAudioConfigError(err instanceof Error ? err.message : String(err))
+        setMediaConfigError(err instanceof Error ? err.message : String(err))
+        setLlmProviders([])
+        setModelDefaults({})
+        setVideoProtocols([])
       }
     }
-    void loadAudioProviders()
-    const handleConfigUpdate = () => void loadAudioProviders()
+    void loadMediaProviders()
+    const handleConfigUpdate = () => void loadMediaProviders()
     window.addEventListener("drama:runtime-config-updated", handleConfigUpdate)
     return () => {
       cancelled = true
@@ -4170,17 +6902,6 @@ export default function NodeDetailPanel({
     return () => window.removeEventListener("keydown", onKey)
   }, [onClose, lightbox, videoLightbox])
 
-  useEffect(() => {
-    try {
-      setDebugRawEnabled(
-        process.env.NODE_ENV !== "production" ||
-        window.localStorage.getItem("drama.nodeDebugRaw") === "1",
-      )
-    } catch {
-      setDebugRawEnabled(process.env.NODE_ENV !== "production")
-    }
-  }, [])
-
   const style = getNodeStyle(data?.type)
   const status = data?.status ?? "idle"
   const statusBadge = STATUS_LABELS[status] ?? STATUS_LABELS.idle
@@ -4189,52 +6910,82 @@ export default function NodeDetailPanel({
   const mediaProgress = data ? mediaProgressFromOutput(data.output) : null
 
   const media = data ? collectMedia(data.output) : []
+  const referenceMentionCandidates = useMemo(
+    () => data
+      ? buildReferenceMentionCandidates(
+        data,
+        draft,
+        canvasNodes as CanvasGraphNode[],
+        canvasEdges as CanvasGraphEdge[],
+        currentProjectId,
+      )
+      : [],
+    [data, draft, canvasNodes, canvasEdges, currentProjectId],
+  )
 
   const isModal = presentation === "modal"
+  const isAnchored = presentation === "anchored"
   const panelClass = isModal
-    ? "fixed left-1/2 top-1/2 z-[70] flex max-h-[calc(100dvh-28px)] w-[calc(100vw-20px)] flex-col overflow-hidden rounded-lg border border-white/[0.09] bg-[#0f131b]/96 shadow-[0_28px_90px_rgba(0,0,0,0.66)] backdrop-blur-xl sm:max-h-[84vh] sm:w-[min(900px,calc(100vw-72px))]"
-    : "absolute bottom-3 left-3 right-3 top-3 z-30 flex flex-col overflow-hidden rounded-lg border border-white/[0.09] bg-[#0f131b]/96 shadow-2xl backdrop-blur sm:left-auto sm:w-[380px]"
-  const canRequestStoryRevision = Boolean(data && onRequestStoryRevision && STORY_REVISION_NODE_TYPES.has(data.type))
+    ? "openreel-node-detail-panel nodrag nowheel fixed left-1/2 top-1/2 z-[90] flex max-h-[calc(100dvh-28px)] w-[calc(100vw-20px)] flex-col overflow-hidden rounded-lg border border-white/[0.09] bg-[#0f131b]/96 shadow-[0_28px_90px_rgba(0,0,0,0.66)] backdrop-blur-xl sm:max-h-[84vh] sm:w-[min(900px,calc(100vw-72px))]"
+    : isAnchored
+      ? "openreel-node-detail-panel nodrag nowheel absolute z-[90] flex flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#111821]/98 shadow-[0_24px_80px_rgba(0,0,0,0.62)] ring-1 ring-cyan-300/10 backdrop-blur-xl"
+      : "openreel-node-detail-panel nodrag nowheel absolute bottom-3 left-3 right-3 top-3 z-30 flex flex-col overflow-hidden rounded-lg border border-white/[0.09] bg-[#0f131b]/96 shadow-2xl backdrop-blur sm:left-auto sm:w-[380px]"
   const canRerunNode = Boolean(data && onRerun && MEDIA_RERUN_NODE_TYPES.has(data.type))
-  const mediaRunTarget = data?.type === "video" ? "视频" : data?.type === "audio" ? "音频" : "图片"
+  const mediaRunTarget = data?.type === "text" ? "文本" : data?.type === "video" ? "视频" : data?.type === "audio" ? "音频" : "图片"
   const mediaRunLabel = data && (data.status === "idle" || data.status === "queued")
     ? `生成${mediaRunTarget}`
     : `重新生成${mediaRunTarget}`
-  const footerActionCount = [canRequestStoryRevision, canRerunNode].filter(Boolean).length
-  const footerClass = footerActionCount >= 3
-    ? "grid grid-cols-3 gap-2 border-t border-white/[0.08] bg-[#111722]/92 px-3 py-3 shrink-0 sm:px-4"
-    : footerActionCount === 2
-    ? "grid grid-cols-2 gap-2 border-t border-white/[0.08] bg-[#111722]/92 px-3 py-3 shrink-0 sm:px-4"
-    : "border-t border-white/[0.08] bg-[#111722]/92 px-3 py-3 shrink-0 sm:px-4"
+  const footerClass = "border-t border-white/[0.08] bg-[#111722] px-3 py-3 shadow-[0_-14px_26px_rgba(0,0,0,0.32)] shrink-0 sm:px-4"
 
   const canEdit = Boolean(data && EDITABLE_NODE_TYPES.has(data.type))
   const actionBusy = actionDisabled || rerunning || uploadingOutput
-  const selectedAudioProvider = data?.type === "audio" ? resolveAudioProvider(draft.model, audioProviders) : undefined
+  const selectedAudioProvider = data?.type === "audio"
+    ? resolveAudioProvider(draft.model, mediaProvidersForKind(mediaProviders, "audio"))
+    : undefined
   const selectedAudioMode = data?.type === "audio"
-    ? audioProviderModeFromFormat(selectedAudioProvider?.api_format)
+    ? audioProviderModeFromProvider(selectedAudioProvider)
     : "unknown"
 
-  const startEdit = () => {
-    if (!data) return
-    setDraft(draftFromNode(data))
-    setEditing(true)
-  }
+  useEffect(() => {
+    selectedAudioModeRef.current = selectedAudioMode
+  }, [selectedAudioMode])
 
-  const cancelEdit = () => {
-    if (data) setDraft(draftFromNode(data))
-    setEditing(false)
-  }
+  useEffect(() => {
+    referenceMentionCandidatesRef.current = referenceMentionCandidates
+  }, [referenceMentionCandidates])
 
   const updateDraft = (patch: Partial<EditableNodeDraft>) => {
-    setDraft((current) => ({ ...current, ...patch }))
+    setDraft((current) => {
+      const next = { ...current, ...patch }
+      draftRef.current = next
+      if (!editableDraftEquals(current, next)) {
+        draftDirtyRef.current = true
+        setDraftDirty(true)
+      }
+      return next
+    })
   }
 
-  const uploadReferenceFiles = async (files: FileList | null) => {
+  const uploadReferenceFiles = async (files: FileList | File[] | null) => {
     if (!files?.length || !currentProjectId) return
+    let selectedFiles = Array.from(files)
+    if (dataRef.current?.type === "video") {
+      const limit = videoReferenceLimitForDraft(draftRef.current, mediaProvidersRef.current, videoProtocolsRef.current)
+      if (limit !== undefined) {
+        const currentCount = referenceDisplayCount(
+          draftRef.current.reference_images,
+          referenceMentionCandidateRefs(referenceMentionCandidatesRef.current),
+          currentProjectId,
+        )
+        const remaining = Math.max(0, limit - currentCount)
+        selectedFiles = selectedFiles.slice(0, remaining)
+      }
+    }
+    if (selectedFiles.length === 0) return
     setUploadingRefs(true)
     setError(null)
     try {
-      const uploaded = await Promise.all(Array.from(files).map((file) => uploadFile(currentProjectId, file)))
+      const uploaded = await Promise.all(selectedFiles.map((file) => uploadFile(currentProjectId, file)))
       const refs = uploaded
         .map((item) => item.rel_path || item.url || item.mention || "")
         .filter(Boolean)
@@ -4242,6 +6993,7 @@ export default function NodeDetailPanel({
         ...current,
         reference_images: Array.from(new Set([...current.reference_images, ...refs])),
       }))
+      if (refs.length > 0) setDraftDirty(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -4257,18 +7009,11 @@ export default function NodeDetailPanel({
     try {
       const result = await uploadProjectNodeMedia<NodeFull>(currentProjectId, data.id, files[0])
       setData(result)
-      setDraft(draftFromNode(result))
+      const next = concreteDraftStateFromNode(result, mediaProviders, llmProviders, modelDefaults)
+      setDraft(next.draft)
+      setDraftDirty(next.dirty)
       updateCanvasNode(result.id, canvasPatchFromNode(result))
       setDetailReloadTick((tick) => tick + 1)
-      if (Array.isArray(result.changes) && result.changes.length > 0) {
-        appendMessage({
-          id: crypto.randomUUID?.() ?? `node-media-upload-${Date.now()}`,
-          role: "assistant",
-          content: "",
-          createdAt: new Date().toISOString(),
-          changeCard: { tool: "node.update", changes: result.changes },
-        })
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -4276,34 +7021,79 @@ export default function NodeDetailPanel({
     }
   }
 
-  const saveDraft = async () => {
-    if (!data || !currentProjectId) return
-    setSaving(true)
-    setError(null)
+  const persistDraft = useCallback(async (updateState = true) => {
+    const node = dataRef.current
+    const detailProjectId = currentProjectIdRef.current
+    if (!node || !detailProjectId || !draftDirtyRef.current || savingRef.current) return
+    savingRef.current = true
+    if (updateState && mountedRef.current) {
+      setSaving(true)
+      setError(null)
+    }
     try {
       const result = await updateProjectNodeDetails<NodeFull>(
-        currentProjectId,
-        data.id,
-        payloadFromDraft(data, draft, selectedAudioMode),
+        detailProjectId,
+        node.id,
+        payloadFromDraft(
+          node,
+          draftRef.current,
+          selectedAudioModeRef.current,
+          referenceMentionCandidatesRef.current,
+          node.type === "video"
+            ? videoReferenceLimitForDraft(draftRef.current, mediaProvidersRef.current, videoProtocolsRef.current)
+            : undefined,
+        ),
       )
-      setData(result)
-      setDraft(draftFromNode(result))
-      setEditing(false)
       updateCanvasNode(result.id, canvasPatchFromNode(result))
-      if (Array.isArray(result.changes) && result.changes.length > 0) {
-        appendMessage({
-          id: crypto.randomUUID?.() ?? `node-edit-change-${Date.now()}`,
-          role: "assistant",
-          content: "",
-          createdAt: new Date().toISOString(),
-          changeCard: { tool: "node.update", changes: result.changes },
-        })
+      const next = concreteDraftStateFromNode(
+        result,
+        mediaProvidersRef.current,
+        llmProvidersRef.current,
+        modelDefaultsRef.current,
+      )
+      dataRef.current = result
+      draftRef.current = next.draft
+      draftDirtyRef.current = next.dirty
+      if (updateState && mountedRef.current) {
+        setData(result)
+        setDraft(next.draft)
+        setDraftDirty(next.dirty)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (updateState && mountedRef.current) {
+        setError(err instanceof Error ? err.message : String(err))
+      } else {
+        console.warn("Failed to auto-save node draft", err)
+      }
     } finally {
-      setSaving(false)
+      savingRef.current = false
+      if (updateState && mountedRef.current) setSaving(false)
     }
+  }, [updateCanvasNode])
+
+  useEffect(() => {
+    persistDraftRef.current = persistDraft
+  }, [persistDraft])
+
+  useEffect(() => {
+    return () => {
+      void persistDraftRef.current(false)
+    }
+  }, [nodeId])
+
+  const saveDraft = async () => {
+    await persistDraft(true)
+  }
+
+  const closeWithAutoSave = () => {
+    void persistDraft(false)
+    onClose()
+  }
+
+  const handlePanelBlur = (event: FocusEvent<HTMLDivElement>) => {
+    const nextTarget = event.relatedTarget
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return
+    void persistDraft(true)
   }
 
   const switchHistoryVersion = async (entry: MediaHistoryEntry) => {
@@ -4319,7 +7109,9 @@ export default function NodeDetailPanel({
           : { history_id: entry.id },
       )
       setData(result)
-      setDraft(draftFromNode(result))
+      const next = concreteDraftStateFromNode(result, mediaProviders, llmProviders, modelDefaults)
+      setDraft(next.draft)
+      setDraftDirty(next.dirty)
       updateCanvasNode(result.id, canvasPatchFromNode(result))
       setDetailReloadTick((tick) => tick + 1)
     } catch (err) {
@@ -4327,6 +7119,95 @@ export default function NodeDetailPanel({
     } finally {
       setSwitchingHistoryId(null)
     }
+  }
+
+  const runNodeFromContext = async (targetNodeId: string) => {
+    if (!data) return
+    await persistDraft(true)
+    setError(null)
+    setRerunning(true)
+    setData((current) => current ? { ...current, status: "running", error_message: null } : current)
+    updateCanvasNode(targetNodeId, { status: "running", error: undefined, error_message: undefined })
+    try {
+      await Promise.resolve(onRerun?.(targetNodeId))
+      setDetailReloadTick((tick) => tick + 1)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      setData((current) => current ? { ...current, status: "failed", error_message: message } : current)
+      updateCanvasNode(targetNodeId, { status: "failed", error: message, error_message: message })
+    } finally {
+      setRerunning(false)
+    }
+  }
+
+  if (isAnchored) {
+    return (
+      <>
+        <motion.div
+          initial={{ opacity: 0, y: -6, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: -6, scale: 0.98 }}
+          transition={{ duration: 0.16, ease: "easeOut" }}
+          className="openreel-node-detail-panel nodrag nowheel absolute z-[90] flex flex-col overflow-hidden rounded-xl text-zinc-100"
+          style={anchorStyle}
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onBlurCapture={handlePanelBlur}
+        >
+          {error && (
+            <div className="mb-2 rounded-lg border border-red-400/20 bg-red-950/55 px-3 py-2 text-xs text-red-200 shadow-xl shadow-black/30">
+              {error}
+            </div>
+          )}
+          <div className="min-h-0 flex-1">
+            {data && !loading ? (
+              <NodeCanvasContextPanel
+                node={data}
+                draft={draft}
+                mediaProviders={mediaProviders}
+                llmProviders={llmProviders}
+                modelDefaults={modelDefaults}
+                videoProtocols={videoProtocols}
+                mediaConfigError={mediaConfigError}
+                projectId={currentProjectId}
+                canvasNodes={canvasNodes as CanvasGraphNode[]}
+                referenceMentionCandidates={referenceMentionCandidates}
+                dirty={draftDirty}
+                saving={saving}
+                uploading={uploadingRefs}
+                uploadingOutput={uploadingOutput}
+                rerunning={rerunning}
+                actionDisabled={actionDisabled}
+                displayError={displayError}
+                setLightbox={setLightbox}
+                onChange={updateDraft}
+                onUploadRefs={uploadReferenceFiles}
+                onUploadOutput={uploadNodeMediaOutput}
+                onRerun={runNodeFromContext}
+                onRequestStoryRevision={(targetNodeId) => {
+                  void persistDraft(false)
+                  onRequestStoryRevision?.(targetNodeId)
+                }}
+              />
+            ) : (
+              <div className="rounded-xl border border-white/[0.1] bg-[#252525]/96 px-3 py-6 text-center text-xs text-zinc-500 shadow-[0_24px_70px_rgba(0,0,0,0.46)] backdrop-blur-xl">加载节点...</div>
+            )}
+          </div>
+        </motion.div>
+
+        {lightbox && <Lightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />}
+        {videoLightbox && (
+          <VideoLightbox
+            src={videoLightbox.src}
+            poster={videoLightbox.poster}
+            title={videoLightbox.title}
+            onClose={() => setVideoLightbox(null)}
+          />
+        )}
+      </>
+    )
   }
 
   return (
@@ -4341,12 +7222,15 @@ export default function NodeDetailPanel({
         />
       )}
       <motion.div
-        initial={isModal ? { opacity: 0, scale: 0.96, x: "-50%", y: "-50%" } : { x: 32, opacity: 0 }}
-        animate={isModal ? { opacity: 1, scale: 1, x: "-50%", y: "-50%" } : { x: 0, opacity: 1 }}
-        exit={isModal ? { opacity: 0, scale: 0.96, x: "-50%", y: "-50%" } : { x: 32, opacity: 0 }}
+        initial={isModal ? { opacity: 0, scale: 0.96, x: "-50%", y: "-50%" } : isAnchored ? { opacity: 0, y: -8, scale: 0.98 } : { x: 32, opacity: 0 }}
+        animate={isModal ? { opacity: 1, scale: 1, x: "-50%", y: "-50%" } : isAnchored ? { opacity: 1, y: 0, scale: 1 } : { x: 0, opacity: 1 }}
+        exit={isModal ? { opacity: 0, scale: 0.96, x: "-50%", y: "-50%" } : isAnchored ? { opacity: 0, y: -8, scale: 0.98 } : { x: 32, opacity: 0 }}
         transition={{ duration: 0.18, ease: "easeOut" }}
         className={panelClass}
+        style={isAnchored ? anchorStyle : undefined}
         onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex shrink-0 items-start gap-3 border-b border-white/[0.08] bg-[#111722]/92 px-3.5 py-3 sm:px-4">
@@ -4392,36 +7276,11 @@ export default function NodeDetailPanel({
                 </span>
               )}
             </div>
-            {mediaProgress && <MediaProgressText progress={mediaProgress} />}
           </div>
-          {canEdit && !editing && (
-            <button
-              type="button"
-              onClick={startEdit}
-              className="rounded-lg border border-white/[0.1] bg-white/[0.06] px-3 py-2 text-xs font-medium text-zinc-100 transition hover:bg-white/[0.1]"
-            >
-              编辑
-            </button>
-          )}
-          {canEdit && editing && (
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={cancelEdit}
-                disabled={saving}
-                className="rounded-lg border border-white/[0.1] bg-transparent px-3 py-2 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                onClick={() => void saveDraft()}
-                disabled={saving}
-                className="rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                {saving ? "保存中..." : "保存"}
-              </button>
-            </div>
+          {canEdit && draftDirty && (
+            <span className="shrink-0 rounded-md border border-cyan-300/25 bg-cyan-300/10 px-2 py-1 text-[10px] font-medium text-cyan-100">
+              未保存
+            </span>
           )}
           <button
             onClick={onClose}
@@ -4433,7 +7292,7 @@ export default function NodeDetailPanel({
         </div>
 
         {/* Body */}
-        <div className="flex-1 space-y-3 overflow-y-auto bg-[#090c12] px-3.5 py-3.5 sm:px-4">
+        <div className="flex-1 space-y-3 overflow-y-auto bg-[#090c12] px-3.5 pb-24 pt-3.5 sm:px-4">
           {loading && (
             <div className="text-xs text-gray-500 py-8 text-center">加载节点详情…</div>
           )}
@@ -4445,22 +7304,28 @@ export default function NodeDetailPanel({
           )}
 
           {data && !loading && (
-            editing ? (
-              <NodeEditView
+            <>
+              {canEdit && (
+                <NodeEditView
                 node={data}
                 draft={draft}
-                audioProviders={audioProviders}
-                audioConfigError={audioConfigError}
+                mediaProviders={mediaProviders}
+                llmProviders={llmProviders}
+                modelDefaults={modelDefaults}
+                videoProtocols={videoProtocols}
+                mediaConfigError={mediaConfigError}
                 projectId={currentProjectId}
+                canvasNodes={canvasNodes as CanvasGraphNode[]}
+                referenceMentionCandidates={referenceMentionCandidates}
                 saving={saving}
+                dirty={draftDirty}
                 uploading={uploadingRefs}
                 setLightbox={setLightbox}
                 onChange={updateDraft}
                 onUploadRefs={uploadReferenceFiles}
                 onSave={saveDraft}
               />
-            ) : (
-            <>
+              )}
               <NodeMediaUploadSection
                 nodeType={data.type}
                 uploading={uploadingOutput}
@@ -4534,15 +7399,6 @@ export default function NodeDetailPanel({
                 </Section>
               )}
 
-              {/* Error */}
-              {displayError && (
-                <Section title="错误">
-                  <div className="rounded border border-red-900/60 bg-red-950/40 px-3 py-2 text-[13px] text-red-300 whitespace-pre-wrap break-words">
-                    {displayError}
-                  </div>
-                </Section>
-              )}
-
               {data.output == null && data.input == null && !data.prompt && !displayError && media.length === 0 && (
                 <div className="text-xs text-gray-500 italic py-6 text-center">
                   {status === "running" || status === "queued" || status === "idle"
@@ -4551,24 +7407,20 @@ export default function NodeDetailPanel({
                 </div>
               )}
 
-              {debugRawEnabled && <NodeDebugSection node={data} />}
+              <NodeAdvancedSurface
+                node={data}
+                displayError={displayError}
+                mediaProgress={mediaProgress}
+                switchingHistoryId={switchingHistoryId}
+                onSwitchHistory={switchHistoryVersion}
+              />
             </>
-            )
           )}
         </div>
 
         {/* Footer */}
-        {data && !editing && (status !== "running" || rerunning) && (canRequestStoryRevision || canRerunNode) && (
+        {data && (status !== "running" || rerunning) && canRerunNode && (
           <div className={footerClass}>
-            {canRequestStoryRevision && (
-	              <button
-	                onClick={() => onRequestStoryRevision?.(data.id)}
-	                disabled={actionBusy}
-	                className="rounded-md border border-amber-500/40 bg-amber-950/35 py-2 text-sm font-medium text-amber-100 transition-colors hover:bg-amber-900/45 disabled:cursor-not-allowed disabled:opacity-45"
-	              >
-                修改剧情
-              </button>
-            )}
             {canRerunNode && (
 	              <button
 	                onClick={() => {

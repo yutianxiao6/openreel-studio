@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { getRuntimeConfigFile, patchRuntimeConfig } from "@/lib/api"
+import { getAudioProviderProtocols, getImageProviderProtocols, getRuntimeConfigFile, getVideoProviderProtocols, patchRuntimeConfig } from "@/lib/api"
 import { LlmTab } from "./tabs/LlmTab"
 import { MediaTab } from "./tabs/MediaTab"
 import { AgentTab } from "./tabs/AgentTab"
@@ -50,10 +50,33 @@ export interface MediaProviderEntry {
   params: Record<string, unknown>
 }
 
+export interface MediaProtocolSummary {
+  id: string
+  display_name?: string
+  model_names?: string[]
+  model_profiles?: Array<{
+    match?: string
+    label?: string
+    supported_ratios?: string[]
+    supported_resolutions?: string[]
+    default_ratio?: string
+    default_resolution?: string
+    modes?: Record<string, unknown> | string[]
+    supported_modes?: string[]
+  }>
+  supported_ratios?: string[]
+  supported_resolutions?: string[]
+  supported_sizes?: string[]
+  result_type?: string
+}
+
 export type TabKey = "llm" | "image" | "video" | "audio" | "agent" | "debug" | "raw"
 
 export interface ConfigContext {
   config: RuntimeConfig
+  imageProtocols: MediaProtocolSummary[]
+  videoProtocols: MediaProtocolSummary[]
+  audioProtocols: MediaProtocolSummary[]
   reload: () => Promise<void>
   applyPatch: (patch: Record<string, unknown>) => Promise<{ ok: boolean; errors: string[] }>
 }
@@ -66,6 +89,9 @@ interface Props {
 export function SettingsModal({ open, onClose }: Props) {
   const [tab, setTab] = useState<TabKey>("llm")
   const [config, setConfig] = useState<RuntimeConfig | null>(null)
+  const [imageProtocols, setImageProtocols] = useState<MediaProtocolSummary[]>([])
+  const [videoProtocols, setVideoProtocols] = useState<MediaProtocolSummary[]>([])
+  const [audioProtocols, setAudioProtocols] = useState<MediaProtocolSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -74,13 +100,30 @@ export function SettingsModal({ open, onClose }: Props) {
     setLoading(true)
     setError(null)
     try {
-      const r = await getRuntimeConfigFile<{
-        raw_text: string
-        parsed: RuntimeConfig
-        valid: boolean
-        errors: string[]
-      }>(false)
+      const [r, imageProtocolResult, videoProtocolResult, audioProtocolResult] = await Promise.all([
+        getRuntimeConfigFile<{
+          raw_text: string
+          parsed: RuntimeConfig
+          valid: boolean
+          errors: string[]
+        }>(false),
+        getImageProviderProtocols<{
+          ok: boolean
+          protocols: MediaProtocolSummary[]
+        }>().catch(() => null),
+        getVideoProviderProtocols<{
+          ok: boolean
+          protocols: MediaProtocolSummary[]
+        }>().catch(() => null),
+        getAudioProviderProtocols<{
+          ok: boolean
+          protocols: MediaProtocolSummary[]
+        }>().catch(() => null),
+      ])
       setConfig(r.parsed)
+      setImageProtocols(imageProtocolResult?.protocols ?? [])
+      setVideoProtocols(videoProtocolResult?.protocols ?? [])
+      setAudioProtocols(audioProtocolResult?.protocols ?? [])
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -121,7 +164,7 @@ export function SettingsModal({ open, onClose }: Props) {
   if (!open) return null
 
   const ctx: ConfigContext | null = config
-    ? { config, reload: refresh, applyPatch }
+    ? { config, imageProtocols, videoProtocols, audioProtocols, reload: refresh, applyPatch }
     : null
 
   const imageCount = config?.media_providers.filter((p) => p.kind === "image").length ?? 0

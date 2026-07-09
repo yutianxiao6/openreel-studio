@@ -110,7 +110,7 @@ openreel-studio/
 ├── data/                    # SQLite, traces, prompt dumps, tool results
 ├── storage/                 # Uploaded and generated media
 ├── assets/                  # Local asset library files
-├── config/                  # Runtime provider configuration
+├── config/                  # Runtime provider config and image/video/audio protocol catalogs
 ├── deploy/                  # Server gateway and deployment files
 ├── packaging/               # PyInstaller API packaging
 └── scripts/                 # Init, install, E2E, desktop packaging scripts
@@ -301,6 +301,15 @@ Runtime provider settings are stored in `config/runtime.jsonc`. The file is
 ignored by Git. You can configure LLM and media providers from the settings UI
 or edit the JSONC file directly.
 
+Media provider runtime settings only keep connection data such as Base URL,
+model name, API key, and selected protocol id. Image request protocols live in
+`config/image_provider_protocols/catalog.json`; video request protocols live in
+`config/video_provider_protocols/catalog.json`; audio request protocols live in
+`config/audio_provider_protocols/catalog.json`. These catalog files are
+shareable and do not contain secrets.
+For accepted fields and error behavior, see
+[docs/MODEL_PROVIDER_PROTOCOLS.md](./docs/MODEL_PROVIDER_PROTOCOLS.md).
+
 `config/runtime.example.jsonc` is a no-secret reference file. Real secrets
 should live in `.env.local`, `.env.production`, or shell environment variables.
 The API can auto-generate `config/runtime.jsonc` on first startup from available
@@ -474,6 +483,7 @@ and implementation.
 - [WORKFLOW_SPEC_PROTOCOL.md](./WORKFLOW_SPEC_PROTOCOL.md)
 - [docs/workflow-spec-protocol.md](./docs/workflow-spec-protocol.md)
 - [docs/workflow-build-patch-design.md](./docs/workflow-build-patch-design.md)
+- [docs/MODEL_PROVIDER_PROTOCOLS.md](./docs/MODEL_PROVIDER_PROTOCOLS.md)
 - [docs/AGENT_QUALITY_ACCEPTANCE.md](./docs/AGENT_QUALITY_ACCEPTANCE.md)
 - [docs/DESKTOP_PACKAGING.md](./docs/DESKTOP_PACKAGING.md)
 
@@ -572,7 +582,7 @@ openreel-studio/
 ├── data/                    # SQLite、trace、prompt dump、tool result
 ├── storage/                 # 上传和生成的媒体
 ├── assets/                  # 本地资产库文件
-├── config/                  # 运行时 provider 配置
+├── config/                  # 运行时 provider 配置和图片/视频/音频协议 catalog
 ├── deploy/                  # 服务器网关和部署文件
 ├── packaging/               # PyInstaller API 打包配置
 └── scripts/                 # 初始化、安装、E2E、桌面打包脚本
@@ -742,6 +752,13 @@ curl -fsSL https://raw.githubusercontent.com/yutianxiao6/openreel-studio/main/sc
 
 运行时 provider 配置存放在 `config/runtime.jsonc`，该文件被 Git 忽略。可以在设置界面配置 LLM 和媒体 provider，也可以直接编辑 JSONC。
 
+媒体 provider 的运行时配置只保存 Base URL、模型名、API Key 和选中的协议 ID。图片请求协议写在
+`config/image_provider_protocols/catalog.json`；视频请求协议写在
+`config/video_provider_protocols/catalog.json`；音频请求协议写在
+`config/audio_provider_protocols/catalog.json`。这些 catalog 文件可以共享，不包含密钥。
+字段定义和错误处理见
+[docs/MODEL_PROVIDER_PROTOCOLS.md](./docs/MODEL_PROVIDER_PROTOCOLS.md)。
+
 `config/runtime.example.jsonc` 是无密钥参考文件。真实密钥应放在 `.env.local`、`.env.production` 或系统环境变量中。API 首次启动时可以根据已有的 `*_API_KEY` 环境变量自动生成 `config/runtime.jsonc`。
 
 常用 provider 环境变量：
@@ -904,6 +921,7 @@ npm publish --access public
 - [WORKFLOW_SPEC_PROTOCOL.md](./WORKFLOW_SPEC_PROTOCOL.md)
 - [docs/workflow-spec-protocol.md](./docs/workflow-spec-protocol.md)
 - [docs/workflow-build-patch-design.md](./docs/workflow-build-patch-design.md)
+- [docs/MODEL_PROVIDER_PROTOCOLS.md](./docs/MODEL_PROVIDER_PROTOCOLS.md)
 - [docs/AGENT_QUALITY_ACCEPTANCE.md](./docs/AGENT_QUALITY_ACCEPTANCE.md)
 - [docs/DESKTOP_PACKAGING.md](./docs/DESKTOP_PACKAGING.md)
 

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from app.mcp_tools import config_tools, mcp_meta_tools
 from app.mcp_tools.registry import registry
+from app.services import media_provider
 
 
 router = APIRouter()
@@ -96,6 +97,21 @@ async def read_config_file(mask_secrets: bool = True) -> dict[str, Any]:
 @router.get("/config/summary")
 async def read_config_summary() -> dict[str, Any]:
     return await config_tools.config_list_all()
+
+
+@router.get("/config/video-protocols")
+async def read_video_protocols() -> dict[str, Any]:
+    return media_provider.list_video_http_v1_protocol_catalog()
+
+
+@router.get("/config/image-protocols")
+async def read_image_protocols() -> dict[str, Any]:
+    return media_provider.list_image_http_v1_protocol_catalog()
+
+
+@router.get("/config/audio-protocols")
+async def read_audio_protocols() -> dict[str, Any]:
+    return media_provider.list_audio_http_v1_protocol_catalog()
 
 
 @router.post("/config/validate")

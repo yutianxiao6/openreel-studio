@@ -213,7 +213,7 @@ async def generate_story_template(
 async def get_presets(
     model_name: str | None = None,
 ) -> dict:
-    """Get recommended default parameters for image providers."""
+    """Get image provider default parameters declared by the image protocol catalog."""
     from app.services.media_provider import match_preset, list_presets, get_preset_descriptions
 
     if model_name:

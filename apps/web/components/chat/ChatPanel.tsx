@@ -45,7 +45,6 @@ import { ProposedPlanCard } from "./ProposedPlanCard"
 import { PendingActionCard } from "./PendingActionCard"
 import { InteractionInputCard } from "@/components/interaction/InteractionInputCard"
 import { ChecklistPanel } from "./ChecklistPanel"
-import { ChangeCard } from "./ChangeCard"
 import { SlashMenu, filterSlashCommands, type SlashCommandDef } from "./SlashMenu"
 import { MarkdownView } from "@/components/common/MarkdownView"
 import { buildDecisionInputs } from "@/lib/decisionInputs"
@@ -2042,23 +2041,6 @@ function SmoothMarkdownView({
   return <MarkdownView>{displayed}</MarkdownView>
 }
 
-function extractChanges(msg: any): Array<{tool: string; changes: Array<{field: string; label: string; before: string; after: string}>}> {
-  const result: Array<{tool: string; changes: any[]}> = []
-  // From live changeCard
-  if (msg.changeCard) result.push(msg.changeCard)
-  // From persisted rounds
-  if (msg.rounds) {
-    for (const round of msg.rounds) {
-      for (const r of (round.results || [])) {
-        if (r.changes && Array.isArray(r.changes) && r.changes.length > 0) {
-          result.push({ tool: r.tool || "", changes: r.changes })
-        }
-      }
-    }
-  }
-  return result
-}
-
 export function ChatPanel() {
   const [input, setInput] = useState("")
   const [dragOver, setDragOver] = useState(false)
@@ -2513,17 +2495,6 @@ export function ChatPanel() {
       )
       updateToolBubble(tool, { status: failed ? "failed" : "completed" })
       addAgentRoundToolResult(summary)
-      // Show change diff if the tool returned changes
-      if (resultObj && Array.isArray(resultObj.changes) && resultObj.changes.length > 0) {
-        const changes = resultObj.changes as Array<{field: string; label: string; before: string; after: string}>
-        appendMessage({
-          id: crypto.randomUUID?.() ?? `change-${Date.now()}`,
-          role: "assistant",
-          content: "",
-          createdAt: new Date().toISOString(),
-          changeCard: { tool, changes },
-        })
-      }
       return
     }
     if (event.type === "step_start") {
@@ -4075,9 +4046,6 @@ function MessageBubbleImpl({
             onResolve={onPendingActionResolve}
           />
         )}
-        {extractChanges(msg).map((cc, i) => (
-          <ChangeCard key={i} tool={cc.tool} changes={cc.changes} />
-        ))}
         {msg.proposedPlan ? (
           <ProposedPlanCard
             plan={msg.proposedPlan}

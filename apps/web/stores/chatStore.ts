@@ -221,7 +221,6 @@ export interface ChatMessage {
   proposedPlan?: PlanDoc
   interactionInput?: InteractionInputPayload
   pendingAction?: PendingActionPayload
-  changeCard?: { tool: string; changes: Array<{ field: string; label: string; before: string; after: string }> }
   metadata?: Record<string, unknown>
 }
 

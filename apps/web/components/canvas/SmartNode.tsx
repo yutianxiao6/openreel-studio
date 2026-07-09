@@ -64,6 +64,7 @@ interface ImageGridPreviewCell {
 
 interface PreviewData {
   type?: string
+  text?: string
   status?: unknown
   progress?: unknown
   poll_status?: unknown
@@ -231,21 +232,58 @@ function audioFromPreview(preview?: PreviewData): { src: string; format?: string
   return null
 }
 
+function objectFromUnknown(value: unknown): Record<string, unknown> | null {
+  if (!value) return null
+  if (typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== "string" || !value.trim().startsWith("{")) return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function scalarText(value: unknown): string {
+  if (typeof value === "string") return value.trim()
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  return ""
+}
+
+function hasTextBodyValue(value: unknown): boolean {
+  const direct = scalarText(value)
+  if (direct) return true
+  const obj = objectFromUnknown(value)
+  if (!obj) return false
+  for (const key of ["content", "full_text", "story_text", "text", "script", "output", "reply", "response", "summary", "description"]) {
+    if (scalarText(obj[key])) return true
+  }
+  const result = objectFromUnknown(obj.result)
+  return result ? hasTextBodyValue(result) : false
+}
+
+function hasTextProduct(data: NodeData): boolean {
+  if (hasTextBodyValue(data.output)) return true
+  const input = data.input || {}
+  return hasTextBodyValue({
+    content: input.content,
+    full_text: input.full_text,
+    story_text: input.story_text,
+    text: input.text,
+    script: input.script,
+    output: input.output,
+    reply: input.reply,
+    response: input.response,
+  })
+}
+
 function videoMimeType(src: string): string {
   const path = src.split(/[?#]/, 1)[0]?.toLowerCase() || ""
   if (path.endsWith(".webm")) return "video/webm"
   if (path.endsWith(".mov")) return "video/quicktime"
   return "video/mp4"
-}
-
-function audioMimeType(src: string): string {
-  const path = src.split(/[?#]/, 1)[0]?.toLowerCase() || ""
-  if (path.endsWith(".wav")) return "audio/wav"
-  if (path.endsWith(".m4a")) return "audio/mp4"
-  if (path.endsWith(".aac")) return "audio/aac"
-  if (path.endsWith(".ogg")) return "audio/ogg"
-  if (path.endsWith(".flac")) return "audio/flac"
-  return "audio/mpeg"
 }
 
 function isPanoramaImage(preview?: PreviewData, title?: string, prompt?: string): boolean {
@@ -459,35 +497,95 @@ function MediaProgressText({ progress }: { progress: MediaProgressInfo | null })
   )
 }
 
-function StatusPill({ status }: { status: string }) {
-  const config: Record<string, { label: string; cls: string }> = {
-    completed: { label: "完成", cls: "bg-emerald-400/12 text-emerald-200 ring-emerald-400/25" },
-    running: { label: "生成中", cls: "bg-blue-400/12 text-blue-200 ring-blue-400/25" },
-    failed: { label: "失败", cls: "bg-red-400/12 text-red-200 ring-red-400/25" },
-    queued: { label: "排队", cls: "bg-zinc-500/12 text-zinc-300 ring-white/10" },
-    idle: { label: "待运行", cls: "bg-zinc-500/12 text-zinc-300 ring-white/10" },
+function NodeStatusMarker({
+  status,
+  progress,
+  renderState,
+}: {
+  status: string
+  progress?: MediaProgressInfo | null
+  renderState?: string
+}) {
+  if (status === "running") {
+    return (
+      <span className="rounded-full border border-blue-200/25 bg-blue-300/12 px-1.5 py-0.5 text-[10px] font-medium text-blue-100 shadow-[0_6px_14px_rgba(59,130,246,0.14)]">
+        {progress?.label || "生成中"}
+      </span>
+    )
   }
-  const item = config[status] || { label: status || "未知", cls: "bg-zinc-500/12 text-zinc-300 ring-white/10" }
+  if (status === "failed") {
+    return (
+      <span className="rounded-full border border-red-300/25 bg-red-400/12 px-1.5 py-0.5 text-[10px] font-medium text-red-100">
+        失败
+      </span>
+    )
+  }
+  if (renderState === "stale") {
+    return (
+      <span className="rounded-full border border-amber-300/25 bg-amber-300/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-100">
+        未更新
+      </span>
+    )
+  }
+  return null
+}
+
+function NodeCanvasLabel({
+  label,
+  color,
+  publicIdText,
+  status,
+  progress,
+  renderState,
+}: {
+  label: string
+  color: string
+  publicIdText?: string
+  status: string
+  progress?: MediaProgressInfo | null
+  renderState?: string
+}) {
+  const idText = publicIdText ? publicIdText.replace(/^#/, "") : ""
   return (
-    <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium ring-1", item.cls)}>
-      {item.label}
-    </span>
+    <div className="pointer-events-none absolute left-0 right-0 top-0 z-30 flex -translate-y-full items-center justify-between gap-2 pb-1.5">
+      <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-zinc-400/90">
+        <span
+          className="h-2 w-2 shrink-0 rounded-[3px]"
+          style={{ background: color, boxShadow: `0 0 14px ${color}55` }}
+        />
+        <span className="truncate">
+          {label}节点{idText ? ` ${idText}` : ""}
+        </span>
+      </div>
+      <NodeStatusMarker status={status} progress={progress} renderState={renderState} />
+    </div>
   )
 }
 
-function RenderStatePill({ state }: { state?: string }) {
-  if (!state) return null
-  const stale = state === "stale"
+function MediaPlaceholderIcon({ type, color }: { type?: string; color: string }) {
+  if (type === "video") {
+    return (
+      <span className="flex h-12 w-12 items-center justify-center rounded-full border border-white/10 bg-white/[0.04]">
+        <span className="ml-0.5 h-0 w-0 border-y-[9px] border-l-[14px] border-y-transparent border-l-zinc-500" />
+      </span>
+    )
+  }
+  if (type === "audio") {
+    return (
+      <span className="flex h-11 w-14 items-end justify-center gap-1.5 rounded-md border border-white/10 bg-white/[0.035] px-2 py-2">
+        {[0.42, 0.74, 0.56, 0.9].map((height, index) => (
+          <span key={index} className="w-1.5 rounded-full bg-zinc-500" style={{ height: `${height * 100}%` }} />
+        ))}
+      </span>
+    )
+  }
   return (
-    <span
-      className={cn(
-        "rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-medium shadow-lg ring-1 backdrop-blur",
-        stale
-          ? "text-amber-100 ring-amber-300/35"
-          : "text-emerald-100 ring-emerald-300/25",
-      )}
-    >
-      {stale ? "未更新" : "最新"}
+    <span className="relative block h-11 w-14 overflow-hidden rounded-md border border-white/10 bg-white/[0.035]">
+      <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-zinc-500/80" />
+      <span
+        className="absolute bottom-2 left-2 h-0 w-0 border-b-[18px] border-l-[16px] border-r-[16px] border-l-transparent border-r-transparent"
+        style={{ borderBottomColor: `${color}66` }}
+      />
     </span>
   )
 }
@@ -869,20 +967,28 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   ])
   const gridToolActive = gridMode !== "idle"
   const gridEditing = gridToolActive && gridCells.length > 0
-  const canGridCrop = data.type === "image" && !isRunning && !isSuperseded && Boolean(image?.primary || gridCells.length)
+  const hasPreviewProduct = (
+    (data.type === "text" && hasTextProduct(data)) ||
+    (data.type === "image" && Boolean(image?.primary || gridCells.length)) ||
+    (data.type === "video" && Boolean(video?.src)) ||
+    (data.type === "audio" && Boolean(audio?.src))
+  )
+  const hasImageProduct = data.type === "image" && Boolean(image?.primary || gridCells.length)
+  const canGridCrop = hasImageProduct && !isRunning && !isSuperseded
   const panoramaNode = data.type === "image" && isPanoramaImage(data.preview, data.title, data.prompt)
   const renderState = data.type === "image" ? data.renderState : undefined
-  const resizeActive = selected || resizeHover
+  const resizeActive = resizeHover && !selected
   const handleClass = cn(
-    "openreel-port-handle !h-2.5 !w-2.5 !rounded-full !border-2 !border-[#0f131b] !bg-zinc-300/70 !opacity-45 !shadow-[0_0_0_1px_rgba(255,255,255,0.22)] transition-[opacity,background-color,box-shadow] group-hover:!bg-cyan-200 group-hover:!opacity-95 group-hover:!shadow-[0_0_0_4px_rgba(34,211,238,0.13)]",
-    resizeActive && "!bg-cyan-200 !opacity-100 !shadow-[0_0_0_4px_rgba(34,211,238,0.18)]",
+    "openreel-port-handle !h-2.5 !w-2.5 !rounded-full !border-2 !border-[#0f131b] !opacity-45 !shadow-[0_0_0_1px_rgba(255,255,255,0.22)] transition-[opacity,background-color,box-shadow] group-hover:!opacity-95",
+    resizeActive && "!opacity-100",
   )
   const portStyle = {
     top: "50%",
     transform: "translateY(-50%)",
   } as const
   const portOffset = -NODE_PORT_GUTTER + NODE_PORT_INSET
-  const showImageToolbar = data.type === "image" && Boolean(image?.primary)
+  const showNodeToolbar = hasPreviewProduct
+  const showImageToolbarActions = data.type === "image" && Boolean(image?.primary)
 
   const clearImageToolbarHideTimer = useCallback(() => {
     if (imageToolbarHideTimer.current) {
@@ -892,30 +998,30 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   }, [])
 
   const revealImageToolbar = useCallback(() => {
-    if (!showImageToolbar) return
+    if (!showNodeToolbar) return
     clearImageToolbarHideTimer()
     setImageToolbarVisible(true)
-  }, [clearImageToolbarHideTimer, showImageToolbar])
+  }, [clearImageToolbarHideTimer, showNodeToolbar])
 
   const scheduleImageToolbarHide = useCallback(() => {
-    if (!showImageToolbar || gridToolActive) return
+    if (!showNodeToolbar || gridToolActive) return
     clearImageToolbarHideTimer()
     imageToolbarHideTimer.current = setTimeout(() => {
       setImageToolbarVisible(false)
       setPanoramaConfirmOpen(false)
       imageToolbarHideTimer.current = null
     }, 1500)
-  }, [clearImageToolbarHideTimer, gridToolActive, showImageToolbar])
+  }, [clearImageToolbarHideTimer, gridToolActive, showNodeToolbar])
 
   useEffect(() => clearImageToolbarHideTimer, [clearImageToolbarHideTimer])
 
   useEffect(() => {
-    if (!showImageToolbar) {
+    if (!showNodeToolbar) {
       clearImageToolbarHideTimer()
       setImageToolbarVisible(false)
       setPanoramaConfirmOpen(false)
     }
-  }, [clearImageToolbarHideTimer, showImageToolbar])
+  }, [clearImageToolbarHideTimer, showNodeToolbar])
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -1048,6 +1154,16 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
     }))
   }, [data.title, id, image?.primary])
 
+  const requestPreviewNode = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    window.dispatchEvent(new CustomEvent("openreel:preview-node", {
+      detail: {
+        nodeId: id,
+      },
+    }))
+  }, [id])
+
   const requestOpenPanorama = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault()
     event.stopPropagation()
@@ -1142,7 +1258,13 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
         isConnectableEnd={true}
         onMouseDown={(event) => event.stopPropagation()}
         onTouchStart={(event) => event.stopPropagation()}
-        style={{ ...portStyle, left: portOffset, pointerEvents: "auto" }}
+        style={{
+          ...portStyle,
+          left: portOffset,
+          pointerEvents: "auto",
+          background: resizeActive ? style.color : "rgba(212,212,216,0.72)",
+          boxShadow: resizeActive ? `0 0 0 4px ${style.color}30` : undefined,
+        }}
       />
       <Handle
         type="source"
@@ -1152,10 +1274,24 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
         data-openreel-port="output"
         isConnectableStart={true}
         isConnectableEnd={false}
-        style={{ ...portStyle, right: portOffset }}
+        style={{
+          ...portStyle,
+          right: portOffset,
+          background: resizeActive ? style.color : "rgba(212,212,216,0.72)",
+          boxShadow: resizeActive ? `0 0 0 4px ${style.color}30` : undefined,
+        }}
       />
 
-      {showImageToolbar && (
+      <NodeCanvasLabel
+        label={style.label}
+        color={style.color}
+        publicIdText={publicIdText}
+        status={status}
+        progress={mediaProgress}
+        renderState={renderState}
+      />
+
+      {showNodeToolbar && (
         <div
           className={cn(
             "nodrag absolute left-1/2 top-0 z-50 -mt-2 flex -translate-x-1/2 -translate-y-full items-center gap-1.5 rounded-md border border-white/10 bg-[#0b0f16]/88 px-1.5 py-1 shadow-[0_16px_40px_rgba(0,0,0,0.45)] backdrop-blur-md transition-opacity duration-150",
@@ -1169,6 +1305,15 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
           onMouseDown={(event) => event.stopPropagation()}
           onPointerDown={(event) => event.stopPropagation()}
         >
+          {hasPreviewProduct && (
+            <button
+              type="button"
+              onClick={requestPreviewNode}
+              className="h-7 whitespace-nowrap rounded border border-white/10 bg-white/[0.06] px-2.5 text-[11px] font-medium text-zinc-100 transition hover:bg-white/[0.12]"
+            >
+              预览
+            </button>
+          )}
           {canGridCrop && (
             <button
               type="button"
@@ -1199,7 +1344,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
               ))}
             </div>
           )}
-          {!gridToolActive && (
+          {!gridToolActive && showImageToolbarActions && (
             <>
               <div className="relative">
                 <button
@@ -1275,9 +1420,9 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
 
       <div
         className={cn(
-          "h-full w-full overflow-hidden rounded-md border bg-[#151821] shadow-[0_18px_34px_rgba(0,0,0,0.28)] transition-[box-shadow,border-color] hover:border-zinc-500 hover:shadow-[0_24px_46px_rgba(0,0,0,0.34)]",
+          "h-full w-full overflow-hidden rounded-md border bg-[#232323] shadow-[0_18px_34px_rgba(0,0,0,0.28)] transition-[box-shadow,border-color] hover:border-white/25 hover:shadow-[0_24px_46px_rgba(0,0,0,0.34)]",
           "openreel-smart-node-card openreel-smart-node-drag",
-          selected ? "border-zinc-200 shadow-[0_0_0_1px_rgba(244,244,245,0.7),0_24px_50px_rgba(0,0,0,0.38)]" : "border-white/10",
+          "border-white/[0.08]",
           resizeActive && !selected && "border-cyan-200/80 shadow-[0_0_0_1px_rgba(34,211,238,0.36),0_24px_46px_rgba(0,0,0,0.34)]",
           isRunning && !isSuperseded && style.runningGlow,
           gridToolActive && "nodrag",
@@ -1362,52 +1507,15 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
               })}
             </div>
           ) : data.type === "audio" && audio?.src ? (
-            <div className="flex h-full w-full flex-col justify-between bg-[radial-gradient(circle_at_18%_12%,rgba(245,158,11,0.24),transparent_32%),linear-gradient(135deg,#111827,#18181b)] px-4 py-4">
-              <div>
-                <div className="flex items-center gap-2">
-                  {publicIdText && (
-                    <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-50/85 ring-1 ring-white/10">
-                      {publicIdText}
-                    </span>
-                  )}
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ background: style.color }} />
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-100/80">Audio</span>
-                </div>
-                <div className="mt-3 line-clamp-2 text-[13px] font-medium leading-4 text-white" title={data.title}>
-                  {data.title || "未命名音频"}
-                </div>
-              </div>
-              <div className="space-y-2">
-                <div className="pointer-events-none flex h-8 items-end gap-1.5 rounded-md border border-white/10 bg-black/28 px-2.5 py-1.5">
-                  {[0.35, 0.72, 0.48, 0.86, 0.55, 0.68, 0.4, 0.78, 0.5, 0.62].map((height, index) => (
-                    <span
-                      key={index}
-                      className="w-1.5 rounded-full bg-amber-200/80"
-                      style={{ height: `${Math.round(height * 100)}%` }}
-                    />
-                  ))}
-                </div>
-                <div
-                  className="nodrag nowheel rounded-md border border-white/10 bg-black/45 px-2 py-1.5 shadow-lg shadow-black/20"
-                  onClick={(event) => event.stopPropagation()}
-                  onDoubleClick={(event) => event.stopPropagation()}
-                  onMouseDown={(event) => event.stopPropagation()}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onTouchStart={(event) => event.stopPropagation()}
-                >
-                  <audio
-                    controls
-                    preload="metadata"
-                    className="nodrag h-8 w-full"
-                    controlsList="nodownload"
-                  >
-                    <source src={audio.src} type={audioMimeType(audio.src)} />
-                  </audio>
-                  <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-zinc-400">
-                    <span className="truncate">{audio.format || "音频文件"}</span>
-                    {audio.duration && <span>{audio.duration}</span>}
-                  </div>
-                </div>
+            <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_18%_12%,rgba(245,158,11,0.24),transparent_32%),linear-gradient(135deg,#111827,#18181b)] px-5">
+              <div className="pointer-events-none flex h-16 w-full max-w-[220px] items-end justify-center gap-2 rounded-md border border-white/10 bg-black/24 px-4 py-3 shadow-inner shadow-black/20">
+                {[0.35, 0.72, 0.48, 0.86, 0.55, 0.68, 0.4, 0.78, 0.5, 0.62].map((height, index) => (
+                  <span
+                    key={index}
+                    className="w-2 rounded-full bg-amber-200/80"
+                    style={{ height: `${Math.round(height * 100)}%` }}
+                  />
+                ))}
               </div>
               {isRunning && (
                 <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/38 backdrop-blur-[1px]">
@@ -1504,7 +1612,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                 {isRunning ? (
                   <span className="h-5 w-5 rounded-full border-2 border-zinc-500 border-t-zinc-100 animate-spin" />
                 ) : (
-                  <span className="text-[11px] font-semibold tracking-[0.18em] text-zinc-600">{style.icon}</span>
+                  <MediaPlaceholderIcon type={data.type} color={style.color} />
                 )}
 	                {isRunning ? (
                   <MediaProgressText progress={mediaProgress} />
@@ -1512,12 +1620,6 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                   <span className="text-xs">{data.type === "video" ? "待生成视频" : data.type === "audio" ? "待生成音频" : "待生成图片"}</span>
                 )}
               </div>
-            </div>
-          )}
-
-          {renderState && (
-            <div className="pointer-events-none absolute left-2 top-2 z-30">
-              <RenderStatePill state={renderState} />
             </div>
           )}
 
@@ -1529,40 +1631,23 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
             </div>
           )}
 
-          {!(data.type === "audio" && audio?.src) && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent px-3 pb-2.5 pt-8">
-              <div className="flex min-w-0 items-start gap-1.5">
-                {publicIdText && (
-                  <span className="mt-0.5 shrink-0 rounded bg-white/12 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white/85 ring-1 ring-white/10">
-                    {publicIdText}
-                  </span>
-                )}
-                <div className="line-clamp-2 min-w-0 text-[13px] font-medium leading-4 text-white" title={data.title}>
-                  {data.title || "未命名"}
-                </div>
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/78 via-black/28 to-transparent px-3 pb-2.5 pt-10">
+            <div className="line-clamp-2 min-w-0 text-[13px] font-semibold leading-4 text-white drop-shadow" title={data.title}>
+              {data.title || "未命名"}
+            </div>
+            {audio?.duration && data.type === "audio" && (
+              <div className="mt-1 text-[10px] text-zinc-300/80">
+                {audio.duration}
               </div>
-            </div>
-          )}
-          {status === "failed" && (
-            <div className="absolute left-2 top-2 rounded bg-red-500/90 px-1.5 py-0.5 text-[10px] font-medium text-white">
-              失败
-            </div>
-          )}
+            )}
+          </div>
         </div>
       ) : (
         <div className="flex h-full flex-col p-3">
-          <div className="mb-2 flex items-center gap-2">
-            {publicIdText && (
-              <span className="shrink-0 rounded bg-white/8 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-zinc-300 ring-1 ring-white/10">
-                {publicIdText}
-              </span>
-            )}
-            <span className="h-2 w-2 rounded-full" style={{ background: style.color }} />
-            <div className="min-w-0 flex-1 truncate text-[13px] font-semibold text-zinc-100" title={data.title}>
-              {data.title || "未命名"}
-            </div>
+          <div className="mb-2 min-w-0 truncate text-[13px] font-semibold text-zinc-100" title={data.title}>
+            {data.title || "未命名"}
           </div>
-          <div className="min-h-0 flex-1 overflow-hidden rounded bg-white/[0.035] px-3 py-2.5">
+          <div className="min-h-0 flex-1 overflow-hidden rounded border border-white/[0.06] bg-white/[0.035] px-3 py-2.5">
             {isRunning ? (
               <div className="flex h-full items-center justify-center gap-2 text-xs text-zinc-400">
                 <span className="h-4 w-4 rounded-full border-2 border-zinc-600 border-t-zinc-200 animate-spin" />
@@ -1574,7 +1659,6 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
               </div>
             )}
           </div>
-          {status === "failed" && <div className="mt-2 text-[11px] text-red-300">生成失败</div>}
         </div>
       )}
       </div>

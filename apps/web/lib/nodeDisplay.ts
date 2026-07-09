@@ -78,6 +78,7 @@ const UNLABELED_SINGLE_BODY_KEYS = new Set([
 ])
 
 const TECHNICAL_HIDDEN_KEYS = new Set([
+  "chat_history",
   "depends_on",
   "hidden_keys",
   "labels",
@@ -89,6 +90,8 @@ const TECHNICAL_HIDDEN_KEYS = new Set([
   "run_id",
   "status",
   "state",
+  "surface",
+  "fields",
   "type",
   "kind",
   "usage",
@@ -102,6 +105,7 @@ const TECHNICAL_HIDDEN_KEYS = new Set([
   "input_values",
   "run_history",
   "step_run_history",
+  "text_chat_history",
 ])
 
 const DEFAULT_LABELS: Record<string, string> = {
@@ -127,6 +131,10 @@ const DEFAULT_LABELS: Record<string, string> = {
   index: "序号",
   duration_seconds: "时长",
   visual_style: "视觉风格",
+  aspect_ratio: "画幅",
+  resolution: "分辨率",
+  quality: "质量",
+  clarity: "清晰度",
 }
 
 function keyLabel(key: string, labels?: Record<string, unknown>): string {
@@ -205,9 +213,38 @@ export function readableTextValue(value: unknown, depth = 0): string {
 }
 
 export function nodeReadableText(node: NodeDisplayInput): string {
+  if (node.type === "text") {
+    return textNodeReadableText(node)
+  }
   const outputText = readableTextValue(node.output)
   if (outputText) return outputText
   const inputText = readableTextValue(inputFieldsFromNodeInput(node.input))
+  if (inputText) return inputText
+  return scalarText(node.prompt)
+}
+
+function firstBodyTextFromObject(obj: Record<string, unknown> | undefined): string {
+  if (!obj) return ""
+  for (const key of ["content", "full_text", "story_text", "text", "script", "output", "reply", "response", "description"]) {
+    const text = scalarText(obj[key])
+    if (text) return text
+  }
+  const result = parsePlainObject(obj.result)
+  if (result) {
+    const text = firstBodyTextFromObject(result)
+    if (text) return text
+  }
+  return ""
+}
+
+function textNodeReadableText(node: NodeDisplayInput): string {
+  const outputScalar = scalarText(node.output)
+  if (outputScalar) return outputScalar
+  const output = parsePlainObject(node.output)
+  const outputText = firstBodyTextFromObject(output)
+  if (outputText) return outputText
+  const input = inputFieldsFromNodeInput(node.input)
+  const inputText = firstBodyTextFromObject(input)
   if (inputText) return inputText
   return scalarText(node.prompt)
 }

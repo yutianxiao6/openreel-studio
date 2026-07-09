@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent, type TouchEvent as ReactTouchEvent } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent, type TouchEvent as ReactTouchEvent } from "react"
 import ReactFlow, {
   ConnectionLineType,
   ConnectionMode,
@@ -56,6 +56,8 @@ import {
   downloadWorkflowTemplatePackage,
   getProjectNodeDetails,
   getProjectNodes,
+  getRuntimeConfigFile,
+  getVideoProviderProtocols,
   resolveMediaUrl,
   restoreProjectMediaHistoryItem,
   restoreProjectCanvasSnapshot,
@@ -77,9 +79,17 @@ import {
 } from "@/lib/api"
 import { nodeTypes } from "./nodes"
 import NodeDetailPanel from "./NodeDetailPanel"
+import ImageEditPanel from "./ImageEditPanel"
 import CanvasGroupLayer, { type CanvasViewport } from "./CanvasGroupLayer"
 import PanoramaViewer, { type PanoramaCaptureMode } from "./PanoramaViewer"
 import { cn } from "@/lib/utils"
+import { canvasNodeDisplayText } from "@/lib/nodeDisplay"
+import {
+  resolveVideoProvider,
+  videoReferenceImageLimitForProvider,
+  type MediaProviderSummary,
+  type VideoProtocolSummary,
+} from "@/lib/videoProtocolLimits"
 import type { WorkspaceView } from "@/components/workspace/WorkspaceViewTabs"
 
 interface GridDropTarget {
@@ -108,6 +118,15 @@ interface PendingConnectionPreviewLine {
   toY: number
 }
 
+interface CanvasCreateMenuState {
+  x: number
+  y: number
+  flowX: number
+  flowY: number
+  connectFrom?: PendingConnectionDraft
+  previewLine?: PendingConnectionPreviewLine
+}
+
 interface CanvasAlignmentGuide {
   orientation: "vertical" | "horizontal"
   position: number
@@ -126,6 +145,15 @@ interface NodeBounds {
   width: number
   height: number
 }
+
+const NODE_CONTEXT_PANEL_MARGIN = 14
+const NODE_CONTEXT_PANEL_GAP = 10
+const NODE_CONTEXT_PANEL_MIN_HEIGHT = 160
+const NODE_CONTEXT_PANEL_PREFERRED_HEIGHT = 380
+const NODE_CONTEXT_PANEL_MAX_HEIGHT = 420
+const NODE_CONTEXT_PANEL_MIN_WIDTH = 420
+const NODE_CONTEXT_PANEL_IDEAL_WIDTH = 560
+const NODE_CONTEXT_PANEL_MAX_WIDTH = 640
 
 interface WorkflowCanvasProps {
   workspaceView?: WorkspaceView
@@ -166,6 +194,18 @@ interface NodeImageEditRequest {
   imageUrl?: string
 }
 
+interface NodePreviewRequest {
+  nodeId: string
+  type?: string
+  title?: string
+  input?: unknown
+  output?: unknown
+  prompt?: string
+  preview?: Record<string, unknown>
+  previewText?: string
+  readOnly?: boolean
+}
+
 interface NodePanoramaCreateRequest {
   nodeId: string
   title: string
@@ -191,6 +231,7 @@ interface LongPressState {
 
 const LONG_PRESS_MS = 560
 const LONG_PRESS_MOVE_TOLERANCE = 28
+const CANVAS_BLANK_CLICK_TOLERANCE = 6
 const ALIGNMENT_SNAP_SCREEN_PX = 8
 const ALIGNMENT_SNAP_SCREEN_PX_COARSE = 14
 const ALIGNMENT_GUIDE_MARGIN = 44
@@ -210,13 +251,55 @@ const PANORAMA_PROMPT = [
   "避免文字、水印、边框、重复物体、断裂透视和明显拼接痕迹。",
 ].join("\n")
 
-type MediaHistoryFilter = "all" | "image" | "video" | "audio"
+type MediaHistoryFilter = "all" | "text" | "image" | "video" | "audio"
 
 const MEDIA_HISTORY_LABEL: Record<ProjectMediaHistoryItem["kind"], string> = {
+  text: "文本",
   image: "图片",
   video: "视频",
   audio: "音频",
 }
+
+const CANVAS_NODE_CREATE_ITEMS: Array<{
+  type: CanvasNodeType
+  label: string
+  description: string
+  badge: string
+  accentClass: string
+}> = [
+  {
+    type: "text",
+    label: "文本",
+    description: "剧情、分段、设定或提示词草稿",
+    badge: "T",
+    accentClass: "bg-sky-400/14 text-sky-200 ring-sky-300/20",
+  },
+  {
+    type: "image",
+    label: "图片",
+    description: "人物、场景、分镜或参考图",
+    badge: "I",
+    accentClass: "bg-emerald-400/14 text-emerald-200 ring-emerald-300/20",
+  },
+  {
+    type: "video",
+    label: "视频",
+    description: "片段、成片或上传视频",
+    badge: "V",
+    accentClass: "bg-fuchsia-400/14 text-fuchsia-200 ring-fuchsia-300/20",
+  },
+  {
+    type: "audio",
+    label: "音频",
+    description: "旁白、音乐或声音素材",
+    badge: "A",
+    accentClass: "bg-amber-400/14 text-amber-200 ring-amber-300/20",
+  },
+]
+
+const CANVAS_CREATE_MENU_WIDTH = 286
+const CANVAS_CREATE_MENU_HEIGHT = 520
+const CANVAS_CONNECT_CREATE_MENU_HEIGHT = 318
 
 function formatMediaHistoryTime(value?: string | null): string {
   if (!value) return ""
@@ -238,7 +321,7 @@ function formatMediaHistorySize(value?: number | null): string {
 
 function mediaHistoryMimeType(item: ProjectMediaHistoryItem): string {
   if (item.mime_type) return item.mime_type
-  const lower = item.filename.toLowerCase()
+  const lower = (item.filename || "").toLowerCase()
   if (lower.endsWith(".webm")) return "video/webm"
   if (lower.endsWith(".mov")) return "video/quicktime"
   if (lower.endsWith(".wav")) return "audio/wav"
@@ -251,10 +334,66 @@ function mediaHistoryMimeType(item: ProjectMediaHistoryItem): string {
   return "image/png"
 }
 
+function canvasUploadNodeType(file: File): Extract<CanvasNodeType, "image" | "video"> | null {
+  const mime = file.type.toLowerCase()
+  if (mime.startsWith("image/")) return "image"
+  if (mime.startsWith("video/")) return "video"
+  const lower = file.name.toLowerCase()
+  if (/\.(png|jpe?g|webp|gif|avif|bmp)$/i.test(lower)) return "image"
+  if (/\.(mp4|mov|webm|m4v|avi|mkv)$/i.test(lower)) return "video"
+  return null
+}
+
+function titleFromUploadFile(file: File, type: Extract<CanvasNodeType, "image" | "video">): string {
+  const fallback = type === "image" ? "上传图片" : "上传视频"
+  const base = file.name.replace(/\.[^.]+$/, "").trim()
+  if (!base) return fallback
+  return `${fallback} - ${base.slice(0, 42)}`
+}
+
+function findAvailableNodePosition(
+  initial: { x: number; y: number },
+  nodes: FlowNode[],
+  ignoreNodeId?: string,
+): { x: number; y: number } {
+  const padding = 18
+  const width = ALIGNMENT_DEFAULT_NODE_WIDTH
+  const height = ALIGNMENT_DEFAULT_NODE_HEIGHT
+  const occupied = nodes
+    .filter((node) => node.id !== ignoreNodeId)
+    .map(nodeBounds)
+  for (let index = 0; index < 12; index += 1) {
+    const candidate = {
+      x: Math.round(initial.x + (index % 3) * 28),
+      y: Math.round(initial.y + Math.floor(index / 3) * 54),
+    }
+    const left = candidate.x - padding
+    const top = candidate.y - padding
+    const right = candidate.x + width + padding
+    const bottom = candidate.y + height + padding
+    const overlaps = occupied.some((bounds) => (
+      left < bounds.right + padding
+      && right > bounds.left - padding
+      && top < bounds.bottom + padding
+      && bottom > bounds.top - padding
+    ))
+    if (!overlaps) return candidate
+  }
+  return { x: Math.round(initial.x), y: Math.round(initial.y) }
+}
+
 function MediaHistoryPreview({ item }: { item: ProjectMediaHistoryItem }) {
+  if (item.kind === "text") {
+    return (
+      <div className="flex h-full w-full flex-col justify-between bg-zinc-950 p-2 text-zinc-200">
+        <span className="text-[10px] font-semibold tracking-[0.18em] text-sky-200">TEXT</span>
+        <span className="line-clamp-4 text-[11px] leading-4 text-zinc-300">{item.content || item.prompt || "文本结果"}</span>
+      </div>
+    )
+  }
   const src = resolveMediaUrl(item.url)
   if (item.kind === "image") {
-    return <img src={src} alt={item.title || item.filename} className="h-full w-full object-cover" loading="lazy" />
+    return <img src={src} alt={item.title || item.filename || ""} className="h-full w-full object-cover" loading="lazy" />
   }
   if (item.kind === "video") {
     return (
@@ -303,12 +442,14 @@ function MediaHistoryDrawer({
   const visibleItems = filter === "all" ? items : items.filter((item) => item.kind === filter)
   const counts = {
     all: items.length,
+    text: items.filter((item) => item.kind === "text").length,
     image: items.filter((item) => item.kind === "image").length,
     video: items.filter((item) => item.kind === "video").length,
     audio: items.filter((item) => item.kind === "audio").length,
   }
   const tabs: Array<{ id: MediaHistoryFilter; label: string }> = [
     { id: "all", label: "全部" },
+    { id: "text", label: "文本" },
     { id: "image", label: "图片" },
     { id: "video", label: "视频" },
     { id: "audio", label: "音频" },
@@ -335,7 +476,7 @@ function MediaHistoryDrawer({
         <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
           <div>
             <div className="text-sm font-semibold text-zinc-100">生成历史</div>
-            <div className="text-[11px] text-zinc-500">当前项目 · {items.length} 个文件</div>
+            <div className="text-[11px] text-zinc-500">当前项目 · {items.length} 条记录</div>
           </div>
           <div className="flex items-center gap-1.5">
             <button
@@ -356,7 +497,7 @@ function MediaHistoryDrawer({
           </div>
         </div>
         <div className="border-b border-white/10 px-3 py-2">
-          <div className="grid grid-cols-4 gap-1 rounded-md bg-black/24 p-1">
+          <div className="grid grid-cols-5 gap-1 rounded-md bg-black/24 p-1">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
@@ -399,7 +540,7 @@ function MediaHistoryDrawer({
                           <span className="rounded border border-white/10 bg-black/24 px-1.5 py-0.5 text-[10px] text-zinc-300">
                             {MEDIA_HISTORY_LABEL[item.kind]}
                           </span>
-                          <span className="truncate text-xs font-medium text-zinc-100">{item.title || item.filename}</span>
+                          <span className="truncate text-xs font-medium text-zinc-100">{item.title || item.filename || "文本结果"}</span>
                         </div>
                         <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-zinc-500">
                           <span>{formatMediaHistoryTime(item.created_at) || "未知时间"}</span>
@@ -411,33 +552,44 @@ function MediaHistoryDrawer({
                             {item.prompt}
                           </div>
                         ) : null}
+                        {item.kind === "text" && item.content ? (
+                          <div className="mt-1.5 line-clamp-3 text-[11px] leading-relaxed text-zinc-200">
+                            {item.content}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                     <div className="flex justify-end gap-1.5 border-t border-white/[0.06] bg-black/12 px-2.5 py-2">
-                      <a
-                        href={resolveMediaUrl(item.url)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded-md border border-white/10 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/[0.06]"
-                      >
-                        查看
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => onRestore(item)}
-                        disabled={restoring || deleting}
-                        className="rounded-md bg-zinc-100 px-2.5 py-1 text-[11px] font-medium text-zinc-950 disabled:opacity-50"
-                      >
-                        {restoring ? "恢复中" : "恢复"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDelete(item)}
-                        disabled={restoring || deleting}
-                        className="rounded-md border border-red-300/20 bg-red-500/10 px-2.5 py-1 text-[11px] text-red-200 hover:bg-red-500/18 disabled:opacity-50"
-                      >
-                        {deleting ? "删除中" : "删除"}
-                      </button>
+                      {item.kind === "text" ? (
+                        <span className="rounded-md border border-white/10 px-2.5 py-1 text-[11px] text-zinc-400">只读记录</span>
+                      ) : (
+                        <>
+                          <a
+                            href={resolveMediaUrl(item.url)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded-md border border-white/10 px-2.5 py-1 text-[11px] text-zinc-300 hover:bg-white/[0.06]"
+                          >
+                            查看
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => onRestore(item)}
+                            disabled={restoring || deleting}
+                            className="rounded-md bg-zinc-100 px-2.5 py-1 text-[11px] font-medium text-zinc-950 disabled:opacity-50"
+                          >
+                            {restoring ? "恢复中" : "恢复"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDelete(item)}
+                            disabled={restoring || deleting}
+                            className="rounded-md border border-red-300/20 bg-red-500/10 px-2.5 py-1 text-[11px] text-red-200 hover:bg-red-500/18 disabled:opacity-50"
+                          >
+                            {deleting ? "删除中" : "删除"}
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 )
@@ -9314,8 +9466,16 @@ function touchPoint(event: ReactTouchEvent<HTMLDivElement>) {
 function isInteractiveTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false
   return Boolean(target.closest(
-    "button,a,input,textarea,select,[contenteditable='true'],.nodrag,.openreel-canvas-action-menu,.react-flow__handle,.react-flow__controls,.react-flow__minimap",
+    "button,a,input,textarea,select,[contenteditable='true'],.nodrag,.nowheel,.openreel-node-detail-panel,.openreel-node-preview-card,.openreel-canvas-action-menu,.react-flow__handle,.react-flow__controls,.react-flow__minimap",
   ))
+}
+
+function isCanvasBlankTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  if (isInteractiveTarget(target)) return false
+  if (target.closest("[data-openreel-workflow-ui='true'],[data-openreel-group-toolbar='true']")) return false
+  if (target.closest(".react-flow__node,.react-flow__edge,.react-flow__handle")) return false
+  return Boolean(target.closest(".react-flow__pane,.react-flow__viewport,.react-flow__renderer"))
 }
 
 function isVideoUrl(value: unknown): value is string {
@@ -9345,6 +9505,520 @@ function imageDownloadUrlFromNode(node: FlowNode | undefined): string | null {
   }
   const src = preview.local_url || preview.url || preview.composite_url || preview.remote_url
   return typeof src === "string" && !isVideoUrl(src) ? resolveMediaUrl(src) : null
+}
+
+function previewObject(value: unknown): Record<string, unknown> | null {
+  if (!value) return null
+  if (typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== "string") return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function previewString(value: unknown): string {
+  return typeof value === "string" && value.trim()
+    ? value.trim()
+    : typeof value === "number" || typeof value === "boolean"
+      ? String(value)
+      : ""
+}
+
+function previewUrlFromObject(obj: Record<string, unknown> | null | undefined, keys = ["local_url", "url", "remote_url", "composite_url"]): string {
+  if (!obj) return ""
+  for (const key of keys) {
+    const value = previewString(obj[key])
+    if (value) return resolveMediaUrl(value)
+  }
+  return ""
+}
+
+function previewImageUrlFromNode(node: FlowNode | undefined): string {
+  const fromPreview = imageDownloadUrlFromNode(node)
+  if (fromPreview) return fromPreview
+  const data = node?.data as { type?: string; output?: unknown } | undefined
+  if (data?.type !== "image") return ""
+  const output = previewObject(data.output)
+  return previewUrlFromObject(output)
+}
+
+function previewVideoFromNode(node: FlowNode | undefined): { src: string; poster?: string } | null {
+  const data = node?.data as { type?: string; preview?: Record<string, unknown>; output?: unknown } | undefined
+  if (data?.type !== "video") return null
+  const candidates = [data.preview, previewObject(data.output)].filter(Boolean) as Record<string, unknown>[]
+  for (const item of candidates) {
+    if (item.type === "fusion" && Array.isArray(item.stages)) {
+      const stage = (item.stages as Record<string, unknown>[]).find((stageItem) => (
+        /视频|video|clip/i.test(String(stageItem.name ?? "")) &&
+        previewUrlFromObject(stageItem, ["local_url", "url", "remote_url"])
+      ))
+      const src = previewUrlFromObject(stage, ["local_url", "url", "remote_url"])
+      if (src) return { src, poster: previewUrlFromObject(stage, ["poster", "thumbnail_url"]) || undefined }
+    }
+    const src = previewUrlFromObject(item, ["local_url", "url", "remote_url"])
+    if (src && (item.type === "video" || isVideoUrl(src))) {
+      return { src, poster: previewUrlFromObject(item, ["poster", "thumbnail_url"]) || undefined }
+    }
+  }
+  return null
+}
+
+function isAudioUrl(value: unknown): value is string {
+  return typeof value === "string" && /\.(mp3|wav|m4a|aac|ogg|flac)(?:\?|#|$)/i.test(value)
+}
+
+function previewAudioFromNode(node: FlowNode | undefined): { src: string } | null {
+  const data = node?.data as { type?: string; preview?: Record<string, unknown>; output?: unknown } | undefined
+  if (data?.type !== "audio") return null
+  const candidates = [data.preview, previewObject(data.output)].filter(Boolean) as Record<string, unknown>[]
+  for (const item of candidates) {
+    if (item.type === "fusion" && Array.isArray(item.stages)) {
+      const stage = (item.stages as Record<string, unknown>[]).find((stageItem) => (
+        /音频|audio|sound|music/i.test(String(stageItem.name ?? "")) &&
+        previewUrlFromObject(stageItem, ["local_url", "url", "remote_url"])
+      ))
+      const src = previewUrlFromObject(stage, ["local_url", "url", "remote_url"])
+      if (src) return { src }
+    }
+    const src = previewUrlFromObject(item, ["local_url", "url", "remote_url"])
+    if (src && (item.type === "audio" || isAudioUrl(src))) return { src }
+  }
+  return null
+}
+
+function previewInputFields(value: unknown): Record<string, unknown> {
+  const input = previewObject(value) || {}
+  const fields = previewObject(input.fields)
+  return fields ? { ...input, ...fields } : input
+}
+
+function previewFirstString(...values: unknown[]): string {
+  for (const value of values) {
+    const text = previewString(value)
+    if (text) return text
+  }
+  return ""
+}
+
+function previewImageStageFromPreview(preview: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  if (!preview) return {}
+  if (preview.type === "fusion" && Array.isArray(preview.stages)) {
+    const stage = (preview.stages as Record<string, unknown>[]).find((item) => {
+      const src = item.local_url || item.url || item.remote_url
+      return isImageStageName(item.name) && typeof src === "string" && !isVideoUrl(src)
+    })
+    return stage || {}
+  }
+  return preview
+}
+
+function previewImageInfoFromNode(node: FlowNode): {
+  prompt: string
+  resolution: string
+  aspect: string
+  quality: string
+  clarity: string
+  model: string
+  provider: string
+  size: string
+} {
+  const data = node.data as { input?: unknown; output?: unknown; prompt?: string; preview?: Record<string, unknown> } | undefined
+  const input = previewInputFields(data?.input)
+  const output = previewObject(data?.output) || {}
+  const preview = data?.preview || {}
+  const stage = previewImageStageFromPreview(preview)
+  const width = previewFirstString(stage.width, output.width, preview.width)
+  const height = previewFirstString(stage.height, output.height, preview.height)
+  const size = width && height ? `${width} x ${height}` : ""
+  return {
+    prompt: previewFirstString(data?.prompt, input.prompt, input.image_prompt, output.prompt, output.image_prompt, stage.prompt, preview.prompt),
+    resolution: previewFirstString(stage.size_final, stage.size, stage.resolution, output.size_final, output.resolution, output.size, input.resolution, input.size, preview.resolution, preview.size),
+    aspect: previewFirstString(stage.aspect_ratio, output.aspect_ratio, input.aspect_ratio, preview.aspect_ratio),
+    quality: previewFirstString(stage.quality, output.quality, input.quality, preview.quality),
+    clarity: previewFirstString(output.clarity, input.clarity, preview.clarity),
+    model: previewFirstString(stage.model, output.model, input.model, preview.model),
+    provider: previewFirstString(stage.provider, output.provider, preview.provider),
+    size,
+  }
+}
+
+function previewStageFromPreview(preview: Record<string, unknown> | null | undefined, type: string): Record<string, unknown> {
+  if (!preview || !Array.isArray(preview.stages)) return preview || {}
+  const matcher = type === "video"
+    ? /视频|video|clip/i
+    : type === "audio"
+      ? /音频|audio|sound|music/i
+      : /图|首帧|尾帧|模板|参考|image|storyboard/i
+  const stage = (preview.stages as Record<string, unknown>[]).find((item) => {
+    const src = previewUrlFromObject(item, ["local_url", "url", "remote_url", "composite_url"])
+    return matcher.test(String(item.name ?? "")) && Boolean(src)
+  })
+  return stage || preview
+}
+
+function previewInfoFromNode(node: FlowNode, type: string): {
+  prompt: string
+  resolution: string
+  aspect: string
+  quality: string
+  clarity: string
+  model: string
+  provider: string
+  size: string
+  duration: string
+  format: string
+} {
+  if (type === "image") {
+    return { ...previewImageInfoFromNode(node), duration: "", format: "" }
+  }
+  const data = node.data as { input?: unknown; output?: unknown; prompt?: string; preview?: Record<string, unknown> } | undefined
+  const input = previewInputFields(data?.input)
+  const output = previewObject(data?.output) || {}
+  const preview = data?.preview || {}
+  const stage = previewStageFromPreview(preview, type)
+  const width = previewFirstString(stage.width, output.width, preview.width)
+  const height = previewFirstString(stage.height, output.height, preview.height)
+  const size = width && height ? `${width} x ${height}` : ""
+  return {
+    prompt: previewFirstString(
+      data?.prompt,
+      input.prompt,
+      input.video_prompt,
+      input.audio_prompt,
+      input.text_prompt,
+      output.prompt,
+      output.video_prompt,
+      output.audio_prompt,
+      output.input,
+      stage.prompt,
+      preview.prompt,
+    ),
+    resolution: previewFirstString(stage.size_final, stage.size, stage.resolution, output.size_final, output.resolution, output.size, input.resolution, input.size, preview.resolution, preview.size),
+    aspect: previewFirstString(stage.aspect_ratio, output.aspect_ratio, input.aspect_ratio, preview.aspect_ratio),
+    quality: previewFirstString(stage.quality, output.quality, input.quality, preview.quality),
+    clarity: previewFirstString(output.clarity, input.clarity, preview.clarity),
+    model: previewFirstString(stage.model, output.model, input.model, preview.model),
+    provider: previewFirstString(stage.provider, output.provider, input.provider, preview.provider),
+    size,
+    duration: previewFirstString(stage.duration_seconds, output.duration_seconds, input.duration_seconds, preview.duration_seconds),
+    format: previewFirstString(stage.format, output.format, input.format, preview.format),
+  }
+}
+
+function previewSpecEntries(info: ReturnType<typeof previewInfoFromNode>, type: string): Array<[string, string]> {
+  return [
+    ["分辨率", info.resolution],
+    [type === "audio" ? "时长" : "尺寸", type === "audio" ? info.duration : info.size],
+    ["比例", info.aspect],
+    ["格式", info.format],
+    ["画质", info.quality],
+    ["清晰度", info.clarity],
+    ["模型", info.model],
+    ["服务", info.provider],
+  ].filter((item): item is [string, string] => Boolean(item[1]))
+}
+
+function PreviewSpecRail({ entries }: { entries: Array<[string, string]> }) {
+  if (entries.length === 0) return null
+  return (
+    <div className="flex min-h-8 items-center gap-2 overflow-x-auto rounded-xl bg-white/[0.035] px-2.5 py-1.5 shadow-inner shadow-black/20 [scrollbar-width:none]">
+      {entries.map(([label, value]) => (
+        <span key={`${label}:${value}`} className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-black/30 px-2.5 py-1 text-[10px] leading-none text-zinc-400 ring-1 ring-white/[0.055]">
+          <span className="font-medium text-zinc-500">{label}</span>
+          <span className="font-semibold text-zinc-100">{value}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function PreviewPromptPanel({
+  title = "生成提示词",
+  prompt,
+  note,
+}: {
+  title?: string
+  prompt?: string
+  note?: string
+}) {
+  return (
+    <aside className="min-h-0 overflow-hidden rounded-xl bg-[#10141b]/92 shadow-[0_18px_50px_rgba(0,0,0,0.28)] ring-1 ring-white/[0.08]">
+      <div className="flex h-11 items-center justify-between border-b border-white/[0.06] px-4">
+        <div className="text-[11px] font-semibold tracking-wide text-zinc-300">{title}</div>
+        <span className="h-1.5 w-1.5 rounded-full bg-cyan-200/75" />
+      </div>
+      <div className="max-h-[calc(100dvh-212px)] overflow-auto px-4 py-3.5">
+        <div className="whitespace-pre-wrap break-words text-[13px] font-medium leading-6 text-zinc-100/95">
+          {prompt || note || "暂无提示词记录"}
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+function nodePreviewTypeLabel(type: string): string {
+  if (type === "text") return "文本"
+  if (type === "image") return "图片"
+  if (type === "video") return "视频"
+  if (type === "audio") return "音频"
+  return type || "节点"
+}
+
+const NODE_PREVIEW_WIDE_TYPES = new Set(["text", "image", "video", "audio"])
+const NODE_PREVIEW_LAYOUT_CLASS = "grid min-h-[520px] gap-3 lg:min-h-[min(720px,calc(100dvh-112px))] lg:grid-cols-[minmax(0,1fr)_minmax(380px,440px)]"
+const NODE_PREVIEW_MEDIA_FRAME_CLASS = "flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-xl bg-black shadow-inner shadow-black/30 ring-1 ring-white/[0.08]"
+const NODE_PREVIEW_EMPTY_CLASS = "flex min-h-[520px] items-center justify-center rounded-xl bg-[#070a0f] text-sm font-medium text-zinc-500 ring-1 ring-white/[0.08] lg:min-h-[min(720px,calc(100dvh-112px))]"
+
+function videoPreviewMimeType(src: string): string {
+  const path = src.split(/[?#]/, 1)[0]?.toLowerCase() || ""
+  if (path.endsWith(".webm")) return "video/webm"
+  if (path.endsWith(".mov")) return "video/quicktime"
+  return "video/mp4"
+}
+
+function NodeOutputPreviewCard({
+  node,
+  projectId,
+  readOnly,
+  onClose,
+  onTextSaved,
+}: {
+  node: FlowNode
+  projectId?: string
+  readOnly?: boolean
+  onClose: () => void
+  onTextSaved: () => void | Promise<void>
+}) {
+  const data = node.data as {
+    type?: string
+    title?: string
+    input?: unknown
+    output?: unknown
+    prompt?: string
+    preview?: Record<string, unknown>
+    previewText?: string
+  }
+  const type = String(data.type || "")
+  const title = data.title || "节点预览"
+  const isImagePreview = type === "image"
+  const isWidePreview = NODE_PREVIEW_WIDE_TYPES.has(type)
+  const info = previewInfoFromNode(node, type)
+  const specEntries = previewSpecEntries(info, type)
+  const textValue = type === "text"
+    ? canvasNodeDisplayText({
+      type,
+      input: data.input,
+      output: data.output,
+      prompt: data.prompt,
+      preview: data.preview,
+      previewText: data.previewText,
+    })
+    : ""
+  const imageUrl = type === "image" ? previewImageUrlFromNode(node) : ""
+  const video = type === "video" ? previewVideoFromNode(node) : null
+  const audio = type === "audio" ? previewAudioFromNode(node) : null
+  const [textDraft, setTextDraft] = useState(textValue)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [imageExpanded, setImageExpanded] = useState(false)
+
+  useEffect(() => {
+    setTextDraft(textValue)
+    setError(null)
+  }, [node.id, textValue])
+
+  useEffect(() => {
+    setImageExpanded(false)
+  }, [node.id, imageUrl])
+
+  const saveText = useCallback(async () => {
+    if (readOnly || type !== "text" || !projectId || saving || textDraft === textValue) return
+    setSaving(true)
+    setError(null)
+    try {
+      const input = previewObject(data.input) || {}
+      await updateProjectNodeDetails(projectId, node.id, {
+        title,
+        prompt: data.prompt || previewString(input.prompt) || null,
+        input: { ...input, content: textDraft },
+        output: textDraft || null,
+      })
+      await onTextSaved()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSaving(false)
+    }
+  }, [data.input, data.prompt, node.id, onTextSaved, projectId, readOnly, saving, textDraft, textValue, title, type])
+
+  const closeWithSave = async () => {
+    await saveText()
+    onClose()
+  }
+
+  return (
+    <div
+      className="openreel-node-preview-card nodrag nowheel fixed inset-0 z-[92] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+      onClick={() => void closeWithSave()}
+      onMouseDown={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <div
+        className={cn(
+          "flex max-h-[calc(100dvh-16px)] flex-col overflow-hidden rounded-xl border border-white/[0.12] bg-[#0d1118]/98 text-zinc-100 shadow-[0_30px_110px_rgba(0,0,0,0.72)]",
+          isImagePreview && imageExpanded
+            ? "w-[calc(100vw-16px)]"
+            : isWidePreview
+            ? "w-[min(1680px,calc(100vw-16px))]"
+            : "w-[min(760px,calc(100vw-24px))]",
+        )}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex min-h-12 items-center gap-3 border-b border-white/[0.08] bg-[#141922]/96 px-4">
+          <span className="rounded-full bg-white/[0.07] px-2.5 py-1 text-[11px] font-semibold text-zinc-300 ring-1 ring-white/[0.075]">
+            {nodePreviewTypeLabel(type)}
+          </span>
+          <div className="min-w-0 flex-1 truncate text-sm font-semibold text-zinc-50">{title}</div>
+          {type === "text" && (
+            <span className={`text-[11px] ${saving ? "text-cyan-200" : textDraft !== textValue ? "text-amber-200" : "text-zinc-500"}`}>
+              {readOnly ? "历史预览" : saving ? "保存中" : textDraft !== textValue ? "待保存" : "已保存"}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => void closeWithSave()}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-lg leading-none text-zinc-500 transition hover:bg-white/10 hover:text-zinc-100"
+            aria-label="关闭预览"
+          >
+            ×
+          </button>
+        </div>
+        <div className={cn(
+          "min-h-0 flex-1 bg-[#070a0f]",
+          isWidePreview ? "p-3" : "p-3",
+          isImagePreview ? "overflow-hidden" : "overflow-auto",
+        )}>
+          {type === "text" ? (
+            <div className={NODE_PREVIEW_LAYOUT_CLASS}>
+              <div className="flex min-h-0 flex-col gap-2.5">
+                <PreviewSpecRail entries={specEntries} />
+                <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl bg-[#11151c] shadow-inner shadow-black/30 ring-1 ring-white/[0.08]">
+                  <textarea
+                    value={textDraft}
+                    onChange={(event) => setTextDraft(event.target.value)}
+                    onBlur={() => void saveText()}
+                    readOnly={readOnly}
+                    className="min-h-[420px] flex-1 resize-none bg-transparent px-5 py-4 text-[15px] font-medium leading-8 text-zinc-50 outline-none [color-scheme:dark] placeholder:text-zinc-600 read-only:cursor-default read-only:text-zinc-100 lg:min-h-0"
+                    placeholder="正文会显示在这里，也可以直接编辑"
+                  />
+                </div>
+              </div>
+              <PreviewPromptPanel title="输入提示词" prompt={info.prompt || data.prompt || ""} note="暂无输入提示词记录" />
+            </div>
+          ) : type === "image" ? (
+            imageUrl ? (
+              <div
+                className={cn(
+                  "h-full min-h-[420px] gap-2.5",
+                  imageExpanded
+                    ? "flex min-h-[calc(100dvh-84px)] flex-col"
+                    : "grid lg:grid-cols-[minmax(0,1fr)_minmax(380px,440px)]",
+                )}
+              >
+                <div className="flex min-h-0 flex-col gap-2.5">
+                  <PreviewSpecRail entries={specEntries} />
+                  <button
+                    type="button"
+                    onClick={() => setImageExpanded((value) => !value)}
+                    className={cn(
+                      `${NODE_PREVIEW_MEDIA_FRAME_CLASS} w-full outline-none transition focus-visible:ring-cyan-200/60`,
+                      imageExpanded
+                        ? "min-h-0 cursor-zoom-out"
+                        : "min-h-[520px] cursor-zoom-in hover:ring-white/[0.16] lg:min-h-0",
+                    )}
+                    title={imageExpanded ? "缩回图片" : "放大图片"}
+                  >
+                    <img
+                      src={imageUrl}
+                      alt={title}
+                      className={cn(
+                        "max-w-full object-contain",
+                        imageExpanded ? "max-h-full" : "max-h-[calc(100dvh-166px)]",
+                      )}
+                    />
+                  </button>
+                </div>
+                {!imageExpanded && (
+                  <PreviewPromptPanel prompt={info.prompt} />
+                )}
+              </div>
+            ) : (
+              <div className={NODE_PREVIEW_EMPTY_CLASS}>
+                暂无图片产物
+              </div>
+            )
+          ) : type === "video" ? (
+            video?.src ? (
+              <div className={NODE_PREVIEW_LAYOUT_CLASS}>
+                <div className="flex min-h-0 flex-col gap-2.5">
+                  <PreviewSpecRail entries={specEntries} />
+                  <div className={NODE_PREVIEW_MEDIA_FRAME_CLASS}>
+                    <video controls playsInline poster={video.poster} className="h-full max-h-[calc(100dvh-176px)] w-full object-contain">
+                      <source src={video.src} type={videoPreviewMimeType(video.src)} />
+                    </video>
+                  </div>
+                </div>
+                <PreviewPromptPanel prompt={info.prompt} />
+              </div>
+            ) : (
+              <div className={NODE_PREVIEW_EMPTY_CLASS}>
+                暂无视频产物
+              </div>
+            )
+          ) : type === "audio" ? (
+            audio?.src ? (
+              <div className={NODE_PREVIEW_LAYOUT_CLASS}>
+                <div className="flex min-h-0 flex-col gap-2.5">
+                  <PreviewSpecRail entries={specEntries} />
+                  <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 overflow-hidden rounded-xl bg-[#080b10] px-8 py-10 shadow-inner shadow-black/30 ring-1 ring-white/[0.08]">
+                    <div className="flex h-44 w-full max-w-2xl items-center justify-center gap-1.5">
+                      {[26, 54, 78, 42, 92, 118, 72, 136, 98, 62, 150, 112, 84, 132, 70, 102, 146, 88, 58, 120, 94, 48, 76, 108].map((height, index) => (
+                        <span
+                          key={`${height}-${index}`}
+                          className="w-2 rounded-full bg-gradient-to-t from-cyan-300/35 via-cyan-100/85 to-white/95 shadow-[0_0_18px_rgba(103,232,249,0.18)]"
+                          style={{ height }}
+                        />
+                      ))}
+                    </div>
+                    <audio controls className="w-full max-w-2xl [color-scheme:dark]" src={audio.src} />
+                  </div>
+                </div>
+                <PreviewPromptPanel prompt={info.prompt} />
+              </div>
+            ) : (
+              <div className={NODE_PREVIEW_EMPTY_CLASS}>
+                暂无音频产物
+              </div>
+            )
+          ) : (
+            <div className="flex min-h-[240px] items-center justify-center rounded-xl bg-black/35 text-sm font-medium text-zinc-500 ring-1 ring-white/[0.08]">
+              暂无可预览内容
+            </div>
+          )}
+          {error && (
+            <div className="mt-3 rounded-md border border-red-400/20 bg-red-950/35 px-3 py-2 text-xs text-red-200">
+              {error}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function stripCanvasNodeReferenceMarker(value: string): string {
@@ -9494,6 +10168,52 @@ function edgeKey(edge: Pick<FlowEdge, "source" | "target">): string {
   return `${edge.source}->${edge.target}`
 }
 
+function canvasNodeType(node: FlowNode | undefined): string {
+  const data = node?.data as { type?: unknown } | undefined
+  return String(data?.type || node?.type || "")
+}
+
+function canvasNodeInput(node: FlowNode | undefined): Record<string, unknown> {
+  const data = node?.data as { input?: unknown; workflowRuntimeOutput?: unknown; output?: unknown } | undefined
+  return asWorkflowObject(data?.input) || {}
+}
+
+function videoReferenceLimitForCanvasNode(
+  node: FlowNode,
+  providers: MediaProviderSummary[],
+  protocols: VideoProtocolSummary[],
+): number | undefined {
+  if (canvasNodeType(node) !== "video") return undefined
+  const input = canvasNodeInput(node)
+  const model = workflowStringValue(input.model)
+  const mode = workflowStringValue(input.video_mode || input.mode)
+  const provider = resolveVideoProvider(model, providers)
+  return videoReferenceImageLimitForProvider(provider, protocols, mode)
+}
+
+function invalidVideoReferenceEdgeKeys(
+  nodes: FlowNode[],
+  edges: FlowEdge[],
+  providers: MediaProviderSummary[],
+  protocols: VideoProtocolSummary[],
+): Set<string> {
+  const invalid = new Set<string>()
+  if (providers.length === 0 || protocols.length === 0) return invalid
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  for (const target of nodes) {
+    if (canvasNodeType(target) !== "video") continue
+    const limit = videoReferenceLimitForCanvasNode(target, providers, protocols)
+    if (limit === undefined) continue
+    const incomingImageEdges = edges.filter((edge) => {
+      if (edge.target !== target.id) return false
+      return canvasNodeType(nodeById.get(edge.source)) === "image"
+    })
+    const max = Math.max(0, limit)
+    incomingImageEdges.slice(max).forEach((edge) => invalid.add(edgeKey(edge)))
+  }
+  return invalid
+}
+
 function hasAlternateDirectedPath(
   source: string,
   target: string,
@@ -9525,18 +10245,20 @@ function transitiveReducedEdges(edges: FlowEdge[]): FlowEdge[] {
 }
 
 function edgeWithDisplayStyle(edge: FlowEdge, emphasized = false): FlowEdge {
+  const invalidReference = Boolean((edge.data as { invalidReference?: boolean } | undefined)?.invalidReference)
   return {
     ...edge,
     animated: emphasized || edge.animated,
     markerEnd: {
       type: MarkerType.ArrowClosed,
-      color: emphasized ? "#22d3ee" : "#64748b",
+      color: invalidReference ? "#ef4444" : emphasized ? "#22d3ee" : "#64748b",
     },
     style: {
       ...(edge.style || {}),
-      stroke: emphasized ? "#22d3ee" : (edge.style as { stroke?: string } | undefined)?.stroke || "#64748b",
-      strokeWidth: emphasized ? 2.2 : (edge.style as { strokeWidth?: number } | undefined)?.strokeWidth || 1.7,
-      opacity: emphasized ? 0.95 : (edge.style as { opacity?: number } | undefined)?.opacity || 0.72,
+      stroke: invalidReference ? "#ef4444" : emphasized ? "#22d3ee" : (edge.style as { stroke?: string } | undefined)?.stroke || "#64748b",
+      strokeWidth: invalidReference || emphasized ? 2.2 : (edge.style as { strokeWidth?: number } | undefined)?.strokeWidth || 1.7,
+      strokeDasharray: invalidReference ? "5 4" : (edge.style as { strokeDasharray?: string } | undefined)?.strokeDasharray,
+      opacity: invalidReference || emphasized ? 0.95 : (edge.style as { opacity?: number } | undefined)?.opacity || 0.72,
     },
   }
 }
@@ -9545,10 +10267,14 @@ function deriveDisplayedEdges(
   edges: FlowEdge[],
   mode: CanvasEdgeDisplayMode,
   selectedNodeIds: string[],
+  invalidReferenceEdgeKeys: Set<string> = new Set(),
 ): FlowEdge[] {
-  if (mode === "all") return edges.map((edge) => edgeWithDisplayStyle(edge))
+  const markInvalid = (edge: FlowEdge): FlowEdge => invalidReferenceEdgeKeys.has(edgeKey(edge))
+    ? { ...edge, data: { ...(edge.data as Record<string, unknown> | undefined), invalidReference: true } }
+    : edge
+  if (mode === "all") return edges.map((edge) => edgeWithDisplayStyle(markInvalid(edge)))
   const cleanEdges = transitiveReducedEdges(edges)
-  if (mode === "clean" || selectedNodeIds.length === 0) return cleanEdges.map((edge) => edgeWithDisplayStyle(edge))
+  if (mode === "clean" || selectedNodeIds.length === 0) return cleanEdges.map((edge) => edgeWithDisplayStyle(markInvalid(edge)))
 
   const selected = new Set(selectedNodeIds)
   const cleanKeys = new Set(cleanEdges.map(edgeKey))
@@ -9558,7 +10284,7 @@ function deriveDisplayedEdges(
     if (!cleanKeys.has(edgeKey(edge))) merged.push(edge)
   }
   const selectedKeys = new Set(directSelectedEdges.map(edgeKey))
-  return merged.map((edge) => edgeWithDisplayStyle(edge, selectedKeys.has(edgeKey(edge))))
+  return merged.map((edge) => edgeWithDisplayStyle(markInvalid(edge), selectedKeys.has(edgeKey(edge))))
 }
 
 function deriveCanvasVisibleEdges(
@@ -9814,6 +10540,91 @@ function nodeBounds(node: FlowNode): NodeBounds {
   }
 }
 
+function nodeContextPanelStyle(
+  node: FlowNode | null,
+  viewport: CanvasViewport,
+  container: HTMLDivElement | null,
+): CSSProperties | null {
+  if (!node || !container) return null
+  const bounds = nodeBounds(node)
+  const zoom = viewport.zoom || 1
+  const margin = NODE_CONTEXT_PANEL_MARGIN
+  const gap = NODE_CONTEXT_PANEL_GAP
+  const containerWidth = container.clientWidth || window.innerWidth
+  const containerHeight = container.clientHeight || window.innerHeight
+  if (containerWidth <= margin * 2 || containerHeight <= margin * 2) return null
+
+  const nodeScreenLeft = bounds.left * zoom + viewport.x
+  const nodeScreenTop = bounds.top * zoom + viewport.y
+  const nodeScreenWidth = bounds.width * zoom
+  const nodeScreenHeight = bounds.height * zoom
+  const nodeScreenCenterX = nodeScreenLeft + nodeScreenWidth / 2
+  const nodeScreenBottom = nodeScreenTop + nodeScreenHeight
+  const maxPanelWidth = Math.min(NODE_CONTEXT_PANEL_MAX_WIDTH, containerWidth - margin * 2)
+  const panelWidth = Math.min(
+    maxPanelWidth,
+    Math.max(
+      NODE_CONTEXT_PANEL_MIN_WIDTH,
+      Math.min(NODE_CONTEXT_PANEL_MAX_WIDTH, Math.max(nodeScreenWidth, NODE_CONTEXT_PANEL_IDEAL_WIDTH)),
+    ),
+  )
+  const left = Math.max(margin, Math.min(nodeScreenCenterX - panelWidth / 2, containerWidth - panelWidth - margin))
+
+  let top = nodeScreenBottom + gap
+  let maxHeight = Math.min(NODE_CONTEXT_PANEL_MAX_HEIGHT, containerHeight - top - margin)
+  let transformOrigin = "top center"
+  if (maxHeight < NODE_CONTEXT_PANEL_MIN_HEIGHT) {
+    const aboveHeight = nodeScreenTop - margin - gap
+    if (aboveHeight >= NODE_CONTEXT_PANEL_MIN_HEIGHT) {
+      maxHeight = Math.min(NODE_CONTEXT_PANEL_MAX_HEIGHT, aboveHeight)
+      top = Math.max(margin, nodeScreenTop - gap - maxHeight)
+      transformOrigin = "bottom center"
+    } else {
+      maxHeight = Math.max(
+        NODE_CONTEXT_PANEL_MIN_HEIGHT,
+        Math.min(NODE_CONTEXT_PANEL_MAX_HEIGHT, containerHeight - margin * 2),
+      )
+      top = Math.max(margin, Math.min(nodeScreenBottom + gap, containerHeight - margin - maxHeight))
+    }
+  }
+
+  return {
+    left,
+    top,
+    width: panelWidth,
+    maxHeight,
+    transformOrigin,
+  }
+}
+
+function nodeContextViewportNudge(
+  node: FlowNode | null,
+  viewport: CanvasViewport,
+  container: HTMLDivElement | null,
+): CanvasViewport | null {
+  if (!node || !container) return null
+  const bounds = nodeBounds(node)
+  const zoom = viewport.zoom || 1
+  const margin = NODE_CONTEXT_PANEL_MARGIN
+  const gap = NODE_CONTEXT_PANEL_GAP
+  const containerHeight = container.clientHeight || window.innerHeight
+  const nodeScreenTop = bounds.top * zoom + viewport.y
+  const nodeScreenBottom = nodeScreenTop + bounds.height * zoom
+  const belowSpace = containerHeight - nodeScreenBottom - gap - margin
+  if (belowSpace >= NODE_CONTEXT_PANEL_PREFERRED_HEIGHT) return null
+
+  const desiredBottom = containerHeight - margin - gap - NODE_CONTEXT_PANEL_PREFERRED_HEIGHT
+  const desiredShiftY = desiredBottom - nodeScreenBottom
+  const maxUpwardShift = margin - nodeScreenTop
+  const shiftY = Math.min(0, Math.max(desiredShiftY, maxUpwardShift))
+  if (Math.abs(shiftY) < 1) return null
+
+  return {
+    ...viewport,
+    y: viewport.y + shiftY,
+  }
+}
+
 function nearestAlignment(
   active: NodeBounds,
   others: NodeBounds[],
@@ -9953,16 +10764,11 @@ export default function WorkflowCanvas({
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null)
   const [viewport, setViewport] = useState<CanvasViewport>({ x: 0, y: 0, zoom: 1 })
   const [groupedNodeIds, setGroupedNodeIds] = useState<string[]>([])
-  const [contextMenu, setContextMenu] = useState<{
-    x: number
-    y: number
-    flowX: number
-    flowY: number
-    connectFrom?: PendingConnectionDraft
-    previewLine?: PendingConnectionPreviewLine
-  } | null>(null)
+  const [contextMenu, setContextMenu] = useState<CanvasCreateMenuState | null>(null)
   const [nodeActionMenu, setNodeActionMenu] = useState<NodeActionMenuState | null>(null)
   const [assetSaveRequest, setAssetSaveRequest] = useState<NodeAssetSaveRequest | null>(null)
+  const [imageEditRequest, setImageEditRequest] = useState<NodeImageEditRequest | null>(null)
+  const [nodePreviewRequest, setNodePreviewRequest] = useState<NodePreviewRequest | null>(null)
   const [nodeDetailEditRequestKey, setNodeDetailEditRequestKey] = useState<string | null>(null)
   const [panoramaViewer, setPanoramaViewer] = useState<PanoramaViewerRequest | null>(null)
   const [mediaHistoryOpen, setMediaHistoryOpen] = useState(false)
@@ -10002,6 +10808,8 @@ export default function WorkflowCanvas({
   const [workflowInstanceErrors, setWorkflowInstanceErrors] = useState<Record<string, string>>({})
   const [workflowDockDetail, setWorkflowDockDetail] = useState<WorkflowRunDockDetailSelection | null>(null)
   const [edgeDisplayMode, setEdgeDisplayMode] = useState<CanvasEdgeDisplayMode>("clean")
+  const [videoReferenceProviders, setVideoReferenceProviders] = useState<MediaProviderSummary[]>([])
+  const [videoReferenceProtocols, setVideoReferenceProtocols] = useState<VideoProtocolSummary[]>([])
   const [alignmentGuides, setAlignmentGuides] = useState<CanvasAlignmentGuide[]>([])
   const [assetSaveForm, setAssetSaveForm] = useState<AssetSaveForm>({
     library: "shared",
@@ -10022,8 +10830,35 @@ export default function WorkflowCanvas({
   const connectionStartRef = useRef<PendingConnectionDraft | null>(null)
   const connectionCompletedRef = useRef(false)
   const suppressPaneClickRef = useRef(false)
+  const blankPointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null)
   const longPressRef = useRef<LongPressState | null>(null)
   const refreshTimerRef = useRef<number | null>(null)
+  const createMenuUploadInputRef = useRef<HTMLInputElement | null>(null)
+  const createMenuUploadContextRef = useRef<CanvasCreateMenuState | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const loadVideoReferenceConfig = async () => {
+      try {
+        const [config, protocols] = await Promise.all([
+          getRuntimeConfigFile<{ parsed?: { media_providers?: MediaProviderSummary[] } }>(true),
+          getVideoProviderProtocols<{ protocols?: VideoProtocolSummary[] }>().catch(() => null),
+        ])
+        if (cancelled) return
+        setVideoReferenceProviders(config.parsed?.media_providers || [])
+        setVideoReferenceProtocols(protocols?.protocols || [])
+      } catch {
+        if (cancelled) return
+        setVideoReferenceProviders([])
+        setVideoReferenceProtocols([])
+      }
+    }
+    void loadVideoReferenceConfig()
+    window.addEventListener("drama:runtime-config-updated", loadVideoReferenceConfig)
+    return () => {
+      cancelled = true
+      window.removeEventListener("drama:runtime-config-updated", loadVideoReferenceConfig)
+    }
+  }, [])
   const groupedNodeIdSet = useMemo(() => new Set(groupedNodeIds), [groupedNodeIds])
   const visibleNodeIds = useMemo(() => new Set(allNodes.map((node) => node.id)), [allNodes])
   const canvasEdges = useMemo(
@@ -10046,6 +10881,37 @@ export default function WorkflowCanvas({
     [allNodes, canvasVisibleEdges, canvasVisibleNodeIds],
   )
   const selectedCanvasNodeId = selectedNodeId && canvasVisibleNodeIds.has(selectedNodeId) ? selectedNodeId : null
+  const basePreviewCanvasNode = nodePreviewRequest?.nodeId
+    ? nodes.find((node) => node.id === nodePreviewRequest.nodeId)
+    : undefined
+  const previewCanvasNode = useMemo(() => {
+    if (!basePreviewCanvasNode) return undefined
+    if (!nodePreviewRequest) return basePreviewCanvasNode
+    const hasOverride = (
+      nodePreviewRequest.type ||
+      nodePreviewRequest.title ||
+      nodePreviewRequest.input !== undefined ||
+      nodePreviewRequest.output !== undefined ||
+      nodePreviewRequest.prompt !== undefined ||
+      nodePreviewRequest.preview !== undefined ||
+      nodePreviewRequest.previewText !== undefined
+    )
+    if (!hasOverride) return basePreviewCanvasNode
+    const data = basePreviewCanvasNode.data as Record<string, unknown>
+    return {
+      ...basePreviewCanvasNode,
+      data: {
+        ...data,
+        type: nodePreviewRequest.type || data.type,
+        title: nodePreviewRequest.title || data.title,
+        input: nodePreviewRequest.input !== undefined ? nodePreviewRequest.input : data.input,
+        output: nodePreviewRequest.output !== undefined ? nodePreviewRequest.output : data.output,
+        prompt: nodePreviewRequest.prompt !== undefined ? nodePreviewRequest.prompt : data.prompt,
+        preview: nodePreviewRequest.preview !== undefined ? nodePreviewRequest.preview : data.preview,
+        previewText: nodePreviewRequest.previewText !== undefined ? nodePreviewRequest.previewText : data.previewText,
+      },
+    } as FlowNode
+  }, [basePreviewCanvasNode, nodePreviewRequest])
   const selectedNodeIds = useMemo(
     () => {
       const ids = new Set(nodes.filter((node) => node.selected && canvasVisibleNodeIds.has(node.id)).map((node) => node.id))
@@ -10054,9 +10920,13 @@ export default function WorkflowCanvas({
     },
     [canvasVisibleNodeIds, nodes, selectedCanvasNodeId],
   )
+  const invalidReferenceEdgeKeys = useMemo(
+    () => invalidVideoReferenceEdgeKeys(nodes, canvasVisibleEdges, videoReferenceProviders, videoReferenceProtocols),
+    [canvasVisibleEdges, nodes, videoReferenceProviders, videoReferenceProtocols],
+  )
   const edges = useMemo(
-    () => deriveDisplayedEdges(canvasVisibleEdges, edgeDisplayMode, selectedNodeIds),
-    [canvasVisibleEdges, edgeDisplayMode, selectedNodeIds],
+    () => deriveDisplayedEdges(canvasVisibleEdges, edgeDisplayMode, selectedNodeIds, invalidReferenceEdgeKeys),
+    [canvasVisibleEdges, edgeDisplayMode, invalidReferenceEdgeKeys, selectedNodeIds],
   )
   const selectedEdgeIds = useMemo(
     () => edges.filter((edge) => edge.selected).map((edge) => edge.id),
@@ -11336,13 +12206,47 @@ export default function WorkflowCanvas({
     const handleEditImageNode = (event: Event) => {
       const detail = (event as CustomEvent<NodeImageEditRequest>).detail
       if (!detail?.nodeId) return
+      const nodeId = String(detail.nodeId)
+      const sourceNode = nodes.find((item) => item.id === nodeId)
+      const imageUrl = String(detail.imageUrl || imageDownloadUrlFromNode(sourceNode) || "")
       setNodeActionMenu(null)
-      setNodeDetailEditRequestKey(`${String(detail.nodeId)}:${Date.now()}`)
-      selectNode(String(detail.nodeId))
+      if (!imageUrl) {
+        setNodeDetailEditRequestKey(`${nodeId}:${Date.now()}`)
+        selectNode(nodeId)
+        return
+      }
+      setImageEditRequest({
+        nodeId,
+        title: String(detail.title || (sourceNode?.data as { title?: string } | undefined)?.title || "图片编辑"),
+        imageUrl,
+      })
     }
     window.addEventListener("openreel:edit-image-node", handleEditImageNode)
     return () => window.removeEventListener("openreel:edit-image-node", handleEditImageNode)
-  }, [selectNode])
+  }, [nodes, selectNode])
+
+  useEffect(() => {
+    const handlePreviewNode = (event: Event) => {
+      const detail = (event as CustomEvent<NodePreviewRequest>).detail
+      const nodeId = String(detail?.nodeId || "").trim()
+      if (!nodeId) return
+      setContextMenu(null)
+      setNodeActionMenu(null)
+      setNodePreviewRequest({
+        nodeId,
+        type: detail?.type,
+        title: detail?.title,
+        input: detail?.input,
+        output: detail?.output,
+        prompt: detail?.prompt,
+        preview: detail?.preview,
+        previewText: detail?.previewText,
+        readOnly: Boolean(detail?.readOnly),
+      })
+    }
+    window.addEventListener("openreel:preview-node", handlePreviewNode)
+    return () => window.removeEventListener("openreel:preview-node", handlePreviewNode)
+  }, [])
 
   const createPanoramaFromNode = useCallback(async (request: NodePanoramaCreateRequest) => {
     if (!currentProject?.id || !request.nodeId) return
@@ -11943,6 +12847,12 @@ export default function WorkflowCanvas({
     if ("vibrate" in navigator) navigator.vibrate?.(10)
   }, [])
 
+  const clearCanvasSelection = useCallback(() => {
+    setContextMenu(null)
+    setNodeActionMenu(null)
+    selectNode(null)
+  }, [selectNode])
+
   const startLongPress = useCallback((
     pointerId: number,
     x: number,
@@ -11981,6 +12891,9 @@ export default function WorkflowCanvas({
 
   const handlePointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (isWorkflowUiTarget(event.target)) return
+    blankPointerRef.current = event.button === 0 && isCanvasBlankTarget(event.target)
+      ? { pointerId: event.pointerId, x: event.clientX, y: event.clientY }
+      : null
     if (!isTouchPointer(event)) return
     startLongPress(event.pointerId, event.clientX, event.clientY, event.target)
   }, [startLongPress])
@@ -12012,16 +12925,30 @@ export default function WorkflowCanvas({
   }, [clearLongPress])
 
   const handlePointerEndCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (isWorkflowUiTarget(event.target)) return
-    const state = longPressRef.current
-    if (!state || state.pointerId !== event.pointerId) return
-    const fired = state.fired
-    clearLongPress()
-    if (fired) {
-      event.preventDefault()
-      event.stopPropagation()
+    if (isWorkflowUiTarget(event.target)) {
+      blankPointerRef.current = null
+      return
     }
-  }, [clearLongPress])
+    const state = longPressRef.current
+    if (state && state.pointerId === event.pointerId) {
+      const fired = state.fired
+      clearLongPress()
+      if (fired) {
+        blankPointerRef.current = null
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
+    }
+    const blankPointer = blankPointerRef.current
+    blankPointerRef.current = null
+    if (!blankPointer || blankPointer.pointerId !== event.pointerId || suppressPaneClickRef.current) return
+    if (!isCanvasBlankTarget(event.target)) return
+    const moved = Math.hypot(event.clientX - blankPointer.x, event.clientY - blankPointer.y)
+    if (moved <= CANVAS_BLANK_CLICK_TOLERANCE) {
+      clearCanvasSelection()
+    }
+  }, [clearCanvasSelection, clearLongPress])
 
   const handleTouchEndCapture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     if (isWorkflowUiTarget(event.target)) return
@@ -12036,26 +12963,39 @@ export default function WorkflowCanvas({
     }
   }, [clearLongPress])
 
-  const handleCreateNode = useCallback(async (type: CanvasNodeType) => {
-    if (!currentProject?.id || !contextMenu) return
-    const menu = contextMenu
-    const title = {
-      text: "文本节点",
-      image: "图片节点",
-      video: "视频节点",
-      audio: "音频节点",
-    }[type]
-    setContextMenu(null)
+  const resolveCreateMenuPosition = useCallback((menu: CanvasCreateMenuState) => {
+    let initial = { x: menu.flowX, y: menu.flowY }
+    if (menu.connectFrom?.nodeId) {
+      const sourceNode = nodes.find((node) => node.id === menu.connectFrom?.nodeId)
+      if (sourceNode) {
+        const bounds = nodeBounds(sourceNode)
+        const gap = 104
+        initial = menu.connectFrom.handleType === "target"
+          ? { x: bounds.left - ALIGNMENT_DEFAULT_NODE_WIDTH - gap, y: bounds.top }
+          : { x: bounds.right + gap, y: bounds.top }
+      }
+    }
+    return findAvailableNodePosition(initial, nodes, menu.connectFrom?.nodeId)
+  }, [nodes])
+
+  const createNodeFromMenu = useCallback(async (
+    type: CanvasNodeType,
+    title: string,
+    menu: CanvasCreateMenuState,
+    undoLabel?: string,
+  ) => {
+    if (!currentProject?.id) return null
+    const positionInput = resolveCreateMenuPosition(menu)
     try {
       const raw = await createProjectNode(currentProject.id, {
         type,
         title,
-        x: menu.flowX,
-        y: menu.flowY,
+        x: positionInput.x,
+        y: positionInput.y,
       })
       const id = String(raw.id ?? "")
-      if (!id) return
-      const position = { x: Number(raw.position_x ?? menu.flowX), y: Number(raw.position_y ?? menu.flowY) }
+      if (!id) return null
+      const position = { x: Number(raw.position_x ?? positionInput.x), y: Number(raw.position_y ?? positionInput.y) }
       addNode({
         id,
         type,
@@ -12093,7 +13033,7 @@ export default function WorkflowCanvas({
         }
       }
       pushUndo({
-        label: menu.connectFrom ? "创建并连接节点" : "创建节点",
+        label: undoLabel || (menu.connectFrom ? "创建并连接节点" : "创建节点"),
         undo: async () => {
           if (!currentProject?.id) return
           if (connectedEdgeId) {
@@ -12103,10 +13043,69 @@ export default function WorkflowCanvas({
         },
       })
       selectNode(null)
+      return { id, connectedEdgeId }
     } catch (error) {
       console.warn("Failed to create canvas node", error)
+      return null
     }
-  }, [addNode, connectNodes, contextMenu, currentProject?.id, pushUndo, removeEdges, replaceEdgeId, selectNode])
+  }, [addNode, connectNodes, currentProject?.id, pushUndo, removeEdges, replaceEdgeId, resolveCreateMenuPosition, selectNode])
+
+  const handleCreateNode = useCallback(async (type: CanvasNodeType) => {
+    if (!contextMenu) return
+    const menu = contextMenu
+    const item = CANVAS_NODE_CREATE_ITEMS.find((entry) => entry.type === type)
+    const title = item ? `${item.label}节点` : "新建节点"
+    setContextMenu(null)
+    await createNodeFromMenu(type, title, menu)
+  }, [contextMenu, createNodeFromMenu])
+
+  const handleCreateUploadMedia = useCallback(async (files: FileList | null) => {
+    const file = files?.[0]
+    const menu = createMenuUploadContextRef.current
+    createMenuUploadContextRef.current = null
+    if (!file || !menu || !currentProject?.id) return
+    const type = canvasUploadNodeType(file)
+    if (!type) {
+      window.alert("当前入口支持上传图片或视频。音频可以先创建音频节点，或从历史素材恢复。")
+      return
+    }
+    const created = await createNodeFromMenu(type, titleFromUploadFile(file, type), menu, "上传媒体到画布")
+    if (!created?.id) return
+    try {
+      await uploadProjectNodeMedia(currentProject.id, created.id, file)
+      await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+      selectNode(created.id)
+    } catch (error) {
+      console.warn("Failed to upload media for new node", error)
+      window.alert(error instanceof Error ? error.message : "上传失败")
+    }
+  }, [createNodeFromMenu, currentProject?.id, refreshCanvas, selectNode])
+
+  const openUploadCreateFromMenu = useCallback(() => {
+    if (!contextMenu) return
+    createMenuUploadContextRef.current = contextMenu
+    setContextMenu(null)
+    createMenuUploadInputRef.current?.click()
+  }, [contextMenu])
+
+  const openMediaHistoryFromCreateMenu = useCallback(() => {
+    setContextMenu(null)
+    setMediaHistoryOpen(true)
+    void refreshMediaHistory()
+  }, [refreshMediaHistory])
+
+  const openWorkflowTemplatesFromCreateMenu = useCallback(() => {
+    setContextMenu(null)
+    onWorkspaceViewChange?.("workflow")
+    void refreshWorkflowTemplates()
+  }, [onWorkspaceViewChange, refreshWorkflowTemplates])
+
+  const openCanvasCreateMenuAtCenter = useCallback(() => {
+    const rect = canvasContainerRef.current?.getBoundingClientRect()
+    const x = rect ? rect.left + rect.width * 0.5 : window.innerWidth * 0.5
+    const y = rect ? rect.top + rect.height * 0.46 : window.innerHeight * 0.46
+    openPaneCreateMenuAt(x, y)
+  }, [openPaneCreateMenuAt])
 
   const deleteCanvasItems = useCallback(async (nodeIdsInput: string[], edgeIdsInput: string[]) => {
     if (!currentProject?.id) return
@@ -12303,6 +13302,7 @@ export default function WorkflowCanvas({
 
   const restoreMediaHistoryItem = useCallback(async (item: ProjectMediaHistoryItem) => {
     if (!currentProject?.id || restoringHistoryId) return
+    if (item.kind === "text") return
     setRestoringHistoryId(item.id)
     setMediaHistoryError(null)
     try {
@@ -12317,7 +13317,7 @@ export default function WorkflowCanvas({
       }>(currentProject.id, item.id, {
         x: position.x,
         y: position.y,
-        title: item.title || item.filename,
+        title: item.title || item.filename || "历史素材",
       })
       await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
       if (result.node?.id) selectNode(String(result.node.id))
@@ -12331,6 +13331,7 @@ export default function WorkflowCanvas({
 
   const deleteMediaHistoryItem = useCallback(async (item: ProjectMediaHistoryItem) => {
     if (!currentProject?.id || deletingHistoryId) return
+    if (item.kind === "text") return
     const ok = window.confirm(`确定彻底删除这个${MEDIA_HISTORY_LABEL[item.kind]}文件吗？`)
     if (!ok) return
     setDeletingHistoryId(item.id)
@@ -12353,6 +13354,24 @@ export default function WorkflowCanvas({
       : visibleNodes.map((node) => groupedNodeIdSet.has(node.id) ? { ...node, draggable: false } : node)
   }, [canvasVisibleNodeIds, groupedNodeIdSet, nodes])
   const flowEdges = edges
+  const selectedCanvasNode = useMemo(
+    () => selectedCanvasNodeId ? flowNodes.find((node) => node.id === selectedCanvasNodeId) || null : null,
+    [flowNodes, selectedCanvasNodeId],
+  )
+  const selectedNodeContextPanelStyle = useMemo(
+    () => nodeContextPanelStyle(selectedCanvasNode, viewport, canvasContainerRef.current),
+    [selectedCanvasNode, viewport],
+  )
+  useEffect(() => {
+    if (!selectedCanvasNode || !flowInstance || !canvasContainerRef.current) return
+    const nextViewport = nodeContextViewportNudge(selectedCanvasNode, viewport, canvasContainerRef.current)
+    if (!nextViewport) return
+    const frame = window.requestAnimationFrame(() => {
+      setViewport(nextViewport)
+      void flowInstance.setViewport(nextViewport, { duration: 160 })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [flowInstance, selectedCanvasNode, viewport])
   const hiddenEdgeCount = Math.max(0, canvasVisibleEdges.length - flowEdges.length)
   const workflowPanel = currentProject?.id ? (
     <WorkflowTemplatePanel
@@ -12437,12 +13456,38 @@ export default function WorkflowCanvas({
         onRestore={(item) => void restoreMediaHistoryItem(item)}
         onDelete={(item) => void deleteMediaHistoryItem(item)}
       />
-      {flowNodes.length === 0 && (
+      <input
+        ref={createMenuUploadInputRef}
+        type="file"
+        accept="image/*,video/*"
+        className="hidden"
+        onChange={(event) => {
+          void handleCreateUploadMedia(event.currentTarget.files)
+          event.currentTarget.value = ""
+        }}
+      />
+      {flowNodes.length === 0 && !contextMenu && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-zinc-500">
-          <div className="text-center">
-            <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-md bg-white/[0.06] text-[12px] font-semibold tracking-tight text-zinc-300">WF</div>
+          <div className="pointer-events-auto rounded-md border border-white/10 bg-[#10151d]/82 px-4 py-3 text-center shadow-xl shadow-black/30 backdrop-blur">
+            <div className="mx-auto mb-2 flex h-9 w-9 items-center justify-center rounded-md bg-white/[0.07] text-[12px] font-semibold tracking-tight text-zinc-300">+</div>
             <div className="text-sm text-zinc-200">创作画布</div>
-            <div className="text-xs mt-1 text-zinc-500">任务驱动的 text / image / video / audio 节点会显示在这里</div>
+            <div className="mt-1 text-xs text-zinc-500">从节点开始，或直接打开流程模板</div>
+            <div className="mt-3 flex items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={openCanvasCreateMenuAtCenter}
+                className="h-8 rounded-md bg-cyan-300 px-3 text-xs font-medium text-cyan-950 transition hover:bg-cyan-200"
+              >
+                新建节点
+              </button>
+              <button
+                type="button"
+                onClick={openWorkflowTemplatesFromCreateMenu}
+                className="h-8 rounded-md border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-zinc-200 transition hover:bg-white/[0.08]"
+              >
+                流程模板
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -12560,11 +13605,9 @@ export default function WorkflowCanvas({
         onPaneContextMenu={handlePaneContextMenu}
         onPaneClick={() => {
           if (suppressPaneClickRef.current) return
-          setContextMenu(null)
-          setNodeActionMenu(null)
-          selectNode(null)
+          clearCanvasSelection()
         }}
-        className="bg-black"
+        className="openreel-canvas-flow bg-black"
       >
         <MiniMap
           pannable
@@ -12575,6 +13618,20 @@ export default function WorkflowCanvas({
         />
         <Controls className="!rounded-md !border !border-white/10 !bg-[#11151d]/90 !shadow-xl !shadow-black/30 [&_button]:!h-9 [&_button]:!w-9 [&_button]:!border-white/10 [&_button]:!bg-transparent [&_button]:!text-zinc-300 hover:[&_button]:!bg-white/10 sm:[&_button]:!h-7 sm:[&_button]:!w-7" />
       </ReactFlow>
+
+      <button
+        type="button"
+        title="新建节点"
+        aria-label="新建节点"
+        data-openreel-workflow-ui="true"
+        onClick={(event) => {
+          event.stopPropagation()
+          openCanvasCreateMenuAtCenter()
+        }}
+        className="absolute left-4 top-4 z-40 flex h-9 w-9 items-center justify-center rounded-md border border-white/10 bg-[#11151d]/92 text-zinc-100 shadow-xl shadow-black/30 backdrop-blur transition hover:border-cyan-300/35 hover:bg-cyan-300/12 hover:text-cyan-100"
+      >
+        <span className="text-base font-light leading-none">+</span>
+      </button>
 
       <CanvasGroupLayer
         projectId={currentProject?.id}
@@ -12597,30 +13654,85 @@ export default function WorkflowCanvas({
 
       {contextMenu && (
         <div
-          className="fixed z-[80] w-40 overflow-hidden rounded-md border border-white/10 bg-[#11151d]/96 py-1 text-sm text-zinc-200 shadow-2xl shadow-black/50 backdrop-blur"
-          style={menuPositionStyle(contextMenu.x, contextMenu.y, 160, contextMenu.connectFrom ? 190 : 154)}
+          className="fixed z-[80] overflow-hidden rounded-lg border border-white/10 bg-[#10151d]/98 p-2 text-sm text-zinc-200 shadow-2xl shadow-black/55 backdrop-blur"
+          style={menuPositionStyle(
+            contextMenu.x,
+            contextMenu.y,
+            CANVAS_CREATE_MENU_WIDTH,
+            contextMenu.connectFrom ? CANVAS_CONNECT_CREATE_MENU_HEIGHT : CANVAS_CREATE_MENU_HEIGHT,
+          )}
           onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
         >
-          {contextMenu.connectFrom && (
-            <div className="border-b border-white/10 px-3 py-2 text-[10px] font-medium uppercase tracking-[0.12em] text-cyan-200/80">
-              创建并连接
+          <div className="border-b border-white/10 px-2 pb-2">
+            <div className="text-xs font-semibold text-zinc-100">
+              {contextMenu.connectFrom ? "接在当前节点后" : "添加到画布"}
+            </div>
+            <div className="mt-0.5 text-[11px] text-zinc-500">
+              {contextMenu.connectFrom ? "新节点会自动建立依赖连线" : "选择内容类型或从已有素材开始"}
+            </div>
+          </div>
+          <div className="py-2">
+            <div className="px-2 pb-1 text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-600">节点</div>
+            {CANVAS_NODE_CREATE_ITEMS.map((item) => (
+              <button
+                key={item.type}
+                type="button"
+                className="group flex w-full items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-white/[0.07]"
+                onClick={() => void handleCreateNode(item.type)}
+              >
+                <span className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[11px] font-semibold ring-1", item.accentClass)}>
+                  {item.badge}
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-xs font-medium text-zinc-100">{item.label}</span>
+                  <span className="block truncate text-[11px] text-zinc-500 group-hover:text-zinc-400">{item.description}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+          {!contextMenu.connectFrom && (
+            <div className="border-t border-white/10 pt-2">
+              <div className="px-2 pb-1 text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-600">已有内容</div>
+              <button
+                type="button"
+                className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left transition-colors hover:bg-white/[0.07]"
+                onClick={openUploadCreateFromMenu}
+              >
+                <span>
+                  <span className="block text-xs font-medium text-zinc-100">上传图片或视频</span>
+                  <span className="block text-[11px] text-zinc-500">自动创建对应画布节点</span>
+                </span>
+                <span className="text-sm text-zinc-500">↑</span>
+              </button>
+              <button
+                type="button"
+                className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left transition-colors hover:bg-white/[0.07]"
+                onClick={openMediaHistoryFromCreateMenu}
+              >
+                <span>
+                  <span className="block text-xs font-medium text-zinc-100">历史素材</span>
+                  <span className="block text-[11px] text-zinc-500">把生成过的图片/视频放回画布</span>
+                </span>
+                <span className="text-sm text-zinc-500">›</span>
+              </button>
             </div>
           )}
-          {([
-            ["text", "文本节点"],
-            ["image", "图片节点"],
-            ["video", "视频节点"],
-            ["audio", "音频节点"],
-          ] as const).map(([type, label]) => (
-            <button
-              key={type}
-              type="button"
-              className="block w-full px-3 py-2 text-left text-xs transition-colors hover:bg-white/10"
-              onClick={() => void handleCreateNode(type)}
-            >
-              {label}
-            </button>
-          ))}
+          {!contextMenu.connectFrom && (
+            <div className="mt-2 border-t border-white/10 pt-2">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left transition-colors hover:bg-white/[0.07]"
+                onClick={openWorkflowTemplatesFromCreateMenu}
+              >
+                <span>
+                  <span className="block text-xs font-medium text-zinc-100">流程模板</span>
+                  <span className="block text-[11px] text-zinc-500">打开模板面板并添加可运行流程</span>
+                </span>
+                <span className="text-sm text-zinc-500">›</span>
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -12708,6 +13820,18 @@ export default function WorkflowCanvas({
         </div>
       )}
 
+      {previewCanvasNode && currentProject?.id && (
+        <NodeOutputPreviewCard
+          node={previewCanvasNode}
+          projectId={currentProject.id}
+          readOnly={Boolean(nodePreviewRequest?.readOnly)}
+          onClose={() => setNodePreviewRequest(null)}
+          onTextSaved={async () => {
+            await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+          }}
+        />
+      )}
+
       {nodeActionMenu && (
         <div
           className="openreel-canvas-action-menu fixed z-[80] w-44 overflow-hidden rounded-md border border-white/10 bg-[#11151d]/96 py-1 text-sm text-zinc-200 shadow-2xl shadow-black/50 backdrop-blur"
@@ -12718,7 +13842,7 @@ export default function WorkflowCanvas({
           {nodeActionMenu.imageUrl && (
             <button
               type="button"
-              className="block w-full px-3 py-2.5 text-left text-xs transition-colors hover:bg-white/10"
+              className="block w-full appearance-none bg-transparent px-3 py-2.5 text-left text-xs text-zinc-100 transition-colors hover:bg-white/10"
               onClick={() => void handleDownloadImageFromMenu(nodeActionMenu.imageUrl!, nodeActionMenu.title)}
             >
               保存图片
@@ -12726,7 +13850,7 @@ export default function WorkflowCanvas({
           )}
           <button
             type="button"
-            className="block w-full px-3 py-2.5 text-left text-xs text-red-200 transition-colors hover:bg-red-500/12 hover:text-red-100"
+            className="block w-full appearance-none bg-transparent px-3 py-2.5 text-left text-xs text-red-200 transition-colors hover:bg-red-500/12 hover:text-red-100"
             onClick={() => void handleDeleteNodeFromMenu(nodeActionMenu.nodeId)}
           >
             删除节点
@@ -12735,18 +13859,33 @@ export default function WorkflowCanvas({
       )}
 
       <AnimatePresence>
-        {selectedCanvasNodeId && (
+        {selectedCanvasNodeId && selectedNodeContextPanelStyle && (
           <NodeDetailPanel
             key={selectedCanvasNodeId}
             nodeId={selectedCanvasNodeId}
             projectId={currentProject?.id}
             onClose={() => selectNode(null)}
             onRerun={handleRerun}
-            presentation="modal"
+            presentation="anchored"
+            anchorStyle={selectedNodeContextPanelStyle}
             editRequestKey={nodeDetailEditRequestKey}
           />
         )}
       </AnimatePresence>
+
+      {imageEditRequest && currentProject?.id && (
+        <ImageEditPanel
+          projectId={currentProject.id}
+          nodeId={imageEditRequest.nodeId}
+          title={imageEditRequest.title || "图片编辑"}
+          imageUrl={imageEditRequest.imageUrl || ""}
+          onClose={() => setImageEditRequest(null)}
+          onCommitted={async () => {
+            setImageEditRequest(null)
+            await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+          }}
+        />
+      )}
 
       {panoramaViewer && (
         <PanoramaViewer

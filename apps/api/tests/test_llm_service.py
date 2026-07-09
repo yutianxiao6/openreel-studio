@@ -157,6 +157,38 @@ async def test_workflow_spec_uses_agent_loop_config_fallback(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_node_override_provider_name_resolves_configured_llm_provider(monkeypatch) -> None:
+    async def fake_lookup_provider(name: str):
+        assert name == "Panel Text"
+        return SimpleNamespace(
+            name=name,
+            provider="deepseek",
+            model_name="deepseek-chat",
+            base_url="https://llm.example.test/v1",
+            api_key="sk-panel",
+            max_output_tokens=2048,
+            context_window_tokens=None,
+            max_input_tokens=None,
+            supports_prompt_cache=None,
+            supports_vision=False,
+            tokenizer=None,
+            tier="balanced",
+            params_json=None,
+        )
+
+    monkeypatch.setattr(llm_service, "_lookup_llm_provider", fake_lookup_provider)
+
+    cfg = await llm_service._resolve_config("text_generation", None, "Panel Text")
+
+    assert cfg["model"] == "deepseek/deepseek-chat"
+    assert cfg["api_base"] == "https://llm.example.test/v1"
+    assert cfg["api_key"] == "sk-panel"
+    assert cfg["max_tokens"] == 2048
+    assert cfg["model_metadata"]["provider_name"] == "Panel Text"
+    assert cfg["model_metadata"]["supports_vision"] is False
+
+
+@pytest.mark.asyncio
 async def test_llm_generate_does_not_retry_context_length(monkeypatch) -> None:
     calls = {"count": 0}
 

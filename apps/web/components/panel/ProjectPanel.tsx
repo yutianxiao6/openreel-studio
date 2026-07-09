@@ -1,24 +1,19 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react"
-import { AnimatePresence, motion } from "framer-motion"
+import { motion } from "framer-motion"
 import type { Node } from "reactflow"
 import { useViewModeStore } from "@/stores/viewModeStore"
 import { useProjectStore } from "@/stores/projectStore"
 import { useCanvasStore } from "@/stores/canvasStore"
 import { useBlueprintStore } from "@/stores/blueprintStore"
-import { summarizeAgentRoundToolResult, useChatStore, type ChecklistItem } from "@/stores/chatStore"
+import { useChatStore, type ChecklistItem } from "@/stores/chatStore"
 import {
-  chatStreamAsync,
-  callTool,
   getPanelLayout,
   resolveMediaUrl,
   setPanelLayout,
-  type BlueprintStreamEvent,
-  type ChatStreamEvent,
 } from "@/lib/api"
 import { getNodeStyle } from "../canvas/nodeStyles"
-import NodeDetailPanel from "../canvas/NodeDetailPanel"
 
 interface NodeSummary {
   id: string
@@ -112,42 +107,12 @@ interface PanelData {
 
 type PanelLayoutMode = "tier" | "type" | "phase" | "status"
 
-interface DeleteNodeResult {
-  ok?: boolean
-  id?: string
-  error?: string
-  cleared_all?: boolean
-  deleted_node_ids?: unknown[]
-}
-
 type CanvasNodeData = {
   type?: string
   status?: string
   title?: string
   prompt?: string | null
   preview?: Record<string, unknown>
-}
-
-function isWorkflowSpecOnlyRound(event: ChatStreamEvent): boolean {
-  if (event.type !== "agent_round") return false
-  const agents = Array.isArray(event.tool_agents) ? event.tool_agents.map((item) => String(item).trim()).filter(Boolean) : []
-  return agents.length > 0 && agents.every((agent) => agent === "workflow_spec")
-}
-
-function isWorkflowSpecToolEvent(event: ChatStreamEvent): boolean {
-  if (event.type !== "tool_start" && event.type !== "tool_done") return false
-  if (typeof event.agent === "string" && event.agent.trim() === "workflow_spec") return true
-  return event.type === "tool_start" && String(event.tool || "") === "tool.execute" && /workflow_spec|工作流.*模板|流程图/.test(String(event.content || ""))
-}
-
-function isWorkflowSpecPreviewResult(result: unknown): boolean {
-  if (!result || typeof result !== "object" || Array.isArray(result)) return false
-  const outer = result as Record<string, unknown>
-  const nested = outer.result && typeof outer.result === "object" && !Array.isArray(outer.result)
-    ? outer.result as Record<string, unknown>
-    : null
-  const candidate = typeof outer.artifact_ref === "string" ? outer : nested
-  return typeof candidate?.artifact_ref === "string" && candidate.artifact_ref.startsWith("workflow_spec:")
 }
 
 const LAYOUT_MODES: { mode: PanelLayoutMode; label: string }[] = [
@@ -342,15 +307,6 @@ function nodeProgress(nodes: NodeSummary[]) {
   const failed = nodes.filter((node) => node.status === "failed").length
   const running = nodes.filter((node) => node.status === "running").length
   return { total, completed, failed, running, ratio: total ? completed / total : 0 }
-}
-
-function deletedIdsFromResult(result: DeleteNodeResult, fallbackId: string): string[] {
-  const ids = (result.deleted_node_ids ?? [])
-    .map((id) => (typeof id === "string" ? id : ""))
-    .filter(Boolean)
-  if (ids.length) return ids
-  if (typeof result.id === "string" && result.id) return [result.id]
-  return [fallbackId]
 }
 
 function segmentSortKey(segment: SegmentBucket): number {
@@ -1297,31 +1253,21 @@ export function ProjectPanel() {
   const { currentProject } = useProjectStore()
   const { mode: viewMode } = useViewModeStore()
   const canvasNodes = useCanvasStore((s) => s.nodes)
-  const applyCanvasAction = useCanvasStore((s) => s.applyCanvasAction)
-  const updateCanvasNode = useCanvasStore((s) => s.updateNode)
-  const appendMessage = useChatStore((s) => s.appendMessage)
-  const setStreaming = useChatStore((s) => s.setStreaming)
+  const selectCanvasNode = useCanvasStore((s) => s.selectNode)
   const streaming = useChatStore((s) => s.streaming)
-  const addAgentRound = useChatStore((s) => s.addAgentRound)
-  const addAgentRoundToolStart = useChatStore((s) => s.addAgentRoundToolStart)
-  const addAgentRoundToolResult = useChatStore((s) => s.addAgentRoundToolResult)
-  const completeAgentRound = useChatStore((s) => s.completeAgentRound)
-  const addToolBubble = useChatStore((s) => s.addToolBubble)
-  const updateToolBubble = useChatStore((s) => s.updateToolBubble)
   const activeChecklist = useChatStore((s) => s.activeChecklist)
-  const setActiveChecklist = useChatStore((s) => s.setActiveChecklist)
   const blueprintStatus = useBlueprintStore((s) => s.status)
   const blueprint = useBlueprintStore((s) => s.blueprint)
-  const applyBlueprintEvent = useBlueprintStore((s) => s.applyStreamEvent)
   const [data, setData] = useState<PanelData | null>(null)
   const [loading, setLoading] = useState(false)
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [zoom, setZoom] = useState(0.92)
   const [layoutMode, setLayoutMode] = useState<PanelLayoutMode>("tier")
+  const openCanvasNode = useCallback((id: string) => {
+    selectCanvasNode(id)
+  }, [selectCanvasNode])
 
   const canvasById = useMemo(() => new Map(canvasNodes.map((node) => [node.id, node])), [canvasNodes])
   const allPanelNodes = useMemo(() => collectPanelNodes(data), [data])
-  const panelNodeById = useMemo(() => new Map(allPanelNodes.map((node) => [node.id, node])), [allPanelNodes])
   const progress = nodeProgress(allPanelNodes)
 
   const fetchPanel = useCallback(async () => {
@@ -1352,131 +1298,6 @@ export function ProjectPanel() {
       setLoading(false)
     }
   }, [currentProject, layoutMode])
-
-  const handleStreamEvent = useCallback((event: ChatStreamEvent) => {
-    if (String(event.type).startsWith("blueprint_") && event.type !== "blueprint_tree_changed") {
-      applyBlueprintEvent(event as BlueprintStreamEvent, currentProject?.id)
-      void fetchPanel()
-      return
-    }
-    if (event.type === "agent_round") {
-      if (isWorkflowSpecOnlyRound(event)) return
-      addAgentRound({
-        round: Number(event.round),
-        content: String(event.content ?? ""),
-        source: event.source === "model" ? "model" : "action_summary",
-        tools: Array.isArray(event.tools) ? event.tools.map(String) : [],
-      })
-      return
-    }
-    if (event.type === "agent_round_done") {
-      completeAgentRound(Number(event.round))
-      return
-    }
-    if (event.type === "tool_start" && event.tool) {
-      if (isWorkflowSpecToolEvent(event)) return
-      const tool = String(event.tool)
-      addToolBubble(tool)
-      addAgentRoundToolStart(tool, String(event.content || ""))
-      return
-    }
-    if (event.type === "tool_done" && event.tool) {
-      const result = event.result
-      if (isWorkflowSpecPreviewResult(result) || isWorkflowSpecToolEvent(event)) return
-      const resultObj = result as Record<string, unknown> | null
-      const awaitingConfirmation = Boolean(resultObj?.requires_user_confirm) && !resultObj?.error
-      const failed = Boolean(
-        result && typeof result === "object" &&
-        !awaitingConfirmation &&
-        ("error" in result || ("ok" in result && result.ok === false))
-      )
-      updateToolBubble(String(event.tool), { status: failed ? "failed" : "completed" })
-      addAgentRoundToolResult(summarizeAgentRoundToolResult(String(event.tool), result))
-      return
-    }
-    if (event.type === "canvas_action") {
-      applyCanvasAction(String(event.action ?? ""), (event.payload as Record<string, unknown>) ?? {})
-      void fetchPanel()
-      return
-    }
-    if (event.type === "checklist_updated") {
-      if (Array.isArray(event.checklist)) {
-        setActiveChecklist(event.checklist as ChecklistItem[])
-      }
-      void fetchPanel()
-    }
-  }, [
-    addAgentRound,
-    addAgentRoundToolResult,
-    addAgentRoundToolStart,
-    addToolBubble,
-    applyBlueprintEvent,
-    applyCanvasAction,
-    completeAgentRound,
-    currentProject?.id,
-    fetchPanel,
-    setActiveChecklist,
-    updateToolBubble,
-  ])
-
-  const handleRerun = useCallback(async (nodeId: string) => {
-    if (!currentProject || streaming) return
-    const canvasType = String(canvasById.get(nodeId)?.data?.type ?? "")
-    const panelType = String(panelNodeById.get(nodeId)?.type ?? "")
-    const action = canvasType === "image" || panelType === "image" ? "render" : "force"
-    updateCanvasNode(nodeId, { status: "running", error: undefined, error_message: undefined })
-    try {
-      const result = await callTool<Record<string, unknown>>("node.run", {
-        project_id: currentProject.id,
-        node_id: nodeId,
-        action,
-      })
-      if (result && result.ok === false) throw new Error(String(result.error || "重新生成失败"))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      updateCanvasNode(nodeId, { status: "failed", error: message, error_message: message })
-      throw error
-    } finally {
-      await fetchPanel()
-    }
-  }, [canvasById, currentProject, fetchPanel, panelNodeById, streaming, updateCanvasNode])
-
-  const handleStoryRevision = useCallback(async (nodeId: string) => {
-    if (!currentProject || streaming) return
-    const target = panelNodeById.get(nodeId)
-    const targetType = target?.type || ""
-    const targetTitle = target?.title || "未命名节点"
-    const revision = window.prompt(`修改剧情节点「${targetTitle}」\n\n请输入你要怎么改：`, "")?.trim()
-    if (!revision) return
-    const revisionMsg = [
-      `请根据用户要求修改蓝图中的剧情源内容，目标节点 node_id=${nodeId}（类型：${targetType}，标题：${targetTitle}）。`,
-      `修改要求：${revision}`,
-      "必须先读取节点和项目蓝图，定位 blueprint_source_paths，创建 pending_blueprint_revision；不要直接修改剧情节点 output。修订草稿生成后请让用户确认。",
-    ].join("\n")
-    setSelectedNodeId(null)
-    appendMessage({ role: "user", content: `修改剧情节点【${targetTitle}】：${revision}`, id: `${Date.now()}-u`, createdAt: new Date().toISOString() })
-    appendMessage({ role: "assistant", content: "", id: `${Date.now()}-a`, createdAt: new Date().toISOString(), nodes: [] })
-    setStreaming(true)
-    try {
-      await chatStreamAsync(currentProject.id, revisionMsg, handleStreamEvent)
-    } finally {
-      setStreaming(false)
-      await fetchPanel()
-    }
-  }, [appendMessage, currentProject, fetchPanel, handleStreamEvent, panelNodeById, setStreaming, streaming])
-
-  const handleDelete = useCallback(async (nodeId: string) => {
-    const result = await callTool<DeleteNodeResult>("canvas.delete", { scope: "selected", node_ids: [nodeId] })
-    if (result.error || result.ok === false) throw new Error(result.error || "节点删除失败")
-    if (result.cleared_all) {
-      applyCanvasAction("clear_all", {})
-    } else {
-      for (const id of deletedIdsFromResult(result, nodeId)) {
-        applyCanvasAction("delete_node", { id })
-      }
-    }
-    await fetchPanel()
-  }, [applyCanvasAction, fetchPanel])
 
   useEffect(() => {
     if (viewMode === "panel") void fetchPanel()
@@ -1593,10 +1414,10 @@ export function ProjectPanel() {
               {grid ? (
                 <div className="space-y-4">
                   {blueprintTree?.root ? (
-                    <BlueprintTreeLayout tree={blueprintTree} canvasById={canvasById} onOpen={setSelectedNodeId} />
+                    <BlueprintTreeLayout tree={blueprintTree} canvasById={canvasById} onOpen={openCanvasNode} />
                   ) : (
                     <>
-                      <GlobalStrip grid={grid.global} canvasById={canvasById} onOpen={setSelectedNodeId} />
+                      <GlobalStrip grid={grid.global} canvasById={canvasById} onOpen={openCanvasNode} />
                       {episodeOrder.map((episodeNumber) => {
                         const episode = grid.episodes[String(episodeNumber)]
                         if (!episode) return null
@@ -1606,7 +1427,7 @@ export function ProjectPanel() {
                             episode={episode}
                             globalCharacters={globalCharacters}
                             canvasById={canvasById}
-                            onOpen={setSelectedNodeId}
+                            onOpen={openCanvasNode}
                           />
                         )
                       })}
@@ -1615,7 +1436,7 @@ export function ProjectPanel() {
                           <div className="mb-2 text-xs text-zinc-500">草稿 / 未分类</div>
                           <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(178px, 1fr))" }}>
                             {grid.unbucketed.map((node) => (
-                              <NodeThumb key={node.id} node={node} canvasNode={canvasById.get(node.id)} onOpen={setSelectedNodeId} />
+                              <NodeThumb key={node.id} node={node} canvasNode={canvasById.get(node.id)} onOpen={openCanvasNode} />
                             ))}
                           </div>
                         </div>
@@ -1624,28 +1445,12 @@ export function ProjectPanel() {
                   )}
                 </div>
               ) : (
-                <FlatLayout grid={data.grid as Record<string, NodeSummary[]>} canvasById={canvasById} onOpen={setSelectedNodeId} />
+                <FlatLayout grid={data.grid as Record<string, NodeSummary[]>} canvasById={canvasById} onOpen={openCanvasNode} />
               )}
             </div>
           </motion.div>
         )}
       </div>
-
-      <AnimatePresence>
-        {selectedNodeId ? (
-          <NodeDetailPanel
-            key={selectedNodeId}
-            nodeId={selectedNodeId}
-            projectId={currentProject.id}
-            onClose={() => setSelectedNodeId(null)}
-            onRerun={handleRerun}
-            onRequestStoryRevision={handleStoryRevision}
-            onDelete={handleDelete}
-            actionDisabled={streaming || loading}
-            presentation="modal"
-          />
-        ) : null}
-      </AnimatePresence>
     </div>
   )
 }

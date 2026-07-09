@@ -4,12 +4,61 @@
 """
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ── 子模型 ────────────────────────────────────────────────────────────────
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
+def _protocol_catalog_path(env_name: str, relative_path: str) -> Path:
+    override = os.getenv(env_name, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return _project_root() / relative_path
+
+
+def _protocol_ids_from_catalog(env_name: str, relative_path: str) -> set[str]:
+    path = _protocol_catalog_path(env_name, relative_path)
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    protocols = data.get("protocols") if isinstance(data, dict) else None
+    if not isinstance(protocols, dict):
+        return set()
+    return {str(protocol_id) for protocol_id in protocols if str(protocol_id).strip()}
+
+
+def _video_protocol_ids_from_catalog() -> set[str]:
+    return _protocol_ids_from_catalog(
+        "OPENREEL_VIDEO_PROTOCOLS_FILE",
+        "config/video_provider_protocols/catalog.json",
+    )
+
+
+def _image_protocol_ids_from_catalog() -> set[str]:
+    return _protocol_ids_from_catalog(
+        "OPENREEL_IMAGE_PROTOCOLS_FILE",
+        "config/image_provider_protocols/catalog.json",
+    )
+
+
+def _audio_protocol_ids_from_catalog() -> set[str]:
+    return _protocol_ids_from_catalog(
+        "OPENREEL_AUDIO_PROTOCOLS_FILE",
+        "config/audio_provider_protocols/catalog.json",
+    )
 
 
 class LlmProviderEntry(BaseModel):
@@ -105,7 +154,7 @@ class MediaProviderEntry(BaseModel):
     base_url: str = Field(..., min_length=1)
     api_key: Optional[str] = None
     model_name: str = Field(..., min_length=1)
-    api_format: str = Field("openai", description="openai | raw | raw_post | volcengine_ark | xai_video | grok_1_5 | t8_grok_video_3 | lingke_media_generate | suno_compatible | openai_tts")
+    api_format: str = Field("openai", description="openai | raw | raw_post | image_http_v1 | video_http_v1 | audio_http_v1 | volcengine_ark | xai_video | grok_1_5 | t8_grok_video_3 | lingke_media_generate | suno_compatible | openai_tts")
     is_active: bool = False
     enabled: bool = True
     notes: Optional[str] = None
@@ -121,12 +170,75 @@ class MediaProviderEntry(BaseModel):
     @field_validator("api_format")
     @classmethod
     def _valid_api_format(cls, v: str) -> str:
-        if v not in ("openai", "raw", "raw_post", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"):
+        if v not in ("openai", "raw", "raw_post", "image_http_v1", "video_http_v1", "audio_http_v1", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"):
             raise ValueError(
-                "api_format must be 'openai', 'raw', 'raw_post', 'volcengine_ark', 'xai_video', 'grok_1_5', 't8_grok_video_3', 'lingke_media_generate', 'suno_compatible', or 'openai_tts', "
+                "api_format must be 'openai', 'raw', 'raw_post', 'image_http_v1', 'video_http_v1', 'audio_http_v1', 'volcengine_ark', 'xai_video', 'grok_1_5', 't8_grok_video_3', 'lingke_media_generate', 'suno_compatible', or 'openai_tts', "
                 f"got {v!r}"
             )
         return v
+
+    @model_validator(mode="after")
+    def _validate_image_protocol_reference(self) -> "MediaProviderEntry":
+        if self.kind != "image" or self.api_format != "image_http_v1":
+            return self
+        params = self.params if isinstance(self.params, dict) else {}
+        if "image_protocol" in params or isinstance(params.get("protocol"), dict):
+            raise ValueError(
+                "image_http_v1 provider 只保存 params.image_protocol_id；协议 JSON 必须写在 config/image_provider_protocols/catalog.json"
+            )
+        protocol_id = str(params.get("image_protocol_id") or "").strip()
+        if not protocol_id:
+            raise ValueError("image_http_v1 provider 必须设置 params.image_protocol_id")
+        catalog_ids = _image_protocol_ids_from_catalog()
+        if not catalog_ids:
+            raise ValueError("image_http_v1 protocol catalog 缺失或没有可用协议")
+        if protocol_id not in catalog_ids:
+            raise ValueError(
+                f"params.image_protocol_id={protocol_id!r} 不在 config/image_provider_protocols/catalog.json 的 protocols 中"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_video_protocol_reference(self) -> "MediaProviderEntry":
+        if self.kind != "video" or self.api_format != "video_http_v1":
+            return self
+        params = self.params if isinstance(self.params, dict) else {}
+        if "video_protocol" in params or isinstance(params.get("protocol"), dict):
+            raise ValueError(
+                "video_http_v1 provider 只保存 params.video_protocol_id；协议 JSON 必须写在 config/video_provider_protocols/catalog.json"
+            )
+        protocol_id = str(params.get("video_protocol_id") or "").strip()
+        if not protocol_id:
+            raise ValueError("video_http_v1 provider 必须设置 params.video_protocol_id")
+        catalog_ids = _video_protocol_ids_from_catalog()
+        if not catalog_ids:
+            raise ValueError("video_http_v1 protocol catalog 缺失或没有可用协议")
+        if protocol_id not in catalog_ids:
+            raise ValueError(
+                f"params.video_protocol_id={protocol_id!r} 不在 config/video_provider_protocols/catalog.json 的 protocols 中"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_audio_protocol_reference(self) -> "MediaProviderEntry":
+        if self.kind != "audio" or self.api_format != "audio_http_v1":
+            return self
+        params = self.params if isinstance(self.params, dict) else {}
+        if "audio_protocol" in params or isinstance(params.get("protocol"), dict):
+            raise ValueError(
+                "audio_http_v1 provider 只保存 params.audio_protocol_id；协议 JSON 必须写在 config/audio_provider_protocols/catalog.json"
+            )
+        protocol_id = str(params.get("audio_protocol_id") or "").strip()
+        if not protocol_id:
+            raise ValueError("audio_http_v1 provider 必须设置 params.audio_protocol_id")
+        catalog_ids = _audio_protocol_ids_from_catalog()
+        if not catalog_ids:
+            raise ValueError("audio_http_v1 protocol catalog 缺失或没有可用协议")
+        if protocol_id not in catalog_ids:
+            raise ValueError(
+                f"params.audio_protocol_id={protocol_id!r} 不在 config/audio_provider_protocols/catalog.json 的 protocols 中"
+            )
+        return self
 
 
 # ── 顶层模型 ──────────────────────────────────────────────────────────────

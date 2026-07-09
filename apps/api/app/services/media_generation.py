@@ -413,6 +413,7 @@ def _video_output(
         "download_error": result.get("download_error"),
         "reference_images": reference_images,
         "resolved_reference_images": result.get("resolved_reference_images") or [],
+        "resolved_media_references": result.get("resolved_media_references") or [],
         "reference_warnings": result.get("reference_warnings") or [],
         "async": status in {"queued", "running"},
     }
@@ -447,6 +448,7 @@ async def _register_video_asset(
             "last_frame": last_frame_asset_id,
             "reference_images": refs_provided,
             "resolved_reference_images": result.get("resolved_reference_images") or [],
+            "resolved_media_references": result.get("resolved_media_references") or [],
             "aspect_ratio": aspect_ratio,
             "resolution": result.get("resolution") or resolution,
             "url": display_url,
@@ -527,6 +529,7 @@ async def _background_video_poll(
     )
     result["reference_images"] = refs_provided
     result["resolved_reference_images"] = queued_result.get("resolved_reference_images") or []
+    result["resolved_media_references"] = queued_result.get("resolved_media_references") or result.get("resolved_media_references") or []
     result["reference_warnings"] = [
         *(
             queued_result.get("reference_warnings")

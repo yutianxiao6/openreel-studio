@@ -787,10 +787,10 @@ export async function switchProjectNodeHistory<T = Record<string, unknown>>(
 export interface ProjectMediaHistoryItem {
   id: string
   project_id: string
-  kind: 'image' | 'video' | 'audio'
-  rel_path: string
-  url: string
-  filename: string
+  kind: 'text' | 'image' | 'video' | 'audio'
+  rel_path?: string | null
+  url?: string | null
+  filename?: string | null
   title?: string | null
   created_at?: string | null
   updated_at?: string | null
@@ -800,6 +800,8 @@ export interface ProjectMediaHistoryItem {
   source_node_id?: string | null
   source_node_title?: string | null
   prompt?: string | null
+  content?: string | null
+  model?: string | null
 }
 
 export async function listProjectMediaHistory(projectId: string): Promise<{ items: ProjectMediaHistoryItem[] }> {
@@ -1892,6 +1894,24 @@ export async function getRuntimeConfigSummary<T = unknown>(): Promise<T> {
   return asJson<T>(res)
 }
 
+export async function getVideoProviderProtocols<T = unknown>(): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/tools/config/video-protocols`)
+  return asJson<T>(res)
+}
+
+export async function getImageProviderProtocols<T = unknown>(): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/tools/config/image-protocols`)
+  return asJson<T>(res)
+}
+
+export async function getAudioProviderProtocols<T = unknown>(): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/tools/config/audio-protocols`)
+  return asJson<T>(res)
+}
+
 export async function validateRuntimeConfig(content: string): Promise<{ ok: boolean; errors: string[] }> {
   const base = await getApiBase()
   const res = await fetch(`${base}/api/tools/config/validate`, {
@@ -1964,6 +1984,9 @@ export const api = {
   listMcpServers,
   getRuntimeConfigFile,
   getRuntimeConfigSummary,
+  getImageProviderProtocols,
+  getVideoProviderProtocols,
+  getAudioProviderProtocols,
   validateRuntimeConfig,
   writeRuntimeConfigFile,
   patchRuntimeConfig,

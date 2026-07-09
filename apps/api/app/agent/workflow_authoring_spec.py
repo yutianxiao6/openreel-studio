@@ -300,6 +300,8 @@ def _compile_references(value: Any) -> list[dict[str, Any]]:
 
 
 def _output_canvas(step: dict[str, Any], *, kind: str) -> bool:
+    if kind == "text":
+        return False
     output = _step_output_spec(step)
     if _truthy_flag(output.get("canvas")) or _truthy_flag(output.get("show_on_canvas")):
         return True

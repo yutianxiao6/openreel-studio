@@ -9,13 +9,16 @@ Agent 只看到节点原语(node.create / get / update / delete / list / run),
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import mimetypes
 import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import unquote
 
 from app.agent.blueprint_revision import create_pending_revision_from_node_patch
 from app.agent.prompt_dump import dump_llm_request, new_run_id
@@ -59,6 +62,7 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
 
 NODE_RUN_TIMEOUT_SECONDS = _env_int("DRAMA_NODE_RUN_TIMEOUT_SECONDS", 600, minimum=30)
 IMAGE_RENDER_TIMEOUT_SECONDS = _env_int("DRAMA_IMAGE_RENDER_TIMEOUT_SECONDS", 300, minimum=60)
+TEXT_REFERENCE_IMAGE_MAX_BYTES = _env_int("DRAMA_TEXT_REFERENCE_IMAGE_MAX_BYTES", 8 * 1024 * 1024, minimum=1024)
 STALE_RUNNING_SECONDS = max(
     NODE_RUN_TIMEOUT_SECONDS,
     IMAGE_RENDER_TIMEOUT_SECONDS,
@@ -236,7 +240,8 @@ _NODE_FIELD_SCHEMA: dict[str, dict] = {
         "required": ["prompt"],
         "optional": [
             "title", "description", "duration_seconds", "aspect_ratio", "resolution",
-            "reference_images", "references", "depends_on", "model",
+            "reference_images", "reference_videos", "reference_audios", "media_references",
+            "references", "depends_on", "model", "video_mode", "mode",
             "first_frame_asset_id", "last_frame_asset_id",
             "generate_audio", "watermark", "return_last_frame", "seed",
             "priority", "execution_expires_after", "safety_identifier", "tools",
@@ -380,15 +385,35 @@ async def _merge_stage_into_fusion(
             # 若 status=completed 且新 payload 没带 error → 清掉旧 error
             merged = {**s, **payload}
             if status == "completed":
-                merged.pop("error", None)
-                merged.pop("diagnostics", None)
+                for key in (
+                    "error",
+                    "error_message",
+                    "image_error",
+                    "provider_msg",
+                    "error_kind",
+                    "error_source",
+                    "http_code",
+                    "endpoint",
+                    "diagnostics",
+                ):
+                    merged.pop(key, None)
             elif status == "running":
                 if url is None and local_url is None and remote_url is None:
                     for key in ("url", "local_url", "remote_url"):
                         merged.pop(key, None)
                 if error is None:
-                    merged.pop("error", None)
-                    merged.pop("diagnostics", None)
+                    for key in (
+                        "error",
+                        "error_message",
+                        "image_error",
+                        "provider_msg",
+                        "error_kind",
+                        "error_source",
+                        "http_code",
+                        "endpoint",
+                        "diagnostics",
+                    ):
+                        merged.pop(key, None)
             stages[i] = merged
             found = True
             break
@@ -512,7 +537,9 @@ _DIRECT_INPUT_PATCH_KEYS = {
     "first_frame_asset_id",
     "image_prompt",
     "last_frame_asset_id",
+    "media_references",
     "model",
+    "mode",
     "negative_prompt",
     "no_visual_references",
     "production_path",
@@ -521,12 +548,15 @@ _DIRECT_INPUT_PATCH_KEYS = {
     "prompt_review",
     "purpose",
     "quality",
+    "reference_audios",
     "reference_images",
+    "reference_videos",
     "references",
     "resolution",
     "seed",
     "source_image",
     "visual_prompt",
+    "video_mode",
 }
 
 _REVIEW_PASSED_STATUSES = {"pass", "passed", "approved", "ok", "true"}
@@ -1131,6 +1161,72 @@ async def _reference_images_for_media_run(
     return merged, [*warnings, *node_warnings]
 
 
+def _reference_image_mentions(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = fields.get("reference_image_mentions") or []
+    if not isinstance(raw, list):
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        mention = str(item.get("mention") or "").strip()
+        ref = str(item.get("ref") or item.get("reference") or "").strip()
+        if not mention or not ref:
+            continue
+        key = (mention, _reference_lookup_key(ref))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({
+            "mention": mention,
+            "label": str(item.get("label") or mention.lstrip("@") or "reference image").strip(),
+            "ref": ref,
+            "source": str(item.get("source") or "").strip(),
+            "index": item.get("index"),
+        })
+    return result
+
+
+def _reference_image_mention_note(fields: dict[str, Any], reference_images: list[str]) -> str:
+    mentions = _reference_image_mentions(fields)
+    if not mentions:
+        return ""
+    index_by_ref = {
+        _reference_lookup_key(ref): index + 1
+        for index, ref in enumerate(reference_images)
+        if _reference_lookup_key(ref)
+    }
+    raw_reference_images = fields.get("reference_images") or []
+    if not isinstance(raw_reference_images, list):
+        raw_reference_images = [raw_reference_images]
+    for index, ref in enumerate(raw_reference_images):
+        key = _reference_lookup_key(ref)
+        if key and key not in index_by_ref:
+            index_by_ref[key] = index + 1
+    rows: list[str] = []
+    for item in mentions:
+        ref = str(item.get("ref") or "").strip()
+        explicit_index = item.get("index")
+        try:
+            fallback_index = int(explicit_index) if explicit_index is not None else None
+        except (TypeError, ValueError):
+            fallback_index = None
+        ref_index = index_by_ref.get(_reference_lookup_key(ref)) or fallback_index
+        target = f"第 {ref_index} 张参考图" if ref_index else f"参考图 {ref}"
+        rows.append(f"- {item['mention']} 指向 {target}")
+    if not rows:
+        return ""
+    return "参考图标记说明：\n" + "\n".join(rows)
+
+
+def _prompt_with_reference_image_mentions(prompt: str, fields: dict[str, Any], reference_images: list[str]) -> str:
+    note = _reference_image_mention_note(fields, reference_images)
+    if not note:
+        return prompt
+    return f"{note}\n\n用户提示词：\n{prompt}"
+
+
 async def _reference_images_for_video_run(
     project_id: str,
     fields: dict[str, Any],
@@ -1272,6 +1368,131 @@ async def _image_output_from_reference(project_id: str, ref: str) -> tuple[dict[
     if output:
         return output, None
     return None, f"source_image 无法解析为可用图片: {text}"
+
+
+def _project_storage_path_from_media_url(project_id: str, url: str) -> Path | None:
+    text = unquote(str(url or "").strip())
+    if not text.startswith("/"):
+        return None
+    media_prefix = f"/api/media/{project_id}/"
+    upload_prefix = f"/api/uploads/{project_id}/file/"
+    root = _storage_root() / project_id
+    if text.startswith(media_prefix):
+        rel = text[len(media_prefix):].lstrip("/")
+        return root / "generated_images" / rel
+    if text.startswith(upload_prefix):
+        rel = text[len(upload_prefix):].lstrip("/")
+        return root / rel
+    return None
+
+
+def _image_data_url_from_path(path: Path) -> tuple[str | None, str | None]:
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError as exc:
+        return None, f"参考图路径无法解析: {path} ({exc})"
+    if not resolved.exists() or not resolved.is_file():
+        return None, f"参考图文件不存在: {path}"
+    try:
+        size = resolved.stat().st_size
+    except OSError as exc:
+        return None, f"参考图文件无法读取: {path} ({exc})"
+    if size > TEXT_REFERENCE_IMAGE_MAX_BYTES:
+        return None, f"参考图文件过大，已跳过: {path}"
+    mime = mimetypes.guess_type(str(resolved))[0] or "image/png"
+    try:
+        data = base64.b64encode(resolved.read_bytes()).decode("ascii")
+    except OSError as exc:
+        return None, f"参考图文件无法读取: {path} ({exc})"
+    return f"data:{mime};base64,{data}", None
+
+
+def _llm_image_url_from_source_value(project_id: str, value: str) -> tuple[str | None, str | None]:
+    text = str(value or "").strip()
+    if not text:
+        return None, None
+    if text.startswith("upload:"):
+        text = _storage_relative_upload_reference(text)
+    if text.startswith(("http://", "https://", "data:image/")):
+        return text, None
+
+    path = _project_storage_path_from_media_url(project_id, text)
+    if path is None and text.startswith(("generated_images/", "uploads/")):
+        path = _storage_root() / project_id / text
+    if path is None:
+        raw_path = Path(text).expanduser()
+        if raw_path.is_absolute():
+            path = raw_path
+        elif "/" in text or "\\" in text:
+            path = _storage_root() / project_id / text
+
+    if path is not None:
+        data_url, warning = _image_data_url_from_path(path)
+        if data_url:
+            return data_url, None
+        if text.startswith(("/api/media/", "/api/uploads/")):
+            return text, warning
+        return None, warning
+
+    if text.startswith(("/api/media/", "/api/uploads/")):
+        return text, None
+    return None, f"参考图无法解析为可发送图片: {text}"
+
+
+async def _llm_image_url_from_reference(project_id: str, ref: str) -> tuple[str | None, str | None]:
+    text = str(ref or "").strip()
+    if not text:
+        return None, None
+    if text.startswith("node:"):
+        output, error = await _image_output_from_node_reference(project_id, text)
+        if not output:
+            return None, error
+        for candidate in (
+            output.get("local_path"),
+            output.get("url"),
+            output.get("local_url"),
+            output.get("remote_url"),
+            output.get("path"),
+        ):
+            url, warning = _llm_image_url_from_source_value(project_id, str(candidate or ""))
+            if url:
+                return url, None
+            if warning:
+                return None, warning
+        return None, f"参考图片节点没有可发送图片: {text}"
+    if text.startswith("asset:"):
+        output, error = await _image_output_from_asset_reference(project_id, text)
+        if not output:
+            return None, error
+        for candidate in (
+            output.get("local_path"),
+            output.get("url"),
+            output.get("local_url"),
+            output.get("remote_url"),
+            output.get("path"),
+        ):
+            url, warning = _llm_image_url_from_source_value(project_id, str(candidate or ""))
+            if url:
+                return url, None
+            if warning:
+                return None, warning
+        return None, f"参考资产没有可发送图片: {text}"
+    return _llm_image_url_from_source_value(project_id, text)
+
+
+async def _reference_image_urls_for_text_run(
+    project_id: str,
+    fields: dict[str, Any],
+) -> tuple[list[str], list[str], list[str]]:
+    reference_images, warnings = await _reference_images_for_media_run(project_id, fields)
+    urls: list[str] = []
+    for ref in reference_images:
+        url, warning = await _llm_image_url_from_reference(project_id, ref)
+        if url and url not in urls:
+            urls.append(url)
+        if warning:
+            warnings.append(warning)
+    return reference_images, urls, warnings
 
 
 async def _direct_image_source_output(
@@ -2968,6 +3189,27 @@ def _visual_prompt_from_fields(f: dict, *, include_prompt: bool = True) -> str:
     return ""
 
 
+_IMAGE_CLARITY_PROMPT_HINTS = {
+    "natural": "画面自然清晰，保留真实质感，避免过度锐化",
+    "detailed": "主体细节清楚，边缘稳定，材质纹理丰富，面部和手部结构清晰",
+    "sharp": "画面锐利，高对比细节清楚，主体边缘干净，避免模糊和糊脸",
+    "自然": "画面自然清晰，保留真实质感，避免过度锐化",
+    "细节": "主体细节清楚，边缘稳定，材质纹理丰富，面部和手部结构清晰",
+    "锐利": "画面锐利，高对比细节清楚，主体边缘干净，避免模糊和糊脸",
+}
+
+
+def _image_prompt_with_render_modifiers(base_prompt: str, f: dict) -> str:
+    prompt = str(base_prompt or "").strip()
+    if not prompt:
+        return ""
+    clarity = str(f.get("clarity") or "").strip()
+    clarity_hint = _IMAGE_CLARITY_PROMPT_HINTS.get(clarity, clarity)
+    if clarity_hint and clarity_hint not in prompt:
+        prompt = f"{prompt}\n\n清晰度要求：{clarity_hint}"
+    return prompt
+
+
 def _sync_prompt_patch_with_input(node: dict, patch: dict) -> dict:
     """Keep node.prompt and input_json.prompt in lockstep for Agent edits."""
     if "prompt" not in patch:
@@ -3076,6 +3318,7 @@ _IMAGE_RENDER_FRESHNESS_KEYS = {
     "aspect_ratio",
     "resolution",
     "quality",
+    "clarity",
     "model",
     "seed",
     "style",
@@ -3179,16 +3422,18 @@ async def _render_image_node(project_id: str, node_id: str, f: dict, node_type: 
     if direct_error:
         return direct_error
 
-    prompt = _visual_prompt_from_fields(f)
-    if prompt and prompt != f.get("prompt"):
-        f = await _persist_prompt_to_node(node_id, f, prompt)
-    if not prompt:
+    base_prompt = _visual_prompt_from_fields(f)
+    if base_prompt and base_prompt != f.get("prompt"):
+        f = await _persist_prompt_to_node(node_id, f, base_prompt)
+        base_prompt = _visual_prompt_from_fields(f)
+    if not base_prompt:
         return {
             "error": "image 节点缺 prompt，无法出图。请由模型读取需要的 skill/template 后写入最终图片 prompt。",
             "error_kind": "missing_prompt",
             "node_id": node_id,
             "node_type": node_type,
         }
+    prompt = _image_prompt_with_render_modifiers(base_prompt, f)
 
     from app.agent import message_queue as mq
     cancel_reason = await mq.get_cancel_reason(project_id)
@@ -3229,8 +3474,9 @@ async def _render_image_node(project_id: str, node_id: str, f: dict, node_type: 
         }
     quality = f.get("quality")
 
+    generation_prompt = _prompt_with_reference_image_mentions(prompt, f, reference_images)
     image_result = await media_generation.generate_image(
-        project_id=project_id, prompt=prompt,
+        project_id=project_id, prompt=generation_prompt,
         aspect_ratio=aspect,
         size=size,
         quality=quality,
@@ -3313,6 +3559,8 @@ def _merge_image_output(text_meta: dict, image_result: Any, prompt: str, f: dict
         (image_result.get("quality") if isinstance(image_result, dict) else None)
         or f.get("quality")
     )
+    if f.get("clarity"):
+        merged["clarity"] = f.get("clarity")
     merged["model"] = (
         (image_result.get("model") if isinstance(image_result, dict) else None)
         or f.get("model")
@@ -3330,14 +3578,132 @@ def _merge_image_output(text_meta: dict, image_result: Any, prompt: str, f: dict
 
 
 async def _run_text_node(project_id: str, node_id: str, f: dict) -> dict:
+    prompt = str(f.get("prompt") or f.get("instruction") or "").strip()
     content = str(f.get("content") or f.get("description") or "").strip()
+    references = f.get("references") or []
+    depends_on = f.get("depends_on") or []
+    if not prompt:
+        return {
+            "type": "text",
+            "title": f.get("title"),
+            "content": content,
+            "references": references,
+            "depends_on": depends_on,
+        }
+
+    history = _text_chat_history_entries(f)
+    reference_images, resolved_reference_image_urls, reference_warnings = await _reference_image_urls_for_text_run(project_id, f)
+    messages: list[dict[str, Any]] = []
+    for item in history[-6:]:
+        previous_prompt = str(item.get("prompt") or "").strip()
+        previous_content = str(item.get("content") or item.get("reply") or item.get("output") or "").strip()
+        if previous_prompt:
+            messages.append({"role": "user", "content": previous_prompt})
+        if previous_content:
+            messages.append({"role": "assistant", "content": previous_content})
+    prompt_for_llm = _prompt_with_reference_image_mentions(prompt, f, reference_images)
+    if resolved_reference_image_urls:
+        user_content: list[dict[str, Any]] = [{"type": "text", "text": prompt_for_llm}]
+        user_content.extend({
+            "type": "image_url",
+            "image_url": {"url": image_url},
+        } for image_url in resolved_reference_image_urls)
+        messages.append({"role": "user", "content": user_content})
+    else:
+        messages.append({"role": "user", "content": prompt_for_llm})
+
+    task_type = str(f.get("llm_task_type") or "text_generation").strip() or "text_generation"
+    model_override = str(f.get("model") or f.get("llm_model") or f.get("provider") or "").strip() or None
+    system = (
+        "你是画布文本节点的单次对话助手。"
+        "根据用户提示词、已有对话历史和随消息提供的参考图直接给出可展示正文。"
+        "输出只包含正文内容，保持自然语言，不写 JSON、Markdown 代码围栏或额外状态说明。"
+    )
+    run_id = f"text_node_{new_run_id()}"
+    dump_llm_request(
+        project_id,
+        run_id,
+        0,
+        system,
+        messages,
+        [],
+        user_message=f"text node {node_id}: {prompt}",
+    )
+    async with session_scope() as session:
+        llm_result = await LLMService(session).generate(
+            task_type=task_type,
+            messages=messages,
+            system=system,
+            project_id=project_id,
+            node_override=model_override,
+        )
+    reply = _strip_llm_fences(str(llm_result.get("content") or "")).strip()
+    if not reply:
+        return {
+            "type": "text",
+            "title": f.get("title"),
+            "content": content,
+            "prompt": prompt,
+            "references": references,
+            "depends_on": depends_on,
+            "reference_images": reference_images,
+            "resolved_reference_image_count": len(resolved_reference_image_urls),
+            "reference_warnings": reference_warnings,
+            "error": "文本模型没有返回内容",
+            "error_kind": "empty_llm_response",
+        }
+
+    history_entry = {
+        "id": run_id,
+        "prompt": prompt,
+        "content": reply,
+        "model": llm_result.get("model"),
+        "usage": llm_result.get("usage"),
+        "usage_total_tokens": _workflow_text_usage_total(llm_result.get("usage")),
+        "created_at": _utc_now_iso(),
+    }
+    next_history = [*history, history_entry][-20:]
+    next_fields = dict(f)
+    next_fields["content"] = reply
+    next_fields["prompt"] = prompt
+    next_fields["text_chat_history"] = next_history
+    next_fields["reference_images"] = reference_images
+    next_fields.setdefault("llm_task_type", task_type)
+    if model_override:
+        next_fields["model"] = model_override
+    await canvas_tools.update_node(node_id, {"input_data": next_fields})
     return {
         "type": "text",
         "title": f.get("title"),
-        "content": content,
-        "references": f.get("references") or [],
-        "depends_on": f.get("depends_on") or [],
+        "content": reply,
+        "prompt": prompt,
+        "text_chat_history": next_history,
+        "chat_history": next_history,
+        "model": llm_result.get("model"),
+        "usage": llm_result.get("usage"),
+        "usage_total_tokens": history_entry["usage_total_tokens"],
+        "references": references,
+        "depends_on": depends_on,
+        "reference_images": reference_images,
+        "resolved_reference_image_count": len(resolved_reference_image_urls),
+        "reference_warnings": reference_warnings,
     }
+
+
+def _text_chat_history_entries(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = fields.get("text_chat_history") or fields.get("chat_history") or []
+    if not isinstance(raw, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        prompt = str(item.get("prompt") or item.get("input") or item.get("user") or "").strip()
+        content = str(item.get("content") or item.get("reply") or item.get("response") or item.get("output") or "").strip()
+        if not prompt and not content:
+            continue
+        result.append(dict(item, prompt=prompt, content=content))
+    return result
 
 
 def _workflow_text_meta(fields: dict[str, Any]) -> dict[str, Any]:
@@ -4075,7 +4441,12 @@ async def _run_video_node(project_id: str, node_id: str, f: dict) -> dict:
     video_extra = {
         key: f[key]
         for key in (
+            "video_mode",
+            "mode",
             "ratio",
+            "media_references",
+            "reference_videos",
+            "reference_audios",
             "generate_audio",
             "watermark",
             "return_last_frame",
@@ -4087,9 +4458,10 @@ async def _run_video_node(project_id: str, node_id: str, f: dict) -> dict:
         )
         if key in f
     }
+    generation_prompt = _prompt_with_reference_image_mentions(prompt, f, reference_images)
     result = await media_generation.generate_video(
         project_id=project_id,
-        prompt=prompt,
+        prompt=generation_prompt,
         shot_id=str(f.get("shot_id") or node_id),
         first_frame_asset_id=f.get("first_frame_asset_id"),
         last_frame_asset_id=f.get("last_frame_asset_id"),

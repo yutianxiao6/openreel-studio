@@ -1,47 +1,111 @@
 "use client"
 
 import { useState } from "react"
-import type { ConfigContext, MediaProviderEntry } from "../SettingsModal"
+import type { ConfigContext, MediaProviderEntry, MediaProtocolSummary } from "../SettingsModal"
 import {
-  VIDEO_API_FORMAT_OPTIONS,
   VIDEO_IMAGE_TRANSPORT_OPTIONS,
-  VIDEO_MODEL_OPTIONS,
-  isKnownVideoModel,
-  videoApiFormatForModel,
 } from "@/lib/videoModelOptions"
 
 type MediaKind = "image" | "video" | "audio"
-
-const AUDIO_API_FORMAT_OPTIONS = [
-  { label: "TTS 语音 (OpenAI-compatible)", value: "openai_tts" },
-  { label: "音乐生成 (Suno-compatible)", value: "suno_compatible" },
-]
-
-function normalizeAudioApiFormat(value?: string): string {
-  return AUDIO_API_FORMAT_OPTIONS.some((item) => item.value === value) ? value as string : "openai_tts"
-}
 
 function normalizeVideoImageTransport(value?: unknown): string {
   return VIDEO_IMAGE_TRANSPORT_OPTIONS.some((item) => item.value === value) ? value as string : "data_url"
 }
 
-function normalizeMediaProvider(entry: MediaProviderEntry): MediaProviderEntry {
+function normalizeMediaProvider(
+  entry: MediaProviderEntry,
+  imageProtocols: MediaProtocolSummary[] = [],
+  videoProtocols: MediaProtocolSummary[] = [],
+  audioProtocols: MediaProtocolSummary[] = [],
+): MediaProviderEntry {
   if (entry.kind === "audio") {
+    const rawApiFormat = entry.api_format?.trim() || "audio_http_v1"
+    const nextParams = { ...(entry.params || {}) }
+    delete nextParams.audio_protocol
+    delete nextParams.protocol
+    const legacyProtocolId =
+      rawApiFormat === "suno_compatible" ? "newapi_suno_music"
+      : ["openai_tts", "tts", "openai_speech", "openai_audio_speech"].includes(rawApiFormat) ? "openai_audio_speech"
+      : ""
+    const catalogProtocolId = String(nextParams.audio_protocol_id || legacyProtocolId || audioProtocols[0]?.id || "").trim()
+    if (catalogProtocolId) nextParams.audio_protocol_id = catalogProtocolId
     return {
       ...entry,
-      api_format: normalizeAudioApiFormat(entry.api_format),
+      api_format: "audio_http_v1",
+      params: nextParams,
     }
   }
   if (entry.kind === "image") {
+    const rawApiFormat = entry.api_format?.trim() || "image_http_v1"
+    const nextParams = { ...(entry.params || {}) }
+    delete nextParams.image_protocol
+    delete nextParams.protocol
+    const catalogProtocolId = String(nextParams.image_protocol_id || imageProtocols[0]?.id || "").trim()
+    const shouldUseCatalog = rawApiFormat === "openai" || rawApiFormat === "image_http_v1"
+    if (shouldUseCatalog && catalogProtocolId) nextParams.image_protocol_id = catalogProtocolId
     return {
       ...entry,
-      api_format: entry.api_format || "openai",
+      api_format: shouldUseCatalog ? "image_http_v1" : rawApiFormat,
+      params: nextParams,
     }
+  }
+  const rawApiFormat = entry.api_format?.trim() || "video_http_v1"
+  const nextParams = { ...(entry.params || {}) }
+  delete nextParams.video_protocol
+  delete nextParams.protocol
+  const catalogProtocolId = String(
+    nextParams.video_protocol_id
+    || protocolIdForVideoModel(entry.model_name, videoProtocols)
+    || "",
+  ).trim()
+  const apiFormat = rawApiFormat === "video_http_v1" || catalogProtocolId ? "video_http_v1" : rawApiFormat
+  if (apiFormat === "video_http_v1" && catalogProtocolId) {
+    nextParams.video_protocol_id = catalogProtocolId
   }
   return {
     ...entry,
-    api_format: entry.api_format?.trim() || videoApiFormatForModel(entry.model_name, "lingke_media_generate"),
+    api_format: apiFormat,
+    params: nextParams,
   }
+}
+
+function protocolIdForVideoModel(modelName: string, protocols: MediaProtocolSummary[]): string {
+  const name = modelName.trim()
+  if (!name) return ""
+  const matched = protocols.find((protocol) =>
+    protocol.model_names?.includes(name)
+    || protocol.model_profiles?.some((profile) => profile.match === name),
+  )
+  return matched?.id || ""
+}
+
+function videoModelTemplateOptions(protocols: MediaProtocolSummary[]): Array<{
+  label: string
+  value: string
+  modelName: string
+  protocolId: string
+}> {
+  const options: Array<{ label: string; value: string; modelName: string; protocolId: string }> = []
+  const seen = new Set<string>()
+  for (const protocol of protocols) {
+    const protocolLabel = protocol.display_name || protocol.id
+    const add = (modelName: string, label?: string) => {
+      const clean = modelName.trim()
+      if (!clean) return
+      const key = `${protocol.id}:${clean}`
+      if (seen.has(key)) return
+      seen.add(key)
+      options.push({
+        label: `${label?.trim() || clean} · ${protocolLabel}`,
+        value: key,
+        modelName: clean,
+        protocolId: protocol.id,
+      })
+    }
+    protocol.model_profiles?.forEach((profile) => add(profile.match || "", profile.label))
+    protocol.model_names?.forEach((modelName) => add(modelName))
+  }
+  return options
 }
 
 function kindLabel(kind: MediaKind): string {
@@ -53,13 +117,16 @@ function kindLabel(kind: MediaKind): string {
 export function MediaTab({ ctx, kind }: { ctx: ConfigContext; kind: MediaKind }) {
   const { config, applyPatch } = ctx
   const [editingKey, setEditingKey] = useState<string | null>(null)
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
   const [errors, setErrors] = useState<string[]>([])
-
   const items = config.media_providers.filter((p) => p.kind === kind)
+  const selectedItem = items.find((p) => p.name === selectedKey)
+    || items.find((p) => p.is_active)
+    || items[0]
 
   const upsert = async (entry: MediaProviderEntry, originalName?: string) => {
-    const normalizedEntry = normalizeMediaProvider(entry)
+    const normalizedEntry = normalizeMediaProvider(entry, ctx.imageProtocols, ctx.videoProtocols, ctx.audioProtocols)
     let next = [...config.media_providers]
     if (originalName) {
       next = next.map((p) =>
@@ -75,7 +142,12 @@ export function MediaTab({ ctx, kind }: { ctx: ConfigContext; kind: MediaKind })
     }
     const r = await applyPatch({ media_providers: next })
     if (!r.ok) setErrors(r.errors)
-    else { setErrors([]); setEditingKey(null); setAdding(false) }
+    else {
+      setErrors([])
+      setEditingKey(null)
+      setAdding(false)
+      setSelectedKey(normalizedEntry.name)
+    }
     return r
   }
 
@@ -86,6 +158,10 @@ export function MediaTab({ ctx, kind }: { ctx: ConfigContext; kind: MediaKind })
     )
     const r = await applyPatch({ media_providers: next })
     if (!r.ok) setErrors(r.errors)
+    else {
+      setSelectedKey((current) => current === name ? null : current)
+      setEditingKey((current) => current === name ? null : current)
+    }
   }
 
   const setActive = async (name: string) => {
@@ -94,6 +170,7 @@ export function MediaTab({ ctx, kind }: { ctx: ConfigContext; kind: MediaKind })
     )
     const r = await applyPatch({ media_providers: next })
     if (!r.ok) setErrors(r.errors)
+    else setSelectedKey(name)
   }
 
   return (
@@ -104,48 +181,151 @@ export function MediaTab({ ctx, kind }: { ctx: ConfigContext; kind: MediaKind })
         </div>
       )}
 
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-gray-500">
-          {kindLabel(kind)}生成 Provider
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-950/35 px-3 py-3">
+        <div>
+          <div className="text-sm font-semibold text-gray-100">{kindLabel(kind)}生成模型</div>
+          <p className="mt-0.5 text-xs text-gray-500">
+            配置服务商和模型协议；节点编辑里可以直接选择这里启用的模型。
+          </p>
+        </div>
         <button
-          onClick={() => { setAdding(true); setEditingKey(null) }}
+          onClick={() => { setAdding(true); setEditingKey(null); setSelectedKey(null) }}
           className="text-xs px-2 py-1 rounded bg-indigo-700/40 hover:bg-indigo-700/60 text-indigo-200 border border-indigo-700"
         >
           + 添加 Provider
         </button>
       </div>
 
-      <div className="space-y-2">
-        {items.map((p) => (
-          <Row
-            key={p.name}
-            entry={p}
-            editing={editingKey === p.name}
-            onEdit={() => { setEditingKey(p.name); setAdding(false) }}
-            onCancel={() => setEditingKey(null)}
-            onSave={(updated) => upsert(updated, p.name)}
-            onRemove={() => remove(p.name)}
-            onSetActive={() => setActive(p.name)}
-          />
-        ))}
-        {adding && (
-          <Row
-            entry={blank(kind)}
-            editing
-            onEdit={() => {}}
-            onCancel={() => setAdding(false)}
-            onSave={(updated) => upsert(updated)}
-            onRemove={() => setAdding(false)}
-            onSetActive={() => {}}
-          />
-        )}
-        {items.length === 0 && !adding && (
-          <div className="text-center text-gray-500 text-xs py-6 border border-dashed border-gray-800 rounded">
-            还没有 {kindLabel(kind)} Provider。点击「添加」开始。
-          </div>
-        )}
+      <div className="grid gap-3 lg:grid-cols-[330px_minmax(0,1fr)]">
+        <div className="space-y-2">
+          {items.map((p) => (
+            <Row
+              key={p.name}
+              entry={p}
+              editing={false}
+              selected={!adding && selectedItem?.name === p.name}
+              onSelect={() => { setSelectedKey(p.name); setAdding(false) }}
+              onEdit={() => { setSelectedKey(p.name); setEditingKey(p.name); setAdding(false) }}
+              onCancel={() => setEditingKey(null)}
+              onSave={(updated) => upsert(updated, p.name)}
+              onRemove={() => remove(p.name)}
+              onSetActive={() => setActive(p.name)}
+              imageProtocols={ctx.imageProtocols}
+              videoProtocols={ctx.videoProtocols}
+              audioProtocols={ctx.audioProtocols}
+            />
+          ))}
+          {items.length === 0 && !adding && (
+            <div className="text-center text-gray-500 text-xs py-8 border border-dashed border-gray-800 rounded-lg bg-gray-950/25">
+              还没有 {kindLabel(kind)} Provider。点击「添加」开始。
+            </div>
+          )}
+        </div>
+
+        <div className="min-w-0">
+          {adding ? (
+            <Row
+              key={`new-${kind}`}
+              entry={blank(kind)}
+              editing
+              onEdit={() => {}}
+              onCancel={() => setAdding(false)}
+              onSave={(updated) => upsert(updated)}
+              onRemove={() => setAdding(false)}
+              onSetActive={() => {}}
+              imageProtocols={ctx.imageProtocols}
+              videoProtocols={ctx.videoProtocols}
+              audioProtocols={ctx.audioProtocols}
+            />
+          ) : selectedItem && editingKey === selectedItem.name ? (
+            <Row
+              key={`edit-${selectedItem.name}`}
+              entry={selectedItem}
+              editing
+              onEdit={() => {}}
+              onCancel={() => setEditingKey(null)}
+              onSave={(updated) => upsert(updated, selectedItem.name)}
+              onRemove={() => remove(selectedItem.name)}
+              onSetActive={() => setActive(selectedItem.name)}
+              imageProtocols={ctx.imageProtocols}
+              videoProtocols={ctx.videoProtocols}
+              audioProtocols={ctx.audioProtocols}
+            />
+          ) : selectedItem ? (
+            <ProviderSummary
+              entry={selectedItem}
+              onEdit={() => setEditingKey(selectedItem.name)}
+              onRemove={() => remove(selectedItem.name)}
+              onSetActive={() => setActive(selectedItem.name)}
+            />
+          ) : (
+            <div className="rounded-lg border border-dashed border-gray-800 bg-gray-950/25 px-4 py-10 text-center text-xs text-gray-500">
+              选择左侧 Provider 查看详情，或添加一个新的 {kindLabel(kind)}模型。
+            </div>
+          )}
+        </div>
       </div>
+    </div>
+  )
+}
+
+function ProviderSummary({
+  entry,
+  onEdit,
+  onRemove,
+  onSetActive,
+}: {
+  entry: MediaProviderEntry
+  onEdit: () => void
+  onRemove: () => void
+  onSetActive: () => void
+}) {
+  const protocolId = String(
+    (
+      entry.kind === "image" ? entry.params?.image_protocol_id
+      : entry.kind === "video" ? entry.params?.video_protocol_id
+      : entry.params?.audio_protocol_id
+    ) || "",
+  )
+  return (
+    <div className="rounded-lg border border-gray-800 bg-gray-950/35">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-gray-800 px-4 py-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-semibold text-gray-100">{entry.name}</span>
+            {entry.is_active && (
+              <span className="rounded border border-emerald-800 bg-emerald-950/50 px-1.5 py-0.5 text-[10px] text-emerald-300">默认</span>
+            )}
+            {!entry.enabled && (
+              <span className="rounded border border-gray-700 bg-gray-900 px-1.5 py-0.5 text-[10px] text-gray-400">停用</span>
+            )}
+          </div>
+          <div className="mt-1 truncate font-mono text-xs text-indigo-300">{entry.model_name}</div>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {!entry.is_active && (
+            <button onClick={onSetActive} className="rounded bg-gray-800 px-2 py-1 text-[10px] text-gray-300 hover:bg-gray-700">设为默认</button>
+          )}
+          <button onClick={onEdit} className="rounded bg-indigo-700/40 px-2 py-1 text-[10px] text-indigo-200 hover:bg-indigo-700/60">编辑</button>
+          <button onClick={onRemove} className="rounded bg-red-900/40 px-2 py-1 text-[10px] text-red-300 hover:bg-red-900/60">删除</button>
+        </div>
+      </div>
+      <div className="grid gap-3 px-4 py-4 sm:grid-cols-2">
+        <SummaryField label="接口地址" value={entry.base_url} mono />
+        <SummaryField label="协议引擎" value={entry.api_format} mono />
+        <SummaryField label="协议 ID" value={protocolId || "未设置"} mono />
+        <SummaryField label="API Key" value={entry.api_key ? "已配置" : "未配置"} />
+        {entry.notes && <SummaryField label="备注" value={entry.notes} />}
+      </div>
+    </div>
+  )
+}
+
+function SummaryField({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="min-w-0 rounded-md border border-gray-800 bg-gray-900/45 px-3 py-2">
+      <div className="mb-1 text-[10px] text-gray-500">{label}</div>
+      <div className={`truncate text-xs text-gray-200 ${mono ? "font-mono" : ""}`}>{value}</div>
     </div>
   )
 }
@@ -157,54 +337,60 @@ function blank(kind: MediaKind): MediaProviderEntry {
     base_url: "",
     api_key: "",
     model_name: kind === "audio" ? "tts-1" : "",
-    api_format: kind === "video" ? "lingke_media_generate" : kind === "audio" ? "openai_tts" : "openai",
+    api_format: kind === "video" ? "video_http_v1" : kind === "audio" ? "audio_http_v1" : "image_http_v1",
     is_active: false, enabled: true, notes: "", params: {},
   }
 }
 
 function Row({
-  entry, editing, onEdit, onCancel, onSave, onRemove, onSetActive,
+  entry, editing, selected = false, onSelect, onEdit, onCancel, onSave, onRemove, onSetActive, imageProtocols, videoProtocols, audioProtocols,
 }: {
   entry: MediaProviderEntry
   editing: boolean
+  selected?: boolean
+  onSelect?: () => void
   onEdit: () => void
   onCancel: () => void
   onSave: (e: MediaProviderEntry) => Promise<{ ok: boolean; errors: string[] }>
   onRemove: () => void
   onSetActive: () => void
+  imageProtocols: MediaProtocolSummary[]
+  videoProtocols: MediaProtocolSummary[]
+  audioProtocols: MediaProtocolSummary[]
 }) {
-  const [draft, setDraft] = useState(entry)
+  const [draft, setDraft] = useState(() => normalizeMediaProvider(entry, imageProtocols, audioProtocols))
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
   if (!editing) {
     return (
-      <div className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${
-        entry.is_active
-          ? "border-emerald-700/60 bg-emerald-950/20"
-          : "border-gray-800 bg-gray-950/40"
-      }`}>
-        <div className="flex-1 min-w-0">
+      <button
+        type="button"
+        onClick={onSelect}
+        className={`block w-full rounded-lg border px-3 py-2.5 text-left transition ${
+          selected
+            ? "border-indigo-500/70 bg-indigo-950/25 shadow-[0_0_0_1px_rgba(99,102,241,0.22)]"
+            : entry.is_active
+              ? "border-emerald-700/60 bg-emerald-950/15 hover:border-emerald-600/70"
+              : "border-gray-800 bg-gray-950/35 hover:border-gray-700"
+        }`}
+      >
+        <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-100 font-medium">{entry.name}</span>
+            <span className="truncate text-sm font-medium text-gray-100">{entry.name}</span>
             {entry.is_active && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/50 text-emerald-300 border border-emerald-800">激活</span>
+              <span className="rounded border border-emerald-800 bg-emerald-900/50 px-1.5 py-0.5 text-[10px] text-emerald-300">默认</span>
             )}
-            <span className="text-[10px] text-gray-500 font-mono">{entry.api_format}</span>
+            {!entry.enabled && (
+              <span className="rounded border border-gray-700 bg-gray-900 px-1.5 py-0.5 text-[10px] text-gray-400">停用</span>
+            )}
           </div>
-          <div className="text-[11px] text-indigo-300 font-mono truncate">{entry.model_name}</div>
-          <div className="text-[10px] text-gray-500 font-mono truncate">{entry.base_url}</div>
+          <div className="mt-1 truncate font-mono text-[11px] text-indigo-300">{entry.model_name}</div>
+          <div className="mt-1 flex min-w-0 items-center gap-2 text-[10px] text-gray-500">
+            <span className="shrink-0 font-mono">{entry.api_format}</span>
+            <span className="min-w-0 truncate font-mono">{entry.base_url}</span>
+          </div>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
-          {!entry.is_active && (
-            <button onClick={onSetActive}
-              className="text-[10px] px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">激活</button>
-          )}
-          <button onClick={onEdit}
-            className="text-[10px] px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">编辑</button>
-          <button onClick={onRemove}
-            className="text-[10px] px-2 py-1 rounded bg-red-900/40 hover:bg-red-900/60 text-red-300">删除</button>
-        </div>
-      </div>
+      </button>
     )
   }
 
@@ -217,63 +403,144 @@ function Row({
     else delete nextParams[key]
     setDraft({ ...draft, params: nextParams })
   }
+  const setImageProtocolId = (value: string) => {
+    const nextParams = { ...(draft.params || {}) }
+    delete nextParams.image_protocol
+    delete nextParams.protocol
+    const clean = value.trim()
+    if (clean) nextParams.image_protocol_id = clean
+    else delete nextParams.image_protocol_id
+    setDraft({ ...draft, api_format: "image_http_v1", params: nextParams })
+  }
+  const setVideoProtocolId = (value: string) => {
+    const nextParams = { ...(draft.params || {}) }
+    delete nextParams.video_protocol
+    delete nextParams.protocol
+    const clean = value.trim()
+    if (clean) nextParams.video_protocol_id = clean
+    else delete nextParams.video_protocol_id
+    setDraft({ ...draft, params: nextParams })
+  }
+  const setAudioProtocolId = (value: string) => {
+    const nextParams = { ...(draft.params || {}) }
+    delete nextParams.audio_protocol
+    delete nextParams.protocol
+    const clean = value.trim()
+    if (clean) nextParams.audio_protocol_id = clean
+    else delete nextParams.audio_protocol_id
+    setDraft({ ...draft, api_format: "audio_http_v1", params: nextParams })
+  }
 
-  const applyVideoTemplate = (modelName: string) => {
-    if (!modelName) return
+  const videoModelTemplates = videoModelTemplateOptions(videoProtocols)
+  const applyVideoTemplate = (templateKey: string) => {
+    const template = videoModelTemplates.find((item) => item.value === templateKey)
+    if (!template) return
+    const nextParams = { ...(draft.params || {}) }
+    delete nextParams.video_protocol
+    delete nextParams.protocol
+    nextParams.video_protocol_id = template.protocolId
     setDraft({
       ...draft,
-      model_name: modelName,
-      api_format: videoApiFormatForModel(modelName, draft.api_format || "lingke_media_generate"),
+      model_name: template.modelName,
+      api_format: "video_http_v1",
+      params: nextParams,
     })
   }
-  const setAudioApiFormat = (apiFormat: string) => {
-    setDraft({
-      ...draft,
-      api_format: normalizeAudioApiFormat(apiFormat),
-      model_name: draft.model_name || (apiFormat === "suno_compatible" ? "V5" : "tts-1"),
-    })
-  }
-
-  const selectedVideoTemplate = entry.kind === "video" && isKnownVideoModel(draft.model_name)
-    ? draft.model_name
+  const selectedVideoTemplate = entry.kind === "video"
+    ? videoModelTemplates.find((item) =>
+      item.modelName === draft.model_name && item.protocolId === String(draft.params?.video_protocol_id || ""),
+    )?.value || ""
     : ""
-  const videoImageTransport = normalizeVideoImageTransport(draft.params?.image_transport)
+  const imageInputTransport = normalizeVideoImageTransport(draft.params?.image_transport)
+  const imageProtocolId = String(draft.params?.image_protocol_id || "")
+  const imageProtocolOptions = imageProtocols.map((item) => ({
+    label: item.display_name && item.display_name !== item.id
+      ? `${item.display_name} · ${item.id}`
+      : item.id,
+    value: item.id,
+  }))
+  const selectedCatalogImageProtocolId = imageProtocolOptions.some((item) => item.value === imageProtocolId)
+    ? imageProtocolId
+    : ""
+  const canSaveImageProtocol = draft.api_format !== "image_http_v1" || Boolean(selectedCatalogImageProtocolId)
+  const videoProtocolId = String(draft.params?.video_protocol_id || "")
+  const videoProtocolOptions = videoProtocols.map((item) => ({
+    label: item.display_name && item.display_name !== item.id
+      ? `${item.display_name} · ${item.id}`
+      : item.id,
+    value: item.id,
+  }))
+  const selectedCatalogProtocolId = videoProtocolOptions.some((item) => item.value === videoProtocolId)
+    ? videoProtocolId
+    : ""
+  const canSaveVideoProtocol = draft.api_format !== "video_http_v1" || Boolean(selectedCatalogProtocolId)
+  const audioProtocolId = String(draft.params?.audio_protocol_id || "")
+  const audioProtocolOptions = audioProtocols.map((item) => ({
+    label: item.display_name && item.display_name !== item.id
+      ? `${item.display_name} · ${item.id}`
+      : item.id,
+    value: item.id,
+  }))
+  const selectedCatalogAudioProtocolId = audioProtocolOptions.some((item) => item.value === audioProtocolId)
+    ? audioProtocolId
+    : ""
+  const canSaveAudioProtocol = draft.api_format !== "audio_http_v1" || Boolean(selectedCatalogAudioProtocolId)
 
   return (
-    <div className="rounded-lg border border-indigo-700/60 bg-indigo-950/20 px-3 py-3 space-y-2">
-      <div className="grid grid-cols-2 gap-2">
+    <div className="overflow-hidden rounded-lg border border-indigo-700/60 bg-indigo-950/15">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-900/60 px-4 py-3">
+        <div>
+          <div className="text-sm font-semibold text-gray-100">{draft.name.trim() || `新建${kindLabel(entry.kind)}模型`}</div>
+          <div className="mt-0.5 text-[11px] text-gray-500">常用字段在上方，高级协议参数默认收起。</div>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1.5 text-xs text-gray-300">
+            <input type="checkbox" checked={draft.is_active}
+              onChange={(e) => setField("is_active", e.target.checked)} />
+            默认
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-300">
+            <input type="checkbox" checked={draft.enabled}
+              onChange={(e) => setField("enabled", e.target.checked)} />
+            启用
+          </label>
+        </div>
+      </div>
+      <div className="grid gap-3 px-4 py-4 md:grid-cols-2">
         <F label="名称" required value={draft.name} onChange={(v) => setField("name", v)} />
         <F label="Base URL" required value={draft.base_url} onChange={(v) => setField("base_url", v)}
-          hint={entry.kind === "video"
+          hint={entry.kind === "image"
+            ? "填写当前图片服务商或中转站的 Base URL；请求结构由图片协议决定。"
+            : entry.kind === "video"
             ? "填写当前服务商的 Base URL；请求结构由协议/API Format 决定。"
             : entry.kind === "audio"
-              ? draft.api_format === "suno_compatible"
-                ? "填写 Suno-compatible 服务的 Base URL；系统不会绑定固定中转站。"
-                : "填写 OpenAI-compatible 服务根地址或 /v1 地址；系统会调用 /audio/speech。"
+              ? "填写当前音频服务商或中转站的 Base URL；请求结构由音频协议决定。"
             : undefined} />
-        {entry.kind === "video" ? (
+        {entry.kind === "image" ? (
           <>
-            <SelectField
-              label="模型模板"
-              value={selectedVideoTemplate}
-              onChange={applyVideoTemplate}
-              options={[
-                { label: "自定义/不套用模板", value: "" },
-                ...VIDEO_MODEL_OPTIONS.map((item) => ({
-                  label: item.label,
-                  value: item.modelName,
-                })),
-              ]}
-              defaultText="可手填"
-              hint="选择模板会同时填入模型名和推荐协议；自定义模型可直接改下面的模型名。"
-            />
             <F
               label="模型名"
               required
               value={draft.model_name}
               onChange={(v) => setField("model_name", v)}
-              hint="填写当前中转站或官方接口实际支持的模型 ID。"
+              hint="填写当前中转站或官方接口实际支持的图片模型 ID。"
             />
+            <SelectField
+              label="图片协议"
+              value={selectedCatalogImageProtocolId}
+              onChange={setImageProtocolId}
+              options={[
+                { label: imageProtocolOptions.length ? "请选择协议" : "未读取到协议配置", value: "" },
+                ...imageProtocolOptions,
+              ]}
+              required
+              hint="从 config/image_provider_protocols/catalog.json 动态读取；选择协议后系统按该协议构造请求和解析图片结果。"
+            />
+            {imageProtocolId && !selectedCatalogImageProtocolId && (
+              <div className="col-span-2 rounded border border-amber-800 bg-amber-950/30 px-2 py-1 text-[10px] text-amber-200">
+                当前保存的协议 ID「{imageProtocolId}」不在配置文件中，请先在 catalog 中加入该协议，或改选已有协议。
+              </div>
+            )}
             <div className="col-span-2 rounded border border-gray-800 bg-gray-950/35 p-2">
               <button
                 type="button"
@@ -285,21 +552,102 @@ function Row({
               </button>
               {advancedOpen && (
                 <div className="mt-2 grid grid-cols-2 gap-2">
-                  <SelectField
-                    label="协议/API Format"
-                    value={draft.api_format || "lingke_media_generate"}
-                    onChange={(v) => setField("api_format", v)}
-                    options={VIDEO_API_FORMAT_OPTIONS}
-                    hint="同一个模型名在不同中转站可能使用不同请求结构；这里选择后端适配器。"
-                  />
+                  <div>
+                    <FieldLabel label="协议引擎" defaultText="固定" />
+                    <div className="rounded border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-200">
+                      Declarative HTTP v1
+                      <span className="ml-2 font-mono text-[10px] text-gray-500">image_http_v1</span>
+                    </div>
+                  </div>
                   <SelectField
                     label="图片输入"
-                    value={videoImageTransport}
+                    value={imageInputTransport}
                     onChange={(v) => setParamField("image_transport", v)}
                     options={VIDEO_IMAGE_TRANSPORT_OPTIONS}
                     hint="默认本地项目图转 Base64/data URL，已有公网 URL 原样传；公网 URL 模式需要服务商能直接访问图片地址。"
                   />
-                  {videoImageTransport === "public_url" && (
+                  {imageInputTransport === "public_url" && (
+                    <F
+                      label="公网根地址"
+                      value={String(draft.params?.public_base_url || "")}
+                      onChange={(v) => setParamField("public_base_url", v)}
+                      defaultText="默认空"
+                      hint="用于把 /api/media/... 项目图片转成外网可访问 URL，例如 https://example.com。"
+                    />
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        ) : entry.kind === "video" ? (
+          <>
+            <SelectField
+              label="推荐模型"
+              value={selectedVideoTemplate}
+              onChange={applyVideoTemplate}
+              options={[
+                { label: videoModelTemplates.length ? "手动填写模型名" : "协议里没有模型建议", value: "" },
+                ...videoModelTemplates.map((item) => ({
+                  label: item.label,
+                  value: item.value,
+                })),
+              ]}
+              defaultText="可手填"
+              hint="这些选项来自视频协议配置的 model_profiles；选择后只填模型名和协议 ID。"
+            />
+            <F
+              label="模型名"
+              required
+              value={draft.model_name}
+              onChange={(v) => setField("model_name", v)}
+              hint="填写当前中转站或官方接口实际支持的模型 ID。"
+            />
+            {draft.api_format === "video_http_v1" && (
+              <>
+                <SelectField
+                  label="视频协议"
+                  value={selectedCatalogProtocolId}
+                  onChange={setVideoProtocolId}
+                  options={[
+                    { label: videoProtocolOptions.length ? "请选择协议" : "未读取到协议配置", value: "" },
+                    ...videoProtocolOptions,
+                  ]}
+                  required
+                  hint="从 config/video_provider_protocols/catalog.json 动态读取；选择协议后系统按该协议构造请求、轮询和解析结果。"
+                />
+                {videoProtocolId && !selectedCatalogProtocolId && (
+                  <div className="col-span-2 rounded border border-amber-800 bg-amber-950/30 px-2 py-1 text-[10px] text-amber-200">
+                    当前保存的协议 ID「{videoProtocolId}」不在配置文件中，请先在 catalog 中加入该协议，或改选已有协议。
+                  </div>
+                )}
+              </>
+            )}
+            <div className="col-span-2 rounded border border-gray-800 bg-gray-950/35 p-2">
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((value) => !value)}
+                className="flex w-full items-center justify-between text-left text-[11px] text-gray-300"
+              >
+                <span>高级设置</span>
+                <span className="text-gray-500">{advancedOpen ? "收起" : "展开"}</span>
+              </button>
+              {advancedOpen && (
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <div>
+                    <FieldLabel label="协议引擎" defaultText="固定" />
+                    <div className="rounded border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-200">
+                      Declarative HTTP v1
+                      <span className="ml-2 font-mono text-[10px] text-gray-500">video_http_v1</span>
+                    </div>
+                  </div>
+                  <SelectField
+                    label="图片输入"
+                    value={imageInputTransport}
+                    onChange={(v) => setParamField("image_transport", v)}
+                    options={VIDEO_IMAGE_TRANSPORT_OPTIONS}
+                    hint="默认本地项目图转 Base64/data URL，已有公网 URL 原样传；公网 URL 模式需要服务商能直接访问图片地址。"
+                  />
+                  {imageInputTransport === "public_url" && (
                     <F
                       label="公网根地址"
                       value={String(draft.params?.public_base_url || "")}
@@ -314,52 +662,70 @@ function Row({
           </>
         ) : entry.kind === "audio" ? (
           <>
-            <F label="模型名" required value={draft.model_name} onChange={(v) => setField("model_name", v)}
-              hint={draft.api_format === "suno_compatible"
-                ? "填写服务商支持的音乐模型名，例如 V5、V5_5；具体以当前 Base URL 文档为准。"
-                : "填写服务商支持的 TTS 模型名，例如 tts-1；具体以当前 Base URL 文档为准。"} />
-            <SelectField
-              label="协议/API Format"
-              value={normalizeAudioApiFormat(draft.api_format)}
-              onChange={setAudioApiFormat}
-              options={AUDIO_API_FORMAT_OPTIONS}
-              defaultText="默认 openai_tts"
-              hint="TTS 语音走同步 /v1/audio/speech；音乐生成走 Suno-compatible 异步任务协议。"
+            <F
+              label="模型名"
+              required
+              value={draft.model_name}
+              onChange={(v) => setField("model_name", v)}
+              hint="填写当前中转站或官方接口实际支持的音频模型 ID，例如 tts-1、V5。"
             />
+            <SelectField
+              label="音频协议"
+              value={selectedCatalogAudioProtocolId}
+              onChange={setAudioProtocolId}
+              options={[
+                { label: audioProtocolOptions.length ? "请选择协议" : "未读取到协议配置", value: "" },
+                ...audioProtocolOptions,
+              ]}
+              required
+              hint="从 config/audio_provider_protocols/catalog.json 动态读取；选择协议后系统按该协议构造请求、轮询和解析音频结果。"
+            />
+            {audioProtocolId && !selectedCatalogAudioProtocolId && (
+              <div className="col-span-2 rounded border border-amber-800 bg-amber-950/30 px-2 py-1 text-[10px] text-amber-200">
+                当前保存的协议 ID「{audioProtocolId}」不在配置文件中，请先在 catalog 中加入该协议，或改选已有协议。
+              </div>
+            )}
+            <div className="col-span-2 rounded border border-gray-800 bg-gray-950/35 p-2">
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((value) => !value)}
+                className="flex w-full items-center justify-between text-left text-[11px] text-gray-300"
+              >
+                <span>高级设置</span>
+                <span className="text-gray-500">{advancedOpen ? "收起" : "展开"}</span>
+              </button>
+              {advancedOpen && (
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <div>
+                    <FieldLabel label="协议引擎" defaultText="固定" />
+                    <div className="rounded border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-200">
+                      Declarative HTTP v1
+                      <span className="ml-2 font-mono text-[10px] text-gray-500">audio_http_v1</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </>
-        ) : (
-          <>
-            <F label="模型名" required value={draft.model_name} onChange={(v) => setField("model_name", v)} />
-            <F label="协议/API Format" value={draft.api_format} onChange={(v) => setField("api_format", v)}
-              defaultText="默认 openai" />
-          </>
-        )}
+        ) : null}
         <F label="API Key" required value={draft.api_key ?? ""} type="password"
           onChange={(v) => setField("api_key", v || "")} />
         <F label="备注" value={draft.notes ?? ""} onChange={(v) => setField("notes", v || "")}
           defaultText="默认空" />
       </div>
-      <div className="flex items-center gap-3">
-        <label className="flex items-center gap-1.5 text-xs text-gray-300">
-          <input type="checkbox" checked={draft.is_active}
-            onChange={(e) => setField("is_active", e.target.checked)} />
-          激活 <span className="text-[10px] text-gray-500">默认否</span>
-        </label>
-        <label className="flex items-center gap-1.5 text-xs text-gray-300">
-          <input type="checkbox" checked={draft.enabled}
-            onChange={(e) => setField("enabled", e.target.checked)} />
-          启用 <span className="text-[10px] text-gray-500">默认是</span>
-        </label>
-        <div className="flex-1" />
+      <div className="flex items-center justify-end gap-2 border-t border-indigo-900/60 bg-gray-950/35 px-4 py-3">
         <button onClick={onCancel}
           className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">取消</button>
         <button
-          onClick={() => onSave(normalizeMediaProvider(draft))}
+          onClick={() => onSave(normalizeMediaProvider(draft, imageProtocols, audioProtocols))}
           disabled={
             !draft.name.trim()
             || !draft.base_url.trim()
             || !draft.model_name.trim()
             || !(draft.api_key ?? "").trim()
+            || !canSaveImageProtocol
+            || !canSaveVideoProtocol
+            || !canSaveAudioProtocol
           }
           className="text-xs px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50">保存</button>
       </div>

@@ -1216,7 +1216,7 @@ async def test_image_provider_rejects_downloaded_wrong_aspect_ratio(monkeypatch,
         assert kind == "image"
         return provider
 
-    async def fake_call_openai_image(*args, **kwargs):
+    async def fake_call_image_http_v1(*args, **kwargs):
         return {"images": [{"url": "https://example.test/generated.png"}]}
 
     class FakeResponse:
@@ -1238,7 +1238,7 @@ async def test_image_provider_rejects_downloaded_wrong_aspect_ratio(monkeypatch,
             return FakeResponse()
 
     monkeypatch.setattr(media_provider, "_get_active_provider", fake_get_active_provider)
-    monkeypatch.setattr(media_provider, "_call_openai_image", fake_call_openai_image)
+    monkeypatch.setattr(media_provider, "_call_image_http_v1", fake_call_image_http_v1)
     monkeypatch.setattr(media_provider.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(media_provider.settings, "STORAGE_DIR", str(tmp_path), raising=False)
 
@@ -1432,47 +1432,68 @@ def test_media_provider_schema_accepts_lingke_media_generate_format():
     assert entry.api_format == "lingke_media_generate"
 
 
-def test_media_provider_schema_accepts_suno_compatible_audio_format():
+def test_media_provider_schema_accepts_video_http_v1_format():
+    entry = MediaProviderEntry(
+        kind="video",
+        name="seedance-http",
+        base_url="https://ark.cn-beijing.volces.com/api/v3",
+        api_key="ark-key",
+        model_name="doubao-seedance-2-0-260128",
+        api_format="video_http_v1",
+        params={"video_protocol_id": "seedance_2_0"},
+    )
+
+    assert entry.api_format == "video_http_v1"
+
+
+def test_media_provider_schema_accepts_audio_http_v1_format():
+    entry = MediaProviderEntry(
+        kind="audio",
+        name="audio-http",
+        base_url="https://audio.example",
+        api_key="audio-key",
+        model_name="tts-1",
+        api_format="audio_http_v1",
+        params={"audio_protocol_id": "openai_audio_speech"},
+    )
+
+    assert entry.kind == "audio"
+    assert entry.api_format == "audio_http_v1"
+
+
+def test_media_provider_schema_accepts_audio_http_v1_suno_protocol():
     entry = MediaProviderEntry(
         kind="audio",
         name="suno-compatible",
         base_url="https://audio.example",
         api_key="audio-key",
         model_name="V5",
-        api_format="suno_compatible",
+        api_format="audio_http_v1",
+        params={"audio_protocol_id": "newapi_suno_music"},
     )
 
     assert entry.kind == "audio"
-    assert entry.api_format == "suno_compatible"
+    assert entry.api_format == "audio_http_v1"
 
 
-def test_media_provider_schema_accepts_openai_tts_audio_format():
-    entry = MediaProviderEntry(
-        kind="audio",
-        name="openai-tts",
-        base_url="https://audio.example/v1",
-        api_key="audio-key",
-        model_name="tts-1",
-        api_format="openai_tts",
-    )
-
-    assert entry.kind == "audio"
-    assert entry.api_format == "openai_tts"
-
-
-def test_openai_tts_payload_prefers_node_format_and_filters_music_fields():
+def test_audio_http_v1_payload_prefers_node_format_and_filters_music_fields():
     provider = SimpleNamespace(
+        api_format="audio_http_v1",
         model_name="tts-1",
         params_json=json.dumps({
+            "audio_protocol_id": "openai_audio_speech",
             "response_format": "mp3",
             "speed": 1.05,
             "custom_mode": True,
         }),
     )
 
-    payload, error = media_provider._build_openai_tts_payload(
+    payload, meta = media_provider._build_audio_http_v1_payload(
         provider,
         prompt="旁白文本",
+        title=None,
+        style=None,
+        instrumental=None,
         extra_override={
             "voice": "nova",
             "format": "wav",
@@ -1482,7 +1503,8 @@ def test_openai_tts_payload_prefers_node_format_and_filters_music_fields():
         },
     )
 
-    assert error is None
+    assert meta is not None
+    assert meta["protocol"]["id"] == "openai_audio_speech"
     assert payload == {
         "model": "tts-1",
         "input": "旁白文本",
@@ -1493,17 +1515,46 @@ def test_openai_tts_payload_prefers_node_format_and_filters_music_fields():
     }
 
 
+def test_audio_http_v1_newapi_suno_payload_preserves_instrumental_flag():
+    provider = SimpleNamespace(
+        api_format="audio_http_v1",
+        model_name="V5",
+        params_json=json.dumps({
+            "audio_protocol_id": "newapi_suno_music",
+        }),
+    )
+
+    payload, meta = media_provider._build_audio_http_v1_payload(
+        provider,
+        prompt="A warm cinematic pop theme",
+        title="Theme",
+        style="cinematic pop",
+        instrumental=True,
+        extra_override={"mv": "chirp-v4"},
+    )
+
+    assert meta is not None
+    assert meta["protocol"]["id"] == "newapi_suno_music"
+    assert payload == {
+        "gpt_description_prompt": "A warm cinematic pop theme",
+        "tags": "cinematic pop",
+        "title": "Theme",
+        "make_instrumental": True,
+        "mv": "chirp-v4",
+    }
+
+
 @pytest.mark.asyncio
-async def test_audio_provider_routes_openai_tts(monkeypatch):
+async def test_audio_provider_routes_audio_http_v1(monkeypatch):
     provider = SimpleNamespace(
         name="tts-provider",
         kind="audio",
-        api_format="openai_tts",
+        api_format="audio_http_v1",
         base_url="https://audio.example/v1",
         api_key="audio-key",
         model_name="tts-1",
         enabled=True,
-        params_json=None,
+        params_json=json.dumps({"audio_protocol_id": "openai_audio_speech"}),
     )
     captured: dict = {}
 
@@ -1511,7 +1562,7 @@ async def test_audio_provider_routes_openai_tts(monkeypatch):
         assert kind == "audio"
         return provider
 
-    async def fake_call_openai_tts_audio(**kwargs):
+    async def fake_call_audio_http_v1(**kwargs):
         captured.update(kwargs)
         return {
             "ok": True,
@@ -1520,10 +1571,11 @@ async def test_audio_provider_routes_openai_tts(monkeypatch):
             "model": provider.model_name,
             "voice": kwargs["extra_override"]["voice"],
             "format": kwargs["extra_override"]["format"],
+            "style": kwargs["style"],
         }
 
     monkeypatch.setattr(media_provider, "_get_active_provider", fake_get_active_provider)
-    monkeypatch.setattr(media_provider, "_call_openai_tts_audio", fake_call_openai_tts_audio)
+    monkeypatch.setattr(media_provider, "_call_audio_http_v1", fake_call_audio_http_v1)
 
     result = await media_provider.generate_audio_with_provider(
         project_id="proj-1",
@@ -1536,28 +1588,30 @@ async def test_audio_provider_routes_openai_tts(monkeypatch):
     assert result["provider"] == "tts-provider"
     assert captured["project_id"] == "proj-1"
     assert captured["prompt"] == "生成一句旁白"
-    assert captured["extra_override"] == {
-        "voice": "nova",
-        "format": "wav",
-        "style": "温和",
-    }
+    assert captured["style"] == "温和"
+    assert captured["extra_override"] == {"voice": "nova", "format": "wav"}
 
 
-def test_suno_audio_response_parser_handles_nested_audio_object():
-    items = media_provider._collect_suno_audio_items({
-        "code": 200,
+def test_audio_http_v1_response_parser_handles_newapi_suno_items():
+    protocol, error = media_provider._audio_http_v1_protocol_from_catalog("newapi_suno_music")
+    assert error is None
+    assert protocol is not None
+
+    items = media_provider._audio_http_v1_collect_audio_items(protocol, {
+        "code": "success",
         "data": {
             "status": "SUCCESS",
-            "response": {
-                "sunoData": [
-                    {
-                        "id": "song-1",
-                        "title": "Theme",
-                        "audio": {"audioUrl": "https://example.com/theme.mp3"},
-                        "imageUrl": "https://example.com/theme.png",
-                    }
-                ]
-            },
+            "data": [
+                {
+                    "id": "song-1",
+                    "title": "Theme",
+                    "audio_url": "https://example.com/theme.mp3",
+                    "source_audio_url": "https://example.com/source.mp3",
+                    "image_url": "https://example.com/theme.png",
+                    "duration": 42.5,
+                    "tags": "cinematic, pop",
+                }
+            ],
         },
     })
 
@@ -1567,11 +1621,11 @@ def test_suno_audio_response_parser_handles_nested_audio_object():
             "title": "Theme",
             "url": "https://example.com/theme.mp3",
             "remote_url": "https://example.com/theme.mp3",
-            "source_audio_url": None,
-            "stream_audio_url": None,
+            "source_audio_url": "https://example.com/source.mp3",
+            "stream_audio_url": "https://example.com/theme.mp3",
             "image_url": "https://example.com/theme.png",
-            "duration_seconds": None,
-            "tags": None,
+            "duration_seconds": 42.5,
+            "tags": "cinematic, pop",
         }
     ]
 
@@ -2255,7 +2309,7 @@ async def test_volcengine_ark_rejects_placeholder_resolution_with_doc_hint():
 
     assert payload is None
     assert error["error_kind"] == "bad_request"
-    assert error["supported_resolutions"] == ["480p", "720p", "1080p"]
+    assert error["supported_resolutions"] == ["480p", "720p", "1080p", "4k"]
     assert "VIDEO_MODEL_CALLING.md" in error["hint"]
 
 
@@ -2671,48 +2725,457 @@ def test_t8_grok_video_3_adapter_capabilities_are_structured():
     provider = SimpleNamespace(
         api_format="t8_grok_video_3",
         model_name="grok-video-3",
+        params_json="{}",
     )
 
     adapter = media_provider._video_provider_adapter(provider)
     assert adapter is not None
-    capabilities = media_provider._video_adapter_capabilities(adapter)
+    protocol, error = media_provider._video_http_v1_protocol(provider)
 
-    assert adapter.name == "t8_grok_video_3"
-    assert capabilities["source_images_min"] == 0
-    assert capabilities["source_images_max"] == 7
-    assert capabilities["field_types"]["duration"] == "integer"
-    assert capabilities["field_types"]["images"] == "url_list"
-    assert capabilities["supported_resolutions"] == ["480p", "720p", "1080p"]
+    assert adapter.name == "video_http_v1"
+    assert error is None
+    assert protocol["id"] == "t8_grok_video_3_json_task"
+    assert protocol["image_transport"] == "upload_url"
 
 
 def test_lingke_media_generate_adapter_uses_api_format_without_model_hardcoding():
     provider = SimpleNamespace(
         api_format="lingke_media_generate",
         model_name="custom-video-model",
+        params_json="{}",
     )
 
     adapter = media_provider._video_provider_adapter(provider)
     assert adapter is not None
-    capabilities = media_provider._video_adapter_capabilities(adapter)
+    protocol, error = media_provider._video_http_v1_protocol(provider)
 
-    assert adapter.name == "lingke_media_generate"
-    assert adapter.model_names == frozenset()
-    assert capabilities["source_images_min"] == 0
-    assert capabilities["source_images_max"] == 12
-    assert capabilities["source_image_transport"] == "configurable_url_or_data_url_list"
-    assert capabilities["field_types"]["duration"] == "string"
+    assert adapter.name == "video_http_v1"
+    assert error is None
+    assert protocol["id"] == "lingke_media_generate_json_task"
+    assert protocol["request"]["path"] == "/media/generate"
+
+
+def _seedance_video_http_protocol() -> dict[str, Any]:
+    return {
+        "version": "openreel.video_provider.v1",
+        "display_name": "Seedance 2.0",
+        "default_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "image_transport": "data_url",
+        "supported_ratios": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        "duration": {"min": 4, "max": 15, "allowed_values": [-1]},
+        "forbidden_fields": ["seed", "frames", "camera_fixed", "draft", "service_tier"],
+        "model_profiles": [
+            {
+                "match": "doubao-seedance-2-0-260128",
+                "supported_resolutions": ["480p", "720p", "1080p", "4k"],
+                "default_resolution": "720p",
+            },
+            {
+                "match_contains": "fast",
+                "supported_resolutions": ["480p", "720p"],
+                "default_resolution": "720p",
+            },
+            {
+                "match_contains": "mini",
+                "supported_resolutions": ["480p", "720p"],
+                "default_resolution": "720p",
+            },
+        ],
+        "modes": {
+            "text_to_video": {"prompt_required": True, "max_images": 0, "max_videos": 0, "max_audios": 0},
+            "first_frame": {
+                "prompt_required": False,
+                "required_roles": ["first_frame"],
+                "allowed_roles": ["first_frame"],
+                "min_images": 1,
+                "max_images": 1,
+                "max_videos": 0,
+                "max_audios": 0,
+            },
+            "first_last_frame": {
+                "prompt_required": False,
+                "required_roles": ["first_frame", "last_frame"],
+                "allowed_roles": ["first_frame", "last_frame"],
+                "min_images": 2,
+                "max_images": 2,
+                "max_videos": 0,
+                "max_audios": 0,
+            },
+            "multimodal_reference": {
+                "prompt_required": False,
+                "allowed_roles": ["reference_image", "reference_video", "reference_audio"],
+                "min_total_media": 1,
+                "max_images": 9,
+                "max_videos": 3,
+                "max_audios": 3,
+                "audio_requires_visual": True,
+            },
+        },
+        "content": {
+            "text": {"type": "text", "type_key": "type", "text_key": "text"},
+            "media_types": {
+                "image": {"type": "image_url", "object_key": "image_url", "url_key": "url", "role_key": "role"},
+                "video": {"type": "video_url", "object_key": "video_url", "url_key": "url", "role_key": "role"},
+                "audio": {"type": "audio_url", "object_key": "audio_url", "url_key": "url", "role_key": "role"},
+            },
+        },
+        "request": {
+            "method": "POST",
+            "path": "/contents/generations/tasks",
+            "auth": "bearer",
+            "task_id_paths": ["id"],
+            "body": {
+                "model": "$model",
+                "content": "$content",
+                "duration": "$duration_seconds",
+                "ratio": "$aspect_ratio",
+                "resolution": "$resolution",
+                "generate_audio": "$generate_audio",
+                "return_last_frame": "$return_last_frame",
+                "priority": "$priority",
+                "safety_identifier": "$safety_identifier",
+            },
+        },
+        "poll": {
+            "method": "GET",
+            "path": "/contents/generations/tasks/{task_id}",
+            "status_path": "status",
+            "succeeded": ["succeeded"],
+            "failed": ["failed", "cancelled", "expired"],
+            "running": ["queued", "running", "processing"],
+        },
+        "result": {
+            "video_url_paths": ["content.video_url", "video_url"],
+            "last_frame_url_paths": ["content.last_frame_url", "last_frame_url"],
+        },
+    }
+
+
+def _video_http_provider(
+    model_name: str = "doubao-seedance-2-0-260128",
+    protocol_id: str = "seedance_2_0",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        name="seedance-http",
+        api_key="ark-key",
+        base_url="https://ark.cn-beijing.volces.com/api/v3",
+        api_format="video_http_v1",
+        model_name=model_name,
+        params_json=json.dumps({"video_protocol_id": protocol_id}, ensure_ascii=False),
+    )
+
+
+def test_video_http_v1_adapter_uses_api_format():
+    adapter = media_provider._video_provider_adapter(_video_http_provider())
+
+    assert adapter is not None
+    assert adapter.name == "video_http_v1"
+    assert "video_http_v1" in media_provider._supported_video_api_formats()
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_seedance_text_to_video_payload_supports_4k():
+    payload, meta = await media_provider._build_video_http_v1_payload(
+        provider=_video_http_provider(),
+        project_id="proj-1",
+        prompt="雨夜里的霓虹街巷，镜头缓慢前推",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=15,
+        reference_images=None,
+        extra_override={"aspect_ratio": "9:16", "resolution": "4k", "generate_audio": False},
+    )
+
+    assert meta["mode"] == "text_to_video"
+    assert payload["model"] == "doubao-seedance-2-0-260128"
+    assert payload["duration"] == 15
+    assert payload["ratio"] == "9:16"
+    assert payload["resolution"] == "4k"
+    assert payload["generate_audio"] is False
+    assert payload["content"] == [{"type": "text", "text": "雨夜里的霓虹街巷，镜头缓慢前推"}]
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_seedance_first_last_frame_payload():
+    payload, meta = await media_provider._build_video_http_v1_payload(
+        provider=_video_http_provider(),
+        project_id="proj-1",
+        prompt="从白天过渡到夜晚，保持角色位置一致",
+        first_frame_url="https://example.com/first.png",
+        last_frame_url="https://example.com/last.png",
+        duration_seconds=8,
+        reference_images=None,
+        extra_override={"aspect_ratio": "16:9", "resolution": "1080p", "return_last_frame": True},
+    )
+
+    assert meta["mode"] == "first_last_frame"
+    assert payload["return_last_frame"] is True
+    assert payload["content"][1]["role"] == "first_frame"
+    assert payload["content"][1]["image_url"]["url"] == "https://example.com/first.png"
+    assert payload["content"][2]["role"] == "last_frame"
+    assert payload["content"][2]["image_url"]["url"] == "https://example.com/last.png"
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_seedance_multimodal_payload_accepts_image_video_audio_refs():
+    payload, meta = await media_provider._build_video_http_v1_payload(
+        provider=_video_http_provider(),
+        project_id="proj-1",
+        prompt="参考素材的动作和节奏，生成同风格片段",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=6,
+        reference_images=["https://example.com/ref.png"],
+        extra_override={
+            "resolution": "720p",
+            "reference_videos": ["https://example.com/ref.mp4"],
+            "reference_audios": ["https://example.com/ref.mp3"],
+        },
+    )
+
+    assert meta["mode"] == "multimodal_reference"
+    media_items = payload["content"][1:]
+    assert [item["type"] for item in media_items] == ["image_url", "video_url", "audio_url"]
+    assert [item["role"] for item in media_items] == ["reference_image", "reference_video", "reference_audio"]
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_body_can_use_plain_media_url_lists(monkeypatch):
+    protocol = _seedance_video_http_protocol()
+    protocol["request"]["body"] = {
+        "model": "$model",
+        "params": {
+            "prompt": "$prompt",
+            "images": "$image_urls",
+            "videos": "$video_urls",
+            "audios": "$audio_urls",
+        },
+    }
+    monkeypatch.setattr(
+        media_provider,
+        "_video_http_v1_protocol_from_catalog",
+        lambda protocol_id: (protocol, None),
+    )
+
+    payload, meta = await media_provider._build_video_http_v1_payload(
+        provider=_video_http_provider(),
+        project_id="proj-1",
+        prompt="plain url lists",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=6,
+        reference_images=["https://example.com/ref.png"],
+        extra_override={
+            "reference_videos": ["https://example.com/ref.mp4"],
+            "reference_audios": ["https://example.com/ref.mp3"],
+        },
+    )
+
+    assert meta["mode"] == "multimodal_reference"
+    assert payload["params"]["images"] == ["https://example.com/ref.png"]
+    assert payload["params"]["videos"] == ["https://example.com/ref.mp4"]
+    assert payload["params"]["audios"] == ["https://example.com/ref.mp3"]
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_seedance_audio_only_reference_is_rejected():
+    payload, error = await media_provider._build_video_http_v1_payload(
+        provider=_video_http_provider(),
+        project_id="proj-1",
+        prompt="跟随音乐节奏生成视频",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=6,
+        reference_images=None,
+        extra_override={"video_mode": "multimodal_reference", "reference_audios": ["https://example.com/ref.mp3"]},
+    )
+
+    assert payload is None
+    assert error["error_kind"] == "bad_request"
+    assert "音频参考" in error["error"]
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_seedance_fast_rejects_1080p():
+    payload, error = await media_provider._build_video_http_v1_payload(
+        provider=_video_http_provider("doubao-seedance-2-0-fast-260128"),
+        project_id="proj-1",
+        prompt="fast model",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=4,
+        reference_images=None,
+        extra_override={"resolution": "1080p"},
+    )
+
+    assert payload is None
+    assert error["error_kind"] == "bad_request"
+    assert error["supported_resolutions"] == ["480p", "720p"]
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_seedance_forbids_seed_field():
+    payload, error = await media_provider._build_video_http_v1_payload(
+        provider=_video_http_provider(),
+        project_id="proj-1",
+        prompt="seed should be rejected",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=4,
+        reference_images=None,
+        extra_override={"resolution": "720p", "seed": 123},
+    )
+
+    assert payload is None
+    assert error["error_kind"] == "bad_request"
+    assert "seed" in error["error"]
+
+
+def test_video_http_v1_catalog_lists_migrated_video_protocols():
+    catalog = media_provider.list_video_http_v1_protocol_catalog()
+
+    assert catalog["ok"] is True
+    protocol_ids = {item["id"] for item in catalog["protocols"]}
+    assert {
+        "seedance_2_0",
+        "lingke_media_generate_json_task",
+        "t8_grok_video_3_json_task",
+        "xai_grok_imagine_video_1_5",
+        "grok_1_5_multipart",
+    }.issubset(protocol_ids)
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_t8_protocol_uploads_images_and_uppercases_resolution(monkeypatch):
+    async def fake_upload(project_id, provider, protocol, ref):
+        return f"https://files.example/{ref.rsplit('/', 1)[-1]}", None
+
+    monkeypatch.setattr(media_provider, "_video_http_v1_upload_image_ref", fake_upload)
+    provider = _video_http_provider("grok-video-3", "t8_grok_video_3_json_task")
+    provider.base_url = "https://relay.example/v1"
+
+    payload, meta = await media_provider._build_video_http_v1_payload(
+        provider=provider,
+        project_id="proj-1",
+        prompt="Use @img1 as a character reference.",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=15,
+        reference_images=["https://example.com/ref.png"],
+        extra_override={"aspect_ratio": "9:16", "resolution": "1080p", "seed": 123},
+    )
+
+    assert meta["mode"] == "multimodal_reference"
+    assert payload == {
+        "model": "grok-video-3",
+        "prompt": "Use @img1 as a character reference.",
+        "ratio": "9:16",
+        "duration": 15,
+        "resolution": "1080P",
+        "images": ["https://files.example/ref.png"],
+        "seed": 123,
+    }
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_t8_protocol_rejects_1080p_long_duration():
+    provider = _video_http_provider("grok-video-3", "t8_grok_video_3_json_task")
+
+    payload, error = await media_provider._build_video_http_v1_payload(
+        provider=provider,
+        project_id="proj-1",
+        prompt="Long duration video.",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=20,
+        reference_images=None,
+        extra_override={"aspect_ratio": "16:9", "resolution": "1080p"},
+    )
+
+    assert payload is None
+    assert error["error_kind"] == "bad_request"
+    assert error["supported_resolutions"] == ["720p"]
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_xai_protocol_uses_first_image_url():
+    provider = _video_http_provider("grok-imagine-video-1.5", "xai_grok_imagine_video_1_5")
+    provider.base_url = "https://api.x.ai/v1"
+
+    payload, meta = await media_provider._build_video_http_v1_payload(
+        provider=provider,
+        project_id="proj-1",
+        prompt="Animate the source image with slow camera movement.",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=6,
+        reference_images=["https://example.com/source.png"],
+        extra_override={"resolution": "720p", "seed": 42},
+    )
+
+    assert meta["mode"] == "first_frame"
+    assert payload == {
+        "model": "grok-imagine-video-1.5",
+        "prompt": "Animate the source image with slow camera movement.",
+        "image": {"url": "https://example.com/source.png"},
+        "duration": 6,
+        "resolution": "720p",
+        "seed": 42,
+    }
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_grok_1_5_protocol_builds_multipart_request(monkeypatch):
+    async def fake_image_file(project_id, ref):
+        return ("source.png", b"image-bytes", "image/png"), None
+
+    monkeypatch.setattr(media_provider, "_image_file_input", fake_image_file)
+    provider = _video_http_provider("grok-1.5-video-15s", "grok_1_5_multipart")
+    provider.base_url = "https://relay.example/v1"
+
+    payload, meta = await media_provider._build_video_http_v1_payload(
+        provider=provider,
+        project_id="proj-1",
+        prompt="Animate the source image.",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=15,
+        reference_images=["https://example.com/source.png"],
+        extra_override={"aspect_ratio": "9:16", "resolution": "720p"},
+    )
+
+    assert payload == {
+        "model": "grok-1.5-video-15s",
+        "prompt": "Animate the source image.",
+        "size": "720x1280",
+    }
+    assert meta["request"]["encoding"] == "multipart"
+    assert meta["_multipart_files"]["input_reference"] == ("source.png", b"image-bytes", "image/png")
 
 
 def test_video_adapter_uses_api_format_for_grok_relay_variants():
     provider = SimpleNamespace(
         api_format="t8_grok_video_3",
         model_name="grok-1.5-video-15s",
+        params_json="{}",
     )
 
     adapter = media_provider._video_provider_adapter(provider)
 
     assert adapter is not None
-    assert adapter.name == "t8_grok_video_3"
+    assert adapter.name == "video_http_v1"
+
+
+def test_video_http_v1_protocol_id_is_inferred_for_legacy_video_formats():
+    assert media_provider._video_http_v1_protocol_id_for_provider(
+        SimpleNamespace(api_format="t8_grok_video_3", model_name="grok-video-3", params_json="{}")
+    ) == "t8_grok_video_3_json_task"
+    assert media_provider._video_http_v1_protocol_id_for_provider(
+        SimpleNamespace(api_format="lingke_media_generate", model_name="grok-video-3", params_json="{}")
+    ) == "lingke_media_generate_json_task"
+    assert media_provider._video_http_v1_protocol_id_for_provider(
+        SimpleNamespace(api_format="grok_1_5", model_name="grok-1.5-video-15s", params_json="{}")
+    ) == "grok_1_5_multipart"
 
 
 @pytest.mark.asyncio
@@ -3388,6 +3851,67 @@ async def test_text_runner_preserves_tree_dependency_fields():
         "references": ["image-1"],
         "depends_on": ["text-0"],
     }
+
+
+@pytest.mark.asyncio
+async def test_text_runner_uses_node_model_override(monkeypatch):
+    llm_calls: list[dict[str, Any]] = []
+    updates: list[dict[str, Any]] = []
+
+    class FakeLLMService:
+        def __init__(self, _session):
+            pass
+
+        async def generate(self, *, task_type, messages, system, project_id, node_override=None):
+            llm_calls.append({
+                "task_type": task_type,
+                "messages": messages,
+                "system": system,
+                "project_id": project_id,
+                "node_override": node_override,
+            })
+            return {
+                "content": "这是模型回复正文。",
+                "model": "deepseek/deepseek-chat",
+                "usage": {"total_tokens": 32},
+            }
+
+    class FakeScope:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    async def fake_reference_images(project_id: str, fields: dict[str, Any]):
+        return [], [], []
+
+    async def fake_update_node(node_id: str, patch: dict[str, Any]):
+        updates.append({"node_id": node_id, **patch})
+        return {"id": node_id, **patch}
+
+    monkeypatch.setattr(node_universal, "LLMService", FakeLLMService)
+    monkeypatch.setattr(node_universal, "session_scope", lambda: FakeScope())
+    monkeypatch.setattr(node_universal, "_reference_image_urls_for_text_run", fake_reference_images)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+
+    result = await node_universal._run_text_node(
+        "proj-1",
+        "node-1",
+        {
+            "title": "文本节点",
+            "prompt": "写一个开场。",
+            "model": "Panel Text",
+            "llm_task_type": "text_generation",
+        },
+    )
+
+    assert llm_calls[0]["node_override"] == "Panel Text"
+    assert llm_calls[0]["task_type"] == "text_generation"
+    assert result["content"] == "这是模型回复正文。"
+    assert result["model"] == "deepseek/deepseek-chat"
+    assert updates[0]["input_data"]["model"] == "Panel Text"
+    assert updates[0]["input_data"]["content"] == "这是模型回复正文。"
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,64 @@
       "params": {}
     }
   ],
-  "media_providers": [],
+  "media_providers": [
+    // Image HTTP v1 keeps runtime connection data here and reads protocol
+    // details from config/image_provider_protocols/catalog.json by id.
+    // image_http_v1 只在这里保存运行时连接信息，协议细节按 id 从
+    // config/image_provider_protocols/catalog.json 读取。
+    {
+      "kind": "image",
+      "name": "image-openai-compatible-example",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "${IMAGE_API_KEY}",
+      "model_name": "gpt-image-1",
+      "api_format": "image_http_v1",
+      "is_active": false,
+      "enabled": false,
+      "notes": "Example only. Copy and enable after filling a real API key.",
+      "params": {
+        "image_protocol_id": "openai_images_generations",
+        "image_transport": "data_url"
+      }
+    },
+    // Video HTTP v1 keeps runtime connection data here and reads protocol
+    // details from config/video_provider_protocols/catalog.json by id.
+    // video_http_v1 只在这里保存运行时连接信息，协议细节按 id 从
+    // config/video_provider_protocols/catalog.json 读取。
+    {
+      "kind": "video",
+      "name": "seedance-example",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "api_key": "${VIDEO_API_KEY}",
+      "model_name": "doubao-seedance-2-0-260128",
+      "api_format": "video_http_v1",
+      "is_active": false,
+      "enabled": false,
+      "notes": "Example only. Copy and enable after filling a real API key.",
+      "params": {
+        "video_protocol_id": "seedance_2_0",
+        "image_transport": "data_url"
+      }
+    },
+    // Audio HTTP v1 keeps runtime connection data here and reads protocol
+    // details from config/audio_provider_protocols/catalog.json by id.
+    // audio_http_v1 只在这里保存运行时连接信息，协议细节按 id 从
+    // config/audio_provider_protocols/catalog.json 读取。
+    {
+      "kind": "audio",
+      "name": "tts-example",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "${AUDIO_API_KEY}",
+      "model_name": "tts-1",
+      "api_format": "audio_http_v1",
+      "is_active": false,
+      "enabled": false,
+      "notes": "Example only. Copy and enable after filling a real API key.",
+      "params": {
+        "audio_protocol_id": "openai_audio_speech"
+      }
+    }
+  ],
   "model_tier_defaults": {
     "strong": null,
     "balanced": "deepseek-default",

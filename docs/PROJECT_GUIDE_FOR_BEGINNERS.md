@@ -474,7 +474,10 @@ storage/
 └── temp/                      # 临时文件
 
 config/
-└── runtime.jsonc              # 本地 provider 配置，通常不提交
+├── runtime.jsonc              # 本地 provider 配置，通常不提交
+├── image_provider_protocols/  # 图片 provider 请求协议 catalog，不含密钥
+├── video_provider_protocols/  # 视频 provider 请求协议 catalog，不含密钥
+└── audio_provider_protocols/  # 音频 provider 请求协议 catalog，不含密钥
 ```
 
 提交代码前要特别检查：
@@ -610,7 +613,7 @@ git diff --stat
 - `apps/api/app/api/routes_media.py`
 - `apps/web/components/settings/tabs/MediaTab.tsx`
 
-图片和视频生成一般由 `node.run` 触发，具体 provider 配置走设置界面和 `config/runtime.jsonc`。
+图片、视频和音频生成一般由 `node.run` 触发。`config/runtime.jsonc` 只保存 Base URL、模型名、API Key 和选中的协议 ID；具体 HTTP 请求结构写在 `config/image_provider_protocols/catalog.json`、`config/video_provider_protocols/catalog.json` 和 `config/audio_provider_protocols/catalog.json`。字段定义、模板变量和错误行为见 `docs/MODEL_PROVIDER_PROTOCOLS.md`。
 
 ### 改文件读写或开发者工具
 
@@ -773,6 +776,7 @@ git diff --check
 - `BLUEPRINT_OPERATING_MODEL.md`：节点优先创作模型和工具合同。
 - `docs/workflow-spec-protocol.md`：workflow spec 协议。
 - `docs/workflow-build-patch-design.md`：工作流搭建模式设计。
+- `docs/MODEL_PROVIDER_PROTOCOLS.md`：图片、视频、音频模型 provider 协议配置说明。
 - `docs/AGENT_QUALITY_ACCEPTANCE.md`：Agent 质量验收标准。
 - `docs/DESKTOP_PACKAGING.md`：桌面打包说明。
 

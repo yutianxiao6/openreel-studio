@@ -158,8 +158,6 @@ from app.services import drama_legacy, media_generation
 
 from app.services import media_provider
 
-from app.services.media_provider import _openai_images_endpoint
-
 plan_rule = SimpleNamespace(PROMPT=(
     "# Complex Work\n\n"
     "Read video workflow skills with `skill.search(category='workflow')`, select reusable template candidates before running, "

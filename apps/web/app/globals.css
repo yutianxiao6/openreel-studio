@@ -78,6 +78,40 @@ body {
   z-index: 24;
 }
 
+.openreel-canvas-flow,
+.openreel-canvas-flow .react-flow__pane,
+.openreel-canvas-flow .react-flow__viewport,
+.openreel-canvas-flow .react-flow__renderer,
+.openreel-canvas-flow .react-flow__node,
+.openreel-canvas-flow .openreel-smart-node-card {
+  cursor: default !important;
+}
+
+.openreel-mention-editor {
+  cursor: text !important;
+}
+
+.openreel-mention-editor:empty::before {
+  content: attr(data-placeholder);
+  color: rgb(113 113 122);
+  pointer-events: none;
+}
+
+.openreel-reference-mention-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  margin: 0 2px;
+  padding: 1px 7px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 999px;
+  background: rgba(14, 116, 144, 0.22);
+  color: rgb(186 230 253);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: default !important;
+}
+
 .react-flow__edge.selected .react-flow__edge-path,
 .react-flow__edge:focus .react-flow__edge-path,
 .react-flow__edge:focus-visible .react-flow__edge-path {

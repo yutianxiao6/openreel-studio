@@ -490,11 +490,116 @@ def _media_output_for_history_item(item: dict[str, Any]) -> dict[str, Any]:
     return project_media_history.output_for_item(item)
 
 
+def _first_nonempty_text(*values: object) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+    return ""
+
+
+def _text_history_entry_id(project_id: str, node_id: str, entry_id: str, index: int) -> str:
+    source = f"{project_id}:{node_id}:{entry_id}:{index}"
+    return f"text_{uuid.uuid5(uuid.NAMESPACE_URL, source).hex[:18]}"
+
+
+def _node_text_output_content(input_data: dict[str, Any], output_data: object) -> str:
+    if isinstance(output_data, str):
+        return output_data.strip()
+    output_obj = output_data if isinstance(output_data, dict) else {}
+    return _first_nonempty_text(
+        output_obj.get("content"),
+        output_obj.get("text"),
+        output_obj.get("reply"),
+        output_obj.get("response"),
+        output_obj.get("output"),
+        output_obj.get("result"),
+        input_data.get("content"),
+        input_data.get("text"),
+    )
+
+
+def _text_history_items_from_node(project_id: str, node: WorkflowNode) -> list[dict[str, Any]]:
+    if node.type != "text":
+        return []
+    input_data = _parse_json_dict(node.input_json)
+    output_data = _parse_json_value(node.output_json)
+    output_obj = output_data if isinstance(output_data, dict) else {}
+    raw_history = (
+        input_data.get("text_chat_history")
+        or input_data.get("chat_history")
+        or output_obj.get("text_chat_history")
+        or output_obj.get("chat_history")
+        or []
+    )
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    if isinstance(raw_history, list):
+        for index, raw_entry in enumerate(raw_history):
+            if not isinstance(raw_entry, dict):
+                continue
+            prompt = _first_nonempty_text(raw_entry.get("prompt"), raw_entry.get("input"), raw_entry.get("user"))
+            content = _first_nonempty_text(raw_entry.get("content"), raw_entry.get("reply"), raw_entry.get("response"), raw_entry.get("output"))
+            if not content:
+                continue
+            key = (prompt, content)
+            seen.add(key)
+            source_entry_id = _first_nonempty_text(raw_entry.get("id")) or str(index)
+            created_at = _first_nonempty_text(raw_entry.get("created_at"), raw_entry.get("completed_at"))
+            items.append({
+                "id": _text_history_entry_id(project_id, node.id, source_entry_id, index),
+                "project_id": project_id,
+                "kind": "text",
+                "rel_path": "",
+                "url": "",
+                "filename": f"{node.title or '文本节点'}-{index + 1}.txt",
+                "title": node.title or "文本节点",
+                "created_at": created_at or (node.updated_at.isoformat() if node.updated_at else None),
+                "updated_at": node.updated_at.isoformat() if node.updated_at else None,
+                "size": len(content.encode("utf-8")),
+                "mime_type": "text/plain",
+                "source": "node",
+                "source_node_id": node.id,
+                "source_node_title": node.title,
+                "prompt": prompt or None,
+                "content": content,
+                "model": _first_nonempty_text(raw_entry.get("model")) or None,
+            })
+    current_content = _node_text_output_content(input_data, output_data)
+    current_prompt = _first_nonempty_text(output_obj.get("prompt"), input_data.get("prompt"), node.prompt)
+    if current_content and (current_prompt, current_content) not in seen:
+        items.append({
+            "id": _text_history_entry_id(project_id, node.id, "current", len(items)),
+            "project_id": project_id,
+            "kind": "text",
+            "rel_path": "",
+            "url": "",
+            "filename": f"{node.title or '文本节点'}-current.txt",
+            "title": node.title or "文本节点",
+            "created_at": node.updated_at.isoformat() if node.updated_at else None,
+            "updated_at": node.updated_at.isoformat() if node.updated_at else None,
+            "size": len(current_content.encode("utf-8")),
+            "mime_type": "text/plain",
+            "source": "node",
+            "source_node_id": node.id,
+            "source_node_title": node.title,
+            "prompt": current_prompt or None,
+            "content": current_content,
+            "model": _first_nonempty_text(output_obj.get("model"), input_data.get("model")) or None,
+        })
+    return items
+
+
 async def _list_project_media_history_items(project_id: str, db: AsyncSession) -> list[dict[str, Any]]:
     try:
-        return await project_media_history.list_items(project_id, db)
+        items = await project_media_history.list_items(project_id, db)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result = await db.exec(select(WorkflowNode).where(WorkflowNode.project_id == project_id, WorkflowNode.type == "text"))
+    for node in result.all():
+        items.extend(_text_history_items_from_node(project_id, node))
+    return sorted(items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
 async def _find_project_media_history_item(project_id: str, item_id: str, db: AsyncSession) -> dict[str, Any] | None:
@@ -527,6 +632,7 @@ _IMAGE_RENDER_FRESHNESS_KEYS = {
     "aspect_ratio",
     "resolution",
     "quality",
+    "clarity",
     "model",
     "seed",
     "style",
@@ -623,6 +729,7 @@ _CHANGE_LABELS = {
     "aspect_ratio": "画幅",
     "resolution": "分辨率",
     "quality": "质量",
+    "clarity": "清晰度",
     "duration_seconds": "时长",
     "production_path": "制作方式",
     "reference_images": "引用图",

@@ -1026,7 +1026,7 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "image.inpaint_region": "对图片或宫格 cell 的局部 mask 区域发起重绘",
     "interaction.request_input": "用通用问题卡向用户提出最多 6 个短问题并等待提交",
     "media.cancel_image_generation": "取消当前项目正在进行或排队的图片生成步骤",
-    "media.get_presets": "读取图片 provider 推荐参数预设",
+    "media.get_presets": "从图片协议 catalog 读取 provider 推荐参数预设",
     "media.list_providers": "读取已配置的媒体 provider 列表",
     "media.test_provider": "向指定媒体 provider 发送最小真实请求并返回测试结果",
     "memory.compact_context": "压缩当前会话上下文，保存摘要和长期事实",
