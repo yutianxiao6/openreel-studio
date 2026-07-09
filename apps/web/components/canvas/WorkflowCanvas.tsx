@@ -10894,6 +10894,16 @@ export default function WorkflowCanvas({
             src: audio.src,
           }
         }
+        if (data?.type === "image") {
+          const src = previewImageUrlFromNode(node)
+          if (!src) return null
+          return {
+            id: node.id,
+            type: "image" as const,
+            title: data.title || "图片节点",
+            src,
+          }
+        }
         return null
       })
       .filter((item): item is VideoEditPanelMediaNode => Boolean(item))

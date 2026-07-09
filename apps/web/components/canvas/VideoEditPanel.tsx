@@ -1,14 +1,14 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
-import type { PointerEvent as ReactPointerEvent } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react"
 import { runProjectMediaOperation } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 export interface VideoEditPanelMediaNode {
   id: string
   title: string
-  type: "video" | "audio"
+  type: "video" | "audio" | "image"
   src: string
 }
 
@@ -24,6 +24,7 @@ interface VideoEditPanelProps {
 
 type BusyAction = "frame" | "tail" | "split" | "trim" | "concat-video" | "concat-audio" | null
 type TimelineTool = "select" | "blade" | "trim"
+type PreviewScale = "fit" | "50" | "75" | "100"
 
 interface TimelineClipState {
   id: string
@@ -60,6 +61,12 @@ function clipEnd(clip: TimelineClipState): number {
   return clip.start + clip.duration
 }
 
+function mediaTypeLabel(type: VideoEditPanelMediaNode["type"]): string {
+  if (type === "video") return "视频"
+  if (type === "audio") return "音频"
+  return "图片"
+}
+
 function waveformBars(seed: string, count = 72): number[] {
   let value = seed.split("").reduce((sum, char) => sum + char.charCodeAt(0), 37)
   return Array.from({ length: count }, () => {
@@ -79,7 +86,7 @@ function videoFrameTimes(duration: number, count: number): number[] {
 }
 
 function timeFromPointer(
-  event: PointerEvent | ReactPointerEvent,
+  event: { clientX: number },
   container: HTMLElement,
   pxPerSecond: number,
 ): number {
@@ -259,6 +266,8 @@ function MediaBinItem({
       <div className="relative h-10 w-14 shrink-0 overflow-hidden rounded bg-black">
         {item.type === "video" ? (
           <video src={item.src} muted preload="metadata" className="h-full w-full object-cover opacity-85" />
+        ) : item.type === "image" ? (
+          <img src={item.src} alt="" className="h-full w-full object-cover opacity-90" draggable={false} />
         ) : (
           <div className="flex h-full items-end justify-center gap-0.5 px-2 py-2">
             {waveformBars(item.id, 12).map((height, index) => (
@@ -273,7 +282,7 @@ function MediaBinItem({
       </div>
       <div className="min-w-0 flex-1">
         <div className="truncate text-[11px] font-medium text-zinc-100">{item.title || "未命名素材"}</div>
-        <div className="mt-0.5 text-[10px] text-zinc-500">{item.type === "video" ? "视频" : "音频"} · 双击插入</div>
+        <div className="mt-0.5 text-[10px] text-zinc-500">{mediaTypeLabel(item.type)} · 双击插入</div>
       </div>
       <button
         type="button"
@@ -383,9 +392,13 @@ function TimelineClip({
     >
       {kind === "video" ? (
         <>
-          <VideoThumbnailStrip src={item.src} count={Math.max(4, Math.min(12, Math.round(width / 70)))} />
+          {item.type === "image" ? (
+            <img src={item.src} alt="" className="absolute inset-0 h-full w-full object-cover opacity-90" draggable={false} />
+          ) : (
+            <VideoThumbnailStrip src={item.src} count={Math.max(4, Math.min(12, Math.round(width / 70)))} />
+          )}
           <div className="absolute inset-0 bg-gradient-to-r from-black/10 via-transparent to-black/20" />
-          {selected && (
+          {selected && item.type === "video" && (
             <div
               className="absolute bottom-0 top-0 border-x border-emerald-100/90 bg-emerald-300/16"
               style={{
@@ -428,7 +441,7 @@ function TimelineClip({
           "rounded px-1.5 py-0.5 text-[10px] font-bold",
           kind === "video" ? "bg-cyan-100 text-cyan-950" : "bg-amber-100 text-amber-950",
         )}>
-          {kind === "video" ? "V" : "A"}
+          {kind === "video" ? (item.type === "image" ? "I" : "V") : "A"}
         </span>
         <span className="truncate text-[11px] font-semibold text-zinc-50">{item.title || "素材"}</span>
       </div>
@@ -459,6 +472,7 @@ export default function VideoEditPanel({
   const [playing, setPlaying] = useState(false)
   const [tool, setTool] = useState<TimelineTool>("select")
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
+  const [previewScale, setPreviewScale] = useState<PreviewScale>("fit")
   const [busy, setBusy] = useState<BusyAction>(null)
   const [error, setError] = useState<string | null>(null)
   const [selectedClipId, setSelectedClipId] = useState(nodeId)
@@ -467,6 +481,10 @@ export default function VideoEditPanel({
   const [trimStart, setTrimStart] = useState(0)
   const [trimEnd, setTrimEnd] = useState(DEFAULT_CLIP_SECONDS)
 
+  const visualItems = useMemo(
+    () => mediaNodes.filter((item) => (item.type === "video" || item.type === "image") && item.src),
+    [mediaNodes],
+  )
   const videoItems = useMemo(() => mediaNodes.filter((item) => item.type === "video" && item.src), [mediaNodes])
   const audioItems = useMemo(() => mediaNodes.filter((item) => item.type === "audio" && item.src), [mediaNodes])
   const mediaById = useMemo(() => new Map(mediaNodes.map((item) => [item.id, item])), [mediaNodes])
@@ -503,7 +521,7 @@ export default function VideoEditPanel({
 
   useEffect(() => {
     setVideoClips((current) => {
-      const valid = current.filter((clip) => videoItems.some((item) => item.id === clip.id))
+      const valid = current.filter((clip) => visualItems.some((item) => item.id === clip.id))
       if (valid.length > 0) {
         return valid.map((clip) => (
           clip.id === nodeId
@@ -511,16 +529,23 @@ export default function VideoEditPanel({
             : clip
         ))
       }
-      const primary = videoItems.find((item) => item.id === nodeId) || videoItems[0]
+      const primary = videoItems.find((item) => item.id === nodeId) || visualItems[0]
       return primary
         ? [{ id: primary.id, start: 0, duration: sourceDuration || DEFAULT_CLIP_SECONDS }]
         : []
     })
-  }, [nodeId, sourceDuration, videoItems])
+  }, [nodeId, sourceDuration, videoItems, visualItems])
 
   useEffect(() => {
-    setAudioClips((current) => current.filter((clip) => audioItems.some((item) => item.id === clip.id)))
-  }, [audioItems])
+    setAudioClips((current) => {
+      const valid = current.filter((clip) => audioItems.some((item) => item.id === clip.id))
+      if (valid.length > 0) return valid
+      const primary = audioItems[0]
+      return primary
+        ? [{ id: primary.id, start: 0, duration: sourceDuration || DEFAULT_CLIP_SECONDS }]
+        : []
+    })
+  }, [audioItems, sourceDuration])
 
   useEffect(() => {
     setSelectedClipId(nodeId)
@@ -542,11 +567,13 @@ export default function VideoEditPanel({
   useEffect(() => {
     const video = videoRef.current
     if (!video || !currentVideoClip) return
+    const item = mediaById.get(currentVideoClip.id)
+    if (item?.type !== "video") return
     const localTime = clamp(currentTime - currentVideoClip.start, 0, currentVideoClip.duration)
     if (Math.abs((video.currentTime || 0) - localTime) > 0.08) {
       video.currentTime = localTime
     }
-  }, [currentTime, currentVideoClip])
+  }, [currentTime, currentVideoClip, mediaById])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -565,28 +592,25 @@ export default function VideoEditPanel({
     }
   }, [currentAudioClip, currentTime, playing])
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null
-      const isTyping = ["input", "textarea", "select"].includes(target?.tagName?.toLowerCase() || "") || target?.isContentEditable
-      if (isTyping) return
-      if (!(event.ctrlKey || event.metaKey)) return
-      if (event.key === "=" || event.key === "+") {
-        event.preventDefault()
-        setPxPerSecond((value) => Math.min(180, value + 14))
-      }
-      if (event.key === "-") {
-        event.preventDefault()
-        setPxPerSecond((value) => Math.max(42, value - 14))
-      }
-    }
-    window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
-  }, [])
-
   const seekTo = (time: number) => {
     setCurrentTime(clamp(time, 0, timelineDuration))
   }
+
+  const zoomTimelineAt = useCallback((nextValue: number, clientX?: number) => {
+    const next = clamp(nextValue, 42, 220)
+    const container = timelineRef.current
+    if (!container || clientX == null) {
+      setPxPerSecond(next)
+      return
+    }
+    const rect = container.getBoundingClientRect()
+    const localX = clientX - rect.left
+    const anchorTime = Math.max(0, (localX + container.scrollLeft - TRACK_LABEL_WIDTH) / pxPerSecond)
+    setPxPerSecond(next)
+    window.requestAnimationFrame(() => {
+      container.scrollLeft = Math.max(0, anchorTime * next + TRACK_LABEL_WIDTH - localX)
+    })
+  }, [pxPerSecond])
 
   const beginPlayheadDrag = (event: ReactPointerEvent<HTMLElement>) => {
     const container = timelineRef.current
@@ -605,22 +629,76 @@ export default function VideoEditPanel({
     window.addEventListener("pointerup", onEnd)
   }
 
-  const togglePlayback = () => {
+  const togglePlayback = useCallback(() => {
     const video = videoRef.current
-    if (!video) return
     if (playing) {
-      video.pause()
+      video?.pause()
       audioRef.current?.pause()
       setPlaying(false)
       return
     }
     const clip = currentVideoClip
-    if (!clip) return
-    const localTime = clamp(currentTime - clip.start, 0, clip.duration)
-    video.currentTime = localTime
-    void video.play()
+    if (!clip && !currentAudioClip) return
+    const item = clip ? mediaById.get(clip.id) : undefined
+    if (video && clip && item?.type === "video") {
+      const localTime = clamp(currentTime - clip.start, 0, clip.duration)
+      video.currentTime = localTime
+      void video.play()
+    }
+    if (currentAudioClip) {
+      const audio = audioRef.current
+      if (audio) {
+        audio.currentTime = clamp(currentTime - currentAudioClip.start, 0, currentAudioClip.duration)
+        void audio.play().catch(() => undefined)
+      }
+    }
     setPlaying(true)
-  }
+  }, [currentAudioClip, currentTime, currentVideoClip, mediaById, playing])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const isTyping = ["input", "textarea", "select"].includes(target?.tagName?.toLowerCase() || "") || target?.isContentEditable
+      if (isTyping) return
+      if (event.code === "Space" || event.key === " ") {
+        event.preventDefault()
+        togglePlayback()
+        return
+      }
+      if (!(event.ctrlKey || event.metaKey)) return
+      if (event.key === "=" || event.key === "+") {
+        event.preventDefault()
+        zoomTimelineAt(pxPerSecond + 14)
+      }
+      if (event.key === "-") {
+        event.preventDefault()
+        zoomTimelineAt(pxPerSecond - 14)
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [pxPerSecond, togglePlayback, zoomTimelineAt])
+
+  useEffect(() => {
+    if (!playing || currentVideoItem?.type === "video") return
+    let frame = 0
+    let last = performance.now()
+    const tick = (now: number) => {
+      const deltaSeconds = (now - last) / 1000
+      last = now
+      setCurrentTime((value) => {
+        const next = clamp(value + deltaSeconds, 0, timelineDuration)
+        if (next >= timelineDuration) {
+          setPlaying(false)
+          return timelineDuration
+        }
+        return next
+      })
+      frame = window.requestAnimationFrame(tick)
+    }
+    frame = window.requestAnimationFrame(tick)
+    return () => window.cancelAnimationFrame(frame)
+  }, [currentVideoItem?.type, playing, timelineDuration])
 
   const runOperation = async (action: BusyAction, input: Parameters<typeof runProjectMediaOperation>[1]) => {
     if (!action || busy) return
@@ -636,10 +714,12 @@ export default function VideoEditPanel({
     }
   }
 
-  const insertMediaItem = (item: VideoEditPanelMediaNode) => {
-    const duration = Math.max(sourceDuration || DEFAULT_CLIP_SECONDS, DEFAULT_CLIP_SECONDS)
-    const start = Math.max(0, currentTime)
-    if (item.type === "video") {
+  const insertMediaItem = (item: VideoEditPanelMediaNode, startAt = currentTime) => {
+    const duration = item.type === "image"
+      ? DEFAULT_CLIP_SECONDS
+      : Math.max(sourceDuration || DEFAULT_CLIP_SECONDS, DEFAULT_CLIP_SECONDS)
+    const start = Math.max(0, startAt)
+    if (item.type === "video" || item.type === "image") {
       setVideoClips((current) => {
         const exists = current.some((clip) => clip.id === item.id)
         return exists
@@ -655,6 +735,18 @@ export default function VideoEditPanel({
         ? current.map((clip) => clip.id === item.id ? { ...clip, start } : clip)
         : [...current, { id: item.id, start, duration }]
     })
+  }
+
+  const handleTrackDrop = (kind: "video" | "audio", event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const id = event.dataTransfer.getData("openreel/media-id")
+    const item = mediaById.get(id)
+    const container = timelineRef.current
+    if (!item || !container) return
+    if (kind === "video" && item.type === "audio") return
+    if (kind === "audio" && item.type !== "audio") return
+    insertMediaItem(item, timeFromPointer(event, container, pxPerSecond))
   }
 
   const updateClipStart = (kind: "video" | "audio", id: string, start: number) => {
@@ -702,10 +794,13 @@ export default function VideoEditPanel({
     beginPlayheadDrag(event)
   }
 
-  const canTrim = selectedVideoClip && trimEnd > trimStart + 0.05
+  const canTrim = selectedVideoClip && selectedVideoItem?.type === "video" && trimEnd > trimStart + 0.05
   const videoConcatIds = videoClips.map((clip) => clip.id).filter((id) => videoItems.some((item) => item.id === id))
   const audioConcatIds = audioClips.map((clip) => clip.id).filter((id) => audioItems.some((item) => item.id === id))
   const isBusy = Boolean(busy)
+  const previewScaleStyle = previewScale === "fit"
+    ? { width: "min(100%, 680px)" }
+    : { width: `${previewScale}%`, maxWidth: "780px" }
 
   return (
     <div
@@ -734,36 +829,61 @@ export default function VideoEditPanel({
       </div>
 
       <div className="grid h-[calc(100%-2.75rem)] grid-rows-[minmax(0,1fr)_190px] bg-[#070b10]">
-        <div className="grid min-h-0 grid-cols-[minmax(520px,1fr)_320px] border-b border-white/10 max-lg:grid-cols-1 max-lg:overflow-y-auto">
+        <div className="grid min-h-0 grid-cols-[220px_minmax(420px,1fr)_300px] border-b border-white/10 max-xl:grid-cols-[200px_minmax(360px,1fr)_280px] max-lg:grid-cols-1 max-lg:overflow-y-auto">
+          <aside className="flex min-h-0 flex-col border-r border-white/10 bg-[#0b1017]">
+            <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
+              <div className="text-[12px] font-semibold text-zinc-100">项目素材</div>
+              <div className="text-[10px] text-zinc-500">{mediaNodes.length}</div>
+            </div>
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+              {mediaNodes.map((item) => (
+                <MediaBinItem key={item.id} item={item} onInsert={insertMediaItem} />
+              ))}
+              {mediaNodes.length === 0 && (
+                <div className="rounded-md border border-dashed border-white/10 px-3 py-5 text-center text-xs leading-5 text-zinc-500">
+                  当前项目里的图片、视频和音频会出现在这里
+                </div>
+              )}
+            </div>
+          </aside>
+
           <main className="flex min-h-0 flex-col bg-[#090d13]">
-            <div className="flex min-h-0 flex-1 items-center justify-center bg-black p-4">
-              <div className="relative flex h-full max-h-full w-full items-center justify-center overflow-hidden rounded-md border border-white/10 bg-black shadow-inner">
+            <div className="flex min-h-0 flex-1 items-center justify-center bg-black p-5">
+              <div
+                className="relative flex aspect-video max-h-full items-center justify-center overflow-hidden rounded-md border border-white/10 bg-black shadow-inner"
+                style={previewScaleStyle}
+              >
                 {currentVideoItem ? (
-                  <video
-                    ref={videoRef}
-                    src={currentVideoItem.src || videoUrl}
-                    preload="metadata"
-                    className="h-full w-full object-contain [color-scheme:dark]"
-                    onLoadedMetadata={(event) => {
-                      const nextDuration = Number(event.currentTarget.duration || 0)
-                      const safeDuration = Number.isFinite(nextDuration) && nextDuration > 0 ? nextDuration : DEFAULT_CLIP_SECONDS
-                      if (currentVideoItem.id === nodeId) {
-                        setSourceDuration(safeDuration)
-                        setTrimEnd(safeDuration)
-                      }
-                    }}
-                    onTimeUpdate={(event) => {
-                      if (!currentVideoClip || !playing) return
-                      const next = currentVideoClip.start + event.currentTarget.currentTime
-                      setCurrentTime(clamp(next, 0, timelineDuration))
-                    }}
-                    onPlay={() => setPlaying(true)}
-                    onPause={() => setPlaying(false)}
-                    onEnded={() => {
-                      setPlaying(false)
-                      audioRef.current?.pause()
-                    }}
-                  />
+                  currentVideoItem.type === "image" ? (
+                    <img src={currentVideoItem.src} alt="" className="h-full w-full object-contain" draggable={false} />
+                  ) : (
+                    <video
+                      ref={videoRef}
+                      src={currentVideoItem.src || videoUrl}
+                      muted={audioClips.length > 0}
+                      preload="metadata"
+                      className="h-full w-full object-contain [color-scheme:dark]"
+                      onLoadedMetadata={(event) => {
+                        const nextDuration = Number(event.currentTarget.duration || 0)
+                        const safeDuration = Number.isFinite(nextDuration) && nextDuration > 0 ? nextDuration : DEFAULT_CLIP_SECONDS
+                        if (currentVideoItem.id === nodeId) {
+                          setSourceDuration(safeDuration)
+                          setTrimEnd(safeDuration)
+                        }
+                      }}
+                      onTimeUpdate={(event) => {
+                        if (!currentVideoClip || !playing) return
+                        const next = currentVideoClip.start + event.currentTarget.currentTime
+                        setCurrentTime(clamp(next, 0, timelineDuration))
+                      }}
+                      onPlay={() => setPlaying(true)}
+                      onPause={() => setPlaying(false)}
+                      onEnded={() => {
+                        setPlaying(false)
+                        audioRef.current?.pause()
+                      }}
+                    />
+                  )
                 ) : (
                   <div className="text-xs text-zinc-500">播放头不在视频片段上</div>
                 )}
@@ -790,10 +910,10 @@ export default function VideoEditPanel({
                 <ToolButton label="切割" glyph="B" active={tool === "blade"} onClick={() => setTool("blade")} />
                 <ToolButton label="裁剪" glyph="T" active={tool === "trim"} onClick={() => setTool("trim")} />
                 <ActionButton
-                  disabled={isBusy}
+                  disabled={isBusy || currentVideoItem?.type !== "video"}
                   onClick={() => void runOperation("frame", {
                     operation: "video.export_frame",
-                    source_node_id: nodeId,
+                    source_node_id: currentVideoClip?.id || nodeId,
                     frame_mode: "time",
                     time_seconds: Math.max(0, currentTime - (currentVideoClip?.start || 0)),
                     title: `${title || "视频"} ${formatTime(currentTime)} 画面`,
@@ -803,7 +923,19 @@ export default function VideoEditPanel({
                 </ActionButton>
               </div>
               <div className="hidden items-center gap-2 text-[10px] text-zinc-500 sm:flex">
-                <span>Ctrl + / - 缩放</span>
+                <span>空格播放</span>
+                <select
+                  value={previewScale}
+                  onChange={(event) => setPreviewScale(event.target.value as PreviewScale)}
+                  className="h-7 rounded-md border border-white/10 bg-[#141a22] px-2 text-[11px] font-semibold text-zinc-200 outline-none"
+                  title="视频缩放"
+                  aria-label="视频缩放"
+                >
+                  <option value="fit">适合</option>
+                  <option value="50">50%</option>
+                  <option value="75">75%</option>
+                  <option value="100">100%</option>
+                </select>
                 <span className="rounded border border-white/10 px-1.5 py-0.5">{Math.round(pxPerSecond)} px/s</span>
               </div>
             </div>
@@ -815,35 +947,15 @@ export default function VideoEditPanel({
               <div className={cn("h-2 w-2 rounded-full", isBusy ? "bg-cyan-300" : "bg-emerald-300/80")} />
             </div>
             <div className="space-y-4 overflow-y-auto p-3">
-              <section>
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-[11px] font-semibold text-zinc-300">素材</div>
-                  <div className="text-[10px] text-zinc-500">{mediaNodes.length}</div>
-                </div>
-                <div className="space-y-2">
-                  {videoItems.map((item) => (
-                    <MediaBinItem key={item.id} item={item} onInsert={insertMediaItem} />
-                  ))}
-                  {audioItems.map((item) => (
-                    <MediaBinItem key={item.id} item={item} onInsert={insertMediaItem} />
-                  ))}
-                  {mediaNodes.length === 0 && (
-                    <div className="rounded-md border border-dashed border-white/10 px-3 py-5 text-center text-xs text-zinc-500">
-                      画布上的视频和音频会出现在这里
-                    </div>
-                  )}
-                </div>
-              </section>
-
               <section className="rounded-md border border-white/10 bg-white/[0.035] p-3">
                 <div className="mb-3 text-[11px] font-semibold text-zinc-300">生成到画布</div>
                 <div className="grid grid-cols-2 gap-2">
                   <ActionButton
                     active={busy === "tail"}
-                    disabled={isBusy}
+                    disabled={isBusy || selectedVideoItem?.type !== "video"}
                     onClick={() => void runOperation("tail", {
                       operation: "video.export_frame",
-                      source_node_id: nodeId,
+                      source_node_id: selectedVideoClip?.id || nodeId,
                       frame_mode: "tail",
                       title: `${title || "视频"} 尾帧`,
                     })}
@@ -930,9 +1042,10 @@ export default function VideoEditPanel({
           className="relative min-h-0 overflow-auto bg-[#080c12]"
           onPointerDown={handleTimelineBackgroundDown}
           onWheel={(event) => {
-            if (!event.ctrlKey && !event.metaKey) return
             event.preventDefault()
-            setPxPerSecond((value) => clamp(value + (event.deltaY < 0 ? 12 : -12), 42, 180))
+            event.stopPropagation()
+            const factor = event.deltaY < 0 ? 1.12 : 0.88
+            zoomTimelineAt(pxPerSecond * factor, event.clientX)
           }}
         >
           <div className="relative min-h-full" style={{ width: TRACK_LABEL_WIDTH + timelineWidth }}>
@@ -956,10 +1069,17 @@ export default function VideoEditPanel({
                 <div className="text-[11px] font-semibold text-zinc-200">画面轴</div>
                 <div className="mt-1 text-[10px] text-zinc-500">拖动定位</div>
               </div>
-              <div className="relative bg-[#090d13]">
+              <div
+                className="relative bg-[#090d13]"
+                onDragOver={(event) => {
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = "copy"
+                }}
+                onDrop={(event) => handleTrackDrop("video", event)}
+              >
                 {videoClips.map((clip) => {
                   const item = mediaById.get(clip.id)
-                  if (!item || item.type !== "video") return null
+                  if (!item || (item.type !== "video" && item.type !== "image")) return null
                   return (
                     <TimelineClip
                       key={clip.id}
@@ -977,7 +1097,7 @@ export default function VideoEditPanel({
                         setTrimEnd(clipEnd(clip))
                       }}
                       onDragStartTime={(start) => updateClipStart("video", clip.id, start)}
-                      onTrimEdge={setTrimEdge}
+                      onTrimEdge={item.type === "video" ? setTrimEdge : undefined}
                     />
                   )
                 })}
@@ -989,7 +1109,14 @@ export default function VideoEditPanel({
                 <div className="text-[11px] font-semibold text-zinc-200">音频轴</div>
                 <div className="mt-1 text-[10px] text-zinc-500">拖动对齐</div>
               </div>
-              <div className="relative bg-[#090d13]">
+              <div
+                className="relative bg-[#090d13]"
+                onDragOver={(event) => {
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = "copy"
+                }}
+                onDrop={(event) => handleTrackDrop("audio", event)}
+              >
                 {audioClips.length === 0 && (
                   <div className="absolute inset-2 flex items-center justify-center rounded-md border border-dashed border-white/10 text-xs text-zinc-600">
                     将音频拖到这里对齐画面
