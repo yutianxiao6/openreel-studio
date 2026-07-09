@@ -714,6 +714,24 @@ export async function runProjectWorkflowAllSteps<T = Record<string, unknown>>(
 
 export type CanvasNodeType = 'text' | 'image' | 'video' | 'audio'
 
+export type ProjectMediaOperation =
+  | 'video.export_frame'
+  | 'video.split_tracks'
+  | 'video.trim'
+  | 'video.concat'
+  | 'audio.concat'
+
+export interface ProjectMediaOperationInput {
+  operation: ProjectMediaOperation
+  source_node_id?: string
+  source_node_ids?: string[]
+  frame_mode?: 'tail' | 'time'
+  time_seconds?: number
+  range?: { start_seconds: number; end_seconds: number }
+  position?: { x: number; y: number }
+  title?: string
+}
+
 export async function createProjectNode(
   projectId: string,
   input: { type: CanvasNodeType; title?: string; x: number; y: number },
@@ -726,6 +744,21 @@ export async function createProjectNode(
   })
   const result = await asJson<Record<string, unknown>>(res)
   requestCanvasRefresh({ projectId })
+  return result
+}
+
+export async function runProjectMediaOperation<T = Record<string, unknown>>(
+  projectId: string,
+  input: ProjectMediaOperationInput,
+): Promise<T> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}/media-operations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const result = await asJson<T>(res)
+  requestCanvasRefresh({ projectId, preserveOnEmpty: true, preserveLayout: true })
   return result
 }
 
@@ -1954,6 +1987,7 @@ export const api = {
   getProjectNodeDetails,
   updateProjectNodeDetails,
   uploadProjectNodeMedia,
+  runProjectMediaOperation,
   createPanoramaCapture,
   listProjectMediaHistory,
   restoreProjectMediaHistoryItem,

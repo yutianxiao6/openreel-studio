@@ -989,6 +989,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const portOffset = -NODE_PORT_GUTTER + NODE_PORT_INSET
   const showNodeToolbar = hasPreviewProduct
   const showImageToolbarActions = data.type === "image" && Boolean(image?.primary)
+  const showVideoToolbarActions = data.type === "video" && Boolean(video?.src) && !isRunning && !isSuperseded
 
   const clearImageToolbarHideTimer = useCallback(() => {
     if (imageToolbarHideTimer.current) {
@@ -1164,6 +1165,34 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
     }))
   }, [id])
 
+  const requestEditVideo = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    window.dispatchEvent(new CustomEvent("openreel:edit-video-node", {
+      detail: {
+        nodeId: id,
+        title: data.title || "",
+        videoUrl: video?.src || "",
+      },
+    }))
+  }, [data.title, id, video?.src])
+
+  const requestExportTailFrame = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    window.dispatchEvent(new CustomEvent("openreel:video-export-tail-frame", {
+      detail: { nodeId: id },
+    }))
+  }, [id])
+
+  const requestSplitAudio = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    window.dispatchEvent(new CustomEvent("openreel:video-split-audio", {
+      detail: { nodeId: id },
+    }))
+  }, [id])
+
   const requestOpenPanorama = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault()
     event.stopPropagation()
@@ -1313,6 +1342,31 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
             >
               预览
             </button>
+          )}
+          {showVideoToolbarActions && (
+            <>
+              <button
+                type="button"
+                onClick={requestEditVideo}
+                className="h-7 whitespace-nowrap rounded border border-cyan-200/20 bg-cyan-300/12 px-2.5 text-[11px] font-medium text-cyan-100 transition hover:bg-cyan-300/18"
+              >
+                剪辑
+              </button>
+              <button
+                type="button"
+                onClick={requestExportTailFrame}
+                className="h-7 whitespace-nowrap rounded border border-white/10 bg-white/[0.06] px-2.5 text-[11px] font-medium text-zinc-100 transition hover:bg-white/[0.12]"
+              >
+                尾帧
+              </button>
+              <button
+                type="button"
+                onClick={requestSplitAudio}
+                className="h-7 whitespace-nowrap rounded border border-white/10 bg-white/[0.06] px-2.5 text-[11px] font-medium text-zinc-100 transition hover:bg-white/[0.12]"
+              >
+                分音
+              </button>
+            </>
           )}
           {canGridCrop && (
             <button

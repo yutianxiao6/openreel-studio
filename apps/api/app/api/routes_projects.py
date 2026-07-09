@@ -22,7 +22,7 @@ from app.db.session import get_session
 from app.agent import canvas_workflow_templates, workflow_spec_artifacts, workflow_template_store
 from app.agent.workflow_audit import WorkflowAuditError
 from app.mcp_tools import canvas_tools, panel_tools, workflow_tools
-from app.services import image_operations, media_history, project_media_history
+from app.services import image_operations, media_history, media_operations, project_media_history
 from app.services.node_service import NodeService, workflow_node_payload
 from app.services.node_ids import next_node_display_id, node_display_id_allocation
 from app.services.node_public_ids import internal_to_public_id_map, publicize_node_refs, resolve_internal_node_id
@@ -127,6 +127,33 @@ class CanvasEdgeRequest(BaseModel):
     source_node_id: str
     target_node_id: str
     label: Optional[str] = None
+
+
+class MediaOperationPosition(BaseModel):
+    x: float
+    y: float
+
+
+class MediaOperationRange(BaseModel):
+    start_seconds: float = Field(ge=0.0)
+    end_seconds: float = Field(gt=0.0)
+
+
+class ProjectMediaOperationRequest(BaseModel):
+    operation: Literal[
+        "video.export_frame",
+        "video.split_tracks",
+        "video.trim",
+        "video.concat",
+        "audio.concat",
+    ]
+    source_node_id: Optional[str] = None
+    source_node_ids: list[str] = Field(default_factory=list)
+    frame_mode: Literal["tail", "time"] = "tail"
+    time_seconds: Optional[float] = Field(default=None, ge=0.0)
+    range: Optional[MediaOperationRange] = None
+    position: Optional[MediaOperationPosition] = None
+    title: Optional[str] = None
 
 
 class ProjectWorkflowMaterializeRequest(BaseModel):
@@ -938,6 +965,122 @@ def _remove_edge_dependency(target: WorkflowNode, source: WorkflowNode | str) ->
     target.input_json = json.dumps(_strip_ui_private(input_data), ensure_ascii=False)
     target.updated_at = datetime.utcnow()
     return True
+
+
+def _media_operation_default_position(source: WorkflowNode | None) -> dict[str, float]:
+    if source is None:
+        return {"x": 160.0, "y": 160.0}
+    return {
+        "x": float(source.position_x or 0.0) + 380.0,
+        "y": float(source.position_y or 0.0),
+    }
+
+
+def _media_operation_position_overlaps(
+    position: dict[str, float],
+    occupied: list[dict[str, float]],
+) -> bool:
+    return any(
+        abs(position["x"] - item["x"]) < 320.0 and abs(position["y"] - item["y"]) < 240.0
+        for item in occupied
+    )
+
+
+def _next_available_media_operation_position(
+    position: dict[str, float],
+    occupied: list[dict[str, float]],
+) -> dict[str, float]:
+    candidate = {"x": float(position["x"]), "y": float(position["y"])}
+    for _ in range(24):
+        if not _media_operation_position_overlaps(candidate, occupied):
+            occupied.append(candidate)
+            return candidate
+        candidate = {"x": candidate["x"], "y": candidate["y"] + 260.0}
+    occupied.append(candidate)
+    return candidate
+
+
+async def _create_dependency_edge(
+    project_id: str,
+    source: WorkflowNode,
+    target: WorkflowNode,
+    db: AsyncSession,
+    *,
+    label: str | None = None,
+) -> WorkflowEdge:
+    existing = (await db.exec(
+        select(WorkflowEdge).where(
+            WorkflowEdge.project_id == project_id,
+            WorkflowEdge.source_node_id == source.id,
+            WorkflowEdge.target_node_id == target.id,
+        )
+    )).first()
+    if existing is None:
+        existing = WorkflowEdge(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            source_node_id=source.id,
+            target_node_id=target.id,
+            label=label,
+            created_at=datetime.utcnow(),
+        )
+        db.add(existing)
+    if _add_edge_dependency(target, source):
+        db.add(target)
+    await db.commit()
+    await db.refresh(existing)
+    return existing
+
+
+async def _create_media_operation_node(
+    project_id: str,
+    result: media_operations.MediaOperationFile,
+    *,
+    source_nodes: list[WorkflowNode],
+    position: dict[str, float],
+    db: AsyncSession,
+) -> WorkflowNode:
+    output = media_operations.item_output(project_id, result)
+    source_refs = [_public_node_ref(source) for source in source_nodes]
+    input_json: dict[str, Any] = {
+        "surface": "media_operation",
+        "title": result.title,
+        "source": {
+            "kind": "media_operation",
+            "operation": result.metadata.get("type"),
+            "source_node_ids": [source.id for source in source_nodes],
+        },
+        "depends_on": source_refs,
+        "fields": {
+            "media_operation": result.metadata,
+            "source_node_refs": source_refs,
+        },
+    }
+    if result.kind == "image":
+        input_json["render_state"] = "fresh"
+
+    svc = NodeService(db)
+    node = await svc.create_node(
+        project_id,
+        {
+            "type": result.kind,
+            "title": result.title,
+            "status": "completed",
+            "position_x": position["x"],
+            "position_y": position["y"],
+            "input_json": input_json,
+            "output_json": output,
+            "model_config_json": {
+                "surface": "media_operation",
+                "_ui_creator": "user",
+                "created_by": "user",
+            },
+            "prompt": None,
+            "error_message": None,
+        },
+    )
+    project_media_history.register_node_outputs(project_id, node)
+    return node
 
 
 def _session_clear_state_patch(state: dict, *, cleared_at: str) -> tuple[dict, int]:
@@ -1835,6 +1978,145 @@ async def switch_project_canvas_node_history(
             "after": after[:800],
         }]
     return payload
+
+
+@router.post("/{project_id}/media-operations")
+async def run_project_media_operation(
+    project_id: str,
+    req: ProjectMediaOperationRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    async def load_node(node_id: str) -> WorkflowNode:
+        node = await db.get(WorkflowNode, node_id)
+        if not node or node.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Node not found")
+        return node
+
+    async def load_nodes(node_ids: list[str]) -> list[WorkflowNode]:
+        unique_ids: list[str] = []
+        for node_id in node_ids:
+            text = str(node_id or "").strip()
+            if text and text not in unique_ids:
+                unique_ids.append(text)
+        nodes: list[WorkflowNode] = []
+        for node_id in unique_ids:
+            nodes.append(await load_node(node_id))
+        return nodes
+
+    source_node: WorkflowNode | None = None
+    source_nodes: list[WorkflowNode] = []
+    try:
+        if req.operation in {"video.export_frame", "video.split_tracks", "video.trim"}:
+            if not req.source_node_id:
+                raise HTTPException(status_code=400, detail="source_node_id is required")
+            source_node = await load_node(req.source_node_id)
+            source_nodes = [source_node]
+        elif req.operation in {"video.concat", "audio.concat"}:
+            source_nodes = await load_nodes(req.source_node_ids)
+            if len(source_nodes) < 2:
+                raise HTTPException(status_code=400, detail="source_node_ids must include at least two nodes")
+
+        if req.operation == "video.export_frame":
+            assert source_node is not None
+            results = [
+                await media_operations.export_video_frame(
+                    project_id,
+                    source_node,
+                    mode=req.frame_mode,
+                    time_seconds=req.time_seconds,
+                    title=req.title,
+                )
+            ]
+        elif req.operation == "video.split_tracks":
+            assert source_node is not None
+            results = await media_operations.split_video_tracks(project_id, source_node)
+        elif req.operation == "video.trim":
+            assert source_node is not None
+            if req.range is None:
+                raise HTTPException(status_code=400, detail="range is required")
+            results = [
+                await media_operations.trim_video(
+                    project_id,
+                    source_node,
+                    start_seconds=req.range.start_seconds,
+                    end_seconds=req.range.end_seconds,
+                    title=req.title,
+                )
+            ]
+        elif req.operation == "video.concat":
+            results = [await media_operations.concat_video(project_id, source_nodes, title=req.title)]
+        elif req.operation == "audio.concat":
+            results = [await media_operations.concat_audio(project_id, source_nodes, title=req.title)]
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported operation")
+    except media_operations.MediaOperationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    base_position = (
+        {"x": req.position.x, "y": req.position.y}
+        if req.position
+        else _media_operation_default_position(source_node or (source_nodes[0] if source_nodes else None))
+    )
+    existing_nodes = (await db.exec(
+        select(WorkflowNode).where(WorkflowNode.project_id == project_id)
+    )).all()
+    occupied_positions = [
+        {"x": float(node.position_x or 0.0), "y": float(node.position_y or 0.0)}
+        for node in existing_nodes
+    ]
+    offset_step = 250.0
+    center_offset = (len(results) - 1) / 2.0
+    requested_positions = [
+        {
+            "x": base_position["x"],
+            "y": base_position["y"] + (index - center_offset) * offset_step,
+        }
+        for index in range(len(results))
+    ]
+    same_column_y = [
+        item["y"]
+        for item in occupied_positions
+        if abs(item["x"] - base_position["x"]) < 320.0
+    ]
+    if same_column_y and requested_positions:
+        min_requested_y = min(item["y"] for item in requested_positions)
+        group_shift = max(0.0, max(same_column_y) + 260.0 - min_requested_y)
+        if group_shift:
+            requested_positions = [
+                {"x": item["x"], "y": item["y"] + group_shift}
+                for item in requested_positions
+            ]
+    created_nodes: list[WorkflowNode] = []
+    created_edges: list[WorkflowEdge] = []
+    for index, result in enumerate(results):
+        requested_position = requested_positions[index]
+        position = _next_available_media_operation_position(requested_position, occupied_positions)
+        node = await _create_media_operation_node(
+            project_id,
+            result,
+            source_nodes=source_nodes,
+            position=position,
+            db=db,
+        )
+        created_nodes.append(node)
+        for source in source_nodes:
+            created_edges.append(
+                await _create_dependency_edge(
+                    project_id,
+                    source,
+                    node,
+                    db,
+                    label="媒体派生",
+                )
+            )
+
+    id_map = await _public_id_map(project_id, db)
+    return {
+        "ok": True,
+        "operation": req.operation,
+        "nodes": [_node_detail_payload(node, id_map) for node in created_nodes],
+        "edges": [edge.model_dump() for edge in created_edges],
+    }
 
 
 @router.post("/{project_id}/nodes/{node_id}/image/edit")

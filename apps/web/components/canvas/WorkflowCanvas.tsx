@@ -61,6 +61,7 @@ import {
   resolveMediaUrl,
   restoreProjectMediaHistoryItem,
   restoreProjectCanvasSnapshot,
+  runProjectMediaOperation,
   updateProjectNodeDetails,
   uploadProjectNodeMedia,
   updateNodePosition,
@@ -80,6 +81,7 @@ import {
 import { nodeTypes } from "./nodes"
 import NodeDetailPanel from "./NodeDetailPanel"
 import ImageEditPanel from "./ImageEditPanel"
+import VideoEditPanel, { type VideoEditPanelMediaNode } from "./VideoEditPanel"
 import CanvasGroupLayer, { type CanvasViewport } from "./CanvasGroupLayer"
 import PanoramaViewer, { type PanoramaCaptureMode } from "./PanoramaViewer"
 import { cn } from "@/lib/utils"
@@ -194,6 +196,12 @@ interface NodeImageEditRequest {
   imageUrl?: string
 }
 
+interface NodeVideoEditRequest {
+  nodeId: string
+  title: string
+  videoUrl?: string
+}
+
 interface NodePreviewRequest {
   nodeId: string
   type?: string
@@ -298,7 +306,7 @@ const CANVAS_NODE_CREATE_ITEMS: Array<{
 ]
 
 const CANVAS_CREATE_MENU_WIDTH = 286
-const CANVAS_CREATE_MENU_HEIGHT = 520
+const CANVAS_CREATE_MENU_HEIGHT = 318
 const CANVAS_CONNECT_CREATE_MENU_HEIGHT = 318
 
 function formatMediaHistoryTime(value?: string | null): string {
@@ -332,23 +340,6 @@ function mediaHistoryMimeType(item: ProjectMediaHistoryItem): string {
   if (item.kind === "video") return "video/mp4"
   if (item.kind === "audio") return "audio/mpeg"
   return "image/png"
-}
-
-function canvasUploadNodeType(file: File): Extract<CanvasNodeType, "image" | "video"> | null {
-  const mime = file.type.toLowerCase()
-  if (mime.startsWith("image/")) return "image"
-  if (mime.startsWith("video/")) return "video"
-  const lower = file.name.toLowerCase()
-  if (/\.(png|jpe?g|webp|gif|avif|bmp)$/i.test(lower)) return "image"
-  if (/\.(mp4|mov|webm|m4v|avi|mkv)$/i.test(lower)) return "video"
-  return null
-}
-
-function titleFromUploadFile(file: File, type: Extract<CanvasNodeType, "image" | "video">): string {
-  const fallback = type === "image" ? "上传图片" : "上传视频"
-  const base = file.name.replace(/\.[^.]+$/, "").trim()
-  if (!base) return fallback
-  return `${fallback} - ${base.slice(0, 42)}`
 }
 
 function findAvailableNodePosition(
@@ -9466,7 +9457,7 @@ function touchPoint(event: ReactTouchEvent<HTMLDivElement>) {
 function isInteractiveTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false
   return Boolean(target.closest(
-    "button,a,input,textarea,select,[contenteditable='true'],.nodrag,.nowheel,.openreel-node-detail-panel,.openreel-node-preview-card,.openreel-canvas-action-menu,.react-flow__handle,.react-flow__controls,.react-flow__minimap",
+    "button,a,input,textarea,select,[contenteditable='true'],.nodrag,.nowheel,.openreel-node-detail-panel,.openreel-node-preview-card,.openreel-video-edit-panel,.openreel-canvas-action-menu,.react-flow__handle,.react-flow__controls,.react-flow__minimap",
   ))
 }
 
@@ -10768,6 +10759,7 @@ export default function WorkflowCanvas({
   const [nodeActionMenu, setNodeActionMenu] = useState<NodeActionMenuState | null>(null)
   const [assetSaveRequest, setAssetSaveRequest] = useState<NodeAssetSaveRequest | null>(null)
   const [imageEditRequest, setImageEditRequest] = useState<NodeImageEditRequest | null>(null)
+  const [videoEditRequest, setVideoEditRequest] = useState<NodeVideoEditRequest | null>(null)
   const [nodePreviewRequest, setNodePreviewRequest] = useState<NodePreviewRequest | null>(null)
   const [nodeDetailEditRequestKey, setNodeDetailEditRequestKey] = useState<string | null>(null)
   const [panoramaViewer, setPanoramaViewer] = useState<PanoramaViewerRequest | null>(null)
@@ -10833,8 +10825,6 @@ export default function WorkflowCanvas({
   const blankPointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null)
   const longPressRef = useRef<LongPressState | null>(null)
   const refreshTimerRef = useRef<number | null>(null)
-  const createMenuUploadInputRef = useRef<HTMLInputElement | null>(null)
-  const createMenuUploadContextRef = useRef<CanvasCreateMenuState | null>(null)
   useEffect(() => {
     let cancelled = false
     const loadVideoReferenceConfig = async () => {
@@ -10880,6 +10870,34 @@ export default function WorkflowCanvas({
     ),
     [allNodes, canvasVisibleEdges, canvasVisibleNodeIds],
   )
+  const videoEditMediaNodes = useMemo<VideoEditPanelMediaNode[]>(() => {
+    return nodes
+      .map((node) => {
+        const data = node.data as { type?: string; title?: string } | undefined
+        if (data?.type === "video") {
+          const video = previewVideoFromNode(node)
+          if (!video?.src) return null
+          return {
+            id: node.id,
+            type: "video" as const,
+            title: data.title || "视频节点",
+            src: video.src,
+          }
+        }
+        if (data?.type === "audio") {
+          const audio = previewAudioFromNode(node)
+          if (!audio?.src) return null
+          return {
+            id: node.id,
+            type: "audio" as const,
+            title: data.title || "音频节点",
+            src: audio.src,
+          }
+        }
+        return null
+      })
+      .filter((item): item is VideoEditPanelMediaNode => Boolean(item))
+  }, [nodes])
   const selectedCanvasNodeId = selectedNodeId && canvasVisibleNodeIds.has(selectedNodeId) ? selectedNodeId : null
   const basePreviewCanvasNode = nodePreviewRequest?.nodeId
     ? nodes.find((node) => node.id === nodePreviewRequest.nodeId)
@@ -12225,6 +12243,85 @@ export default function WorkflowCanvas({
     return () => window.removeEventListener("openreel:edit-image-node", handleEditImageNode)
   }, [nodes, selectNode])
 
+  const mediaOperationPositionForNode = useCallback((node: FlowNode | undefined) => {
+    if (!node) return undefined
+    const width = nodeDimension(node, "width", 320)
+    return {
+      x: node.position.x + Math.max(360, width + 140),
+      y: node.position.y,
+    }
+  }, [])
+
+  const runQuickVideoOperation = useCallback(async (
+    nodeId: string,
+    operation: "video.export_frame" | "video.split_tracks",
+  ) => {
+    if (!currentProject?.id || !nodeId) return
+    const sourceNode = nodes.find((item) => item.id === nodeId)
+    const sourceTitle = String((sourceNode?.data as { title?: string } | undefined)?.title || "视频")
+    try {
+      setNodeActionMenu(null)
+      const result = await runProjectMediaOperation<{
+        ok?: boolean
+        nodes?: Array<{ id?: string }>
+      }>(currentProject.id, {
+        operation,
+        source_node_id: nodeId,
+        frame_mode: operation === "video.export_frame" ? "tail" : undefined,
+        title: operation === "video.export_frame" ? `${sourceTitle} 尾帧` : undefined,
+        position: mediaOperationPositionForNode(sourceNode),
+      })
+      await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+      const firstNodeId = String(result.nodes?.[0]?.id || "")
+      if (firstNodeId) selectNode(firstNodeId)
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "媒体处理失败")
+    }
+  }, [currentProject?.id, mediaOperationPositionForNode, nodes, refreshCanvas, selectNode])
+
+  useEffect(() => {
+    const handleEditVideoNode = (event: Event) => {
+      const detail = (event as CustomEvent<NodeVideoEditRequest>).detail
+      if (!detail?.nodeId) return
+      const nodeId = String(detail.nodeId)
+      const sourceNode = nodes.find((item) => item.id === nodeId)
+      const video = previewVideoFromNode(sourceNode)
+      const videoUrl = String(detail.videoUrl || video?.src || "")
+      setContextMenu(null)
+      setNodeActionMenu(null)
+      if (!videoUrl) {
+        selectNode(nodeId)
+        return
+      }
+      setVideoEditRequest({
+        nodeId,
+        title: String(detail.title || (sourceNode?.data as { title?: string } | undefined)?.title || "视频剪辑"),
+        videoUrl,
+      })
+    }
+    window.addEventListener("openreel:edit-video-node", handleEditVideoNode)
+    return () => window.removeEventListener("openreel:edit-video-node", handleEditVideoNode)
+  }, [nodes, selectNode])
+
+  useEffect(() => {
+    const handleExportTailFrame = (event: Event) => {
+      const nodeId = String((event as CustomEvent<{ nodeId?: string }>).detail?.nodeId || "")
+      if (!nodeId) return
+      void runQuickVideoOperation(nodeId, "video.export_frame")
+    }
+    const handleSplitAudio = (event: Event) => {
+      const nodeId = String((event as CustomEvent<{ nodeId?: string }>).detail?.nodeId || "")
+      if (!nodeId) return
+      void runQuickVideoOperation(nodeId, "video.split_tracks")
+    }
+    window.addEventListener("openreel:video-export-tail-frame", handleExportTailFrame)
+    window.addEventListener("openreel:video-split-audio", handleSplitAudio)
+    return () => {
+      window.removeEventListener("openreel:video-export-tail-frame", handleExportTailFrame)
+      window.removeEventListener("openreel:video-split-audio", handleSplitAudio)
+    }
+  }, [runQuickVideoOperation])
+
   useEffect(() => {
     const handlePreviewNode = (event: Event) => {
       const detail = (event as CustomEvent<NodePreviewRequest>).detail
@@ -13059,41 +13156,6 @@ export default function WorkflowCanvas({
     await createNodeFromMenu(type, title, menu)
   }, [contextMenu, createNodeFromMenu])
 
-  const handleCreateUploadMedia = useCallback(async (files: FileList | null) => {
-    const file = files?.[0]
-    const menu = createMenuUploadContextRef.current
-    createMenuUploadContextRef.current = null
-    if (!file || !menu || !currentProject?.id) return
-    const type = canvasUploadNodeType(file)
-    if (!type) {
-      window.alert("当前入口支持上传图片或视频。音频可以先创建音频节点，或从历史素材恢复。")
-      return
-    }
-    const created = await createNodeFromMenu(type, titleFromUploadFile(file, type), menu, "上传媒体到画布")
-    if (!created?.id) return
-    try {
-      await uploadProjectNodeMedia(currentProject.id, created.id, file)
-      await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
-      selectNode(created.id)
-    } catch (error) {
-      console.warn("Failed to upload media for new node", error)
-      window.alert(error instanceof Error ? error.message : "上传失败")
-    }
-  }, [createNodeFromMenu, currentProject?.id, refreshCanvas, selectNode])
-
-  const openUploadCreateFromMenu = useCallback(() => {
-    if (!contextMenu) return
-    createMenuUploadContextRef.current = contextMenu
-    setContextMenu(null)
-    createMenuUploadInputRef.current?.click()
-  }, [contextMenu])
-
-  const openMediaHistoryFromCreateMenu = useCallback(() => {
-    setContextMenu(null)
-    setMediaHistoryOpen(true)
-    void refreshMediaHistory()
-  }, [refreshMediaHistory])
-
   const openWorkflowTemplatesFromCreateMenu = useCallback(() => {
     setContextMenu(null)
     onWorkspaceViewChange?.("workflow")
@@ -13456,16 +13518,6 @@ export default function WorkflowCanvas({
         onRestore={(item) => void restoreMediaHistoryItem(item)}
         onDelete={(item) => void deleteMediaHistoryItem(item)}
       />
-      <input
-        ref={createMenuUploadInputRef}
-        type="file"
-        accept="image/*,video/*"
-        className="hidden"
-        onChange={(event) => {
-          void handleCreateUploadMedia(event.currentTarget.files)
-          event.currentTarget.value = ""
-        }}
-      />
       {flowNodes.length === 0 && !contextMenu && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-zinc-500">
           <div className="pointer-events-auto rounded-md border border-white/10 bg-[#10151d]/82 px-4 py-3 text-center shadow-xl shadow-black/30 backdrop-blur">
@@ -13669,7 +13721,7 @@ export default function WorkflowCanvas({
               {contextMenu.connectFrom ? "接在当前节点后" : "添加到画布"}
             </div>
             <div className="mt-0.5 text-[11px] text-zinc-500">
-              {contextMenu.connectFrom ? "新节点会自动建立依赖连线" : "选择内容类型或从已有素材开始"}
+              {contextMenu.connectFrom ? "新节点会自动建立依赖连线" : "选择要添加的节点"}
             </div>
           </div>
           <div className="py-2">
@@ -13691,48 +13743,6 @@ export default function WorkflowCanvas({
               </button>
             ))}
           </div>
-          {!contextMenu.connectFrom && (
-            <div className="border-t border-white/10 pt-2">
-              <div className="px-2 pb-1 text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-600">已有内容</div>
-              <button
-                type="button"
-                className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left transition-colors hover:bg-white/[0.07]"
-                onClick={openUploadCreateFromMenu}
-              >
-                <span>
-                  <span className="block text-xs font-medium text-zinc-100">上传图片或视频</span>
-                  <span className="block text-[11px] text-zinc-500">自动创建对应画布节点</span>
-                </span>
-                <span className="text-sm text-zinc-500">↑</span>
-              </button>
-              <button
-                type="button"
-                className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left transition-colors hover:bg-white/[0.07]"
-                onClick={openMediaHistoryFromCreateMenu}
-              >
-                <span>
-                  <span className="block text-xs font-medium text-zinc-100">历史素材</span>
-                  <span className="block text-[11px] text-zinc-500">把生成过的图片/视频放回画布</span>
-                </span>
-                <span className="text-sm text-zinc-500">›</span>
-              </button>
-            </div>
-          )}
-          {!contextMenu.connectFrom && (
-            <div className="mt-2 border-t border-white/10 pt-2">
-              <button
-                type="button"
-                className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left transition-colors hover:bg-white/[0.07]"
-                onClick={openWorkflowTemplatesFromCreateMenu}
-              >
-                <span>
-                  <span className="block text-xs font-medium text-zinc-100">流程模板</span>
-                  <span className="block text-[11px] text-zinc-500">打开模板面板并添加可运行流程</span>
-                </span>
-                <span className="text-sm text-zinc-500">›</span>
-              </button>
-            </div>
-          )}
         </div>
       )}
 
@@ -13882,6 +13892,20 @@ export default function WorkflowCanvas({
           onClose={() => setImageEditRequest(null)}
           onCommitted={async () => {
             setImageEditRequest(null)
+            await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+          }}
+        />
+      )}
+
+      {videoEditRequest && currentProject?.id && (
+        <VideoEditPanel
+          projectId={currentProject.id}
+          nodeId={videoEditRequest.nodeId}
+          title={videoEditRequest.title || "视频剪辑"}
+          videoUrl={videoEditRequest.videoUrl || ""}
+          mediaNodes={videoEditMediaNodes}
+          onClose={() => setVideoEditRequest(null)}
+          onCommitted={async () => {
             await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
           }}
         />
