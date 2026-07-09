@@ -25,19 +25,23 @@ interface VideoEditPanelProps {
 }
 
 type BusyAction = "frame" | "tail" | "split" | "trim" | "concat-video" | "concat-audio" | null
-type TimelineTool = "select" | "blade" | "trim"
+type TimelineTool = "select" | "blade"
 type PreviewScale = "fit" | "50" | "75" | "100"
 
 interface TimelineClipState {
-  id: string
+  clipId: string
+  mediaId: string
   start: number
   duration: number
+  sourceOffset: number
 }
 
 const TRACK_LABEL_WIDTH = 76
 const DEFAULT_CLIP_SECONDS = 4
 const DEFAULT_TIMELINE_SECONDS = 12
 const DEFAULT_PX_PER_SECOND = 84
+const MIN_CLIP_SECONDS = 0.25
+const SNAP_PIXELS = 10
 
 function formatTime(value: number): string {
   if (!Number.isFinite(value) || value < 0) return "0:00"
@@ -61,6 +65,23 @@ function clamp(value: number, min: number, max: number): number {
 
 function clipEnd(clip: TimelineClipState): number {
   return clip.start + clip.duration
+}
+
+function createClipId(mediaId: string): string {
+  const random = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10)
+  return `clip:${mediaId}:${Date.now().toString(36)}:${random}`
+}
+
+function createClip(mediaId: string, start: number, duration: number, sourceOffset = 0): TimelineClipState {
+  return {
+    clipId: createClipId(mediaId),
+    mediaId,
+    start: Math.max(0, start),
+    duration: Math.max(MIN_CLIP_SECONDS, duration),
+    sourceOffset: Math.max(0, sourceOffset),
+  }
 }
 
 function mediaTypeLabel(type: VideoEditPanelMediaNode["type"]): string {
@@ -306,41 +327,44 @@ function TimelineClip({
   clip,
   item,
   kind,
+  activeTool,
   pxPerSecond,
   selected,
-  trimStart,
-  trimEnd,
   currentTime,
   onSelect,
   onDragStartTime,
-  onTrimEdge,
+  onResizeEdge,
+  onCutAtTime,
 }: {
   clip: TimelineClipState
   item: VideoEditPanelMediaNode
   kind: "video" | "audio"
+  activeTool: TimelineTool
   pxPerSecond: number
   selected?: boolean
-  trimStart?: number
-  trimEnd?: number
   currentTime: number
   onSelect: () => void
   onDragStartTime: (start: number) => void
-  onTrimEdge?: (edge: "start" | "end", seconds: number) => void
+  onResizeEdge: (edge: "start" | "end", edgeTime: number) => void
+  onCutAtTime: (time: number) => void
 }) {
   const [dragging, setDragging] = useState(false)
   const left = clip.start * pxPerSecond
-  const width = Math.max(54, clip.duration * pxPerSecond)
-  const localTrimStart = trimStart != null ? clamp(trimStart - clip.start, 0, clip.duration) : 0
-  const localTrimEnd = trimEnd != null ? clamp(trimEnd - clip.start, 0, clip.duration) : clip.duration
-  const localPlayhead = clamp(currentTime - clip.start, 0, clip.duration)
+  const width = Math.max(18, clip.duration * pxPerSecond)
 
   const beginMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
     const target = event.target as HTMLElement | null
-    if (target?.dataset.trimHandle) return
+    if (target?.dataset.edgeHandle) return
     event.preventDefault()
     event.stopPropagation()
     onSelect()
+    if (activeTool === "blade") {
+      const rect = event.currentTarget.getBoundingClientRect()
+      const localTime = clamp((event.clientX - rect.left) / pxPerSecond, 0, clip.duration)
+      onCutAtTime(clip.start + localTime)
+      return
+    }
     const startX = event.clientX
     const initialStart = clip.start
     setDragging(true)
@@ -358,16 +382,15 @@ function TimelineClip({
     window.addEventListener("pointerup", onEnd)
   }
 
-  const beginTrim = (edge: "start" | "end", event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!onTrimEdge) return
+  const beginResize = (edge: "start" | "end", event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault()
     event.stopPropagation()
     onSelect()
     const startX = event.clientX
-    const initial = edge === "start" ? localTrimStart : localTrimEnd
+    const initialEdgeTime = edge === "start" ? clip.start : clipEnd(clip)
     const onMove = (moveEvent: PointerEvent) => {
       const delta = (moveEvent.clientX - startX) / pxPerSecond
-      onTrimEdge(edge, clip.start + clamp(initial + delta, 0, clip.duration))
+      onResizeEdge(edge, initialEdgeTime + delta)
     }
     const onEnd = () => {
       window.removeEventListener("pointermove", onMove)
@@ -387,8 +410,9 @@ function TimelineClip({
           ? "border-cyan-200/30 bg-cyan-300/10"
           : "border-amber-200/30 bg-amber-300/10",
         selected && "ring-1 ring-cyan-100/80",
+        activeTool === "blade" && "cursor-crosshair",
         dragging && "cursor-grabbing opacity-85",
-        !dragging && "cursor-grab",
+        !dragging && activeTool !== "blade" && "cursor-grab",
       )}
       style={{ left, width }}
     >
@@ -400,32 +424,6 @@ function TimelineClip({
             <VideoThumbnailStrip src={item.src} count={Math.max(4, Math.min(12, Math.round(width / 70)))} />
           )}
           <div className="absolute inset-0 bg-gradient-to-r from-black/10 via-transparent to-black/20" />
-          {selected && item.type === "video" && (
-            <div
-              className="absolute bottom-0 top-0 border-x border-emerald-100/90 bg-emerald-300/16"
-              style={{
-                left: `${(localTrimStart / clip.duration) * 100}%`,
-                width: `${Math.max(0, ((localTrimEnd - localTrimStart) / clip.duration) * 100)}%`,
-              }}
-            >
-              <button
-                type="button"
-                data-trim-handle="start"
-                onPointerDown={(event) => beginTrim("start", event)}
-                className="absolute -left-1 top-0 h-full w-2 cursor-ew-resize rounded bg-emerald-100"
-                title="裁剪起点"
-                aria-label="裁剪起点"
-              />
-              <button
-                type="button"
-                data-trim-handle="end"
-                onPointerDown={(event) => beginTrim("end", event)}
-                className="absolute -right-1 top-0 h-full w-2 cursor-ew-resize rounded bg-emerald-100"
-                title="裁剪终点"
-                aria-label="裁剪终点"
-              />
-            </div>
-          )}
         </>
       ) : (
         <div className="absolute inset-x-2 bottom-2 flex h-8 items-center gap-[3px]">
@@ -447,12 +445,32 @@ function TimelineClip({
         </span>
         <span className="truncate text-[11px] font-semibold text-zinc-50">{item.title || "素材"}</span>
       </div>
-      {kind === "video" && selected && (
-        <div
-          className="absolute bottom-0 top-0 w-px bg-white/85"
-          style={{ left: `${(localPlayhead / clip.duration) * 100}%` }}
-        />
-      )}
+      <button
+        type="button"
+        data-edge-handle="start"
+        onPointerDown={(event) => beginResize("start", event)}
+        className={cn(
+          "absolute bottom-0 left-0 top-0 z-10 w-2 cursor-ew-resize rounded-l border-l-2 transition",
+          kind === "video"
+            ? "border-cyan-100/90 bg-cyan-100/10 hover:bg-cyan-100/28"
+            : "border-amber-100/90 bg-amber-100/10 hover:bg-amber-100/28",
+        )}
+        title="收放起点"
+        aria-label="收放起点"
+      />
+      <button
+        type="button"
+        data-edge-handle="end"
+        onPointerDown={(event) => beginResize("end", event)}
+        className={cn(
+          "absolute bottom-0 right-0 top-0 z-10 w-2 cursor-ew-resize rounded-r border-r-2 transition",
+          kind === "video"
+            ? "border-cyan-100/90 bg-cyan-100/10 hover:bg-cyan-100/28"
+            : "border-amber-100/90 bg-amber-100/10 hover:bg-amber-100/28",
+        )}
+        title="收放终点"
+        aria-label="收放终点"
+      />
     </div>
   )
 }
@@ -477,11 +495,9 @@ export default function VideoEditPanel({
   const [previewScale, setPreviewScale] = useState<PreviewScale>("fit")
   const [busy, setBusy] = useState<BusyAction>(null)
   const [error, setError] = useState<string | null>(null)
-  const [selectedClipId, setSelectedClipId] = useState(nodeId)
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [videoClips, setVideoClips] = useState<TimelineClipState[]>([])
   const [audioClips, setAudioClips] = useState<TimelineClipState[]>([])
-  const [trimStart, setTrimStart] = useState(0)
-  const [trimEnd, setTrimEnd] = useState(DEFAULT_CLIP_SECONDS)
 
   const visualItems = useMemo(
     () => mediaNodes.filter((item) => (item.type === "video" || item.type === "image") && item.src),
@@ -515,7 +531,7 @@ export default function VideoEditPanel({
     return new Map(entries.map((item) => [item.id, item]))
   }, [embeddedAudioItem, mediaNodes])
   const selectedVideoClip = useMemo(
-    () => videoClips.find((clip) => clip.id === selectedClipId) || videoClips[0],
+    () => videoClips.find((clip) => clip.clipId === selectedClipId) || videoClips[0],
     [selectedClipId, videoClips],
   )
   const currentVideoClip = useMemo(
@@ -526,9 +542,9 @@ export default function VideoEditPanel({
     () => audioClips.find((clip) => currentTime >= clip.start && currentTime <= clipEnd(clip)),
     [audioClips, currentTime],
   )
-  const currentVideoItem = currentVideoClip ? mediaById.get(currentVideoClip.id) : undefined
-  const currentAudioItem = currentAudioClip ? mediaById.get(currentAudioClip.id) : undefined
-  const selectedVideoItem = selectedVideoClip ? mediaById.get(selectedVideoClip.id) : undefined
+  const currentVideoItem = currentVideoClip ? mediaById.get(currentVideoClip.mediaId) : undefined
+  const currentAudioItem = currentAudioClip ? mediaById.get(currentAudioClip.mediaId) : undefined
+  const selectedVideoItem = selectedVideoClip ? mediaById.get(selectedVideoClip.mediaId) : undefined
   const hasSeparateAudioAtPlayhead = Boolean(currentAudioItem && !currentAudioItem.synthetic)
   const timelineDuration = useMemo(() => {
     const lastClipEnd = Math.max(
@@ -548,55 +564,45 @@ export default function VideoEditPanel({
 
   useEffect(() => {
     setVideoClips((current) => {
-      const valid = current.filter((clip) => visualItems.some((item) => item.id === clip.id))
+      const valid = current.filter((clip) => visualItems.some((item) => item.id === clip.mediaId))
       if (valid.length > 0) {
         return valid.map((clip) => (
-          clip.id === nodeId
+          clip.mediaId === nodeId && clip.sourceOffset === 0
             ? { ...clip, duration: sourceDuration || clip.duration || DEFAULT_CLIP_SECONDS }
             : clip
         ))
       }
       const primary = videoItems.find((item) => item.id === nodeId) || visualItems[0]
       return primary
-        ? [{ id: primary.id, start: 0, duration: sourceDuration || DEFAULT_CLIP_SECONDS }]
+        ? [createClip(primary.id, 0, sourceDuration || DEFAULT_CLIP_SECONDS)]
         : []
     })
   }, [nodeId, sourceDuration, videoItems, visualItems])
 
   useEffect(() => {
     setAudioClips((current) => {
-      const valid = current.filter((clip) => audioTimelineItems.some((item) => item.id === clip.id))
+      const valid = current.filter((clip) => audioTimelineItems.some((item) => item.id === clip.mediaId))
       if (valid.length > 0) return valid
       const primary = audioTimelineItems[0]
       return primary
-        ? [{ id: primary.id, start: 0, duration: sourceDuration || DEFAULT_CLIP_SECONDS }]
+        ? [createClip(primary.id, 0, sourceDuration || DEFAULT_CLIP_SECONDS)]
         : []
     })
   }, [audioTimelineItems, sourceDuration])
 
   useEffect(() => {
-    setSelectedClipId(nodeId)
+    setSelectedClipId(null)
     setCurrentTime(0)
-    setTrimStart(0)
-    setTrimEnd(sourceDuration || DEFAULT_CLIP_SECONDS)
     setPlaying(false)
     setError(null)
   }, [nodeId, sourceDuration])
 
   useEffect(() => {
-    if (!currentVideoClip) return
-    const nextStart = clamp(trimStart, currentVideoClip.start, clipEnd(currentVideoClip) - 0.05)
-    const nextEnd = clamp(trimEnd, nextStart + 0.05, clipEnd(currentVideoClip))
-    if (nextStart !== trimStart) setTrimStart(nextStart)
-    if (nextEnd !== trimEnd) setTrimEnd(nextEnd)
-  }, [currentVideoClip, trimEnd, trimStart])
-
-  useEffect(() => {
     const video = videoRef.current
     if (!video || !currentVideoClip) return
-    const item = mediaById.get(currentVideoClip.id)
+    const item = mediaById.get(currentVideoClip.mediaId)
     if (item?.type !== "video") return
-    const localTime = clamp(currentTime - currentVideoClip.start, 0, currentVideoClip.duration)
+    const localTime = currentVideoClip.sourceOffset + clamp(currentTime - currentVideoClip.start, 0, currentVideoClip.duration)
     if (Math.abs((video.currentTime || 0) - localTime) > 0.08) {
       video.currentTime = localTime
     }
@@ -608,7 +614,7 @@ export default function VideoEditPanel({
       audio?.pause()
       return
     }
-    const localTime = clamp(currentTime - currentAudioClip.start, 0, currentAudioClip.duration)
+    const localTime = currentAudioClip.sourceOffset + clamp(currentTime - currentAudioClip.start, 0, currentAudioClip.duration)
     if (Math.abs((audio.currentTime || 0) - localTime) > 0.08) {
       audio.currentTime = localTime
     }
@@ -666,16 +672,16 @@ export default function VideoEditPanel({
     }
     const clip = currentVideoClip
     if (!clip && !currentAudioClip) return
-    const item = clip ? mediaById.get(clip.id) : undefined
+    const item = clip ? mediaById.get(clip.mediaId) : undefined
     if (video && clip && item?.type === "video") {
-      const localTime = clamp(currentTime - clip.start, 0, clip.duration)
+      const localTime = clip.sourceOffset + clamp(currentTime - clip.start, 0, clip.duration)
       video.currentTime = localTime
       void video.play()
     }
     if (currentAudioClip && currentAudioItem && !currentAudioItem.synthetic) {
       const audio = audioRef.current
       if (audio) {
-        audio.currentTime = clamp(currentTime - currentAudioClip.start, 0, currentAudioClip.duration)
+        audio.currentTime = currentAudioClip.sourceOffset + clamp(currentTime - currentAudioClip.start, 0, currentAudioClip.duration)
         void audio.play().catch(() => undefined)
       }
     }
@@ -741,27 +747,41 @@ export default function VideoEditPanel({
     }
   }
 
+  const snapTimeToBoundaries = (value: number, excludeClipId?: string): number => {
+    const threshold = Math.max(0.05, SNAP_PIXELS / pxPerSecond)
+    const targets = [...videoClips, ...audioClips]
+      .filter((clip) => clip.clipId !== excludeClipId)
+      .flatMap((clip) => [clip.start, clipEnd(clip)])
+    const closest = targets.reduce<{ value: number; distance: number } | null>((best, target) => {
+      const distance = Math.abs(value - target)
+      if (distance > threshold) return best
+      if (!best || distance < best.distance) return { value: target, distance }
+      return best
+    }, null)
+    return closest ? closest.value : value
+  }
+
+  const snapClipStart = (clip: TimelineClipState, start: number): number => {
+    const rawStart = Math.max(0, start)
+    const snappedStart = snapTimeToBoundaries(rawStart, clip.clipId)
+    const snappedEndStart = snapTimeToBoundaries(rawStart + clip.duration, clip.clipId) - clip.duration
+    const startDistance = Math.abs(snappedStart - rawStart)
+    const endDistance = Math.abs(snappedEndStart - rawStart)
+    return Math.max(0, endDistance < startDistance ? snappedEndStart : snappedStart)
+  }
+
   const insertMediaItem = (item: VideoEditPanelMediaNode, startAt = currentTime) => {
     const duration = item.type === "image"
       ? DEFAULT_CLIP_SECONDS
       : Math.max(sourceDuration || DEFAULT_CLIP_SECONDS, DEFAULT_CLIP_SECONDS)
-    const start = Math.max(0, startAt)
+    const start = snapTimeToBoundaries(Math.max(0, startAt))
+    const clip = createClip(item.id, start, duration)
     if (item.type === "video" || item.type === "image") {
-      setVideoClips((current) => {
-        const exists = current.some((clip) => clip.id === item.id)
-        return exists
-          ? current.map((clip) => clip.id === item.id ? { ...clip, start } : clip)
-          : [...current, { id: item.id, start, duration }]
-      })
-      setSelectedClipId(item.id)
+      setVideoClips((current) => [...current, clip])
+      setSelectedClipId(clip.clipId)
       return
     }
-    setAudioClips((current) => {
-      const exists = current.some((clip) => clip.id === item.id)
-      return exists
-        ? current.map((clip) => clip.id === item.id ? { ...clip, start } : clip)
-        : [...current, { id: item.id, start, duration }]
-    })
+    setAudioClips((current) => [...current, clip])
   }
 
   const handleTrackDrop = (kind: "video" | "audio", event: ReactDragEvent<HTMLDivElement>) => {
@@ -776,9 +796,9 @@ export default function VideoEditPanel({
     insertMediaItem(item, timeFromPointer(event, container, pxPerSecond))
   }
 
-  const updateClipStart = (kind: "video" | "audio", id: string, start: number) => {
+  const updateClipStart = (kind: "video" | "audio", clipId: string, start: number) => {
     const updater = (clips: TimelineClipState[]) => (
-      clips.map((clip) => clip.id === id ? { ...clip, start: Math.max(0, start) } : clip)
+      clips.map((clip) => clip.clipId === clipId ? { ...clip, start: snapClipStart(clip, start) } : clip)
     )
     if (kind === "video") {
       setVideoClips(updater)
@@ -787,43 +807,87 @@ export default function VideoEditPanel({
     setAudioClips(updater)
   }
 
-  const setTrimEdge = (edge: "start" | "end", seconds: number) => {
-    if (!selectedVideoClip) return
-    if (edge === "start") {
-      setTrimStart(clamp(seconds, selectedVideoClip.start, trimEnd - 0.05))
+  const resizeClipEdge = (kind: "video" | "audio", clipId: string, edge: "start" | "end", edgeTime: number) => {
+    const updater = (clips: TimelineClipState[]) => clips.map((clip) => {
+      if (clip.clipId !== clipId) return clip
+      if (edge === "start") {
+        const nextStart = clamp(
+          snapTimeToBoundaries(edgeTime, clip.clipId),
+          0,
+          clipEnd(clip) - MIN_CLIP_SECONDS,
+        )
+        const delta = nextStart - clip.start
+        return {
+          ...clip,
+          start: nextStart,
+          duration: Math.max(MIN_CLIP_SECONDS, clip.duration - delta),
+          sourceOffset: Math.max(0, clip.sourceOffset + delta),
+        }
+      }
+      const nextEnd = Math.max(
+        clip.start + MIN_CLIP_SECONDS,
+        snapTimeToBoundaries(edgeTime, clip.clipId),
+      )
+      return {
+        ...clip,
+        duration: Math.max(MIN_CLIP_SECONDS, nextEnd - clip.start),
+      }
+    })
+    if (kind === "video") {
+      setVideoClips(updater)
       return
     }
-    setTrimEnd(clamp(seconds, trimStart + 0.05, clipEnd(selectedVideoClip)))
+    setAudioClips(updater)
   }
 
-  const trimAroundTime = (time: number) => {
-    if (!selectedVideoClip) return
-    const center = clamp(time, selectedVideoClip.start, clipEnd(selectedVideoClip))
-    const span = Math.min(Math.max(selectedVideoClip.duration * 0.25, 1.2), selectedVideoClip.duration)
-    let start = clamp(center - span / 2, selectedVideoClip.start, clipEnd(selectedVideoClip))
-    let end = clamp(start + span, selectedVideoClip.start, clipEnd(selectedVideoClip))
-    start = Math.max(selectedVideoClip.start, end - span)
-    setTrimStart(start)
-    setTrimEnd(end)
-    seekTo(start)
+  const splitClipsAt = (clips: TimelineClipState[], time: number) => {
+    let selectedRightClipId: string | null = null
+    const nextClips = clips.flatMap((clip) => {
+      if (time <= clip.start + MIN_CLIP_SECONDS || time >= clipEnd(clip) - MIN_CLIP_SECONDS) {
+        return [clip]
+      }
+      const leftDuration = time - clip.start
+      const rightDuration = clipEnd(clip) - time
+      const rightClip = createClip(
+        clip.mediaId,
+        time,
+        rightDuration,
+        clip.sourceOffset + leftDuration,
+      )
+      selectedRightClipId = selectedRightClipId || rightClip.clipId
+      return [
+        { ...clip, duration: leftDuration },
+        rightClip,
+      ]
+    })
+    return { clips: nextClips, selectedRightClipId }
+  }
+
+  const splitTimelineAt = (time: number) => {
+    const videoResult = splitClipsAt(videoClips, time)
+    const audioResult = splitClipsAt(audioClips, time)
+    setVideoClips(videoResult.clips)
+    setAudioClips(audioResult.clips)
+    if (videoResult.selectedRightClipId) setSelectedClipId(videoResult.selectedRightClipId)
+    seekTo(time)
   }
 
   const handleTimelineBackgroundDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null
-    if (target?.closest("[data-openreel-timeline-clip]")) return
     const container = timelineRef.current
     if (!container) return
     const time = timeFromPointer(event, container, pxPerSecond)
-    if (tool === "trim") {
-      trimAroundTime(time)
+    if (target?.closest("[data-openreel-timeline-clip]")) return
+    if (tool === "blade") {
+      splitTimelineAt(time)
       return
     }
     beginPlayheadDrag(event)
   }
 
-  const canTrim = selectedVideoClip && selectedVideoItem?.type === "video" && trimEnd > trimStart + 0.05
-  const videoConcatIds = videoClips.map((clip) => clip.id).filter((id) => videoItems.some((item) => item.id === id))
-  const audioConcatIds = audioClips.map((clip) => clip.id).filter((id) => audioItems.some((item) => item.id === id))
+  const canTrim = Boolean(selectedVideoClip && selectedVideoItem?.type === "video" && selectedVideoClip.duration > MIN_CLIP_SECONDS)
+  const videoConcatIds = videoClips.map((clip) => clip.mediaId).filter((id) => videoItems.some((item) => item.id === id))
+  const audioConcatIds = audioClips.map((clip) => clip.mediaId).filter((id) => audioItems.some((item) => item.id === id))
   const isBusy = Boolean(busy)
   const previewScaleStyle = previewScale === "fit"
     ? { width: "min(100%, 680px)" }
@@ -893,9 +957,8 @@ export default function VideoEditPanel({
                       onLoadedMetadata={(event) => {
                         const nextDuration = Number(event.currentTarget.duration || 0)
                         const safeDuration = Number.isFinite(nextDuration) && nextDuration > 0 ? nextDuration : DEFAULT_CLIP_SECONDS
-                        if (currentVideoItem.id === nodeId) {
+                        if (currentVideoClip?.mediaId === nodeId && currentVideoClip.sourceOffset === 0) {
                           setSourceDuration(safeDuration)
-                          setTrimEnd(safeDuration)
                         }
                       }}
                       onTimeUpdate={(event) => {
@@ -936,15 +999,14 @@ export default function VideoEditPanel({
                 </button>
                 <span className="w-[76px] text-[11px] font-semibold text-cyan-100">{formatTimePrecise(currentTime)}</span>
                 <ToolButton label="选择" glyph="S" active={tool === "select"} onClick={() => setTool("select")} />
-                <ToolButton label="切割" glyph="B" active={tool === "blade"} onClick={() => setTool("blade")} />
-                <ToolButton label="裁剪" glyph="T" active={tool === "trim"} onClick={() => setTool("trim")} />
+                <ToolButton label="裁剪" glyph="C" active={tool === "blade"} onClick={() => setTool("blade")} />
                 <ActionButton
                   disabled={isBusy || currentVideoItem?.type !== "video"}
                   onClick={() => void runOperation("frame", {
                     operation: "video.export_frame",
-                    source_node_id: currentVideoClip?.id || nodeId,
+                    source_node_id: currentVideoClip?.mediaId || nodeId,
                     frame_mode: "time",
-                    time_seconds: Math.max(0, currentTime - (currentVideoClip?.start || 0)),
+                    time_seconds: Math.max(0, (currentVideoClip?.sourceOffset || 0) + currentTime - (currentVideoClip?.start || 0)),
                     title: `${title || "视频"} ${formatTime(currentTime)} 画面`,
                   })}
                 >
@@ -984,7 +1046,7 @@ export default function VideoEditPanel({
                     disabled={isBusy || selectedVideoItem?.type !== "video"}
                     onClick={() => void runOperation("tail", {
                       operation: "video.export_frame",
-                      source_node_id: selectedVideoClip?.id || nodeId,
+                      source_node_id: selectedVideoClip?.mediaId || nodeId,
                       frame_mode: "tail",
                       title: `${title || "视频"} 尾帧`,
                     })}
@@ -1006,10 +1068,13 @@ export default function VideoEditPanel({
                     disabled={isBusy || !canTrim}
                     onClick={() => void runOperation("trim", {
                       operation: "video.trim",
-                      source_node_id: selectedVideoClip?.id || nodeId,
+                      source_node_id: selectedVideoClip?.mediaId || nodeId,
                       range: {
-                        start_seconds: Math.max(0, trimStart - (selectedVideoClip?.start || 0)),
-                        end_seconds: Math.max(0.05, trimEnd - (selectedVideoClip?.start || 0)),
+                        start_seconds: Math.max(0, selectedVideoClip?.sourceOffset || 0),
+                        end_seconds: Math.max(
+                          MIN_CLIP_SECONDS,
+                          (selectedVideoClip?.sourceOffset || 0) + (selectedVideoClip?.duration || MIN_CLIP_SECONDS),
+                        ),
                       },
                       title: `${selectedVideoItem?.title || title || "视频"} 片段`,
                     })}
@@ -1043,11 +1108,11 @@ export default function VideoEditPanel({
 
               <section className="rounded-md border border-white/10 bg-white/[0.035] p-3">
                 <div className="mb-3 flex items-center justify-between">
-                  <div className="text-[11px] font-semibold text-zinc-300">当前裁剪</div>
-                  <div className="text-[10px] text-zinc-500">{formatTimePrecise(trimStart)} - {formatTimePrecise(trimEnd)}</div>
+                  <div className="text-[11px] font-semibold text-zinc-300">轨道编辑</div>
+                  <div className="text-[10px] text-zinc-500">吸附 {SNAP_PIXELS}px</div>
                 </div>
                 <div className="text-[11px] leading-5 text-zinc-500">
-                  选中“裁剪”后点击画面轴可设定范围，也可以拖动画面片段上的浅绿色手柄微调。
+                  拖动片段两端的收放线调整时长。选择“裁剪”后点击片段或时间轴会一刀切开，画面和音频会在同一时间点同步分割。
                 </div>
               </section>
 
@@ -1107,26 +1172,24 @@ export default function VideoEditPanel({
                 onDrop={(event) => handleTrackDrop("video", event)}
               >
                 {videoClips.map((clip) => {
-                  const item = mediaById.get(clip.id)
+                  const item = mediaById.get(clip.mediaId)
                   if (!item || (item.type !== "video" && item.type !== "image")) return null
                   return (
                     <TimelineClip
-                      key={clip.id}
+                      key={clip.clipId}
                       clip={clip}
                       item={item}
                       kind="video"
+                      activeTool={tool}
                       pxPerSecond={pxPerSecond}
-                      selected={clip.id === selectedClipId}
-                      trimStart={clip.id === selectedClipId ? trimStart : undefined}
-                      trimEnd={clip.id === selectedClipId ? trimEnd : undefined}
+                      selected={clip.clipId === selectedClipId}
                       currentTime={currentTime}
                       onSelect={() => {
-                        setSelectedClipId(clip.id)
-                        setTrimStart(clip.start)
-                        setTrimEnd(clipEnd(clip))
+                        setSelectedClipId(clip.clipId)
                       }}
-                      onDragStartTime={(start) => updateClipStart("video", clip.id, start)}
-                      onTrimEdge={item.type === "video" ? setTrimEdge : undefined}
+                      onDragStartTime={(start) => updateClipStart("video", clip.clipId, start)}
+                      onResizeEdge={(edge, edgeTime) => resizeClipEdge("video", clip.clipId, edge, edgeTime)}
+                      onCutAtTime={splitTimelineAt}
                     />
                   )
                 })}
@@ -1152,18 +1215,22 @@ export default function VideoEditPanel({
                   </div>
                 )}
                 {audioClips.map((clip) => {
-                  const item = mediaById.get(clip.id)
+                  const item = mediaById.get(clip.mediaId)
                   if (!item || item.type !== "audio") return null
                   return (
                     <TimelineClip
-                      key={clip.id}
+                      key={clip.clipId}
                       clip={clip}
                       item={item}
                       kind="audio"
+                      activeTool={tool}
                       pxPerSecond={pxPerSecond}
+                      selected={clip.clipId === selectedClipId}
                       currentTime={currentTime}
-                      onSelect={() => undefined}
-                      onDragStartTime={(start) => updateClipStart("audio", clip.id, start)}
+                      onSelect={() => setSelectedClipId(clip.clipId)}
+                      onDragStartTime={(start) => updateClipStart("audio", clip.clipId, start)}
+                      onResizeEdge={(edge, edgeTime) => resizeClipEdge("audio", clip.clipId, edge, edgeTime)}
+                      onCutAtTime={splitTimelineAt}
                     />
                   )
                 })}
