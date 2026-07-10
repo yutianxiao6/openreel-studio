@@ -39,7 +39,7 @@ interface TimelineClipState {
   fullSource?: boolean
 }
 
-const TRACK_LABEL_WIDTH = 76
+const TRACK_LABEL_WIDTH = 112
 const DEFAULT_CLIP_SECONDS = 4
 const DEFAULT_TIMELINE_SECONDS = 12
 const DEFAULT_PX_PER_SECOND = 84
@@ -51,6 +51,50 @@ const SPRITE_FRAME_STEPS = [6, 10, 14, 18, 24, 32, 40, 48] as const
 
 const mediaDurationCache = new Map<string, number>()
 const mediaDurationRequests = new Map<string, Promise<number>>()
+
+type EditorIconName =
+  | "audio"
+  | "blade"
+  | "close"
+  | "film"
+  | "frame"
+  | "image"
+  | "minus"
+  | "pause"
+  | "play"
+  | "plus"
+  | "pointer"
+  | "step-back"
+  | "step-forward"
+
+function EditorIcon({ name, className }: { name: EditorIconName; className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={cn("h-3.5 w-3.5", className)}
+    >
+      {name === "pointer" && <path d="M4 2.8 15.6 9l-5.1 1.45-2.2 5.2L4 2.8Z" />}
+      {name === "blade" && <><circle cx="6" cy="6" r="2.4" /><circle cx="6" cy="14" r="2.4" /><path d="m8 7.2 8 4.8M8 12.8 16 8" /></>}
+      {name === "play" && <path fill="currentColor" stroke="none" d="m7 4 8 6-8 6V4Z" />}
+      {name === "pause" && <><path strokeWidth="2.4" d="M7 4.5v11M13 4.5v11" /></>}
+      {name === "step-back" && <><path d="M6 4.5v11" /><path fill="currentColor" stroke="none" d="m14.5 4.5-7 5.5 7 5.5v-11Z" /></>}
+      {name === "step-forward" && <><path d="M14 4.5v11" /><path fill="currentColor" stroke="none" d="m5.5 4.5 7 5.5-7 5.5v-11Z" /></>}
+      {name === "film" && <><rect x="2.5" y="4" width="15" height="12" rx="1" /><path d="M6 4v12M14 4v12M2.5 8h3.5M14 8h3.5M2.5 12h3.5M14 12h3.5" /></>}
+      {name === "audio" && <><path d="M3 10h2M7 6v8M10 3.5v13M13 6v8M16 8v4" /></>}
+      {name === "image" && <><rect x="2.5" y="3.5" width="15" height="13" rx="1" /><circle cx="7" cy="8" r="1.3" /><path d="m4.5 14 4-4 2.5 2 2-2 2.5 4" /></>}
+      {name === "frame" && <><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4" /><circle cx="10" cy="10" r="2" /></>}
+      {name === "minus" && <path d="M4 10h12" />}
+      {name === "plus" && <path d="M4 10h12M10 4v12" />}
+      {name === "close" && <path d="m5 5 10 10M15 5 5 15" />}
+    </svg>
+  )
+}
 
 function validDuration(value: unknown): number | null {
   const duration = Number(value)
@@ -238,13 +282,13 @@ function VideoThumbnailStrip({
   })
 
   return (
-    <div className="absolute inset-0 flex overflow-hidden bg-cyan-950/70" data-openreel-frame-strip="true">
+    <div className="absolute inset-0 flex overflow-hidden bg-[#1c3548]" data-openreel-frame-strip="true">
       {frameIndexes.map((frameIndex, index) => (
         <span
           key={`${index}-${frameIndex}`}
           data-openreel-timeline-frame="true"
           data-frame-index={frameIndex}
-          className="h-full min-w-0 flex-1 border-r border-black/20 bg-cover bg-no-repeat last:border-r-0"
+          className="h-full min-w-0 flex-1 border-r border-black/25 bg-cover bg-no-repeat last:border-r-0"
           style={{
             backgroundImage: `url(${spriteUrl})`,
             backgroundPosition: frameCount > 1 ? `${(frameIndex / (frameCount - 1)) * 100}% center` : "center",
@@ -258,12 +302,12 @@ function VideoThumbnailStrip({
 
 function ToolButton({
   label,
-  glyph,
+  icon,
   active,
   onClick,
 }: {
   label: string
-  glyph: string
+  icon: EditorIconName
   active?: boolean
   onClick: () => void
 }) {
@@ -274,14 +318,13 @@ function ToolButton({
       aria-label={label}
       onClick={onClick}
       className={cn(
-        "inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-semibold transition",
+        "inline-flex h-7 w-7 items-center justify-center rounded-[3px] border text-[11px] transition",
         active
-          ? "border-cyan-200/45 bg-cyan-300/16 text-cyan-100"
-          : "border-white/10 bg-white/[0.035] text-zinc-300 hover:bg-white/[0.08]",
+          ? "border-[#579bd3] bg-[#315f83] text-white shadow-[inset_0_1px_rgba(255,255,255,.08)]"
+          : "border-[#353a41] bg-[#24272c] text-[#b8bdc5] hover:border-[#4a5059] hover:bg-[#2d3137] hover:text-white",
       )}
     >
-      <span className="text-[10px] text-zinc-500">{glyph}</span>
-      {label}
+      <EditorIcon name={icon} />
     </button>
   )
 }
@@ -303,11 +346,11 @@ function ActionButton({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "h-8 rounded-md border px-2.5 text-[11px] font-semibold transition",
+        "h-7 rounded-[3px] border px-2.5 text-[10px] font-medium transition",
         active
-          ? "border-cyan-200/45 bg-cyan-200 text-cyan-950"
-          : "border-white/10 bg-white/[0.045] text-zinc-200 hover:bg-white/[0.085]",
-        disabled && "cursor-not-allowed opacity-40 hover:bg-white/[0.045]",
+          ? "border-[#579bd3] bg-[#315f83] text-white"
+          : "border-[#3a3f47] bg-[#272a30] text-[#d2d5da] hover:border-[#515862] hover:bg-[#30343a]",
+        disabled && "cursor-not-allowed opacity-35 hover:border-[#3a3f47] hover:bg-[#272a30]",
       )}
     >
       {children}
@@ -330,41 +373,44 @@ const MediaBinItem = memo(function MediaBinItem({
         event.dataTransfer.setData("openreel/media-id", item.id)
       }}
       onDoubleClick={() => onInsert(item)}
-      className="group flex cursor-grab items-center gap-2 rounded-md border border-white/10 bg-white/[0.035] p-2 active:cursor-grabbing"
+      className="group min-w-0 cursor-grab border border-transparent bg-[#1b1e22] p-1 transition hover:border-[#4b515a] hover:bg-[#22262b] active:cursor-grabbing"
     >
-      <div className="relative h-10 w-14 shrink-0 overflow-hidden rounded bg-black">
+      <div className="relative aspect-video w-full overflow-hidden bg-[#090a0c]">
         {item.type === "video" ? (
-          <video src={item.src} muted preload="metadata" className="h-full w-full object-cover opacity-85" />
+          <video src={item.src} muted preload="metadata" className="h-full w-full object-cover" />
         ) : item.type === "image" ? (
-          <img src={item.src} alt="" className="h-full w-full object-cover opacity-90" draggable={false} />
+          <img src={item.src} alt="" className="h-full w-full object-cover" draggable={false} />
         ) : (
-          <div className="flex h-full items-end justify-center gap-0.5 px-2 py-2">
-            {waveformBars(item.id, 12).map((height, index) => (
+          <div className="flex h-full items-center justify-center gap-px bg-[#17332b] px-2 py-2">
+            {waveformBars(item.id, 20).map((height, index) => (
               <span
                 key={index}
-                className="w-1 rounded-full bg-amber-200/80"
+                className="w-px bg-[#8bd2b3]"
                 style={{ height: `${height * 100}%` }}
               />
             ))}
           </div>
         )}
+        <div className="absolute bottom-1 left-1 flex h-4 w-4 items-center justify-center bg-black/70 text-[#d7dadd]">
+          <EditorIcon name={item.type === "video" ? "film" : item.type === "audio" ? "audio" : "image"} className="h-2.5 w-2.5" />
+        </div>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            onInsert(item)
+          }}
+          className="absolute bottom-1 right-1 flex h-5 w-5 items-center justify-center border border-white/20 bg-black/75 text-white opacity-0 transition hover:bg-[#315f83] group-hover:opacity-100"
+          title="插入轨道"
+          aria-label="插入轨道"
+        >
+          <EditorIcon name="plus" className="h-3 w-3" />
+        </button>
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[11px] font-medium text-zinc-100">{item.title || "未命名素材"}</div>
-        <div className="mt-0.5 text-[10px] text-zinc-500">{mediaTypeLabel(item.type)} · 双击插入</div>
+      <div className="min-w-0 px-0.5 pb-0.5 pt-1">
+        <div className="truncate text-[10px] font-medium text-[#d7dadd]">{item.title || "未命名素材"}</div>
+        <div className="mt-0.5 text-[9px] text-[#777d86]">{mediaTypeLabel(item.type)}</div>
       </div>
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation()
-          onInsert(item)
-        }}
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-zinc-100 text-xs font-black text-zinc-950 opacity-0 transition group-hover:opacity-100"
-        title="插入轨道"
-        aria-label="插入轨道"
-      >
-        +
-      </button>
     </div>
   )
 })
@@ -460,11 +506,11 @@ const TimelineClip = memo(function TimelineClip({
       data-source-duration={sourceDuration?.toFixed(6) || ""}
       onPointerDown={beginMove}
       className={cn(
-        "absolute top-2 h-[76px] overflow-hidden rounded-md border shadow-sm",
+        "group/clip absolute top-1.5 h-[64px] overflow-hidden rounded-[2px] border shadow-[0_1px_2px_rgba(0,0,0,.55)]",
         kind === "video"
-          ? "border-cyan-200/30 bg-cyan-300/10"
-          : "border-amber-200/30 bg-amber-300/10",
-        selected && "ring-1 ring-cyan-100/80",
+          ? "border-[#315f80] bg-[#254d69]"
+          : "border-[#32664f] bg-[#24523e]",
+        selected && "border-[#a9cdec] ring-1 ring-[#6ca9d8]",
         activeTool === "blade" && "cursor-crosshair",
         dragging && "cursor-grabbing opacity-85",
         !dragging && activeTool !== "blade" && "cursor-grab",
@@ -486,42 +532,41 @@ const TimelineClip = memo(function TimelineClip({
               pxPerSecond={pxPerSecond}
             />
           ) : (
-            <div className="absolute inset-0 animate-pulse bg-[linear-gradient(110deg,rgba(8,47,73,.75),rgba(14,116,144,.28),rgba(8,47,73,.75))]" />
+            <div className="absolute inset-0 animate-pulse bg-[linear-gradient(110deg,#203746,#31566f,#203746)]" />
           )}
-          <div className="absolute inset-0 bg-gradient-to-r from-black/10 via-transparent to-black/20" />
+          <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/25" />
         </>
       ) : (
-        <div className="absolute inset-x-2 bottom-2 flex h-11 items-center gap-[3px]">
+        <div className="absolute inset-x-1.5 bottom-1 flex h-10 items-center gap-px">
           {waveformBars(item.id, Math.max(24, Math.min(92, Math.round(width / 6)))).map((height, index) => (
             <span
               key={index}
-              className="w-1 rounded-full bg-amber-100/80"
+              className="min-w-px flex-1 bg-[#a8dfc4]/90"
               style={{ height: `${height * 100}%` }}
             />
           ))}
         </div>
       )}
-      <div className="absolute left-2 top-1.5 flex max-w-[calc(100%-1rem)] items-center gap-1.5">
-        <span className={cn(
-          "rounded px-1.5 py-0.5 text-[10px] font-bold",
-          kind === "video" ? "bg-cyan-100 text-cyan-950" : "bg-amber-100 text-amber-950",
-        )}>
-          {kind === "video" ? (item.type === "image" ? "I" : "V") : "A"}
-        </span>
-        <span className="truncate text-[11px] font-semibold text-zinc-50">{item.title || "素材"}</span>
+      <div className={cn(
+        "absolute inset-x-0 top-0 flex h-[18px] items-center gap-1 border-b px-1.5",
+        kind === "video" ? "border-[#4b7897]/60 bg-[#244861]/92" : "border-[#4a765f]/60 bg-[#214735]/94",
+      )}>
+        <EditorIcon name={kind === "video" ? (item.type === "image" ? "image" : "film") : "audio"} className="h-2.5 w-2.5 shrink-0 text-white/75" />
+        <span className="truncate text-[9px] font-medium text-white/90">{item.title || "素材"}</span>
       </div>
-      <div className="absolute bottom-1 right-2 rounded bg-black/55 px-1.5 py-0.5 text-[9px] font-medium tabular-nums text-zinc-200">
-        源 {formatTimePrecise(clip.sourceOffset)}–{formatTimePrecise(clip.sourceOffset + clip.duration)}
+      <div className="absolute bottom-0.5 right-1 bg-black/60 px-1 py-px font-mono text-[8px] tabular-nums text-white/75">
+        {formatTimePrecise(clip.sourceOffset)}–{formatTimePrecise(clip.sourceOffset + clip.duration)}
       </div>
       <button
         type="button"
         data-edge-handle="start"
         onPointerDown={(event) => beginResize("start", event)}
         className={cn(
-          "absolute bottom-0 left-0 top-0 z-10 w-3 cursor-ew-resize rounded-l border-l-2 transition",
+          "absolute bottom-0 left-0 top-0 z-10 w-2 cursor-ew-resize border-l-2 opacity-0 transition group-hover/clip:opacity-100",
           kind === "video"
-            ? "border-cyan-100/90 bg-cyan-100/10 hover:bg-cyan-100/28"
-            : "border-amber-100/90 bg-amber-100/10 hover:bg-amber-100/28",
+            ? "border-[#d5ebff] bg-[#8bc8f5]/10 hover:bg-[#8bc8f5]/25"
+            : "border-[#d4f4e4] bg-[#8fd8b6]/10 hover:bg-[#8fd8b6]/25",
+          selected && "opacity-100",
         )}
         title="收放起点"
         aria-label="收放起点"
@@ -531,10 +576,11 @@ const TimelineClip = memo(function TimelineClip({
         data-edge-handle="end"
         onPointerDown={(event) => beginResize("end", event)}
         className={cn(
-          "absolute bottom-0 right-0 top-0 z-10 w-3 cursor-ew-resize rounded-r border-r-2 transition",
+          "absolute bottom-0 right-0 top-0 z-10 w-2 cursor-ew-resize border-r-2 opacity-0 transition group-hover/clip:opacity-100",
           kind === "video"
-            ? "border-cyan-100/90 bg-cyan-100/10 hover:bg-cyan-100/28"
-            : "border-amber-100/90 bg-amber-100/10 hover:bg-amber-100/28",
+            ? "border-[#d5ebff] bg-[#8bc8f5]/10 hover:bg-[#8bc8f5]/25"
+            : "border-[#d4f4e4] bg-[#8fd8b6]/10 hover:bg-[#8fd8b6]/25",
+          selected && "opacity-100",
         )}
         title="收放终点"
         aria-label="收放终点"
@@ -566,6 +612,7 @@ export default function VideoEditPanel({
   const [tool, setTool] = useState<TimelineTool>("select")
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const [previewScale, setPreviewScale] = useState<PreviewScale>("fit")
+  const [audioTrackMuted, setAudioTrackMuted] = useState(false)
   const [busy, setBusy] = useState<BusyAction>(null)
   const [error, setError] = useState<string | null>(null)
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
@@ -713,6 +760,7 @@ export default function VideoEditPanel({
     setSelectedClipId(null)
     setCurrentTime(0)
     setPlaying(false)
+    setAudioTrackMuted(false)
     setError(null)
   }, [audioItemForVideo, nodeId, primarySourceKey, primarySyncGroupId, sourceDurationForItem, videoItems, visualItems])
 
@@ -1169,50 +1217,57 @@ export default function VideoEditPanel({
 
   return (
     <div
-      className="openreel-video-edit-panel nodrag nowheel fixed inset-x-3 bottom-3 top-4 z-[94] overflow-hidden rounded-lg border border-white/10 bg-[#070b10]/98 text-zinc-100 shadow-[0_28px_90px_rgba(0,0,0,0.68)] backdrop-blur-xl"
+      className="openreel-video-edit-panel nodrag nowheel fixed inset-2 z-[94] overflow-hidden rounded-[4px] border border-[#34383f] bg-[#111316] text-[#d7d9dc] shadow-[0_24px_80px_rgba(0,0,0,0.72)]"
       data-openreel-workflow-ui="true"
       onClick={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
       onWheel={(event) => event.stopPropagation()}
     >
-      <div className="flex h-9 items-center justify-between border-b border-white/10 bg-[#0b0f16] px-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <div className="max-w-[280px] truncate text-xs font-semibold text-zinc-200">{title || "视频剪辑"}</div>
-          <div className="text-[10px] tabular-nums text-zinc-500">{formatTimePrecise(currentTime)} / {formatTimePrecise(playbackEnd)}</div>
+      <div className="flex h-8 items-center justify-between border-b border-[#34383f] bg-[#202328] px-2.5 shadow-[inset_0_1px_rgba(255,255,255,.025)]">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="border-r border-[#454a52] pr-2.5 text-[9px] font-semibold uppercase tracking-[0.16em] text-[#8d939c]">OpenReel Edit</div>
+          <div className="max-w-[340px] truncate text-[11px] font-medium text-[#e1e3e6]">{title || "未命名时间线"}</div>
+          <div className="font-mono text-[9px] tabular-nums text-[#777d86]">{formatTimePrecise(currentTime)} / {formatTimePrecise(playbackEnd)}</div>
         </div>
         <button
           type="button"
           onClick={onClose}
-          className="h-7 rounded-md border border-white/10 px-3 text-xs text-zinc-300 transition hover:bg-white/[0.07]"
+          className="flex h-6 w-7 items-center justify-center rounded-[2px] text-[#9ca1a9] transition hover:bg-[#353940] hover:text-white"
+          title="关闭编辑器"
+          aria-label="关闭编辑器"
         >
-          关闭
+          <EditorIcon name="close" />
         </button>
       </div>
 
-      <div className="grid h-[calc(100%-2.25rem)] w-full min-w-0 grid-rows-[minmax(245px,40%)_minmax(320px,1fr)] bg-[#070b10]">
-        <div className="grid w-full min-w-0 min-h-0 grid-cols-[220px_minmax(420px,1fr)_300px] border-b border-white/10 max-xl:grid-cols-[200px_minmax(360px,1fr)_280px] max-lg:grid-cols-1 max-lg:overflow-y-auto">
-          <aside data-openreel-media-bin="true" className="flex min-h-0 flex-col border-r border-white/10 bg-[#0b1017]">
-            <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
-              <div className="text-[12px] font-semibold text-zinc-100">项目素材</div>
-              <div className="text-[10px] text-zinc-500">{mediaNodes.length}</div>
+      <div className="grid h-[calc(100%-2rem)] w-full min-w-0 grid-rows-[minmax(220px,36%)_minmax(380px,1fr)] bg-[#111316]">
+        <div className="grid min-h-0 w-full min-w-0 grid-cols-[238px_minmax(420px,1fr)_284px] border-b border-[#34383f] max-xl:grid-cols-[210px_minmax(360px,1fr)_270px] max-lg:grid-cols-1 max-lg:overflow-y-auto">
+          <aside data-openreel-media-bin="true" className="flex min-h-0 flex-col border-r border-[#34383f] bg-[#191b1f]">
+            <div className="flex h-8 items-end justify-between border-b border-[#34383f] bg-[#202328] px-2.5">
+              <div className="flex h-full items-center border-b-2 border-[#4d92c5] text-[10px] font-semibold text-[#e3e5e8]">媒体池</div>
+              <div className="mb-2 font-mono text-[9px] text-[#777d86]">{mediaNodes.length} ITEMS</div>
             </div>
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+            <div className="grid min-h-0 flex-1 auto-rows-max grid-cols-2 content-start gap-1.5 overflow-y-auto p-2">
               {mediaNodes.map((item) => (
                 <MediaBinItem key={item.id} item={item} onInsert={insertMediaItem} />
               ))}
               {mediaNodes.length === 0 && (
-                <div className="rounded-md border border-dashed border-white/10 px-3 py-5 text-center text-xs leading-5 text-zinc-500">
+                <div className="col-span-2 border border-dashed border-[#3a3f46] px-3 py-6 text-center text-[10px] leading-5 text-[#777d86]">
                   当前项目里的图片、视频和音频会出现在这里
                 </div>
               )}
             </div>
           </aside>
 
-          <main data-openreel-preview-pane="true" className="flex min-h-0 min-w-0 flex-col bg-[#0b1017]">
-            <div className="flex min-h-0 flex-1 items-center justify-center bg-[radial-gradient(circle_at_center,rgba(39,52,68,.42),rgba(7,11,16,.96)_72%)] p-2">
+          <main data-openreel-preview-pane="true" className="flex min-h-0 min-w-0 flex-col bg-[#111316]">
+            <div className="flex h-7 shrink-0 items-center justify-between border-b border-[#2f3339] bg-[#1d2024] px-2.5">
+              <span className="text-[9px] font-medium text-[#aeb3ba]">时间线监看器</span>
+              <span className="font-mono text-[8px] text-[#656b73]">PROGRAM</span>
+            </div>
+            <div className="flex min-h-0 flex-1 items-center justify-center bg-[#090a0c] p-1.5">
               <div
-                className="relative flex aspect-video max-h-full items-center justify-center overflow-hidden rounded-md border border-white/10 bg-black shadow-inner"
+                className="relative flex aspect-video max-h-full items-center justify-center overflow-hidden border border-[#292d32] bg-black shadow-[0_0_0_1px_rgba(0,0,0,.8)]"
                 style={previewScaleStyle}
               >
                 {currentVideoItem ? (
@@ -1223,7 +1278,7 @@ export default function VideoEditPanel({
                       ref={videoRef}
                       data-openreel-preview-video="true"
                       src={currentVideoItem.src || videoUrl}
-                      muted={Boolean(currentAudioItem) && !playAudioThroughVideo}
+                      muted={audioTrackMuted || (Boolean(currentAudioItem) && !playAudioThroughVideo)}
                       preload="metadata"
                       className="h-full w-full object-contain [color-scheme:dark]"
                       onLoadedMetadata={(event) => {
@@ -1233,27 +1288,19 @@ export default function VideoEditPanel({
                     />
                   )
                 ) : (
-                  <div className="text-xs text-zinc-500">播放头不在视频片段上</div>
+                  <div className="text-[10px] text-[#686e76]">播放头不在视频片段上</div>
                 )}
               </div>
               {currentAudioItem && !playAudioThroughVideo && (
-                <audio ref={audioRef} src={currentAudioItem.src} preload="metadata" />
+                <audio ref={audioRef} src={currentAudioItem.src} preload="metadata" muted={audioTrackMuted} />
               )}
             </div>
 
-            <div className="flex h-12 items-center justify-between border-t border-white/10 bg-[#0d121a] px-3">
-              <div className="flex items-center gap-2">
+            <div className="relative flex h-10 shrink-0 items-center justify-between border-t border-[#30343a] bg-[#1c1f23] px-2.5">
+              <div className="flex min-w-[154px] items-center gap-2">
+                <span className="font-mono text-[11px] font-medium tabular-nums text-[#d9dde2]">{formatTimePrecise(currentTime)}</span>
                 <button
                   type="button"
-                  onClick={togglePlayback}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-[12px] font-black text-zinc-950 transition hover:bg-white"
-                  title={playing ? "暂停" : "播放"}
-                  aria-label={playing ? "暂停" : "播放"}
-                >
-                  {playing ? "II" : "▶"}
-                </button>
-                <span className="w-[76px] text-[11px] font-semibold text-cyan-100">{formatTimePrecise(currentTime)}</span>
-                <ActionButton
                   disabled={isBusy || currentVideoItem?.type !== "video"}
                   onClick={() => void runOperation("frame", {
                     operation: "video.export_frame",
@@ -1262,16 +1309,47 @@ export default function VideoEditPanel({
                     time_seconds: Math.max(0, (currentVideoClip?.sourceOffset || 0) + currentTime - (currentVideoClip?.start || 0)),
                     title: `${title || "视频"} ${formatTime(currentTime)} 画面`,
                   })}
+                  className="flex h-6 w-6 items-center justify-center rounded-[2px] text-[#9298a1] transition hover:bg-[#30343a] hover:text-white disabled:opacity-30"
+                  title="导出当前帧"
+                  aria-label="导出当前帧"
                 >
-                  定格
-                </ActionButton>
+                  <EditorIcon name="frame" className="h-3 w-3" />
+                </button>
               </div>
-              <div className="hidden items-center gap-2 text-[10px] text-zinc-500 sm:flex">
-                <span>空格播放</span>
+              <div className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => seekTo(Math.max(0, currentTime - 1 / 24))}
+                  className="flex h-7 w-7 items-center justify-center text-[#a8adb5] hover:text-white"
+                  title="后退一帧"
+                  aria-label="后退一帧"
+                >
+                  <EditorIcon name="step-back" />
+                </button>
+                <button
+                  type="button"
+                  onClick={togglePlayback}
+                  className="flex h-7 w-8 shrink-0 items-center justify-center rounded-[2px] text-[#e2e5e8] transition hover:bg-[#30343a] hover:text-white"
+                  title={playing ? "暂停" : "播放"}
+                  aria-label={playing ? "暂停" : "播放"}
+                >
+                  <EditorIcon name={playing ? "pause" : "play"} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => seekTo(Math.min(playbackEnd, currentTime + 1 / 24))}
+                  className="flex h-7 w-7 items-center justify-center text-[#a8adb5] hover:text-white"
+                  title="前进一帧"
+                  aria-label="前进一帧"
+                >
+                  <EditorIcon name="step-forward" />
+                </button>
+              </div>
+              <div className="hidden min-w-[154px] items-center justify-end gap-2 text-[9px] text-[#717780] sm:flex">
                 <select
                   value={previewScale}
                   onChange={(event) => setPreviewScale(event.target.value as PreviewScale)}
-                  className="h-7 rounded-md border border-white/10 bg-[#141a22] px-2 text-[11px] font-semibold text-zinc-200 outline-none"
+                  className="h-6 rounded-[2px] border border-[#353a41] bg-[#24272c] px-2 text-[9px] text-[#c8ccd1] outline-none"
                   title="视频缩放"
                   aria-label="视频缩放"
                 >
@@ -1284,15 +1362,18 @@ export default function VideoEditPanel({
             </div>
           </main>
 
-          <aside data-openreel-inspector-pane="true" className="min-h-0 border-l border-white/10 bg-[#0c1118]">
-            <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
-              <div className="text-[12px] font-semibold text-zinc-100">功能区</div>
-              <div className={cn("h-2 w-2 rounded-full", isBusy ? "bg-cyan-300" : "bg-emerald-300/80")} />
+          <aside data-openreel-inspector-pane="true" className="min-h-0 border-l border-[#34383f] bg-[#191b1f]">
+            <div className="flex h-8 items-end justify-between border-b border-[#34383f] bg-[#202328] px-2.5">
+              <div className="flex h-full items-center border-b-2 border-[#4d92c5] text-[10px] font-semibold text-[#e3e5e8]">检查器</div>
+              <div className="mb-2 text-[8px] uppercase tracking-[0.12em] text-[#6e747d]">Clip</div>
             </div>
-            <div className="space-y-4 overflow-y-auto p-3">
-              <section className="rounded-md border border-white/10 bg-white/[0.035] p-3">
-                <div className="mb-3 text-[11px] font-semibold text-zinc-300">生成到画布</div>
-                <div className="grid grid-cols-2 gap-2">
+            <div className="min-h-0 overflow-y-auto">
+              <section className="border-b border-[#34383f] px-3 py-2.5">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">输出与媒体操作</div>
+                  <span className={cn("h-1.5 w-1.5 rounded-full", isBusy ? "bg-[#67a9d8]" : "bg-[#6b727b]")} />
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
                   <ActionButton
                     active={busy === "tail"}
                     disabled={isBusy || selectedVideoItem?.type !== "video"}
@@ -1358,30 +1439,46 @@ export default function VideoEditPanel({
                 </div>
               </section>
 
-              <section className="rounded-md border border-white/10 bg-white/[0.035] p-3">
-                <div className="mb-3 flex items-center justify-between">
-                  <div className="text-[11px] font-semibold text-zinc-300">轨道编辑</div>
-                  <div className="text-[10px] text-zinc-500">吸附 {SNAP_PIXELS}px</div>
+              <section className="border-b border-[#34383f] px-3 py-2.5">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">片段属性</div>
+                  <div className="font-mono text-[8px] text-[#707680]">SNAP {SNAP_PIXELS}px</div>
                 </div>
                 {selectedVideoClip && (
-                  <div className="mb-2 rounded border border-white/[0.07] bg-black/20 px-2 py-1.5 text-[10px] tabular-nums text-zinc-400">
-                    片段 {formatTimePrecise(selectedVideoClip.duration)} · 源 {formatTimePrecise(selectedVideoClip.sourceOffset)}–{formatTimePrecise(selectedVideoClip.sourceOffset + selectedVideoClip.duration)}
-                    {selectedSourceDuration ? ` / ${formatTimePrecise(selectedSourceDuration)}` : ""}
+                  <div className="mb-2 divide-y divide-[#30343a] border-y border-[#30343a] text-[9px]">
+                    <div className="flex items-center justify-between py-1.5">
+                      <span className="text-[#777d86]">片段时长</span>
+                      <span className="font-mono text-[#d0d4d9]">{formatTimePrecise(selectedVideoClip.duration)}</span>
+                    </div>
+                    <div className="flex items-center justify-between py-1.5">
+                      <span className="text-[#777d86]">源入点</span>
+                      <span className="font-mono text-[#d0d4d9]">{formatTimePrecise(selectedVideoClip.sourceOffset)}</span>
+                    </div>
+                    <div className="flex items-center justify-between py-1.5">
+                      <span className="text-[#777d86]">源出点</span>
+                      <span className="font-mono text-[#d0d4d9]">{formatTimePrecise(selectedVideoClip.sourceOffset + selectedVideoClip.duration)}</span>
+                    </div>
+                    {selectedSourceDuration && (
+                      <div className="flex items-center justify-between py-1.5">
+                        <span className="text-[#777d86]">源总长</span>
+                        <span className="font-mono text-[#d0d4d9]">{formatTimePrecise(selectedSourceDuration)}</span>
+                      </div>
+                    )}
                   </div>
                 )}
-                <div className="text-[11px] leading-5 text-zinc-500">
-                  视频和音频收放不会超出源素材。选择“切割”后点击片段，会把画面及绑定音轨同步切成前后两段。
+                <div className="text-[9px] leading-4 text-[#737983]">
+                  边缘修剪受源素材范围约束。切割会同步处理已链接的画面与音频。
                 </div>
               </section>
 
               {error && (
-                <div className="rounded-md border border-red-400/25 bg-red-950/45 p-3 text-xs leading-5 text-red-100">
+                <div className="m-3 border border-[#7d4547] bg-[#3c2426] p-2.5 text-[10px] leading-4 text-[#f0c1c3]">
                   {error}
                 </div>
               )}
               {busy && (
-                <div className="flex items-center gap-2 rounded-md border border-cyan-200/20 bg-cyan-300/10 p-3 text-xs text-cyan-100">
-                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-cyan-100 border-t-transparent" />
+                <div className="m-3 flex items-center gap-2 border border-[#355a74] bg-[#213746] p-2.5 text-[10px] text-[#c0ddf2]">
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-[#9dc9e8] border-t-transparent" />
                   处理中...
                 </div>
               )}
@@ -1389,34 +1486,46 @@ export default function VideoEditPanel({
           </aside>
         </div>
 
-        <section className="flex w-full min-h-0 min-w-0 flex-col bg-[#080c12]">
-          <div className="flex h-9 shrink-0 items-center justify-between border-b border-white/[0.08] bg-[#0d1219] px-2.5">
+        <section className="flex min-h-0 w-full min-w-0 flex-col bg-[#15171a]">
+          <div className="flex h-9 shrink-0 items-center justify-between border-b border-[#34383f] bg-[#202328] px-2">
             <div className="flex items-center gap-2">
-              <span className="px-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">时间线 · 2 轨</span>
-              <ToolButton label="选择" glyph="S" active={tool === "select"} onClick={() => setTool("select")} />
-              <ToolButton label="切割" glyph="C" active={tool === "blade"} onClick={() => setTool("blade")} />
-              <span className="hidden text-[10px] text-zinc-600 md:inline">滚轮以指针位置缩放</span>
+              <div className="mr-1 flex h-9 items-center border-b-2 border-[#4d92c5] px-1 text-[10px] font-semibold text-[#e2e4e7]">时间线 1</div>
+              <ToolButton label="选择" icon="pointer" active={tool === "select"} onClick={() => setTool("select")} />
+              <ToolButton label="切割" icon="blade" active={tool === "blade"} onClick={() => setTool("blade")} />
+              <div className="ml-1 h-4 w-px bg-[#3b4047]" />
+              <span className="hidden font-mono text-[9px] tabular-nums text-[#777d86] md:inline">{formatTimePrecise(currentTime)}</span>
             </div>
-            <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+            <div className="flex items-center gap-1.5 text-[9px] text-[#777d86]">
               <button
                 type="button"
                 onClick={() => zoomTimelineAt(pxPerSecond - 14)}
-                className="h-7 w-7 rounded border border-white/10 text-sm text-zinc-300 hover:bg-white/[0.07]"
+                className="flex h-7 w-7 items-center justify-center rounded-[2px] text-[#aeb3ba] hover:bg-[#30343a] hover:text-white"
                 title="缩小时间线"
                 aria-label="缩小时间线"
               >
-                −
+                <EditorIcon name="minus" />
               </button>
-              <span className="min-w-[58px] rounded border border-white/10 px-1.5 py-1 text-center tabular-nums">{Math.round(pxPerSecond)} px/s</span>
+              <input
+                type="range"
+                min="42"
+                max="220"
+                step="1"
+                value={pxPerSecond}
+                onChange={(event) => zoomTimelineAt(Number(event.target.value))}
+                className="h-1 w-20 cursor-pointer accent-[#629dcc]"
+                title="时间线缩放"
+                aria-label="时间线缩放"
+              />
               <button
                 type="button"
                 onClick={() => zoomTimelineAt(pxPerSecond + 14)}
-                className="h-7 w-7 rounded border border-white/10 text-sm text-zinc-300 hover:bg-white/[0.07]"
+                className="flex h-7 w-7 items-center justify-center rounded-[2px] text-[#aeb3ba] hover:bg-[#30343a] hover:text-white"
                 title="放大时间线"
                 aria-label="放大时间线"
               >
-                +
+                <EditorIcon name="plus" />
               </button>
+              <span className="w-12 text-right font-mono text-[8px] text-[#676d75]">{Math.round(pxPerSecond)} px/s</span>
             </div>
           </div>
           <div
@@ -1424,17 +1533,17 @@ export default function VideoEditPanel({
             data-openreel-timeline-scroll="true"
             data-px-per-second={pxPerSecond.toFixed(4)}
             data-track-label-width={TRACK_LABEL_WIDTH}
-            className="relative w-full min-h-0 min-w-0 flex-1 overflow-auto bg-[#080c12]"
+            className="relative min-h-0 w-full min-w-0 flex-1 overflow-auto bg-[#15171a]"
             onPointerDown={handleTimelineBackgroundDown}
           >
             <div className="relative min-h-full" style={{ width: TRACK_LABEL_WIDTH + timelineWidth }}>
-            <div className="sticky top-0 z-20 grid h-7 border-b border-white/[0.07] bg-[#0d1118]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
-              <div className="sticky left-0 z-30 border-r border-white/[0.07] bg-[#0d1118]" />
+            <div className="sticky top-0 z-20 grid h-7 border-b border-[#353941] bg-[#1c1f23]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
+              <div className="sticky left-0 z-30 flex items-center border-r border-[#3a3f46] bg-[#1f2227] px-2 font-mono text-[8px] text-[#666c74]">TC</div>
               <div className="relative">
                 {ticks.map((tick) => (
                   <div
                     key={tick}
-                    className="absolute top-0 h-full border-l border-white/[0.08] pl-1 text-[10px] leading-7 text-zinc-500"
+                    className="absolute top-0 h-full border-l border-[#3b4048] pl-1 font-mono text-[8px] leading-7 text-[#777d86]"
                     style={{ left: tick * pxPerSecond }}
                   >
                     {formatTime(tick)}
@@ -1443,13 +1552,16 @@ export default function VideoEditPanel({
               </div>
             </div>
 
-            <div className="relative grid h-[92px] border-b border-white/[0.07]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
-              <div className="sticky left-0 z-10 flex flex-col justify-center border-r border-white/[0.07] bg-[#0d1118] px-3">
-                <div className="text-[11px] font-semibold text-zinc-200">V1</div>
-                <div className="mt-1 text-[10px] text-zinc-500">拖动定位</div>
+            <div className="relative grid h-[76px] border-b border-[#30343a]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
+              <div className="sticky left-0 z-10 grid grid-cols-[30px_1fr] border-r border-[#3a3f46] bg-[#202328]">
+                <div className="flex items-center justify-center border-r border-[#3a3f46] bg-[#2b4f68] text-[10px] font-semibold text-[#d8ecfa]">V1</div>
+                <div className="flex min-w-0 flex-col justify-center px-2">
+                  <div className="truncate text-[9px] font-medium text-[#d2d5d9]">视频 1</div>
+                  <div className="mt-1 flex items-center gap-1.5 text-[#737983]"><EditorIcon name="film" className="h-2.5 w-2.5" /><span className="text-[8px]">VIDEO</span></div>
+                </div>
               </div>
               <div
-                className="relative bg-[#090d13]"
+                className="relative bg-[#17191d] [background-image:linear-gradient(90deg,rgba(255,255,255,.025)_1px,transparent_1px)] [background-size:84px_100%]"
                 onDragOver={(event) => {
                   event.preventDefault()
                   event.dataTransfer.dropEffect = "copy"
@@ -1480,13 +1592,33 @@ export default function VideoEditPanel({
               </div>
             </div>
 
-            <div className="relative grid h-[92px] border-b border-white/[0.07]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
-              <div className="sticky left-0 z-10 flex flex-col justify-center border-r border-white/[0.07] bg-[#0d1118] px-3">
-                <div className="text-[11px] font-semibold text-zinc-200">A1</div>
-                <div className="mt-1 text-[10px] text-zinc-500">拖动对齐</div>
+            <div className="relative grid h-[76px] border-b border-[#30343a]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
+              <div className="sticky left-0 z-10 grid grid-cols-[30px_1fr] border-r border-[#3a3f46] bg-[#202328]">
+                <div className="flex items-center justify-center border-r border-[#3a3f46] bg-[#28503e] text-[10px] font-semibold text-[#d8f1e4]">A1</div>
+                <div className="flex min-w-0 flex-col justify-center px-2">
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="truncate text-[9px] font-medium text-[#d2d5d9]">音频 1</div>
+                    <button
+                      type="button"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={() => setAudioTrackMuted((value) => !value)}
+                      className={cn(
+                        "flex h-4 w-4 items-center justify-center rounded-[2px] border text-[8px] font-semibold",
+                        audioTrackMuted
+                          ? "border-[#b88a4f] bg-[#6b4b24] text-[#ffe1a8]"
+                          : "border-[#3b4148] bg-[#25282d] text-[#7b8189] hover:text-white",
+                      )}
+                      title={audioTrackMuted ? "取消静音" : "静音音频轨道"}
+                      aria-label={audioTrackMuted ? "取消静音" : "静音音频轨道"}
+                    >
+                      M
+                    </button>
+                  </div>
+                  <div className="mt-1 flex items-center gap-1.5 text-[#737983]"><EditorIcon name="audio" className="h-2.5 w-2.5" /><span className="text-[8px]">AUDIO</span></div>
+                </div>
               </div>
               <div
-                className="relative bg-[#090d13]"
+                className="relative bg-[#17191d] [background-image:linear-gradient(90deg,rgba(255,255,255,.025)_1px,transparent_1px)] [background-size:84px_100%]"
                 onDragOver={(event) => {
                   event.preventDefault()
                   event.dataTransfer.dropEffect = "copy"
@@ -1494,7 +1626,7 @@ export default function VideoEditPanel({
                 onDrop={(event) => handleTrackDrop("audio", event)}
               >
                 {audioClips.length === 0 && (
-                  <div className="absolute inset-2 flex items-center justify-center rounded-md border border-dashed border-white/10 text-xs text-zinc-600">
+                  <div className="absolute inset-2 flex items-center justify-center border border-dashed border-[#343940] text-[9px] text-[#5f656d]">
                     将音频拖到这里对齐画面
                   </div>
                 )}
@@ -1524,11 +1656,11 @@ export default function VideoEditPanel({
 
             <div
               ref={playheadRef}
-              className="absolute bottom-0 top-0 z-30 w-px cursor-ew-resize bg-cyan-100 shadow-[0_0_0_1px_rgba(34,211,238,0.28),0_0_18px_rgba(34,211,238,0.45)]"
+              className="absolute bottom-0 top-0 z-30 w-px cursor-ew-resize bg-[#ff4d4f] shadow-[0_0_0_1px_rgba(255,77,79,.18)]"
               style={{ left: TRACK_LABEL_WIDTH + currentTime * pxPerSecond }}
               onPointerDown={beginPlayheadDrag}
             >
-              <div className="-ml-1.5 h-3 w-3 rounded-sm bg-cyan-100" />
+              <div className="-ml-[4px] h-0 w-0 border-l-[4px] border-r-[4px] border-t-[7px] border-l-transparent border-r-transparent border-t-[#ff4d4f]" />
             </div>
             </div>
           </div>
