@@ -106,6 +106,10 @@ const FRAME_TILE_ROWS = 4
 const FRAMES_PER_TILE = FRAME_TILE_COLUMNS * FRAME_TILE_ROWS
 const FRAME_DETAIL_WIDTH = 72
 const DEFAULT_FRAME_RATE = 24
+const AUDIO_ENVELOPE_TOP = 38
+const AUDIO_ENVELOPE_BOTTOM = 56
+const MIN_CLIP_GAIN_DB = -60
+const MAX_CLIP_GAIN_DB = 0
 
 const mediaDurationCache = new Map<string, number>()
 const mediaDurationRequests = new Map<string, Promise<number>>()
@@ -209,6 +213,99 @@ function formatTimePrecise(value: number): string {
   const minutes = Math.floor(value / 60)
   const seconds = value % 60
   return `${String(minutes).padStart(2, "0")}:${seconds.toFixed(2).padStart(5, "0")}`
+}
+
+function nominalFramesPerSecond(framesPerSecond: number): number {
+  return Math.max(1, Math.round(framesPerSecond))
+}
+
+function formatFrameTimecode(frame: number, framesPerSecond: number): string {
+  const nominalFps = nominalFramesPerSecond(framesPerSecond)
+  const safeFrame = Math.max(0, Math.round(frame))
+  const frames = safeFrame % nominalFps
+  const totalSeconds = Math.floor(safeFrame / nominalFps)
+  const seconds = totalSeconds % 60
+  const totalMinutes = Math.floor(totalSeconds / 60)
+  const minutes = totalMinutes % 60
+  const hours = Math.floor(totalMinutes / 60)
+  return [hours, minutes, seconds, frames]
+    .map((part) => String(part).padStart(2, "0"))
+    .join(":")
+}
+
+function parseFrameTimecode(value: string, framesPerSecond: number): number | null {
+  const nominalFps = nominalFramesPerSecond(framesPerSecond)
+  const parts = value.trim().replaceAll(";", ":").split(":")
+  if (parts.length < 2 || parts.length > 4 || parts.some((part) => !/^\d+$/.test(part))) return null
+  const values = parts.map(Number)
+  const padded = [...Array(4 - values.length).fill(0), ...values]
+  const [hours, minutes, seconds, frames] = padded
+  if (minutes > 59 || seconds > 59 || frames >= nominalFps) return null
+  return (((hours * 60 + minutes) * 60 + seconds) * nominalFps) + frames
+}
+
+function FrameTimecodeInput({
+  frame,
+  framesPerSecond,
+  ariaLabel,
+  onFocus,
+  onCommit,
+}: {
+  frame: number
+  framesPerSecond: number
+  ariaLabel: string
+  onFocus: () => void
+  onCommit: (frame: number) => void
+}) {
+  const formatted = formatFrameTimecode(frame, framesPerSecond)
+  const [draft, setDraft] = useState(formatted)
+  const [invalid, setInvalid] = useState(false)
+
+  useEffect(() => {
+    setDraft(formatted)
+    setInvalid(false)
+  }, [formatted])
+
+  const commit = () => {
+    const parsed = parseFrameTimecode(draft, framesPerSecond)
+    if (parsed === null) {
+      setDraft(formatted)
+      setInvalid(true)
+      return
+    }
+    setInvalid(false)
+    setDraft(formatFrameTimecode(parsed, framesPerSecond))
+    onCommit(parsed)
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      spellCheck={false}
+      value={draft}
+      onFocus={onFocus}
+      onChange={(event) => {
+        setDraft(event.target.value)
+        setInvalid(false)
+      }}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur()
+        if (event.key === "Escape") {
+          setDraft(formatted)
+          setInvalid(false)
+          event.currentTarget.blur()
+        }
+      }}
+      aria-label={ariaLabel}
+      aria-invalid={invalid}
+      className={cn(
+        "h-5 w-full rounded-[2px] border bg-[#24272c] px-1 text-center font-mono text-[8px] tabular-nums text-[#d5d9de] outline-none focus:border-[#579bd3]",
+        invalid ? "border-[#a95356]" : "border-[#3a3f46]",
+      )}
+    />
+  )
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -807,6 +904,8 @@ const TimelineClip = memo(function TimelineClip({
   onSelect,
   onDragStartFrame,
   onResizeEdge,
+  onAudioGainChange,
+  onAudioFadeChange,
   onCutAtFrame,
 }: {
   projectId: string
@@ -830,6 +929,8 @@ const TimelineClip = memo(function TimelineClip({
   onSelect: (clipId: string, options: { additive: boolean; independent: boolean }) => void
   onDragStartFrame: (kind: "video" | "audio", clipId: string, startFrame: number, trackId: string) => void
   onResizeEdge: (kind: "video" | "audio", clipId: string, edge: "start" | "end", edgeFrame: number) => void
+  onAudioGainChange: (clipId: string, gainDb: number) => void
+  onAudioFadeChange: (clipId: string, edge: "in" | "out", frames: number) => void
   onCutAtFrame: (frame: number, clipId: string, independent?: boolean) => void
 }) {
   const [dragging, setDragging] = useState(false)
@@ -837,6 +938,15 @@ const TimelineClip = memo(function TimelineClip({
   const width = Math.max(18, clip.durationFrames / sequenceFps * pxPerSecond)
   const clipDurationSeconds = clip.durationFrames / sequenceFps
   const sourceInSeconds = clip.sourceInFrame / sequenceFps
+  const clipGainDb = clamp(clip.gainDb || 0, MIN_CLIP_GAIN_DB, MAX_CLIP_GAIN_DB)
+  const gainLineY = AUDIO_ENVELOPE_TOP + (
+    (MAX_CLIP_GAIN_DB - clipGainDb) / (MAX_CLIP_GAIN_DB - MIN_CLIP_GAIN_DB)
+  ) * (AUDIO_ENVELOPE_BOTTOM - AUDIO_ENVELOPE_TOP)
+  const fadeInX = clamp((clip.fadeInFrames || 0) / clip.durationFrames * width, 0, width)
+  const fadeOutX = clamp(width - (clip.fadeOutFrames || 0) / clip.durationFrames * width, 0, width)
+  const fadeHandleInset = Math.min(10, width / 2)
+  const fadeInHandleX = clamp(fadeInX, fadeHandleInset, width - fadeHandleInset)
+  const fadeOutHandleX = clamp(fadeOutX, fadeHandleInset, width - fadeHandleInset)
 
   const beginMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || disabled) return
@@ -909,6 +1019,59 @@ const TimelineClip = memo(function TimelineClip({
     window.addEventListener("pointerup", onEnd)
   }
 
+  const beginAudioGainAdjust = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (kind !== "audio" || disabled) return
+    event.preventDefault()
+    event.stopPropagation()
+    onSelect(clip.clipId, { additive: false, independent: true })
+    onBeginEdit()
+    const startY = event.clientY
+    const initialGainDb = clipGainDb
+    const updateGain = (clientY: number, fineAdjustment: boolean) => {
+      const dbPerPixel = fineAdjustment ? 0.1 : 0.5
+      const gainDb = Math.round(clamp(
+        initialGainDb - (clientY - startY) * dbPerPixel,
+        MIN_CLIP_GAIN_DB,
+        MAX_CLIP_GAIN_DB,
+      ) * 2) / 2
+      onAudioGainChange(clip.clipId, gainDb)
+    }
+    const onMove = (moveEvent: PointerEvent) => updateGain(moveEvent.clientY, moveEvent.shiftKey)
+    const onEnd = () => {
+      onEditEnd()
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onEnd)
+    }
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", onEnd)
+  }
+
+  const beginAudioFadeAdjust = (edge: "in" | "out", event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (kind !== "audio" || disabled) return
+    event.preventDefault()
+    event.stopPropagation()
+    onSelect(clip.clipId, { additive: false, independent: true })
+    onBeginEdit()
+    const clipRect = event.currentTarget.closest<HTMLElement>("[data-openreel-timeline-clip]")?.getBoundingClientRect()
+    if (!clipRect) return
+    const updateFade = (clientX: number) => {
+      const localX = clamp(clientX - clipRect.left, 0, clipRect.width)
+      const frames = edge === "in"
+        ? Math.round(localX / clipRect.width * clip.durationFrames)
+        : Math.round((clipRect.width - localX) / clipRect.width * clip.durationFrames)
+      onAudioFadeChange(clip.clipId, edge, frames)
+    }
+    updateFade(event.clientX)
+    const onMove = (moveEvent: PointerEvent) => updateFade(moveEvent.clientX)
+    const onEnd = () => {
+      onEditEnd()
+      window.removeEventListener("pointermove", onMove)
+      window.removeEventListener("pointerup", onEnd)
+    }
+    window.addEventListener("pointermove", onMove)
+    window.addEventListener("pointerup", onEnd)
+  }
+
   return (
     <div
       data-openreel-timeline-clip="true"
@@ -966,19 +1129,65 @@ const TimelineClip = memo(function TimelineClip({
           <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-transparent to-black/25" />
         </>
       ) : (
-        waveformNodeId ? (
-          <RealAudioWaveform
-            projectId={projectId}
-            nodeId={waveformNodeId}
-            sourceOffset={sourceInSeconds}
-            clipDuration={clipDurationSeconds}
-            width={width}
-            gainDb={(clip.gainDb || 0) + (trackGainDb || 0)}
-            muted={Boolean(clip.muted || trackMuted)}
-            fadeInSeconds={(clip.fadeInFrames || 0) / sequenceFps}
-            fadeOutSeconds={(clip.fadeOutFrames || 0) / sequenceFps}
+        <>
+          {waveformNodeId ? (
+            <RealAudioWaveform
+              projectId={projectId}
+              nodeId={waveformNodeId}
+              sourceOffset={sourceInSeconds}
+              clipDuration={clipDurationSeconds}
+              width={width}
+              gainDb={(clip.gainDb || 0) + (trackGainDb || 0)}
+              muted={Boolean(clip.muted || trackMuted)}
+              fadeInSeconds={(clip.fadeInFrames || 0) / sequenceFps}
+              fadeOutSeconds={(clip.fadeOutFrames || 0) / sequenceFps}
+            />
+          ) : null}
+          <svg
+            viewBox={`0 0 ${width} 64`}
+            preserveAspectRatio="none"
+            className="pointer-events-none absolute inset-0 z-[11] h-full w-full overflow-visible"
+            aria-hidden="true"
+          >
+            <path
+              d={`M 0 ${AUDIO_ENVELOPE_BOTTOM} L ${fadeInX} ${gainLineY} L ${fadeOutX} ${gainLineY} L ${width} ${AUDIO_ENVELOPE_BOTTOM}`}
+              fill="none"
+              stroke="rgba(219,239,228,.9)"
+              strokeWidth="1"
+              vectorEffect="non-scaling-stroke"
+            />
+          </svg>
+          <button
+            type="button"
+            data-openreel-audio-rubber-band="true"
+            data-gain-db={clipGainDb.toFixed(1)}
+            onPointerDown={beginAudioGainAdjust}
+            className="absolute left-2 right-2 z-[12] h-2 -translate-y-1/2 cursor-ns-resize bg-transparent before:absolute before:inset-x-0 before:top-1/2 before:h-px before:bg-[#dbeee4]/90 hover:before:h-0.5 hover:before:bg-white"
+            style={{ top: gainLineY }}
+            title={`片段音量 ${clipGainDb.toFixed(1)} dB · 上下拖动`}
+            aria-label={`时间轴片段音量 ${item.title}`}
           />
-        ) : null
+          <button
+            type="button"
+            data-openreel-audio-fade-handle="true"
+            data-fade-edge="in"
+            onPointerDown={(event) => beginAudioFadeAdjust("in", event)}
+            className="absolute z-[14] h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-ew-resize border border-[#e8fff3] bg-[#5d9879] shadow-[0_1px_2px_rgba(0,0,0,.7)]"
+            style={{ left: fadeInHandleX, top: gainLineY }}
+            title={`直接调整淡入 · ${clip.fadeInFrames || 0}f`}
+            aria-label={`直接调整淡入 ${item.title}`}
+          />
+          <button
+            type="button"
+            data-openreel-audio-fade-handle="true"
+            data-fade-edge="out"
+            onPointerDown={(event) => beginAudioFadeAdjust("out", event)}
+            className="absolute z-[14] h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rotate-45 cursor-ew-resize border border-[#e8fff3] bg-[#5d9879] shadow-[0_1px_2px_rgba(0,0,0,.7)]"
+            style={{ left: fadeOutHandleX, top: gainLineY }}
+            title={`直接调整淡出 · ${clip.fadeOutFrames || 0}f`}
+            aria-label={`直接调整淡出 ${item.title}`}
+          />
+        </>
       )}
       <div className={cn(
         "absolute inset-x-0 top-0 flex h-[18px] items-center gap-1 border-b px-1.5",
@@ -2301,7 +2510,7 @@ export default function VideoEditPanel({
   }, [audioClips, mediaById, snapFrameToBoundaries, sourceFrameCountForClip, trackById, trimMode, videoClips])
 
   const updateSelectedClipFrameValue = useCallback((
-    field: "startFrame" | "sourceInFrame" | "durationFrames",
+    field: "startFrame" | "sourceInFrame" | "sourceOutFrame" | "durationFrames",
     rawValue: number,
   ) => {
     if (!selectedTimelineClip || !Number.isFinite(rawValue)) return
@@ -2325,12 +2534,18 @@ export default function VideoEditPanel({
         return sourceFrameCount ? Math.max(0, sourceFrameCount - clip.durationFrames) : Number.MAX_SAFE_INTEGER
       }))
       nextSourceInFrame = Math.round(clamp(value, 0, maximumSourceIn))
-    } else {
+    } else if (field === "durationFrames") {
       const maximumDuration = Math.min(...group.map((clip) => {
         const sourceFrameCount = sourceFrameCountForClip(clip)
         return sourceFrameCount ? Math.max(1, sourceFrameCount - clip.sourceInFrame) : Number.MAX_SAFE_INTEGER
       }))
       nextDurationFrames = Math.round(clamp(value, 1, maximumDuration))
+    } else {
+      const maximumSourceOut = Math.min(...group.map((clip) => (
+        sourceFrameCountForClip(clip) || Number.MAX_SAFE_INTEGER
+      )))
+      const nextSourceOutFrame = Math.round(clamp(value, nextSourceInFrame + 1, maximumSourceOut))
+      nextDurationFrames = nextSourceOutFrame - nextSourceInFrame
     }
     const applyValue = (clip: TimelineClipState): TimelineClipState => {
       const fadeInFrames = Math.min(clip.fadeInFrames || 0, nextDurationFrames)
@@ -2348,6 +2563,25 @@ export default function VideoEditPanel({
     setVideoClips((clips) => clips.map((clip) => groupIds.has(clip.clipId) ? applyValue(clip) : clip))
     setAudioClips((clips) => clips.map((clip) => groupIds.has(clip.clipId) ? applyValue(clip) : clip))
   }, [audioClips, selectedClipIds, selectedTimelineClip, sourceFrameCountForClip, trackById, videoClips])
+
+  const updateAudioClipGain = useCallback((clipId: string, rawGainDb: number) => {
+    const gainDb = Math.round(clamp(rawGainDb, MIN_CLIP_GAIN_DB, MAX_CLIP_GAIN_DB) * 2) / 2
+    setAudioClips((clips) => clips.map((clip) => (
+      clip.clipId === clipId ? { ...clip, gainDb } : clip
+    )))
+  }, [])
+
+  const updateAudioClipFade = useCallback((clipId: string, edge: "in" | "out", rawFrames: number) => {
+    setAudioClips((clips) => clips.map((clip) => {
+      if (clip.clipId !== clipId) return clip
+      if (edge === "in") {
+        const fadeInFrames = Math.round(clamp(rawFrames, 0, clip.durationFrames - (clip.fadeOutFrames || 0)))
+        return { ...clip, fadeInFrames }
+      }
+      const fadeOutFrames = Math.round(clamp(rawFrames, 0, clip.durationFrames - (clip.fadeInFrames || 0)))
+      return { ...clip, fadeOutFrames }
+    }))
+  }, [])
 
   const splitTimelineAtFrame = useCallback((splitFrame: number, targetClipId?: string, independent = false) => {
     const safeSplitFrame = Math.max(0, Math.round(splitFrame))
@@ -2673,7 +2907,7 @@ export default function VideoEditPanel({
         style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}
       >
         <div className={cn(
-          "sticky left-0 z-10 grid grid-cols-[30px_1fr] border-r bg-[#202328]",
+          "sticky left-0 z-30 grid grid-cols-[30px_1fr] border-r bg-[#202328]",
           isActive ? "border-[#6c9fc4]" : "border-[#3a3f46]",
         )}>
           <button
@@ -2791,6 +3025,8 @@ export default function VideoEditPanel({
                 }}
                 onDragStartFrame={updateClipStartFrame}
                 onResizeEdge={resizeClipEdge}
+                onAudioGainChange={updateAudioClipGain}
+                onAudioFadeChange={updateAudioClipFade}
                 onCutAtFrame={splitTimelineAtFrame}
               />
             )
@@ -3022,12 +3258,12 @@ export default function VideoEditPanel({
             </div>
           </main>
 
-          <aside data-openreel-inspector-pane="true" className="min-h-0 border-l border-[#34383f] bg-[#191b1f]">
+          <aside data-openreel-inspector-pane="true" className="flex min-h-0 flex-col border-l border-[#34383f] bg-[#191b1f]">
             <div className="flex h-8 items-end justify-between border-b border-[#34383f] bg-[#202328] px-2.5">
               <div className="flex h-full items-center border-b-2 border-[#4d92c5] text-[10px] font-semibold text-[#e3e5e8]">检查器</div>
               <div className="mb-2 text-[8px] uppercase tracking-[0.12em] text-[#6e747d]">Clip</div>
             </div>
-            <div className="min-h-0 overflow-y-auto">
+            <div className="min-h-0 flex-1 overflow-y-auto">
               <section className="border-b border-[#34383f] px-3 py-2.5">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">输出与媒体操作</div>
@@ -3154,6 +3390,70 @@ export default function VideoEditPanel({
                         <span>f</span>
                       </span>
                     </label>
+                    <label className="flex items-center justify-between gap-2 text-[8px] text-[#7f858e]">
+                      <span>源出点帧</span>
+                      <span className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min={selectedTimelineClip.sourceInFrame + 1}
+                          step="1"
+                          value={selectedTimelineClip.sourceInFrame + selectedTimelineClip.durationFrames}
+                          onFocus={recordUndoSnapshot}
+                          onChange={(event) => updateSelectedClipFrameValue("sourceOutFrame", Number(event.target.value))}
+                          className="h-5 w-20 rounded-[2px] border border-[#3a3f46] bg-[#24272c] px-1.5 text-right font-mono text-[8px] text-[#d5d9de] outline-none focus:border-[#579bd3]"
+                          aria-label="源出点帧"
+                        />
+                        <span>f</span>
+                      </span>
+                    </label>
+                    <div className="border-t border-[#30343a] pt-1.5" data-openreel-timecode-inspector="true">
+                      <div className="mb-1 flex items-center justify-between font-mono text-[7px] uppercase tracking-[0.08em] text-[#666d76]">
+                        <span>Timecode</span>
+                        <span>{nominalFramesPerSecond(framesPerSecond)} FPS NDF</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <label className="min-w-0 text-[7px] text-[#737a83]">
+                          <span className="mb-0.5 block">时间线入点</span>
+                          <FrameTimecodeInput
+                            frame={selectedTimelineClip.startFrame}
+                            framesPerSecond={framesPerSecond}
+                            ariaLabel="时间线起始时间码"
+                            onFocus={recordUndoSnapshot}
+                            onCommit={(frame) => updateSelectedClipFrameValue("startFrame", frame)}
+                          />
+                        </label>
+                        <label className="min-w-0 text-[7px] text-[#737a83]">
+                          <span className="mb-0.5 block">持续时间</span>
+                          <FrameTimecodeInput
+                            frame={selectedTimelineClip.durationFrames}
+                            framesPerSecond={framesPerSecond}
+                            ariaLabel="片段持续时间码"
+                            onFocus={recordUndoSnapshot}
+                            onCommit={(frame) => updateSelectedClipFrameValue("durationFrames", frame)}
+                          />
+                        </label>
+                        <label className="min-w-0 text-[7px] text-[#737a83]">
+                          <span className="mb-0.5 block">源入点</span>
+                          <FrameTimecodeInput
+                            frame={selectedTimelineClip.sourceInFrame}
+                            framesPerSecond={framesPerSecond}
+                            ariaLabel="源入点时间码"
+                            onFocus={recordUndoSnapshot}
+                            onCommit={(frame) => updateSelectedClipFrameValue("sourceInFrame", frame)}
+                          />
+                        </label>
+                        <label className="min-w-0 text-[7px] text-[#737a83]">
+                          <span className="mb-0.5 block">源出点</span>
+                          <FrameTimecodeInput
+                            frame={selectedTimelineClip.sourceInFrame + selectedTimelineClip.durationFrames}
+                            framesPerSecond={framesPerSecond}
+                            ariaLabel="源出点时间码"
+                            onFocus={recordUndoSnapshot}
+                            onCommit={(frame) => updateSelectedClipFrameValue("sourceOutFrame", frame)}
+                          />
+                        </label>
+                      </div>
+                    </div>
                   </div>
                 )}
                 {selectedVideoClip && (

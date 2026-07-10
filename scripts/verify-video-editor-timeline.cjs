@@ -49,6 +49,18 @@ function clipEnd(clip) {
   return clip.startFrame + clip.durationFrames
 }
 
+function frameTimecode(frame, framesPerSecond = 24) {
+  const nominalFps = Math.max(1, Math.round(framesPerSecond))
+  const safeFrame = Math.max(0, Math.round(frame))
+  const frames = safeFrame % nominalFps
+  const totalSeconds = Math.floor(safeFrame / nominalFps)
+  const seconds = totalSeconds % 60
+  const totalMinutes = Math.floor(totalSeconds / 60)
+  const minutes = totalMinutes % 60
+  const hours = Math.floor(totalMinutes / 60)
+  return [hours, minutes, seconds, frames].map((part) => String(part).padStart(2, "0")).join(":")
+}
+
 function pageUrl() {
   return `${WEB_URL.replace(/\/+$/, "")}/projects/${encodeURIComponent(PROJECT_ID)}`
 }
@@ -70,6 +82,7 @@ async function readClips(page) {
       startFrame: Number(el.dataset.startFrame || 0),
       durationFrames: Number(el.dataset.durationFrames || 0),
       sourceInFrame: Number(el.dataset.sourceInFrame || 0),
+      gainDb: Number(el.dataset.gainDb || 0),
       fadeInFrames: Number(el.dataset.fadeInFrames || 0),
       fadeOutFrames: Number(el.dataset.fadeOutFrames || 0),
       text: (el.textContent || "").replace(/\s+/g, " ").trim(),
@@ -93,7 +106,7 @@ function pickClipIndexes(clips) {
 async function dragHorizontally(page, locator, deltaX) {
   const box = await locator.boundingBox()
   if (!box) throw new Error("Clip has no bounding box")
-  const y = box.y + box.height / 2
+  const y = box.y + 10
   const x = box.x + box.width / 2
   await page.mouse.move(x, y)
   await page.mouse.down()
@@ -149,11 +162,22 @@ async function marqueeSelectSecondCut(page) {
 async function resizeEdge(page, locator, edge, deltaX) {
   const box = await locator.boundingBox()
   if (!box) throw new Error("Clip has no bounding box")
-  const y = box.y + box.height / 2
+  const y = box.y + box.height - 4
   const x = edge === "start" ? box.x + 3 : box.x + box.width - 3
   await page.mouse.move(x, y)
   await page.mouse.down()
   await page.mouse.move(x + deltaX, y, { steps: 6 })
+  await page.mouse.up()
+}
+
+async function dragControl(page, locator, deltaX, deltaY) {
+  const box = await locator.boundingBox()
+  if (!box) throw new Error("Direct manipulation control has no bounding box")
+  const x = box.x + box.width / 2
+  const y = box.y + box.height / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x + deltaX, y + deltaY, { steps: 8 })
   await page.mouse.up()
 }
 
@@ -528,6 +552,47 @@ async function main() {
       Number(document.querySelectorAll('[data-clip-kind="video"]')[1]?.dataset.durationFrames || 0) === expectedFrame
     ), videoParts[1].durationFrames)
 
+    await page.locator('[data-clip-kind="video"]').nth(1).click()
+    const timecodeStartFrame = videoParts[1].startFrame + 3
+    const timecodeSourceOutFrame = videoParts[1].sourceInFrame + videoParts[1].durationFrames - 8
+    await page.getByLabel("时间线起始时间码", { exact: true }).fill(frameTimecode(timecodeStartFrame))
+    await page.getByLabel("时间线起始时间码", { exact: true }).press("Enter")
+    await page.waitForFunction((expectedFrame) => (
+      Number(document.querySelectorAll('[data-clip-kind="video"]')[1]?.dataset.startFrame || 0) === expectedFrame
+    ), timecodeStartFrame)
+    await page.getByLabel("源出点时间码", { exact: true }).fill(frameTimecode(timecodeSourceOutFrame))
+    await page.getByLabel("源出点时间码", { exact: true }).press("Enter")
+    await page.waitForTimeout(800)
+    clips = await readClips(page)
+    trimmedVideoParts = clips.filter((clip) => clip.kind === "video").sort((a, b) => a.startFrame - b.startFrame)
+    trimmedAudioParts = clips.filter((clip) => clip.kind === "audio").sort((a, b) => a.startFrame - b.startFrame)
+    const timecodeDurationFrames = timecodeSourceOutFrame - videoParts[1].sourceInFrame
+    const timecodePersistedClip = latestSequenceSpec?.clips?.find((clip) => clip.id === trimmedVideoParts[1].clipId)
+    const timecodeState = {
+      expectedStartFrame: timecodeStartFrame,
+      expectedSourceOutFrame: timecodeSourceOutFrame,
+      expectedDurationFrames: timecodeDurationFrames,
+      video: trimmedVideoParts[1],
+      audio: trimmedAudioParts[1],
+      persisted: timecodePersistedClip,
+    }
+    const exactTimecodeInputs = (
+      trimmedVideoParts[1].startFrame === timecodeStartFrame &&
+      trimmedVideoParts[1].durationFrames === timecodeDurationFrames &&
+      trimmedVideoParts[1].sourceInFrame === videoParts[1].sourceInFrame &&
+      aligned(trimmedVideoParts[1], trimmedAudioParts[1]) &&
+      timecodePersistedClip?.timeline_start_frame === timecodeStartFrame &&
+      timecodePersistedClip?.duration_frames === timecodeDurationFrames
+    )
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction((expectedFrame) => (
+      Number(document.querySelectorAll('[data-clip-kind="video"]')[1]?.dataset.durationFrames || 0) === expectedFrame
+    ), videoParts[1].durationFrames)
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction((expectedFrame) => (
+      Number(document.querySelectorAll('[data-clip-kind="video"]')[1]?.dataset.startFrame || 0) === expectedFrame
+    ), videoParts[1].startFrame)
+
     await page.locator('[data-clip-kind="video"]').first().click()
     await page.keyboard.press("Delete")
     await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 2)
@@ -618,6 +683,36 @@ async function main() {
     await page.keyboard.press("g")
     const audioGainShortcut = await page.evaluate(() => document.activeElement?.matches('[data-openreel-clip-gain="true"]') === true)
     await panel.getByText("OpenReel Edit", { exact: true }).click()
+
+    const directAudioClip = page.locator('[data-clip-kind="audio"]').first()
+    const directGainBefore = Number(await directAudioClip.getAttribute("data-gain-db") || 0)
+    await dragControl(page, directAudioClip.locator('[data-openreel-audio-rubber-band="true"]'), 0, 9)
+    await page.waitForTimeout(300)
+    const directGainAfter = Number(await directAudioClip.getAttribute("data-gain-db") || 0)
+    const directFadeBefore = Number(await directAudioClip.getAttribute("data-fade-in-frames") || 0)
+    await dragControl(page, directAudioClip.locator('[data-openreel-audio-fade-handle="true"][data-fade-edge="in"]'), 42, 0)
+    await page.waitForTimeout(300)
+    const directFadeAfter = Number(await directAudioClip.getAttribute("data-fade-in-frames") || 0)
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction((expectedFrames) => (
+      Number(document.querySelector('[data-clip-kind="audio"]')?.dataset.fadeInFrames || 0) === expectedFrames
+    ), directFadeBefore)
+    const directFadeUndo = Number(await directAudioClip.getAttribute("data-fade-in-frames") || 0) === directFadeBefore
+    await page.keyboard.press("Control+Shift+z")
+    await page.waitForFunction((expectedFrames) => (
+      Number(document.querySelector('[data-clip-kind="audio"]')?.dataset.fadeInFrames || 0) === expectedFrames
+    ), directFadeAfter)
+    await page.waitForTimeout(800)
+    const directAudioClipId = await directAudioClip.getAttribute("data-clip-id")
+    const directPersistedAudioClip = latestSequenceSpec?.clips?.find((clip) => clip.id === directAudioClipId)
+    const directAudioEnvelope = (
+      directGainAfter < directGainBefore &&
+      directGainAfter <= -4 &&
+      directFadeAfter > directFadeBefore &&
+      directFadeUndo &&
+      directPersistedAudioClip?.gain_db === directGainAfter &&
+      directPersistedAudioClip?.fade_in_frames === directFadeAfter
+    )
 
     const sourceVideoItem = page.locator('[data-openreel-media-item="true"][data-media-type="video"]').first()
     await sourceVideoItem.click()
@@ -762,21 +857,31 @@ async function main() {
       await page.locator('[data-clip-kind="video"]').first().getAttribute("data-selected") === "true" &&
       await page.locator('[data-clip-kind="audio"]').first().getAttribute("data-selected") === "false"
     )
+    const independentMoveBeforeClips = await readClips(page)
+    const independentVideoBefore = independentMoveBeforeClips.find((clip) => clip.kind === "video")
+    const independentAudioBefore = independentMoveBeforeClips.find((clip) => clip.kind === "audio")
     await page.keyboard.down("Alt")
     await dragHorizontally(page, page.locator('[data-clip-kind="video"]').first(), 42)
     await page.keyboard.up("Alt")
     await page.waitForTimeout(200)
     const independentMoveClips = await readClips(page)
+    const independentVideoAfter = independentMoveClips.find((clip) => clip.clipId === independentVideoBefore?.clipId)
+    const independentAudioAfter = independentMoveClips.find((clip) => clip.clipId === independentAudioBefore?.clipId)
     const independentMove = (
-      independentMoveClips.find((clip) => clip.kind === "video")?.startFrame > 0 &&
-      independentMoveClips.find((clip) => clip.kind === "audio")?.startFrame === 0
+      independentVideoAfter?.startFrame > independentVideoBefore?.startFrame &&
+      independentAudioAfter?.startFrame === independentAudioBefore?.startFrame
     )
     await page.keyboard.press("Control+z")
-    await page.waitForFunction(() => (
+    await page.waitForFunction(({ videoId, videoStartFrame, audioId, audioStartFrame }) => (
       document.querySelectorAll('[data-clip-kind="video"]').length === 2 &&
-      Number(document.querySelector('[data-clip-kind="video"]')?.dataset.startFrame || -1) === 0 &&
-      Number(document.querySelector('[data-clip-kind="audio"]')?.dataset.startFrame || -1) === 0
-    ))
+      Number(document.querySelector(`[data-clip-id="${videoId}"]`)?.dataset.startFrame || -1) === videoStartFrame &&
+      Number(document.querySelector(`[data-clip-id="${audioId}"]`)?.dataset.startFrame || -1) === audioStartFrame
+    ), {
+      videoId: independentVideoBefore.clipId,
+      videoStartFrame: independentVideoBefore.startFrame,
+      audioId: independentAudioBefore.clipId,
+      audioStartFrame: independentAudioBefore.startFrame,
+    })
     await page.locator('[data-clip-kind="video"]').first().click({ modifiers: ["Alt"] })
     await page.locator('[data-clip-kind="video"]').nth(1).click({ modifiers: ["Control"] })
     const additiveSelection = await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-selected-clip-count") === "3"
@@ -966,7 +1071,10 @@ async function main() {
       await page.keyboard.press("n")
       await page.evaluate(() => {
         const inspectorScroller = document.querySelector('[data-openreel-inspector-pane="true"] .overflow-y-auto')
-        if (inspectorScroller) inspectorScroller.scrollTop = inspectorScroller.scrollHeight
+        const timecodeInspector = document.querySelector('[data-openreel-timecode-inspector="true"]')
+        if (inspectorScroller && timecodeInspector) {
+          inspectorScroller.scrollTop = Math.max(0, timecodeInspector.offsetTop - 72)
+        }
       })
       await page.waitForTimeout(120)
       await page.screenshot({ path: SCREENSHOT_PATH, fullPage: false })
@@ -981,7 +1089,7 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && normalDeleteKeepsGap && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && sourceMarksApplied && dynamicTracksPersisted && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
       initialAligned,
       movedTogether,
       clampedAtTimelineStart,
@@ -1017,12 +1125,20 @@ async function main() {
       rollingIncomingTrimSemantics,
       rollingIncomingDeltaFrames,
       exactFrameInputs,
+      exactTimecodeInputs,
+      timecodeState,
       normalDeleteKeepsGap,
       rippleDeleteClosesGap,
       audioControlsPersisted,
       audioControls,
       audioPreviewMixApplied,
       audioGainShortcut,
+      directAudioEnvelope,
+      directGainBefore,
+      directGainAfter,
+      directFadeBefore,
+      directFadeAfter,
+      directFadeUndo,
       sourceMarksApplied,
       fadeStartVolume,
       fadeStartState,
