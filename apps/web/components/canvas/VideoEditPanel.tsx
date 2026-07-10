@@ -41,6 +41,7 @@ type BusyAction = "frame" | "tail" | "split" | "trim" | "concat-video" | "concat
 type TimelineTool = "select" | "blade"
 type TrimMode = "normal" | "ripple" | "rolling"
 type PreviewScale = "fit" | "50" | "75" | "100"
+type PlaybackResolution = "full" | "half" | "quarter"
 
 interface TimelineClipState {
   clipId: string
@@ -1287,6 +1288,9 @@ export default function VideoEditPanel({
 }: VideoEditPanelProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const programCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const decodedVideoClockRef = useRef<{ mediaTime: number; observedAt: number } | null>(null)
+  const suppressMediaClockUntilRef = useRef(0)
   const sourcePreviewRef = useRef<HTMLVideoElement | null>(null)
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const playheadRef = useRef<HTMLDivElement | null>(null)
@@ -1318,6 +1322,9 @@ export default function VideoEditPanel({
   const [snapGuideFrame, setSnapGuideFrame] = useState<number | null>(null)
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const [previewScale, setPreviewScale] = useState<PreviewScale>("fit")
+  const [playbackResolution, setPlaybackResolution] = useState<PlaybackResolution>("full")
+  const [loopEnabled, setLoopEnabled] = useState(false)
+  const [loopRange, setLoopRange] = useState({ inFrame: 0, outFrame: 0 })
   const [tracks, setTracks] = useState<TimelineTrackState[]>(defaultTimelineTracks)
   const [markers, setMarkers] = useState<TimelineMarkerState[]>([])
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null)
@@ -1631,6 +1638,27 @@ export default function VideoEditPanel({
     Math.max(0, ...videoClips.map(clipEndFrame), ...audioClips.map(clipEndFrame))
   ), [audioClips, videoClips])
   const playbackEnd = sequenceEndFrame / framesPerSecond
+  const effectiveLoopOutFrame = loopRange.outFrame > loopRange.inFrame
+    ? Math.min(sequenceEndFrame, loopRange.outFrame)
+    : sequenceEndFrame
+  const playbackClockSource = playbackDirection < 0
+    ? "timeline"
+    : currentAudioClip && currentAudioItem && !playAudioThroughVideo
+      ? "audio"
+      : currentVideoClip && currentVideoItem?.type === "video"
+        ? "video-pts"
+        : "timeline"
+
+  useEffect(() => {
+    setLoopRange((current) => {
+      if (sequenceEndFrame <= 0) return { inFrame: 0, outFrame: 0 }
+      const inFrame = Math.min(current.inFrame, sequenceEndFrame - 1)
+      const outFrame = current.outFrame > inFrame
+        ? Math.min(current.outFrame, sequenceEndFrame)
+        : sequenceEndFrame
+      return inFrame === current.inFrame && outFrame === current.outFrame ? current : { inFrame, outFrame }
+    })
+  }, [sequenceEndFrame])
   const timelineDuration = useMemo(() => {
     const lastClipEndFrame = Math.max(
       0,
@@ -1725,6 +1753,10 @@ export default function VideoEditPanel({
     setSnappingEnabled(true)
     setSnapGuideFrame(null)
     setPlaybackDirection(1)
+    setPlaybackResolution("full")
+    setLoopEnabled(false)
+    setLoopRange({ inFrame: 0, outFrame: 0 })
+    decodedVideoClockRef.current = null
     setSourceMarks({})
     setSourceCursorFrame(0)
     setSelectedClipId(null)
@@ -1983,6 +2015,64 @@ export default function VideoEditPanel({
     void Promise.all(mediaStarts).catch(() => undefined)
   }, [currentAudioClip, currentAudioItem, currentVideoClip, currentVideoItem, framesPerSecond, playbackDirection, playAudioThroughVideo, playing])
 
+  useEffect(() => {
+    const video = videoRef.current
+    decodedVideoClockRef.current = null
+    if (!video || currentVideoItem?.type !== "video" || typeof video.requestVideoFrameCallback !== "function") return
+    let callbackId = 0
+    let cancelled = false
+    const observe = (now: number, metadata: VideoFrameCallbackMetadata) => {
+      if (cancelled) return
+      decodedVideoClockRef.current = { mediaTime: metadata.mediaTime, observedAt: now }
+      callbackId = video.requestVideoFrameCallback(observe)
+    }
+    callbackId = video.requestVideoFrameCallback(observe)
+    return () => {
+      cancelled = true
+      if (callbackId) video.cancelVideoFrameCallback(callbackId)
+      decodedVideoClockRef.current = null
+    }
+  }, [currentVideoClip?.clipId, currentVideoItem])
+
+  useEffect(() => {
+    const video = videoRef.current
+    const canvas = programCanvasRef.current
+    if (!video || !canvas || currentVideoItem?.type !== "video" || playbackResolution === "full") return
+    const mediaIndex = mediaIndexes[currentVideoItem.id]
+    const factor = playbackResolution === "half" ? 0.5 : 0.25
+    const width = Math.max(16, Math.round((mediaIndex?.width || 1280) * factor))
+    const height = Math.max(16, Math.round((mediaIndex?.height || 720) * factor))
+    canvas.width = width
+    canvas.height = height
+    const context = canvas.getContext("2d", { alpha: false })
+    if (!context) return
+    let callbackId = 0
+    let animationFrame = 0
+    let cancelled = false
+    const draw = () => {
+      if (cancelled || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
+      context.drawImage(video, 0, 0, width, height)
+    }
+    const drawFrame = () => {
+      draw()
+      if (typeof video.requestVideoFrameCallback === "function") {
+        callbackId = video.requestVideoFrameCallback(drawFrame)
+      } else {
+        animationFrame = window.requestAnimationFrame(drawFrame)
+      }
+    }
+    video.addEventListener("loadeddata", draw)
+    video.addEventListener("seeked", draw)
+    drawFrame()
+    return () => {
+      cancelled = true
+      video.removeEventListener("loadeddata", draw)
+      video.removeEventListener("seeked", draw)
+      if (callbackId) video.cancelVideoFrameCallback(callbackId)
+      if (animationFrame) window.cancelAnimationFrame(animationFrame)
+    }
+  }, [currentVideoClip?.clipId, currentVideoItem, mediaIndexes, playbackResolution])
+
   const timeToFrame = useCallback((time: number) => (
     Math.max(0, Math.round(time * framesPerSecond))
   ), [framesPerSecond])
@@ -1993,6 +2083,24 @@ export default function VideoEditPanel({
     currentTimeRef.current = nextTime
     setCurrentTime(nextTime)
   }, [frameToTime, timeToFrame, timelineDuration])
+
+  const setProgramLoopIn = useCallback(() => {
+    if (sequenceEndFrame <= 1) return
+    const inFrame = Math.round(clamp(timeToFrame(currentTimeRef.current), 0, sequenceEndFrame - 1))
+    setLoopRange((current) => ({
+      inFrame,
+      outFrame: current.outFrame > inFrame ? current.outFrame : Math.min(sequenceEndFrame, inFrame + 1),
+    }))
+  }, [sequenceEndFrame, timeToFrame])
+
+  const setProgramLoopOut = useCallback(() => {
+    if (sequenceEndFrame <= 1) return
+    const requested = timeToFrame(currentTimeRef.current) + 1
+    setLoopRange((current) => ({
+      inFrame: Math.min(current.inFrame, sequenceEndFrame - 1),
+      outFrame: Math.round(clamp(requested, current.inFrame + 1, sequenceEndFrame)),
+    }))
+  }, [sequenceEndFrame, timeToFrame])
 
   const zoomTimelineAt = useCallback((nextValue: number, clientX?: number) => {
     const next = clamp(nextValue, 42, maxPxPerSecond)
@@ -2125,7 +2233,76 @@ export default function VideoEditPanel({
     const tick = (now: number) => {
       const deltaSeconds = (now - last) / 1000
       last = now
-      timelineTime += deltaSeconds * playbackDirection
+      if (playbackDirection < 0) {
+        timelineTime += deltaSeconds * playbackDirection
+      } else {
+        let sampledMediaClock = false
+        if (now >= suppressMediaClockUntilRef.current && playbackClockSource === "audio" && currentAudioClip) {
+          const audio = audioRef.current
+          if (audio && !audio.paused && audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            const sampledTimelineTime = currentAudioClip.startFrame / framesPerSecond + Math.max(
+              0,
+              audio.currentTime - currentAudioClip.sourceInFrame / framesPerSecond,
+            )
+            timelineTime = Math.max(timelineTime, sampledTimelineTime)
+            sampledMediaClock = true
+          }
+        } else if (now >= suppressMediaClockUntilRef.current && playbackClockSource === "video-pts" && currentVideoClip) {
+          const video = videoRef.current
+          if (video && !video.paused && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            const decoded = decodedVideoClockRef.current
+            const mediaTime = decoded && now - decoded.observedAt < 250 ? decoded.mediaTime : video.currentTime
+            const sampledTimelineTime = currentVideoClip.startFrame / framesPerSecond + Math.max(
+              0,
+              mediaTime - currentVideoClip.sourceInFrame / framesPerSecond,
+            )
+            timelineTime = Math.max(timelineTime, sampledTimelineTime)
+            sampledMediaClock = true
+          }
+        }
+        if (!sampledMediaClock) timelineTime += deltaSeconds
+      }
+      if (
+        playbackDirection > 0 &&
+        loopEnabled &&
+        effectiveLoopOutFrame > loopRange.inFrame &&
+        timelineTime >= effectiveLoopOutFrame / framesPerSecond - 0.5 / framesPerSecond
+      ) {
+        const loopInTime = loopRange.inFrame / framesPerSecond
+        const video = videoRef.current
+        const audio = audioRef.current
+        timelineTime = loopInTime
+        decodedVideoClockRef.current = null
+        if (
+          video &&
+          currentVideoClip &&
+          loopRange.inFrame >= currentVideoClip.startFrame &&
+          loopRange.inFrame < clipEndFrame(currentVideoClip)
+        ) {
+          video.currentTime = currentVideoClip.sourceInFrame / framesPerSecond + loopInTime - currentVideoClip.startFrame / framesPerSecond
+          void video.play().catch(() => undefined)
+        } else {
+          video?.pause()
+        }
+        if (
+          audio &&
+          currentAudioClip &&
+          loopRange.inFrame >= currentAudioClip.startFrame &&
+          loopRange.inFrame < clipEndFrame(currentAudioClip) &&
+          !playAudioThroughVideo
+        ) {
+          audio.currentTime = currentAudioClip.sourceInFrame / framesPerSecond + loopInTime - currentAudioClip.startFrame / framesPerSecond
+          void audio.play().catch(() => undefined)
+        } else {
+          audio?.pause()
+        }
+        suppressMediaClockUntilRef.current = now + 120
+        currentTimeRef.current = timelineTime
+        if (playheadRef.current) playheadRef.current.style.left = `${TRACK_LABEL_WIDTH + timelineTime * pxPerSecond}px`
+        setCurrentTime(timelineTime)
+        frame = window.requestAnimationFrame(tick)
+        return
+      }
       if (playbackDirection > 0 && timelineTime >= playbackEnd - 0.015) {
         videoRef.current?.pause()
         audioRef.current?.pause()
@@ -2154,7 +2331,7 @@ export default function VideoEditPanel({
     }
     frame = window.requestAnimationFrame(tick)
     return () => window.cancelAnimationFrame(frame)
-  }, [playbackDirection, playbackEnd, playing, pxPerSecond])
+  }, [currentAudioClip, currentVideoClip, effectiveLoopOutFrame, framesPerSecond, loopEnabled, loopRange.inFrame, playAudioThroughVideo, playbackClockSource, playbackDirection, playbackEnd, playing, pxPerSecond])
 
   const runOperation = async (action: BusyAction, input: Parameters<typeof runProjectMediaOperation>[1]) => {
     if (!action || busy) return
@@ -2850,6 +3027,16 @@ export default function VideoEditPanel({
         addSequenceMarker()
         return
       }
+      if (!(commandKey || event.altKey) && event.key === "[") {
+        event.preventDefault()
+        setProgramLoopIn()
+        return
+      }
+      if (!(commandKey || event.altKey) && event.key === "]") {
+        event.preventDefault()
+        setProgramLoopOut()
+        return
+      }
       if (!(commandKey || event.altKey) && key === "i") {
         event.preventDefault()
         updateSelectedSourceMark({ inFrame: sourceCursorFrame })
@@ -2911,7 +3098,7 @@ export default function VideoEditPanel({
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [addSequenceMarker, deleteSelectedClips, deleteSelectedMarker, framesPerSecond, jumpToEditPoint, placeMediaItem, pxPerSecond, recordUndoSnapshot, redoEditor, seekTo, selectedMarkerId, selectedMediaItem, shuttlePlayback, sourceCursorFrame, splitTimelineAtFrame, timeToFrame, togglePlayback, undoEditor, updateSelectedSourceMark, zoomTimelineAt])
+  }, [addSequenceMarker, deleteSelectedClips, deleteSelectedMarker, framesPerSecond, jumpToEditPoint, placeMediaItem, pxPerSecond, recordUndoSnapshot, redoEditor, seekTo, selectedMarkerId, selectedMediaItem, setProgramLoopIn, setProgramLoopOut, shuttlePlayback, sourceCursorFrame, splitTimelineAtFrame, timeToFrame, togglePlayback, undoEditor, updateSelectedSourceMark, zoomTimelineAt])
 
   const handleTimelineBackgroundDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null
@@ -3315,10 +3502,10 @@ export default function VideoEditPanel({
             </div>
           </aside>
 
-          <main data-openreel-preview-pane="true" className="flex min-h-0 min-w-0 flex-col bg-[#111316]">
+          <main data-openreel-preview-pane="true" data-playback-clock={playbackClockSource} className="flex min-h-0 min-w-0 flex-col bg-[#111316]">
             <div className="flex h-7 shrink-0 items-center justify-between border-b border-[#2f3339] bg-[#1d2024] px-2.5">
               <span className="text-[9px] font-medium text-[#aeb3ba]">时间线监看器</span>
-              <span className="font-mono text-[8px] text-[#656b73]">{programVideoGap ? "BLACK" : programAudioGap ? "SILENCE" : "PROGRAM"}</span>
+              <span className="font-mono text-[8px] text-[#656b73]">{programVideoGap ? "BLACK" : programAudioGap ? "SILENCE" : `PROGRAM · ${playbackClockSource.toUpperCase()}`}</span>
             </div>
             <div className="flex min-h-0 flex-1 items-center justify-center bg-[#090a0c] p-1.5">
               <div
@@ -3338,7 +3525,10 @@ export default function VideoEditPanel({
                       src={currentVideoItem.src || videoUrl}
                       muted={!playAudioThroughVideo || Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)}
                       preload="metadata"
-                      className="h-full w-full object-contain [color-scheme:dark]"
+                      className={cn(
+                        "object-contain [color-scheme:dark]",
+                        playbackResolution === "full" ? "h-full w-full" : "pointer-events-none absolute h-px w-px opacity-0",
+                      )}
                       onLoadedMetadata={(event) => {
                         const nextDuration = Number(event.currentTarget.duration || 0)
                         registerSourceDuration(currentVideoItem.src, nextDuration)
@@ -3347,6 +3537,14 @@ export default function VideoEditPanel({
                   )
                 ) : (
                   <div className="absolute bottom-2 right-2 border border-white/10 bg-black/70 px-1.5 py-0.5 font-mono text-[7px] tracking-[0.08em] text-[#5f656d]">BLACK · GAP</div>
+                )}
+                {currentVideoItem?.type === "video" && playbackResolution !== "full" && (
+                  <canvas
+                    ref={programCanvasRef}
+                    data-openreel-program-canvas="true"
+                    data-playback-resolution={playbackResolution}
+                    className="h-full w-full object-contain"
+                  />
                 )}
                 {!programVideoGap && programAudioGap && (
                   <div className="pointer-events-none absolute bottom-2 right-2 border border-white/10 bg-black/70 px-1.5 py-0.5 font-mono text-[7px] tracking-[0.08em] text-[#8b918f]">SILENCE</div>
@@ -3359,7 +3557,8 @@ export default function VideoEditPanel({
 
             <div className="relative flex h-10 shrink-0 items-center justify-between border-t border-[#30343a] bg-[#1c1f23] px-2.5">
               <div className="flex min-w-[154px] items-center gap-2">
-                <span className="font-mono text-[11px] font-medium tabular-nums text-[#d9dde2]">{formatTimePrecise(currentTime)}</span>
+                <span className="font-mono text-[11px] font-medium tabular-nums text-[#d9dde2]" data-openreel-program-timecode="true">{formatFrameTimecode(currentFrame, framesPerSecond)}</span>
+                <span className="font-mono text-[7px] tabular-nums text-[#6d737b]">{currentFrame}f</span>
                 <button
                   type="button"
                   disabled={isBusy || currentVideoItem?.type !== "video"}
@@ -3377,9 +3576,26 @@ export default function VideoEditPanel({
                   className="flex h-6 w-6 items-center justify-center rounded-[2px] text-[#9298a1] transition hover:bg-[#30343a] hover:text-white disabled:opacity-30"
                   title="导出当前帧"
                   aria-label="导出当前帧"
+                  data-openreel-export-frame-control="true"
                 >
                   <EditorIcon name="frame" className="h-3 w-3" />
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setLoopEnabled((value) => !value)}
+                  disabled={sequenceEndFrame <= 1}
+                  className={cn(
+                    "h-5 border px-1 font-mono text-[7px]",
+                    loopEnabled ? "border-[#8f7136] bg-[#5b4724] text-[#ffe0a0]" : "border-[#3a3f46] bg-[#25282d] text-[#7e848c]",
+                  )}
+                  aria-label={loopEnabled ? "关闭循环播放" : "开启循环播放"}
+                  title="循环播放"
+                  data-openreel-loop-enabled={loopEnabled ? "true" : "false"}
+                >
+                  LOOP
+                </button>
+                <button type="button" onClick={setProgramLoopIn} className="h-5 border border-[#3a3f46] bg-[#25282d] px-1 font-mono text-[7px] text-[#8e949c]" aria-label="设置节目循环入点" title="设置循环入点 ([)">[</button>
+                <button type="button" onClick={setProgramLoopOut} className="h-5 border border-[#3a3f46] bg-[#25282d] px-1 font-mono text-[7px] text-[#8e949c]" aria-label="设置节目循环出点" title="设置循环出点 (])">]</button>
               </div>
               <div className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1">
                 <button
@@ -3410,7 +3626,19 @@ export default function VideoEditPanel({
                   <EditorIcon name="step-forward" />
                 </button>
               </div>
-              <div className="hidden min-w-[154px] items-center justify-end gap-2 text-[9px] text-[#717780] sm:flex">
+              <div className="hidden min-w-[220px] items-center justify-end gap-1.5 text-[9px] text-[#717780] sm:flex">
+                <span className="font-mono text-[7px] tabular-nums text-[#666d75]" data-openreel-loop-range="true" data-loop-in-frame={loopRange.inFrame} data-loop-out-frame={effectiveLoopOutFrame}>{formatFrameTimecode(loopRange.inFrame, framesPerSecond)}–{formatFrameTimecode(effectiveLoopOutFrame, framesPerSecond)}</span>
+                <select
+                  value={playbackResolution}
+                  onChange={(event) => setPlaybackResolution(event.target.value as PlaybackResolution)}
+                  className="h-6 rounded-[2px] border border-[#353a41] bg-[#24272c] px-1 text-[8px] text-[#c8ccd1] outline-none"
+                  title="回放分辨率"
+                  aria-label="回放分辨率"
+                >
+                  <option value="full">FULL</option>
+                  <option value="half">1/2</option>
+                  <option value="quarter">1/4</option>
+                </select>
                 <select
                   value={previewScale}
                   onChange={(event) => setPreviewScale(event.target.value as PreviewScale)}

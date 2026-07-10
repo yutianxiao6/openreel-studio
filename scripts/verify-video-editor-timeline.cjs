@@ -372,6 +372,97 @@ async function main() {
     const videoClip = page.locator('[data-clip-kind="video"]').first()
     const audioClip = page.locator('[data-clip-kind="audio"]').first()
 
+    const initialProgramTimecode = await page.locator('[data-openreel-program-timecode="true"]').textContent()
+    await panel.getByRole("button", { name: "前进一帧", exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('[data-openreel-timeline-scroll="true"]')?.getAttribute("data-current-frame") === "1")
+    const steppedProgramTimecode = await page.locator('[data-openreel-program-timecode="true"]').textContent()
+    await panel.getByRole("button", { name: "后退一帧", exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('[data-openreel-timeline-scroll="true"]')?.getAttribute("data-current-frame") === "0")
+    const exactProgramFrameStep = initialProgramTimecode === "00:00:00:00" && steppedProgramTimecode === "00:00:00:01"
+    const exportFrameControlReady = await page.locator('[data-openreel-export-frame-control="true"]').isEnabled()
+
+    await page.getByLabel("回放分辨率", { exact: true }).selectOption("half")
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector('[data-openreel-program-canvas="true"]')
+      const video = document.querySelector('[data-openreel-preview-video="true"]')
+      return Boolean(canvas && video?.videoWidth && Math.abs(canvas.width * 2 - video.videoWidth) <= 2)
+    })
+    const playbackResolutionState = await page.evaluate(() => {
+      const canvas = document.querySelector('[data-openreel-program-canvas="true"]')
+      const video = document.querySelector('[data-openreel-preview-video="true"]')
+      return {
+        mode: canvas?.getAttribute("data-playback-resolution") || "",
+        canvasWidth: Number(canvas?.width || 0),
+        canvasHeight: Number(canvas?.height || 0),
+        videoWidth: Number(video?.videoWidth || 0),
+        videoHeight: Number(video?.videoHeight || 0),
+      }
+    })
+    const realPlaybackResolution = (
+      playbackResolutionState.mode === "half" &&
+      Math.abs(playbackResolutionState.canvasWidth * 2 - playbackResolutionState.videoWidth) <= 2 &&
+      Math.abs(playbackResolutionState.canvasHeight * 2 - playbackResolutionState.videoHeight) <= 2
+    )
+    await page.getByLabel("回放分辨率", { exact: true }).selectOption("full")
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-program-canvas="true"]').length === 0)
+
+    await seekTimelineSeconds(page, 0.5)
+    await panel.getByRole("button", { name: "播放", exact: true }).click()
+    await page.waitForTimeout(800)
+    const mediaClockState = await page.evaluate(() => {
+      const timeline = document.querySelector('[data-openreel-timeline-scroll="true"]')
+      const monitor = document.querySelector('[data-openreel-preview-pane="true"]')
+      const videoElement = document.querySelector('[data-openreel-preview-video="true"]')
+      const clip = document.querySelector('[data-clip-kind="video"]')
+      const fps = 24
+      const timelineFrame = Number(timeline?.getAttribute("data-current-frame") || 0)
+      const mediaFrame = Number(clip?.dataset.startFrame || 0) + Math.round(
+        (Number(videoElement?.currentTime || 0) - Number(clip?.dataset.sourceInFrame || 0) / fps) * fps,
+      )
+      return {
+        clock: monitor?.getAttribute("data-playback-clock") || "",
+        timelineFrame,
+        mediaFrame,
+        driftFrames: Math.abs(timelineFrame - mediaFrame),
+      }
+    })
+    const playbackClockSynchronized = mediaClockState.clock === "video-pts" && mediaClockState.driftFrames <= 2
+    await panel.getByRole("button", { name: "暂停", exact: true }).click()
+
+    await seekTimelineSeconds(page, 1)
+    await page.keyboard.press("[")
+    await seekTimelineSeconds(page, 2)
+    await page.keyboard.press("]")
+    const loopRangeState = await page.evaluate(() => {
+      const range = document.querySelector('[data-openreel-loop-range="true"]')
+      return {
+        inFrame: Number(range?.getAttribute("data-loop-in-frame") || -1),
+        outFrame: Number(range?.getAttribute("data-loop-out-frame") || -1),
+      }
+    })
+    await panel.getByRole("button", { name: "开启循环播放", exact: true }).click()
+    await seekTimelineSeconds(page, 47 / 24)
+    await panel.getByRole("button", { name: "播放", exact: true }).click()
+    await page.waitForFunction(() => {
+      const frame = Number(document.querySelector('[data-openreel-timeline-scroll="true"]')?.getAttribute("data-current-frame") || 0)
+      return frame >= 24 && frame < 45
+    }, null, { timeout: 4_000 })
+    const loopWrappedFrame = Number(await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-current-frame"))
+    await page.waitForTimeout(260)
+    const loopProgressedFrame = Number(await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-current-frame"))
+    const loopPlaybackFunctional = (
+      loopRangeState.inFrame === 24 &&
+      loopRangeState.outFrame === 49 &&
+      loopWrappedFrame >= loopRangeState.inFrame &&
+      loopWrappedFrame < loopRangeState.outFrame &&
+      loopProgressedFrame > loopWrappedFrame &&
+      loopProgressedFrame < loopRangeState.outFrame
+    )
+    await panel.getByRole("button", { name: "暂停", exact: true }).click()
+    await panel.getByRole("button", { name: "关闭循环播放", exact: true }).click()
+    await seekTimelineSeconds(page, 0)
+    const programMonitorControls = exactProgramFrameStep && exportFrameControlReady && realPlaybackResolution && playbackClockSynchronized && loopPlaybackFunctional
+
     await dragHorizontally(page, audioClip, 80)
     await page.waitForTimeout(250)
     clips = await readClips(page)
@@ -1186,7 +1277,20 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      programMonitorControls,
+      exactProgramFrameStep,
+      initialProgramTimecode,
+      steppedProgramTimecode,
+      exportFrameControlReady,
+      realPlaybackResolution,
+      playbackResolutionState,
+      playbackClockSynchronized,
+      mediaClockState,
+      loopPlaybackFunctional,
+      loopRangeState,
+      loopWrappedFrame,
+      loopProgressedFrame,
       initialAligned,
       movedTogether,
       clampedAtTimelineStart,
