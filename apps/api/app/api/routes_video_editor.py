@@ -12,6 +12,7 @@ from app.services import (
     media_operations,
     timeline_media_index,
     timeline_thumbnails,
+    timeline_waveforms,
     video_edit_sequences,
 )
 
@@ -205,6 +206,53 @@ async def get_video_frame_tile(
             "X-OpenReel-Tile-Rows": str(rows),
         },
     )
+
+
+@router.get("/{project_id}/nodes/{node_id}/waveform/manifest")
+async def get_video_waveform_manifest(
+    project_id: str,
+    node_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    node = await _load_video_node(db, project_id=project_id, node_id=node_id)
+    try:
+        source = await media_operations.media_path_for_node(project_id, node, "video")
+        manifest, _ = await timeline_waveforms.ensure_waveform(project_id, source)
+    except (
+        media_operations.MediaOperationError,
+        timeline_media_index.TimelineMediaIndexError,
+        timeline_waveforms.TimelineWaveformError,
+    ) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return manifest.model_dump(mode="json")
+
+
+@router.get("/{project_id}/nodes/{node_id}/waveform")
+async def get_video_waveform_page(
+    project_id: str,
+    node_id: str,
+    level: int = Query(default=0, ge=0, le=30),
+    start_bucket: int = Query(default=0, ge=0),
+    limit: int = Query(default=2_000, ge=1, le=10_000),
+    db: AsyncSession = Depends(get_session),
+):
+    node = await _load_video_node(db, project_id=project_id, node_id=node_id)
+    try:
+        source = await media_operations.media_path_for_node(project_id, node, "video")
+        manifest, peaks_path = await timeline_waveforms.ensure_waveform(project_id, source)
+        return timeline_waveforms.waveform_page(
+            manifest,
+            peaks_path,
+            level=level,
+            start_bucket=start_bucket,
+            limit=limit,
+        )
+    except (
+        media_operations.MediaOperationError,
+        timeline_media_index.TimelineMediaIndexError,
+        timeline_waveforms.TimelineWaveformError,
+    ) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{project_id}/nodes/{node_id}/timeline-sprite")
