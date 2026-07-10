@@ -286,6 +286,32 @@ class WorkflowNodeRead(WorkflowNodeBase):
 
 
 # ---------------------------------------------------------------------------
+# frame-accurate video editor sequences
+# ---------------------------------------------------------------------------
+
+class VideoEditSequence(SQLModel, table=True):
+    __tablename__ = "video_edit_sequences"
+
+    node_id: str = Field(foreign_key="workflow_nodes.id", primary_key=True)
+    project_id: str = Field(foreign_key="projects.id", index=True)
+    spec_json: str
+    revision: int = 1
+    created_at: datetime = Field(default_factory=now)
+    updated_at: datetime = Field(default_factory=now)
+
+
+class VideoEditSequenceRevision(SQLModel, table=True):
+    __tablename__ = "video_edit_sequence_revisions"
+
+    id: str = Field(default_factory=gen_uuid, primary_key=True)
+    node_id: str = Field(foreign_key="workflow_nodes.id", index=True)
+    project_id: str = Field(foreign_key="projects.id", index=True)
+    revision: int = Field(index=True)
+    spec_json: str
+    created_at: datetime = Field(default_factory=now)
+
+
+# ---------------------------------------------------------------------------
 # workflow_edges
 # ---------------------------------------------------------------------------
 
