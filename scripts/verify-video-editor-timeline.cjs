@@ -166,6 +166,31 @@ async function main() {
       }
     })
 
+    let mockedSequenceRevision = 0
+    await page.route("**/api/video-editor/**/sequence", async (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (request.method() !== "PUT" || !url.pathname.endsWith("/sequence")) {
+        await route.continue()
+        return
+      }
+      const body = request.postDataJSON()
+      mockedSequenceRevision = Math.max(mockedSequenceRevision, Number(body.expected_revision || 0)) + 1
+      const now = new Date().toISOString()
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          project_id: PROJECT_ID,
+          node_id: NODE_ID,
+          revision: mockedSequenceRevision,
+          spec: body.spec,
+          created_at: now,
+          updated_at: now,
+        }),
+      })
+    })
+
     const nodesLoaded = page.waitForResponse((response) => (
       response.url().includes(`/api/projects/${PROJECT_ID}/nodes`) && response.ok()
     ), { timeout: 12_000 }).catch(() => null)
@@ -173,10 +198,15 @@ async function main() {
     await page.goto(pageUrl(), { waitUntil: "domcontentloaded", timeout: 15_000 })
     await nodesLoaded
 
-    const initialSpriteLoaded = page.waitForResponse((response) => {
-      if (!response.ok() || !response.url().includes("/api/video-editor/") || !response.url().includes("/timeline-sprite")) return false
-      return Number(new URL(response.url()).searchParams.get("frame_count") || 0) >= 14
-    }, { timeout: 20_000 })
+    const mediaIndexLoaded = page.waitForResponse((response) => (
+      response.ok() && response.url().includes("/api/video-editor/") && response.url().includes("/media-index")
+    ), { timeout: 30_000 })
+    const initialFrameTileLoaded = page.waitForResponse((response) => (
+      response.ok() && response.url().includes("/api/video-editor/") && response.url().includes("/frame-tiles/")
+    ), { timeout: 30_000 })
+    const realWaveformLoaded = page.waitForResponse((response) => (
+      response.ok() && response.url().includes("/api/video-editor/") && response.url().includes("/waveform?")
+    ), { timeout: 30_000 })
     await page.evaluate(({ nodeId, videoUrl }) => {
       window.dispatchEvent(new CustomEvent("openreel:edit-video-node", {
         detail: { nodeId, title: "Video editor verification", videoUrl },
@@ -198,7 +228,7 @@ async function main() {
         return sourceDuration > 0 && Math.abs(duration - sourceDuration) < 0.05
       })
     }, null, { timeout: 12_000 })
-    await initialSpriteLoaded
+    await Promise.all([mediaIndexLoaded, initialFrameTileLoaded, realWaveformLoaded])
     await page.waitForFunction(() => {
       const indexes = Array.from(document.querySelectorAll('[data-clip-kind="video"] [data-openreel-timeline-frame]'))
         .map((element) => Number(element.dataset.frameIndex || -1))
@@ -290,6 +320,38 @@ async function main() {
       videoParts.every((clip) => clip.sourceOffset + clip.duration <= clip.sourceDuration + 0.03)
     )
 
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 2)
+    const undoRestoredBeforeSplit = (await readClips(page)).length === 2
+    await page.keyboard.press("Control+Shift+z")
+    await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
+    const redoRestoredSplit = (await readClips(page)).length === 4
+
+    await panel.getByRole("button", { name: "选择", exact: true }).click()
+    await page.locator('[data-clip-kind="video"]').first().click()
+    await page.keyboard.press("Delete")
+    await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 2)
+    let deleteResult = await readClips(page)
+    const normalDeleteKeepsGap = (
+      deleteResult.length === 2 &&
+      aligned(deleteResult.find((clip) => clip.kind === "video"), deleteResult.find((clip) => clip.kind === "audio")) &&
+      deleteResult.every((clip) => clip.start > 0.5)
+    )
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
+
+    await page.locator('[data-clip-kind="video"]').first().click()
+    await page.keyboard.press("Shift+Delete")
+    await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 2)
+    deleteResult = await readClips(page)
+    const rippleDeleteClosesGap = (
+      deleteResult.length === 2 &&
+      aligned(deleteResult.find((clip) => clip.kind === "video"), deleteResult.find((clip) => clip.kind === "audio")) &&
+      deleteResult.every((clip) => closeTime(clip.start, 0) && clip.sourceOffset > 0.5)
+    )
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
+
     const timeline = page.locator('[data-openreel-timeline-scroll="true"]')
     const timelineBox = await timeline.boundingBox()
     if (!timelineBox) throw new Error("Timeline has no bounding box")
@@ -305,17 +367,22 @@ async function main() {
       }
     }, anchorX)
     const zoomBefore = await readZoomAnchor()
-    const detailedSpriteLoaded = page.waitForResponse((response) => {
-      if (!response.ok() || !response.url().includes("/timeline-sprite")) return false
-      return Number(new URL(response.url()).searchParams.get("frame_count") || 0) > 14
-    }, { timeout: 20_000 })
     await page.mouse.move(anchorX, timelineBox.y + 80)
     await page.mouse.wheel(0, -360)
-    await detailedSpriteLoaded
     await page.waitForTimeout(250)
     const zoomAfter = await readZoomAnchor()
     const zoomExpanded = zoomAfter.pxPerSecond > zoomBefore.pxPerSecond * 1.5
     const zoomAnchorStable = Math.abs(zoomAfter.time - zoomBefore.time) < 0.08
+    await page.mouse.wheel(0, -1400)
+    await page.waitForFunction(() => (
+      Array.from(document.querySelectorAll('[data-clip-kind="video"] [data-openreel-frame-strip]'))
+        .every((element) => element.dataset.everyFrame === "true")
+    ), null, { timeout: 12_000 })
+    await page.waitForFunction(() => {
+      const waveforms = Array.from(document.querySelectorAll("[data-openreel-real-waveform]"))
+      return waveforms.length >= 2 && waveforms.every((element) => Number(element.dataset.waveformBuckets || 0) > 0)
+    }, null, { timeout: 12_000 })
+    await page.waitForTimeout(250)
     const frameDetail = await page.evaluate(() => {
       const videoClips = Array.from(document.querySelectorAll('[data-clip-kind="video"]'))
       const perClip = videoClips.map((clip) => Array.from(clip.querySelectorAll("[data-openreel-timeline-frame]"))
@@ -325,9 +392,13 @@ async function main() {
         uniqueFrames: new Set(all).size,
         leftMax: perClip[0]?.length ? Math.max(...perClip[0]) : -1,
         rightMin: perClip[1]?.length ? Math.min(...perClip[1]) : -1,
+        everyFrame: videoClips.every((clip) => clip.querySelector("[data-openreel-frame-strip]")?.dataset.everyFrame === "true"),
+        realWaveforms: Array.from(document.querySelectorAll("[data-openreel-real-waveform]"))
+          .filter((element) => Number(element.dataset.waveformBuckets || 0) > 0).length,
       }
     })
-    const detailedFramesVisible = frameDetail.uniqueFrames >= 10 && frameDetail.leftMax < frameDetail.rightMin
+    const detailedFramesVisible = frameDetail.everyFrame && frameDetail.uniqueFrames >= 200 && frameDetail.leftMax < frameDetail.rightMin
+    const realWaveformsVisible = frameDetail.realWaveforms >= 2
     const layout = await page.evaluate(() => {
       const rect = (selector) => {
         const box = document.querySelector(selector)?.getBoundingClientRect()
@@ -397,7 +468,7 @@ async function main() {
     }
 
     const result = {
-      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && zoomExpanded && zoomAnchorStable && detailedFramesVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && undoRestoredBeforeSplit && redoRestoredSplit && normalDeleteKeepsGap && rippleDeleteClosesGap && zoomExpanded && zoomAnchorStable && detailedFramesVisible && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
       initialAligned,
       movedTogether,
       clampedAtTimelineStart,
@@ -407,11 +478,16 @@ async function main() {
       startTrimmedTogether,
       sourceStartBounded,
       splitSemantics,
+      undoRestoredBeforeSplit,
+      redoRestoredSplit,
+      normalDeleteKeepsGap,
+      rippleDeleteClosesGap,
       zoomExpanded,
       zoomAnchorStable,
       zoomBefore,
       zoomAfter,
       detailedFramesVisible,
+      realWaveformsVisible,
       frameDetail,
       layoutSupportsTracks,
       layout,
