@@ -147,6 +147,18 @@
         "min": 6,
         "max": 60
       },
+      "model_profiles": [
+        {
+          "match": "grok-video-3",
+          "supported_resolutions": ["720p", "1080p"],
+          "default_resolution": "720p",
+          "duration": {
+            "min": 6,
+            "max": 60,
+            "step": 1
+          }
+        }
+      ],
       "modes": {
         "text_to_video": {
           "prompt_required": true,
@@ -266,7 +278,12 @@
         {
           "match": "grok-video-3",
           "supported_resolutions": ["480p", "720p", "1080p"],
-          "default_resolution": "720p"
+          "default_resolution": "720p",
+          "duration": {
+            "min": 6,
+            "max": 30,
+            "step": 1
+          }
         }
       ],
       "modes": {
@@ -527,7 +544,12 @@
         {
           "match": "grok-1.5-video-15s",
           "supported_resolutions": ["480p", "720p"],
-          "default_resolution": "720p"
+          "default_resolution": "720p",
+          "duration": {
+            "min": 1,
+            "max": 15,
+            "step": 1
+          }
         }
       ],
       "modes": {
