@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type MouseEvent } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type MouseEvent } from "react"
 import { motion } from "framer-motion"
 import { createPortal } from "react-dom"
 import {
@@ -175,17 +175,18 @@ const IMAGE_RESOLUTION_TIER_SHORT_EDGE: Record<ImageResolutionTier, number> = {
 }
 
 const IMAGE_ASPECT_RATIO_GRID_OPTIONS = [
-  { label: "9:16", value: "9:16" },
-  { label: "16:9", value: "16:9" },
+  { label: "自适应", value: "auto" },
   { label: "1:1", value: "1:1" },
   { label: "1:2", value: "1:2" },
   { label: "2:1", value: "2:1" },
+  { label: "9:16", value: "9:16" },
+  { label: "16:9", value: "16:9" },
   { label: "3:4", value: "3:4" },
   { label: "4:3", value: "4:3" },
-  { label: "2:3", value: "2:3" },
   { label: "3:2", value: "3:2" },
-  { label: "4:5", value: "4:5" },
+  { label: "2:3", value: "2:3" },
   { label: "5:4", value: "5:4" },
+  { label: "4:5", value: "4:5" },
   { label: "21:9", value: "21:9" },
   { label: "9:21", value: "9:21" },
 ]
@@ -202,6 +203,7 @@ function parseAspectRatio(value: string): { width: number; height: number; value
 }
 
 function normalizeImageAspectRatio(value: string): string {
+  if (value.trim().toLowerCase() === "auto") return "auto"
   return parseAspectRatio(value)?.value || "9:16"
 }
 
@@ -3719,6 +3721,8 @@ function MediaOptionGrid({
   onChange,
   columns = "grid-cols-3",
   hint,
+  compact = false,
+  aspectGlyph = false,
 }: {
   label: string
   value: string
@@ -3726,12 +3730,14 @@ function MediaOptionGrid({
   onChange: (value: string) => void
   columns?: string
   hint?: string
+  compact?: boolean
+  aspectGlyph?: boolean
 }) {
   const visibleOptions = options.length > 0 ? options : [{ label: "未配置", value: "", disabled: true }]
   return (
-    <div className="rounded-lg border border-white/[0.08] bg-black/20 p-2">
-      <div className="mb-1.5 text-[10px] font-medium text-zinc-500">{label}</div>
-      <div className={`grid ${columns} gap-1.5`}>
+    <div className={compact ? "space-y-1.5" : "rounded-lg border border-white/[0.08] bg-black/20 p-2"}>
+      <div className={compact ? "text-[11px] font-medium text-zinc-400" : "mb-1.5 text-[10px] font-medium text-zinc-500"}>{label}</div>
+      <div className={`grid ${columns} ${compact ? "gap-2" : "gap-1.5"}`}>
         {visibleOptions.map((option) => {
           const active = value === option.value
           return (
@@ -3741,12 +3747,23 @@ function MediaOptionGrid({
               onClick={() => onChange(option.value)}
               disabled={option.disabled}
               title={option.hint || option.label}
-              className={`min-h-8 rounded-md border px-2 py-1 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              className={`min-h-8 ${compact ? "rounded-lg" : "rounded-md"} border px-2 py-1 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                compact
+                  ? aspectGlyph
+                    ? "flex h-[62px] flex-col items-center justify-center gap-1 px-1.5 py-1.5 text-[10px]"
+                    : "h-8 px-1.5"
+                  : ""
+              } ${
                 active
-                  ? "border-zinc-100 bg-zinc-100 text-zinc-950 shadow-[0_8px_18px_rgba(255,255,255,0.10)]"
-                  : "border-white/[0.08] bg-white/[0.035] text-zinc-300 hover:border-white/[0.16] hover:bg-white/[0.07] hover:text-zinc-50"
+                  ? compact
+                    ? "border-zinc-100 bg-white/[0.08] text-zinc-50"
+                    : "border-zinc-100 bg-zinc-100 text-zinc-950 shadow-[0_8px_18px_rgba(255,255,255,0.10)]"
+                  : compact
+                    ? "border-white/[0.16] bg-transparent text-zinc-400 hover:border-white/[0.28] hover:bg-white/[0.06] hover:text-zinc-100"
+                    : "border-white/[0.08] bg-white/[0.035] text-zinc-300 hover:border-white/[0.16] hover:bg-white/[0.07] hover:text-zinc-50"
               }`}
             >
+              {aspectGlyph && <AspectRatioGlyph value={option.value} />}
               {option.label}
             </button>
           )
@@ -3757,14 +3774,34 @@ function MediaOptionGrid({
   )
 }
 
+function AspectRatioGlyph({ value }: { value: string }) {
+  const aspect = value === "auto" ? null : parseAspectRatio(value)
+  const ratio = aspect ? aspect.width / aspect.height : 1
+  const width = ratio >= 1 ? 14 : Math.max(6, Math.round(14 * ratio))
+  const height = ratio >= 1 ? Math.max(6, Math.round(14 / ratio)) : 14
+  return (
+    <span
+      aria-hidden="true"
+      className="flex h-3.5 w-4 items-center justify-center"
+    >
+      <span
+        className="block rounded-[2px] border border-current"
+        style={{ width, height }}
+      />
+    </span>
+  )
+}
+
 function ImageResolutionControl({
   aspectRatio,
   resolution,
   onChange,
+  compact = false,
 }: {
   aspectRatio: string
   resolution: string
   onChange: (value: string) => void
+  compact?: boolean
 }) {
   const normalizedAspect = normalizeImageAspectRatio(aspectRatio)
   const presets = imageResolutionPresetsForAspect(normalizedAspect)
@@ -3783,8 +3820,9 @@ function ImageResolutionControl({
         value={presets.find((item) => item.value === resolution)?.value || defaultResolution}
         options={presets.map((item) => ({ label: item.label.split(" · ")[0], value: item.value, hint: item.label }))}
         onChange={onChange}
+        compact={compact}
       />
-      <div className="text-[10px] text-zinc-600">保存值：{exactResolution}</div>
+      {!compact && <div className="text-[10px] text-zinc-600">保存值：{exactResolution}</div>}
     </div>
   )
 }
@@ -5528,6 +5566,7 @@ function NodePanelTextHistoryButton({
 
 function MediaParameterDialog({
   open,
+  anchorRef,
   nodeType,
   draft,
   selectedAudioMode,
@@ -5547,6 +5586,7 @@ function MediaParameterDialog({
   onImageResolution,
 }: {
   open: boolean
+  anchorRef: { current: HTMLButtonElement | null }
   nodeType: "image" | "video" | "audio"
   draft: EditableNodeDraft
   selectedAudioMode: AudioProviderMode
@@ -5565,6 +5605,64 @@ function MediaParameterDialog({
   onImageAspectRatio: (value: string) => void
   onImageResolution: (value: string) => void
 }) {
+  const popoverRef = useRef<HTMLDivElement | null>(null)
+  const [position, setPosition] = useState<{ left: number; top: number; maxHeight: number } | null>(null)
+
+  useLayoutEffect(() => {
+    if (!open || typeof window === "undefined") {
+      setPosition(null)
+      return
+    }
+
+    const updatePosition = () => {
+      const anchor = anchorRef.current
+      if (!anchor) return
+      const anchorRect = anchor.getBoundingClientRect()
+      const popover = popoverRef.current
+      const viewportWidth = window.visualViewport?.width || window.innerWidth
+      const viewportHeight = window.visualViewport?.height || window.innerHeight
+      const margin = 12
+      const gap = 8
+      const measuredWidth = popover?.getBoundingClientRect().width || Math.min(352, viewportWidth - margin * 2)
+      const contentHeight = popover?.scrollHeight || 460
+      const availableAbove = Math.max(0, anchorRect.top - gap - margin)
+      const availableBelow = Math.max(0, viewportHeight - anchorRect.bottom - gap - margin)
+      const preferredHeight = Math.min(contentHeight, 520)
+      const placeAbove = availableAbove >= preferredHeight || availableAbove >= availableBelow
+      const availableHeight = placeAbove ? availableAbove : availableBelow
+      const maxHeight = Math.max(160, Math.min(520, availableHeight, viewportHeight - margin * 2))
+      const renderedHeight = Math.min(contentHeight, maxHeight)
+      const top = Math.max(
+        margin,
+        Math.min(
+          placeAbove ? anchorRect.top - gap - renderedHeight : anchorRect.bottom + gap,
+          viewportHeight - margin - renderedHeight,
+        ),
+      )
+      const left = Math.max(margin, Math.min(anchorRect.left, viewportWidth - measuredWidth - margin))
+      const next = { left, top, maxHeight }
+      setPosition((current) => (
+        current && current.left === next.left && current.top === next.top && current.maxHeight === next.maxHeight
+          ? current
+          : next
+      ))
+    }
+
+    const frame = window.requestAnimationFrame(updatePosition)
+    window.addEventListener("resize", updatePosition)
+    window.addEventListener("scroll", updatePosition, true)
+    const resizeObserver = typeof ResizeObserver !== "undefined" && popoverRef.current
+      ? new ResizeObserver(updatePosition)
+      : null
+    if (resizeObserver && popoverRef.current) resizeObserver.observe(popoverRef.current)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener("resize", updatePosition)
+      window.removeEventListener("scroll", updatePosition, true)
+      resizeObserver?.disconnect()
+    }
+  }, [anchorRef, open])
+
   useEffect(() => {
     if (!open) return
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -5576,77 +5674,79 @@ function MediaParameterDialog({
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [onClose, open])
 
+  useEffect(() => {
+    if (!open) return
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (popoverRef.current?.contains(target) || anchorRef.current?.contains(target)) return
+      onClose()
+    }
+    document.addEventListener("pointerdown", handleOutsidePointerDown)
+    return () => document.removeEventListener("pointerdown", handleOutsidePointerDown)
+  }, [anchorRef, onClose, open])
+
   if (!open || typeof document === "undefined") return null
 
   const title = nodeType === "image" ? "图片生成参数" : nodeType === "video" ? "视频生成参数" : "音频生成参数"
-  const icon = nodeType === "image" ? "图" : nodeType === "video" ? "影" : "声"
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/48 p-4 backdrop-blur-[2px]"
-      role="presentation"
-      onClick={onClose}
+      ref={popoverRef}
+      role="dialog"
+      aria-label={title}
+      aria-modal="false"
+      className="fixed z-[120] w-[352px] max-w-[calc(100vw-24px)] overflow-y-auto rounded-[15px] border border-white/[0.12] bg-[#292929] p-3 text-zinc-100 shadow-[0_12px_32px_rgba(0,0,0,0.48)] ring-1 ring-black/20 transition-[opacity,transform] duration-150"
+      style={{
+        left: position?.left ?? 0,
+        top: position?.top ?? 0,
+        maxHeight: position?.maxHeight ?? "calc(100dvh - 24px)",
+        opacity: position ? 1 : 0,
+        pointerEvents: position ? "auto" : "none",
+        visibility: position ? "visible" : "hidden",
+      }}
       onMouseDown={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="openreel-media-parameter-dialog-title"
-        className="flex max-h-[min(680px,calc(100dvh-32px))] w-[min(520px,calc(100vw-32px))] flex-col overflow-hidden rounded-xl border border-white/[0.13] bg-[#171b23]/98 text-zinc-100 shadow-[0_30px_110px_rgba(0,0,0,0.72)] ring-1 ring-cyan-200/[0.06]"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="flex shrink-0 items-center gap-2.5 border-b border-white/[0.08] bg-[#20252e]/96 px-4 py-3">
-          <span className="flex h-7 w-7 items-center justify-center rounded-md border border-white/[0.12] bg-white/[0.07] text-[11px] font-semibold text-zinc-200">
-            {icon}
-          </span>
-          <div className="min-w-0 flex-1">
-            <div id="openreel-media-parameter-dialog-title" className="text-sm font-semibold text-zinc-50">{title}</div>
-            <div className="mt-0.5 text-[10px] text-zinc-500">参数会保存到当前节点，关闭弹窗不会丢失编辑。</div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-lg leading-none text-zinc-500 transition hover:bg-white/10 hover:text-zinc-100"
-            aria-label="关闭生成参数"
-          >
-            ×
-          </button>
-        </div>
-
-        <div className="min-h-0 overflow-y-auto bg-[#0d1118] p-3.5 sm:p-4">
           {nodeType === "image" && (
-            <div className="grid gap-2.5">
+            <div className="grid gap-3">
               <MediaOptionGrid
                 label="画质"
                 value={draft.quality}
                 options={IMAGE_QUALITY_OPTIONS}
                 onChange={(quality) => onChange({ quality })}
                 columns="grid-cols-3"
+                compact
+              />
+              <ImageResolutionControl
+                aspectRatio={imageAspectRatio}
+                resolution={imageResolution}
+                onChange={onImageResolution}
+                compact
               />
               <MediaOptionGrid
                 label="比例"
                 value={imageAspectRatio}
                 options={IMAGE_ASPECT_RATIO_GRID_OPTIONS}
                 onChange={onImageAspectRatio}
-                columns="grid-cols-4"
-              />
-              <ImageResolutionControl
-                aspectRatio={imageAspectRatio}
-                resolution={imageResolution}
-                onChange={onImageResolution}
+                columns="grid-cols-5"
+                compact
+                aspectGlyph
               />
             </div>
           )}
 
           {nodeType === "video" && (
-            <div className="grid gap-2.5">
+            <div className="grid gap-3">
               <MediaOptionGrid
                 label="比例"
                 value={normalizeVideoAspectRatio(draft.aspect_ratio)}
                 options={videoAspectOptions}
                 onChange={(aspect_ratio) => onChange({ aspect_ratio })}
-                columns="grid-cols-4"
+                columns="grid-cols-5"
+                compact
+                aspectGlyph
               />
               <MediaOptionGrid
                 label="清晰度"
@@ -5657,32 +5757,32 @@ function MediaParameterDialog({
                 }))}
                 onChange={(resolution) => onChange({ resolution })}
                 columns="grid-cols-4"
+                compact
               />
               <DraftField label="视频时长">
-                <div className="grid gap-2 rounded-lg border border-white/[0.08] bg-black/20 p-2">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="range"
-                      min={videoDurationMin}
-                      max={videoDurationMax}
-                      step={videoDurationStep}
-                      value={Number.isFinite(videoDurationValue) ? videoDurationValue : videoDurationMin}
-                      onChange={(event) => onChange({ duration_seconds: event.target.value })}
-                      className="h-2 min-w-0 flex-1 accent-cyan-300"
-                    />
-                    <input
-                      type="number"
-                      min={videoDurationMin}
-                      max={videoDurationMax}
-                      step={videoDurationStep}
-                      inputMode="numeric"
-                      value={draft.duration_seconds}
-                      onChange={(event) => onChange({ duration_seconds: event.target.value })}
-                      onBlur={(event) => onChange({ duration_seconds: normalizeVideoDurationForRule(event.target.value, videoDurationRule) })}
-                      className="h-8 w-16 rounded-md border border-white/[0.1] bg-[#080c13] px-2 text-xs text-zinc-100 outline-none [color-scheme:dark] focus:border-cyan-300/45"
-                      placeholder="秒"
-                    />
-                  </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={videoDurationMin}
+                    max={videoDurationMax}
+                    step={videoDurationStep}
+                    value={Number.isFinite(videoDurationValue) ? videoDurationValue : videoDurationMin}
+                    onChange={(event) => onChange({ duration_seconds: event.target.value })}
+                    className="h-1.5 min-w-0 flex-1 accent-cyan-300"
+                  />
+                  <input
+                    type="number"
+                    min={videoDurationMin}
+                    max={videoDurationMax}
+                    step={videoDurationStep}
+                    inputMode="numeric"
+                    value={draft.duration_seconds}
+                    onChange={(event) => onChange({ duration_seconds: event.target.value })}
+                    onBlur={(event) => onChange({ duration_seconds: normalizeVideoDurationForRule(event.target.value, videoDurationRule) })}
+                    className="h-8 w-14 rounded-md border border-white/[0.12] bg-white/[0.05] px-2 text-xs text-zinc-100 outline-none [color-scheme:dark] focus:border-cyan-300/45"
+                    placeholder="秒"
+                  />
+                  <span className="text-[11px] text-zinc-500">秒</span>
                 </div>
               </DraftField>
             </div>
@@ -5746,18 +5846,6 @@ function MediaParameterDialog({
               )}
             </div>
           )}
-        </div>
-
-        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-white/[0.08] bg-[#171b23] px-4 py-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border border-white/[0.1] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.09] hover:text-zinc-50"
-          >
-            完成
-          </button>
-        </div>
-      </div>
     </div>,
     document.body,
   )
@@ -5870,6 +5958,7 @@ function NodeCanvasContextPanel({
       ? "bg-amber-300 shadow-[0_0_14px_rgba(252,211,77,0.45)]"
       : "bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.3)]"
   const [mediaParameterDialogOpen, setMediaParameterDialogOpen] = useState(false)
+  const mediaParameterToggleRef = useRef<HTMLButtonElement | null>(null)
   const compactSelectClass = "h-7 min-w-0 appearance-none rounded-md border border-white/[0.08] bg-[#1f1f1f] px-2 text-[11px] font-medium text-zinc-100 shadow-inner shadow-black/20 outline-none [color-scheme:dark] transition focus:border-white/[0.18] focus:bg-[#262626] focus:text-zinc-50 hover:border-white/[0.14] hover:bg-[#282828] [&>option]:bg-[#1f1f1f] [&>option]:text-zinc-100"
   const textareaHeightClass = isVideo ? "min-h-[78px]" : isAudio ? "min-h-[88px]" : "min-h-[96px]"
   const promptMaxRows = isText ? 7 : isVideo ? 6 : 7
@@ -6072,12 +6161,14 @@ function NodeCanvasContextPanel({
 	          )}
 
 	          {hasMediaParameterToggle && (
-	            <button
-	              type="button"
-	              data-openreel-node-parameter-toggle="true"
+            <button
+              type="button"
+              ref={mediaParameterToggleRef}
+              data-openreel-node-parameter-toggle="true"
               aria-expanded={mediaParameterDialogOpen}
               aria-haspopup="dialog"
               onClick={() => setMediaParameterDialogOpen((value) => !value)}
+              onPointerDown={(event) => event.stopPropagation()}
 	              className={`flex h-7 min-w-[160px] flex-1 items-center gap-1.5 rounded-md border px-2 text-left text-[11px] font-medium shadow-inner shadow-black/20 transition ${
                 mediaParameterDialogOpen
 	                  ? "border-zinc-100 bg-zinc-100 text-zinc-950"
@@ -6147,6 +6238,7 @@ function NodeCanvasContextPanel({
       {hasMediaParameterToggle && (
         <MediaParameterDialog
           open={mediaParameterDialogOpen}
+          anchorRef={mediaParameterToggleRef}
           nodeType={isImage ? "image" : isVideo ? "video" : "audio"}
           draft={draft}
           selectedAudioMode={selectedAudioMode}
