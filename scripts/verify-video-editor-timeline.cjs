@@ -8,7 +8,7 @@ const WEB_URL = env.WEB_URL || env.DRAMA_WEB_URL
 const PROJECT_ID = env.PROJECT_ID || env.DRAMA_PROJECT_ID
 const NODE_ID = env.NODE_ID || env.DRAMA_NODE_ID
 const VIDEO_URL = env.VIDEO_URL || env.DRAMA_VIDEO_URL
-const TIMEOUT_MS = Number(env.TIMEOUT_MS || env.VIDEO_EDITOR_VERIFY_TIMEOUT_MS || 45_000)
+const TIMEOUT_MS = Number(env.TIMEOUT_MS || env.VIDEO_EDITOR_VERIFY_TIMEOUT_MS || 60_000)
 const SCREENSHOT_PATH = env.SCREENSHOT_PATH || ""
 const HEADLESS = env.HEADED === "1" || env.HEADLESS === "0" ? false : true
 const CHROME_PATH = env.CHROME_PATH || ""
@@ -173,6 +173,10 @@ async function main() {
     await page.goto(pageUrl(), { waitUntil: "domcontentloaded", timeout: 15_000 })
     await nodesLoaded
 
+    const initialSpriteLoaded = page.waitForResponse((response) => {
+      if (!response.ok() || !response.url().includes("/api/video-editor/") || !response.url().includes("/timeline-sprite")) return false
+      return Number(new URL(response.url()).searchParams.get("frame_count") || 0) >= 14
+    }, { timeout: 20_000 })
     await page.evaluate(({ nodeId, videoUrl }) => {
       window.dispatchEvent(new CustomEvent("openreel:edit-video-node", {
         detail: { nodeId, title: "Video editor verification", videoUrl },
@@ -193,6 +197,12 @@ async function main() {
         const sourceDuration = Number(el.dataset.sourceDuration || 0)
         return sourceDuration > 0 && Math.abs(duration - sourceDuration) < 0.05
       })
+    }, null, { timeout: 12_000 })
+    await initialSpriteLoaded
+    await page.waitForFunction(() => {
+      const indexes = Array.from(document.querySelectorAll('[data-clip-kind="video"] [data-openreel-timeline-frame]'))
+        .map((element) => Number(element.dataset.frameIndex || -1))
+      return new Set(indexes).size >= 6
     }, null, { timeout: 12_000 })
 
     let clips = await readClips(page)
@@ -280,6 +290,64 @@ async function main() {
       videoParts.every((clip) => clip.sourceOffset + clip.duration <= clip.sourceDuration + 0.03)
     )
 
+    const timeline = page.locator('[data-openreel-timeline-scroll="true"]')
+    const timelineBox = await timeline.boundingBox()
+    if (!timelineBox) throw new Error("Timeline has no bounding box")
+    const anchorX = timelineBox.x + timelineBox.width * 0.5
+    const readZoomAnchor = () => page.evaluate((clientX) => {
+      const element = document.querySelector('[data-openreel-timeline-scroll="true"]')
+      const rect = element.getBoundingClientRect()
+      const pxPerSecond = Number(element.dataset.pxPerSecond || 0)
+      const labelWidth = Number(element.dataset.trackLabelWidth || 0)
+      return {
+        pxPerSecond,
+        time: (clientX - rect.left + element.scrollLeft - labelWidth) / pxPerSecond,
+      }
+    }, anchorX)
+    const zoomBefore = await readZoomAnchor()
+    const detailedSpriteLoaded = page.waitForResponse((response) => {
+      if (!response.ok() || !response.url().includes("/timeline-sprite")) return false
+      return Number(new URL(response.url()).searchParams.get("frame_count") || 0) > 14
+    }, { timeout: 20_000 })
+    await page.mouse.move(anchorX, timelineBox.y + 80)
+    await page.mouse.wheel(0, -360)
+    await detailedSpriteLoaded
+    await page.waitForTimeout(250)
+    const zoomAfter = await readZoomAnchor()
+    const zoomExpanded = zoomAfter.pxPerSecond > zoomBefore.pxPerSecond * 1.5
+    const zoomAnchorStable = Math.abs(zoomAfter.time - zoomBefore.time) < 0.08
+    const frameDetail = await page.evaluate(() => {
+      const videoClips = Array.from(document.querySelectorAll('[data-clip-kind="video"]'))
+      const perClip = videoClips.map((clip) => Array.from(clip.querySelectorAll("[data-openreel-timeline-frame]"))
+        .map((element) => Number(element.dataset.frameIndex || -1)))
+      const all = perClip.flat()
+      return {
+        uniqueFrames: new Set(all).size,
+        leftMax: perClip[0]?.length ? Math.max(...perClip[0]) : -1,
+        rightMin: perClip[1]?.length ? Math.min(...perClip[1]) : -1,
+      }
+    })
+    const detailedFramesVisible = frameDetail.uniqueFrames >= 10 && frameDetail.leftMax < frameDetail.rightMin
+    const layout = await page.evaluate(() => {
+      const rect = (selector) => {
+        const box = document.querySelector(selector)?.getBoundingClientRect()
+        return box ? { x: box.x, y: box.y, width: box.width, height: box.height } : null
+      }
+      return {
+        panel: rect(".openreel-video-edit-panel"),
+        mediaBin: rect('[data-openreel-media-bin="true"]'),
+        preview: rect('[data-openreel-preview-pane="true"]'),
+        inspector: rect('[data-openreel-inspector-pane="true"]'),
+        timeline: rect('[data-openreel-timeline-scroll="true"]'),
+        previewVideo: rect('[data-openreel-preview-video="true"]'),
+      }
+    })
+    const layoutSupportsTracks = Boolean(
+      layout.panel && layout.mediaBin && layout.preview && layout.inspector && layout.timeline &&
+      layout.mediaBin.x < layout.preview.x && layout.preview.x < layout.inspector.x &&
+      layout.timeline.height > layout.preview.height,
+    )
+
     const baselineProbe = await measureAnimationFrames(page)
 
     await page.evaluate(() => {
@@ -329,7 +397,7 @@ async function main() {
     }
 
     const result = {
-      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && playbackResponsive && consoleErrors.length === 0,
+      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && zoomExpanded && zoomAnchorStable && detailedFramesVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
       initialAligned,
       movedTogether,
       clampedAtTimelineStart,
@@ -339,6 +407,14 @@ async function main() {
       startTrimmedTogether,
       sourceStartBounded,
       splitSemantics,
+      zoomExpanded,
+      zoomAnchorStable,
+      zoomBefore,
+      zoomAfter,
+      detailedFramesVisible,
+      frameDetail,
+      layoutSupportsTracks,
+      layout,
       baselineFps: Number(baselineFps.toFixed(1)),
       playbackFps: Number(playbackFps.toFixed(1)),
       playbackResponsive,

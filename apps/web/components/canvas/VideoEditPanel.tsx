@@ -1,8 +1,8 @@
 "use client"
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react"
-import { runProjectMediaOperation } from "@/lib/api"
+import { resolveMediaUrl, runProjectMediaOperation } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 export interface VideoEditPanelMediaNode {
@@ -46,15 +46,11 @@ const DEFAULT_PX_PER_SECOND = 84
 const MIN_CLIP_SECONDS = 0.25
 const SNAP_PIXELS = 10
 const PLAYBACK_UI_FRAME_MS = 1000 / 20
-
-interface CachedVideoPoster {
-  duration: number
-  src: string
-}
+const TIMELINE_FRAME_WIDTH = 96
+const SPRITE_FRAME_STEPS = [6, 10, 14, 18, 24, 32, 40, 48] as const
 
 const mediaDurationCache = new Map<string, number>()
 const mediaDurationRequests = new Map<string, Promise<number>>()
-const videoPosterRequests = new Map<string, Promise<CachedVideoPoster>>()
 
 function validDuration(value: unknown): number | null {
   const duration = Number(value)
@@ -87,51 +83,6 @@ function loadMediaDuration(src: string, type: "video" | "audio"): Promise<number
     mediaDurationRequests.delete(src)
   })
   mediaDurationRequests.set(src, request)
-  return request
-}
-
-function loadVideoPoster(src: string): Promise<CachedVideoPoster> {
-  const pending = videoPosterRequests.get(src)
-  if (pending) return pending
-
-  const request = (async () => {
-    const video = document.createElement("video")
-    video.crossOrigin = "anonymous"
-    video.muted = true
-    video.preload = "auto"
-    video.playsInline = true
-    video.src = src
-
-    const canvas = document.createElement("canvas")
-    canvas.width = 160
-    canvas.height = 90
-    const context = canvas.getContext("2d")
-    if (!context) throw new Error("canvas unavailable")
-
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve()
-      video.onerror = () => reject(new Error("video metadata unavailable"))
-    })
-    const duration = validDuration(video.duration)
-    if (!duration) throw new Error("video duration unavailable")
-    mediaDurationCache.set(src, duration)
-
-    const time = Math.min(Math.max(duration * 0.2, 0.05), Math.max(duration - 0.05, 0))
-    await new Promise<void>((resolve, reject) => {
-      video.onseeked = () => resolve()
-      video.onerror = () => reject(new Error("video seek unavailable"))
-      video.currentTime = time
-    })
-    context.drawImage(video, 0, 0, canvas.width, canvas.height)
-    const poster = canvas.toDataURL("image/jpeg", 0.68)
-    video.removeAttribute("src")
-    video.load()
-    return { duration, src: poster }
-  })().catch((error) => {
-    videoPosterRequests.delete(src)
-    throw error
-  })
-  videoPosterRequests.set(src, request)
   return request
 }
 
@@ -258,52 +209,49 @@ function timeFromPointer(
 }
 
 function VideoThumbnailStrip({
-  src,
-  displayCount,
+  projectId,
+  nodeId,
+  sourceOffset,
+  clipDuration,
+  sourceDuration,
+  width,
+  pxPerSecond,
 }: {
-  src: string
-  displayCount: number
+  projectId: string
+  nodeId: string
+  sourceOffset: number
+  clipDuration: number
+  sourceDuration: number
+  width: number
+  pxPerSecond: number
 }) {
-  const [poster, setPoster] = useState<string>("")
-  const [failed, setFailed] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    setPoster("")
-    setFailed(false)
-    if (!src) return
-    loadVideoPoster(src).then((result) => {
-      if (cancelled) return
-      setPoster(result.src)
-    }).catch(() => {
-      if (!cancelled) setFailed(true)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [src])
-
-  if (poster) {
-    return (
-      <div
-        className="absolute inset-0 bg-repeat-x opacity-90"
-        style={{
-          backgroundImage: `url(${poster})`,
-          backgroundPosition: "left center",
-          backgroundSize: `${100 / Math.max(1, displayCount)}% 100%`,
-        }}
-      >
-        <div className="absolute inset-0 opacity-20 [background-image:repeating-linear-gradient(90deg,transparent_0,transparent_calc(100%_-_1px),rgba(255,255,255,.4)_100%)]" />
-      </div>
-    )
-  }
+  const desiredFrames = Math.max(6, Math.min(48, Math.ceil(sourceDuration * pxPerSecond / TIMELINE_FRAME_WIDTH)))
+  const frameCount = SPRITE_FRAME_STEPS.find((value) => value >= desiredFrames) || 48
+  const displayCount = Math.max(1, Math.ceil(width / TIMELINE_FRAME_WIDTH))
+  const spriteUrl = resolveMediaUrl(
+    `/api/video-editor/${encodeURIComponent(projectId)}/nodes/${encodeURIComponent(nodeId)}/timeline-sprite` +
+    `?frame_count=${frameCount}&duration_seconds=${sourceDuration.toFixed(3)}&frame_width=128&frame_height=72`,
+  )
+  const frameIndexes = Array.from({ length: displayCount }, (_, index) => {
+    const sourceTime = sourceOffset + ((index + 0.5) / displayCount) * clipDuration
+    return Math.max(0, Math.min(frameCount - 1, Math.floor((sourceTime / sourceDuration) * frameCount)))
+  })
 
   return (
-    <div className={cn(
-      "absolute inset-0 bg-[linear-gradient(110deg,rgba(8,47,73,.75),rgba(14,116,144,.28),rgba(8,47,73,.75))]",
-      !failed && "animate-pulse",
-    )}>
-      <div className="absolute inset-0 opacity-25 [background-image:repeating-linear-gradient(90deg,transparent_0,transparent_78px,rgba(255,255,255,.2)_79px,rgba(255,255,255,.2)_80px)]" />
+    <div className="absolute inset-0 flex overflow-hidden bg-cyan-950/70" data-openreel-frame-strip="true">
+      {frameIndexes.map((frameIndex, index) => (
+        <span
+          key={`${index}-${frameIndex}`}
+          data-openreel-timeline-frame="true"
+          data-frame-index={frameIndex}
+          className="h-full min-w-0 flex-1 border-r border-black/20 bg-cover bg-no-repeat last:border-r-0"
+          style={{
+            backgroundImage: `url(${spriteUrl})`,
+            backgroundPosition: frameCount > 1 ? `${(frameIndex / (frameCount - 1)) * 100}% center` : "center",
+            backgroundSize: `${frameCount * 100}% 100%`,
+          }}
+        />
+      ))}
     </div>
   )
 }
@@ -422,6 +370,7 @@ const MediaBinItem = memo(function MediaBinItem({
 })
 
 const TimelineClip = memo(function TimelineClip({
+  projectId,
   clip,
   item,
   kind,
@@ -434,6 +383,7 @@ const TimelineClip = memo(function TimelineClip({
   onResizeEdge,
   onCutAtTime,
 }: {
+  projectId: string
   clip: TimelineClipState
   item: VideoEditPanelMediaNode
   kind: "video" | "audio"
@@ -510,7 +460,7 @@ const TimelineClip = memo(function TimelineClip({
       data-source-duration={sourceDuration?.toFixed(6) || ""}
       onPointerDown={beginMove}
       className={cn(
-        "absolute top-2 h-[58px] overflow-hidden rounded-md border shadow-sm",
+        "absolute top-2 h-[76px] overflow-hidden rounded-md border shadow-sm",
         kind === "video"
           ? "border-cyan-200/30 bg-cyan-300/10"
           : "border-amber-200/30 bg-amber-300/10",
@@ -525,16 +475,23 @@ const TimelineClip = memo(function TimelineClip({
         <>
           {item.type === "image" ? (
             <img src={item.src} alt="" className="absolute inset-0 h-full w-full object-cover opacity-90" draggable={false} />
-          ) : (
+          ) : sourceDuration ? (
             <VideoThumbnailStrip
-              src={item.src}
-              displayCount={Math.max(3, Math.min(10, Math.round(width / 78)))}
+              projectId={projectId}
+              nodeId={item.id}
+              sourceOffset={clip.sourceOffset}
+              clipDuration={clip.duration}
+              sourceDuration={sourceDuration}
+              width={width}
+              pxPerSecond={pxPerSecond}
             />
+          ) : (
+            <div className="absolute inset-0 animate-pulse bg-[linear-gradient(110deg,rgba(8,47,73,.75),rgba(14,116,144,.28),rgba(8,47,73,.75))]" />
           )}
           <div className="absolute inset-0 bg-gradient-to-r from-black/10 via-transparent to-black/20" />
         </>
       ) : (
-        <div className="absolute inset-x-2 bottom-2 flex h-8 items-center gap-[3px]">
+        <div className="absolute inset-x-2 bottom-2 flex h-11 items-center gap-[3px]">
           {waveformBars(item.id, Math.max(24, Math.min(92, Math.round(width / 6)))).map((height, index) => (
             <span
               key={index}
@@ -600,6 +557,8 @@ export default function VideoEditPanel({
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const playheadRef = useRef<HTMLDivElement | null>(null)
   const currentTimeRef = useRef(0)
+  const pxPerSecondRef = useRef(DEFAULT_PX_PER_SECOND)
+  const pendingZoomRef = useRef<{ anchorTime: number; localX: number } | null>(null)
   const initializedNodeRef = useRef<string | null>(null)
   const [sourceDurations, setSourceDurations] = useState<Record<string, number>>({})
   const [currentTime, setCurrentTime] = useState(0)
@@ -836,19 +795,42 @@ export default function VideoEditPanel({
 
   const zoomTimelineAt = useCallback((nextValue: number, clientX?: number) => {
     const next = clamp(nextValue, 42, 220)
+    const currentScale = pxPerSecondRef.current
     const container = timelineRef.current
     if (!container || clientX == null) {
+      pxPerSecondRef.current = next
       setPxPerSecond(next)
       return
     }
     const rect = container.getBoundingClientRect()
     const localX = clientX - rect.left
-    const anchorTime = Math.max(0, (localX + container.scrollLeft - TRACK_LABEL_WIDTH) / pxPerSecond)
+    const anchorTime = Math.max(0, (localX + container.scrollLeft - TRACK_LABEL_WIDTH) / currentScale)
+    pendingZoomRef.current = { anchorTime, localX }
+    pxPerSecondRef.current = next
     setPxPerSecond(next)
-    window.requestAnimationFrame(() => {
-      container.scrollLeft = Math.max(0, anchorTime * next + TRACK_LABEL_WIDTH - localX)
-    })
+  }, [])
+
+  useLayoutEffect(() => {
+    const container = timelineRef.current
+    const pending = pendingZoomRef.current
+    if (!container || !pending) return
+    container.scrollLeft = Math.max(0, pending.anchorTime * pxPerSecond + TRACK_LABEL_WIDTH - pending.localX)
+    pendingZoomRef.current = null
   }, [pxPerSecond])
+
+  useEffect(() => {
+    const container = timelineRef.current
+    if (!container) return
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      const delta = event.deltaY || event.deltaX
+      const factor = Math.exp(-delta * 0.0018)
+      zoomTimelineAt(pxPerSecondRef.current * factor, event.clientX)
+    }
+    container.addEventListener("wheel", onWheel, { passive: false })
+    return () => container.removeEventListener("wheel", onWheel)
+  }, [zoomTimelineAt])
 
   const beginPlayheadDrag = (event: ReactPointerEvent<HTMLElement>) => {
     const container = timelineRef.current
@@ -1182,8 +1164,8 @@ export default function VideoEditPanel({
   const audioConcatIds = audioClips.map((clip) => clip.mediaId).filter((id) => audioItems.some((item) => item.id === id))
   const isBusy = Boolean(busy)
   const previewScaleStyle = previewScale === "fit"
-    ? { width: "min(100%, 680px)" }
-    : { width: `${previewScale}%`, maxWidth: "780px" }
+    ? { height: "min(100%, 280px)", width: "auto", maxWidth: "100%" }
+    : { width: `${previewScale}%`, maxWidth: "640px" }
 
   return (
     <div
@@ -1194,26 +1176,23 @@ export default function VideoEditPanel({
       onPointerDown={(event) => event.stopPropagation()}
       onWheel={(event) => event.stopPropagation()}
     >
-      <div className="flex h-11 items-center justify-between border-b border-white/10 bg-[#0b0f16] px-3">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-7 w-7 items-center justify-center rounded-md bg-cyan-300 text-[11px] font-black text-cyan-950">VE</div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-zinc-100">{title || "视频剪辑"}</div>
-            <div className="text-[10px] text-zinc-500">{formatTimePrecise(currentTime)} / {formatTimePrecise(playbackEnd)}</div>
-          </div>
+      <div className="flex h-9 items-center justify-between border-b border-white/10 bg-[#0b0f16] px-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="max-w-[280px] truncate text-xs font-semibold text-zinc-200">{title || "视频剪辑"}</div>
+          <div className="text-[10px] tabular-nums text-zinc-500">{formatTimePrecise(currentTime)} / {formatTimePrecise(playbackEnd)}</div>
         </div>
         <button
           type="button"
           onClick={onClose}
-          className="h-8 rounded-md border border-white/10 px-3 text-xs text-zinc-300 transition hover:bg-white/[0.07]"
+          className="h-7 rounded-md border border-white/10 px-3 text-xs text-zinc-300 transition hover:bg-white/[0.07]"
         >
           关闭
         </button>
       </div>
 
-      <div className="grid h-[calc(100%-2.75rem)] grid-rows-[minmax(0,1fr)_190px] bg-[#070b10]">
-        <div className="grid min-h-0 grid-cols-[220px_minmax(420px,1fr)_300px] border-b border-white/10 max-xl:grid-cols-[200px_minmax(360px,1fr)_280px] max-lg:grid-cols-1 max-lg:overflow-y-auto">
-          <aside className="flex min-h-0 flex-col border-r border-white/10 bg-[#0b1017]">
+      <div className="grid h-[calc(100%-2.25rem)] w-full min-w-0 grid-rows-[minmax(245px,40%)_minmax(320px,1fr)] bg-[#070b10]">
+        <div className="grid w-full min-w-0 min-h-0 grid-cols-[220px_minmax(420px,1fr)_300px] border-b border-white/10 max-xl:grid-cols-[200px_minmax(360px,1fr)_280px] max-lg:grid-cols-1 max-lg:overflow-y-auto">
+          <aside data-openreel-media-bin="true" className="flex min-h-0 flex-col border-r border-white/10 bg-[#0b1017]">
             <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
               <div className="text-[12px] font-semibold text-zinc-100">项目素材</div>
               <div className="text-[10px] text-zinc-500">{mediaNodes.length}</div>
@@ -1230,8 +1209,8 @@ export default function VideoEditPanel({
             </div>
           </aside>
 
-          <main className="flex min-h-0 flex-col bg-[#090d13]">
-            <div className="flex min-h-0 flex-1 items-center justify-center bg-black p-5">
+          <main data-openreel-preview-pane="true" className="flex min-h-0 min-w-0 flex-col bg-[#0b1017]">
+            <div className="flex min-h-0 flex-1 items-center justify-center bg-[radial-gradient(circle_at_center,rgba(39,52,68,.42),rgba(7,11,16,.96)_72%)] p-2">
               <div
                 className="relative flex aspect-video max-h-full items-center justify-center overflow-hidden rounded-md border border-white/10 bg-black shadow-inner"
                 style={previewScaleStyle}
@@ -1256,9 +1235,6 @@ export default function VideoEditPanel({
                 ) : (
                   <div className="text-xs text-zinc-500">播放头不在视频片段上</div>
                 )}
-                <div className="pointer-events-none absolute left-3 top-3 rounded bg-black/55 px-2 py-1 text-[10px] font-medium text-zinc-300">
-                  {currentVideoItem?.title || selectedVideoItem?.title || "当前画面"}
-                </div>
               </div>
               {currentAudioItem && !playAudioThroughVideo && (
                 <audio ref={audioRef} src={currentAudioItem.src} preload="metadata" />
@@ -1277,8 +1253,6 @@ export default function VideoEditPanel({
                   {playing ? "II" : "▶"}
                 </button>
                 <span className="w-[76px] text-[11px] font-semibold text-cyan-100">{formatTimePrecise(currentTime)}</span>
-                <ToolButton label="选择" glyph="S" active={tool === "select"} onClick={() => setTool("select")} />
-                <ToolButton label="切割" glyph="C" active={tool === "blade"} onClick={() => setTool("blade")} />
                 <ActionButton
                   disabled={isBusy || currentVideoItem?.type !== "video"}
                   onClick={() => void runOperation("frame", {
@@ -1306,30 +1280,11 @@ export default function VideoEditPanel({
                   <option value="75">75%</option>
                   <option value="100">100%</option>
                 </select>
-                <button
-                  type="button"
-                  onClick={() => zoomTimelineAt(pxPerSecond - 14)}
-                  className="h-7 w-7 rounded border border-white/10 text-sm text-zinc-300 hover:bg-white/[0.07]"
-                  title="缩小时间线"
-                  aria-label="缩小时间线"
-                >
-                  −
-                </button>
-                <span className="min-w-[58px] rounded border border-white/10 px-1.5 py-1 text-center tabular-nums">{Math.round(pxPerSecond)} px/s</span>
-                <button
-                  type="button"
-                  onClick={() => zoomTimelineAt(pxPerSecond + 14)}
-                  className="h-7 w-7 rounded border border-white/10 text-sm text-zinc-300 hover:bg-white/[0.07]"
-                  title="放大时间线"
-                  aria-label="放大时间线"
-                >
-                  +
-                </button>
               </div>
             </div>
           </main>
 
-          <aside className="min-h-0 border-l border-white/10 bg-[#0c1118]">
+          <aside data-openreel-inspector-pane="true" className="min-h-0 border-l border-white/10 bg-[#0c1118]">
             <div className="flex h-10 items-center justify-between border-b border-white/10 px-3">
               <div className="text-[12px] font-semibold text-zinc-100">功能区</div>
               <div className={cn("h-2 w-2 rounded-full", isBusy ? "bg-cyan-300" : "bg-emerald-300/80")} />
@@ -1434,19 +1389,45 @@ export default function VideoEditPanel({
           </aside>
         </div>
 
-        <section
-          ref={timelineRef}
-          className="relative min-h-0 overflow-auto bg-[#080c12]"
-          onPointerDown={handleTimelineBackgroundDown}
-          onWheel={(event) => {
-            if (!(event.ctrlKey || event.metaKey || event.altKey)) return
-            event.preventDefault()
-            event.stopPropagation()
-            const factor = event.deltaY < 0 ? 1.12 : 0.88
-            zoomTimelineAt(pxPerSecond * factor, event.clientX)
-          }}
-        >
-          <div className="relative min-h-full" style={{ width: TRACK_LABEL_WIDTH + timelineWidth }}>
+        <section className="flex w-full min-h-0 min-w-0 flex-col bg-[#080c12]">
+          <div className="flex h-9 shrink-0 items-center justify-between border-b border-white/[0.08] bg-[#0d1219] px-2.5">
+            <div className="flex items-center gap-2">
+              <span className="px-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-500">时间线 · 2 轨</span>
+              <ToolButton label="选择" glyph="S" active={tool === "select"} onClick={() => setTool("select")} />
+              <ToolButton label="切割" glyph="C" active={tool === "blade"} onClick={() => setTool("blade")} />
+              <span className="hidden text-[10px] text-zinc-600 md:inline">滚轮以指针位置缩放</span>
+            </div>
+            <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+              <button
+                type="button"
+                onClick={() => zoomTimelineAt(pxPerSecond - 14)}
+                className="h-7 w-7 rounded border border-white/10 text-sm text-zinc-300 hover:bg-white/[0.07]"
+                title="缩小时间线"
+                aria-label="缩小时间线"
+              >
+                −
+              </button>
+              <span className="min-w-[58px] rounded border border-white/10 px-1.5 py-1 text-center tabular-nums">{Math.round(pxPerSecond)} px/s</span>
+              <button
+                type="button"
+                onClick={() => zoomTimelineAt(pxPerSecond + 14)}
+                className="h-7 w-7 rounded border border-white/10 text-sm text-zinc-300 hover:bg-white/[0.07]"
+                title="放大时间线"
+                aria-label="放大时间线"
+              >
+                +
+              </button>
+            </div>
+          </div>
+          <div
+            ref={timelineRef}
+            data-openreel-timeline-scroll="true"
+            data-px-per-second={pxPerSecond.toFixed(4)}
+            data-track-label-width={TRACK_LABEL_WIDTH}
+            className="relative w-full min-h-0 min-w-0 flex-1 overflow-auto bg-[#080c12]"
+            onPointerDown={handleTimelineBackgroundDown}
+          >
+            <div className="relative min-h-full" style={{ width: TRACK_LABEL_WIDTH + timelineWidth }}>
             <div className="sticky top-0 z-20 grid h-7 border-b border-white/[0.07] bg-[#0d1118]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
               <div className="sticky left-0 z-30 border-r border-white/[0.07] bg-[#0d1118]" />
               <div className="relative">
@@ -1462,9 +1443,9 @@ export default function VideoEditPanel({
               </div>
             </div>
 
-            <div className="relative grid h-[76px] border-b border-white/[0.07]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
+            <div className="relative grid h-[92px] border-b border-white/[0.07]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
               <div className="sticky left-0 z-10 flex flex-col justify-center border-r border-white/[0.07] bg-[#0d1118] px-3">
-                <div className="text-[11px] font-semibold text-zinc-200">画面轴</div>
+                <div className="text-[11px] font-semibold text-zinc-200">V1</div>
                 <div className="mt-1 text-[10px] text-zinc-500">拖动定位</div>
               </div>
               <div
@@ -1481,6 +1462,7 @@ export default function VideoEditPanel({
                   return (
                     <TimelineClip
                       key={clip.clipId}
+                      projectId={projectId}
                       clip={clip}
                       item={item}
                       kind="video"
@@ -1498,9 +1480,9 @@ export default function VideoEditPanel({
               </div>
             </div>
 
-            <div className="relative grid h-[76px] border-b border-white/[0.07]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
+            <div className="relative grid h-[92px] border-b border-white/[0.07]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
               <div className="sticky left-0 z-10 flex flex-col justify-center border-r border-white/[0.07] bg-[#0d1118] px-3">
-                <div className="text-[11px] font-semibold text-zinc-200">音频轴</div>
+                <div className="text-[11px] font-semibold text-zinc-200">A1</div>
                 <div className="mt-1 text-[10px] text-zinc-500">拖动对齐</div>
               </div>
               <div
@@ -1522,6 +1504,7 @@ export default function VideoEditPanel({
                   return (
                     <TimelineClip
                       key={clip.clipId}
+                      projectId={projectId}
                       clip={clip}
                       item={item}
                       kind="audio"
@@ -1546,6 +1529,7 @@ export default function VideoEditPanel({
               onPointerDown={beginPlayheadDrag}
             >
               <div className="-ml-1.5 h-3 w-3 rounded-sm bg-cyan-100" />
+            </div>
             </div>
           </div>
         </section>

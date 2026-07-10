@@ -12,6 +12,7 @@ from app.api.routes_nodes import router as nodes_router
 from app.api.routes_projects import router as projects_router
 from app.api.routes_tools import router as tools_router
 from app.api.routes_uploads import router as uploads_router
+from app.api.routes_video_editor import router as video_editor_router
 from app.api.routes_workflow import router as workflow_router
 from app.config import settings
 from app.db.session import init_db
@@ -88,6 +89,7 @@ app.include_router(media_router, prefix="/api/media", tags=["media"])
 app.include_router(models_router, prefix="/api/models", tags=["models"])
 app.include_router(tools_router, prefix="/api/tools", tags=["tools"])
 app.include_router(uploads_router, prefix="/api/uploads", tags=["uploads"])
+app.include_router(video_editor_router, prefix="/api/video-editor", tags=["video-editor"])
 app.include_router(workflow_router, prefix="/api/workflow", tags=["workflow"])
 
 
