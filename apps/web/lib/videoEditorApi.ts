@@ -76,6 +76,19 @@ export interface VideoEditorMarkerSpec {
   label: string
 }
 
+export interface VideoEditorVisualTransformSpec {
+  fit: "contain" | "cover"
+  position_x: number
+  position_y: number
+  scale: number
+  rotation_deg: number
+  opacity: number
+  crop_left: number
+  crop_top: number
+  crop_right: number
+  crop_bottom: number
+}
+
 export interface VideoEditorClipSpec {
   id: string
   track_id: string
@@ -89,6 +102,7 @@ export interface VideoEditorClipSpec {
   muted: boolean
   fade_in_frames: number
   fade_out_frames: number
+  visual_transform: VideoEditorVisualTransformSpec
 }
 
 export interface VideoEditorSequenceSpec {

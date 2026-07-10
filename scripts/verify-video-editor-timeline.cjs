@@ -463,6 +463,116 @@ async function main() {
     await seekTimelineSeconds(page, 0)
     const programMonitorControls = exactProgramFrameStep && exportFrameControlReady && realPlaybackResolution && playbackClockSynchronized && loopPlaybackFunctional
 
+    await videoClip.click()
+    await page.getByLabel("画面适配", { exact: true }).selectOption("cover")
+    await page.getByLabel("画面位置 X", { exact: true }).fill("8")
+    await page.getByLabel("画面位置 Y", { exact: true }).fill("-4")
+    await page.getByLabel("画面缩放", { exact: true }).fill("115")
+    await page.getByLabel("画面旋转", { exact: true }).fill("6")
+    await page.getByLabel("画面不透明度", { exact: true }).fill("85")
+    await page.getByLabel("画面裁剪左", { exact: true }).fill("6")
+    await page.getByLabel("画面裁剪上", { exact: true }).fill("3")
+    await page.getByLabel("画面裁剪右", { exact: true }).fill("4")
+    await page.getByLabel("画面裁剪下", { exact: true }).fill("2")
+    await page.waitForFunction(() => {
+      const monitor = document.querySelector('[data-openreel-program-gap]')
+      return monitor?.getAttribute("data-visual-fit") === "cover" &&
+        monitor?.getAttribute("data-visual-scale") === "1.15" &&
+        monitor?.getAttribute("data-visual-crop") === "0.03,0.04,0.02,0.06"
+    })
+    await page.waitForTimeout(900)
+    const transformedVisualState = await page.evaluate(() => {
+      const monitor = document.querySelector('[data-openreel-program-gap]')
+      const media = document.querySelector('[data-openreel-preview-visual="true"]')
+      return {
+        fit: monitor?.getAttribute("data-visual-fit") || "",
+        positionX: Number(monitor?.getAttribute("data-visual-position-x") || 0),
+        positionY: Number(monitor?.getAttribute("data-visual-position-y") || 0),
+        scale: Number(monitor?.getAttribute("data-visual-scale") || 0),
+        rotation: Number(monitor?.getAttribute("data-visual-rotation") || 0),
+        opacity: Number(monitor?.getAttribute("data-visual-opacity") || 0),
+        crop: monitor?.getAttribute("data-visual-crop") || "",
+        transformStyle: media?.style.transform || "",
+        clipPathStyle: media?.style.clipPath || "",
+        opacityStyle: media?.style.opacity || "",
+      }
+    })
+    const initialVideoClipId = await videoClip.getAttribute("data-clip-id")
+    const persistedVisualTransform = latestSequenceSpec?.clips?.find((clip) => clip.id === initialVideoClipId)?.visual_transform
+    const visualPreviewApplied = (
+      transformedVisualState.fit === "cover" &&
+      transformedVisualState.positionX === 0.08 &&
+      transformedVisualState.positionY === -0.04 &&
+      transformedVisualState.scale === 1.15 &&
+      transformedVisualState.rotation === 6 &&
+      transformedVisualState.opacity === 0.85 &&
+      transformedVisualState.crop === "0.03,0.04,0.02,0.06" &&
+      transformedVisualState.transformStyle.includes("translate(8%, -4%)") &&
+      transformedVisualState.transformStyle.includes("scale(1.15)") &&
+      transformedVisualState.transformStyle.includes("rotate(6deg)") &&
+      transformedVisualState.clipPathStyle.includes("inset(3% 4% 2% 6%)") &&
+      transformedVisualState.opacityStyle === "0.85"
+    )
+    const visualTransformPersisted = (
+      persistedVisualTransform?.fit === "cover" &&
+      persistedVisualTransform?.position_x === 0.08 &&
+      persistedVisualTransform?.position_y === -0.04 &&
+      persistedVisualTransform?.scale === 1.15 &&
+      persistedVisualTransform?.rotation_deg === 6 &&
+      persistedVisualTransform?.opacity === 0.85 &&
+      persistedVisualTransform?.crop_left === 0.06 &&
+      persistedVisualTransform?.crop_top === 0.03 &&
+      persistedVisualTransform?.crop_right === 0.04 &&
+      persistedVisualTransform?.crop_bottom === 0.02
+    )
+    await page.getByLabel("回放分辨率", { exact: true }).selectOption("half")
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector('[data-openreel-program-canvas="true"]')
+      return Number(canvas?.getAttribute("data-rendered-frames") || 0) >= 1 &&
+        canvas?.getAttribute("data-visual-signature") === "cover:0.08:-0.04:1.15:6:0.85:0.03:0.04:0.02:0.06"
+    })
+    const transformedReducedCanvasState = await page.evaluate(() => {
+      const canvas = document.querySelector('[data-openreel-program-canvas="true"]')
+      return {
+        width: Number(canvas?.width || 0),
+        height: Number(canvas?.height || 0),
+        renderedFrames: Number(canvas?.getAttribute("data-rendered-frames") || 0),
+        visualSignature: canvas?.getAttribute("data-visual-signature") || "",
+      }
+    })
+    const transformedReducedCanvas = (
+      transformedReducedCanvasState.width === 640 &&
+      transformedReducedCanvasState.height === 360 &&
+      transformedReducedCanvasState.renderedFrames >= 1 &&
+      transformedReducedCanvasState.visualSignature === "cover:0.08:-0.04:1.15:6:0.85:0.03:0.04:0.02:0.06"
+    )
+    await page.getByLabel("回放分辨率", { exact: true }).selectOption("full")
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-program-canvas="true"]').length === 0)
+    await page.getByRole("button", { name: "重置画面属性", exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-visual-scale") === "1")
+    const visualResetState = await page.locator('[data-openreel-program-gap]').evaluate((monitor) => ({
+      fit: monitor.getAttribute("data-visual-fit"),
+      scale: monitor.getAttribute("data-visual-scale"),
+      crop: monitor.getAttribute("data-visual-crop"),
+    }))
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction(() => document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-visual-scale") === "1.15")
+    const visualUndoRestored = true
+    await page.keyboard.press("Control+Shift+z")
+    await page.waitForFunction(() => document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-visual-scale") === "1")
+    const visualRedoReset = true
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction(() => document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-visual-scale") === "1.15")
+    await page.waitForTimeout(900)
+    const visualResetAndHistory = (
+      visualResetState.fit === "contain" &&
+      visualResetState.scale === "1" &&
+      visualResetState.crop === "0,0,0,0" &&
+      visualUndoRestored &&
+      visualRedoReset
+    )
+    const basicVisualControls = visualPreviewApplied && visualTransformPersisted && transformedReducedCanvas && visualResetAndHistory
+
     await dragHorizontally(page, audioClip, 80)
     await page.waitForTimeout(250)
     clips = await readClips(page)
@@ -1238,6 +1348,7 @@ async function main() {
       const a2 = document.querySelector('[data-openreel-track-id="a2"]')
       const a1 = document.querySelector('[data-openreel-track-id="a1"]')
       const marker = document.querySelector('[data-openreel-sequence-marker="true"]')
+      const monitor = document.querySelector('[data-openreel-program-gap]')
       const names = Array.from(document.querySelectorAll('[aria-label^="重命名轨道"]')).map((input) => input.value)
       return Boolean(
         v2?.getAttribute("data-track-locked") === "true" &&
@@ -1246,6 +1357,9 @@ async function main() {
         a2?.getAttribute("data-track-muted") === "true" &&
         Number(a1?.getAttribute("data-track-height") || 0) === expectedTrackHeight &&
         Number(marker?.getAttribute("data-marker-frame") || -1) === expectedMarkerFrame &&
+        monitor?.getAttribute("data-visual-fit") === "cover" &&
+        monitor?.getAttribute("data-visual-scale") === "1.15" &&
+        monitor?.getAttribute("data-visual-crop") === "0.03,0.04,0.02,0.06" &&
         names.includes("补充画面") &&
         names.includes("补充声音")
       )
@@ -1259,9 +1373,9 @@ async function main() {
       await page.keyboard.press("n")
       await page.evaluate(() => {
         const inspectorScroller = document.querySelector('[data-openreel-inspector-pane="true"] .overflow-y-auto')
-        const timecodeInspector = document.querySelector('[data-openreel-timecode-inspector="true"]')
-        if (inspectorScroller && timecodeInspector) {
-          inspectorScroller.scrollTop = Math.max(0, timecodeInspector.offsetTop - 72)
+        const visualInspector = document.querySelector('[data-openreel-visual-inspector="true"]')
+        if (inspectorScroller && visualInspector) {
+          inspectorScroller.scrollTop = Math.max(0, visualInspector.offsetTop - 62)
         }
       })
       await page.waitForTimeout(120)
@@ -1277,7 +1391,16 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: basicVisualControls && programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      basicVisualControls,
+      visualPreviewApplied,
+      visualTransformPersisted,
+      transformedReducedCanvas,
+      transformedReducedCanvasState,
+      visualResetAndHistory,
+      transformedVisualState,
+      persistedVisualTransform,
+      visualResetState,
       programMonitorControls,
       exactProgramFrameStep,
       initialProgramTimecode,

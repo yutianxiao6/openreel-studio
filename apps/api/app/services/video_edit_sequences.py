@@ -59,6 +59,27 @@ class SequenceMarker(BaseModel):
     label: str = Field(min_length=1, max_length=160)
 
 
+class SequenceVisualTransform(BaseModel):
+    fit: Literal["contain", "cover"] = "contain"
+    position_x: float = Field(default=0.0, ge=-2.0, le=2.0)
+    position_y: float = Field(default=0.0, ge=-2.0, le=2.0)
+    scale: float = Field(default=1.0, ge=0.1, le=4.0)
+    rotation_deg: float = Field(default=0.0, ge=-360.0, le=360.0)
+    opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+    crop_left: float = Field(default=0.0, ge=0.0, le=0.95)
+    crop_top: float = Field(default=0.0, ge=0.0, le=0.95)
+    crop_right: float = Field(default=0.0, ge=0.0, le=0.95)
+    crop_bottom: float = Field(default=0.0, ge=0.0, le=0.95)
+
+    @model_validator(mode="after")
+    def validate_crop(self) -> "SequenceVisualTransform":
+        if self.crop_left + self.crop_right >= 1.0:
+            raise ValueError("Horizontal crop must leave visible content")
+        if self.crop_top + self.crop_bottom >= 1.0:
+            raise ValueError("Vertical crop must leave visible content")
+        return self
+
+
 class SequenceClip(BaseModel):
     id: str = Field(min_length=1, max_length=240)
     track_id: str = Field(min_length=1, max_length=120)
@@ -72,6 +93,7 @@ class SequenceClip(BaseModel):
     muted: bool = False
     fade_in_frames: int = Field(default=0, ge=0)
     fade_out_frames: int = Field(default=0, ge=0)
+    visual_transform: SequenceVisualTransform = Field(default_factory=SequenceVisualTransform)
 
 
 class SequenceSpec(BaseModel):

@@ -43,6 +43,19 @@ type TrimMode = "normal" | "ripple" | "rolling"
 type PreviewScale = "fit" | "50" | "75" | "100"
 type PlaybackResolution = "full" | "half" | "quarter"
 
+interface VisualTransformState {
+  fit: "contain" | "cover"
+  positionX: number
+  positionY: number
+  scale: number
+  rotationDeg: number
+  opacity: number
+  cropLeft: number
+  cropTop: number
+  cropRight: number
+  cropBottom: number
+}
+
 interface TimelineClipState {
   clipId: string
   mediaId: string
@@ -56,6 +69,7 @@ interface TimelineClipState {
   muted?: boolean
   fadeInFrames?: number
   fadeOutFrames?: number
+  visualTransform: VisualTransformState
 }
 
 interface TimelineTrackState {
@@ -331,6 +345,100 @@ function clipsShareTimelineRange(a: TimelineClipState, b: TimelineClipState): bo
   return Boolean(a.syncGroupId && b.syncGroupId && a.syncGroupId === b.syncGroupId)
 }
 
+function defaultVisualTransform(): VisualTransformState {
+  return {
+    fit: "contain",
+    positionX: 0,
+    positionY: 0,
+    scale: 1,
+    rotationDeg: 0,
+    opacity: 1,
+    cropLeft: 0,
+    cropTop: 0,
+    cropRight: 0,
+    cropBottom: 0,
+  }
+}
+
+function normalizedVisualTransform(value?: Partial<VisualTransformState> | null): VisualTransformState {
+  const cropLeft = clamp(Number(value?.cropLeft || 0), 0, 0.95)
+  const cropRight = clamp(Number(value?.cropRight || 0), 0, 0.95 - cropLeft)
+  const cropTop = clamp(Number(value?.cropTop || 0), 0, 0.95)
+  const cropBottom = clamp(Number(value?.cropBottom || 0), 0, 0.95 - cropTop)
+  return {
+    fit: value?.fit === "cover" ? "cover" : "contain",
+    positionX: clamp(Number(value?.positionX || 0), -2, 2),
+    positionY: clamp(Number(value?.positionY || 0), -2, 2),
+    scale: clamp(Number(value?.scale || 1), 0.1, 4),
+    rotationDeg: clamp(Number(value?.rotationDeg || 0), -360, 360),
+    opacity: clamp(Number(value?.opacity ?? 1), 0, 1),
+    cropLeft,
+    cropTop,
+    cropRight,
+    cropBottom,
+  }
+}
+
+function cloneTimelineClip(clip: TimelineClipState): TimelineClipState {
+  return {
+    ...clip,
+    visualTransform: { ...clip.visualTransform },
+  }
+}
+
+function visualTransformStyle(value: VisualTransformState) {
+  return {
+    objectFit: value.fit,
+    opacity: value.opacity,
+    clipPath: `inset(${value.cropTop * 100}% ${value.cropRight * 100}% ${value.cropBottom * 100}% ${value.cropLeft * 100}%)`,
+    transform: `translate(${value.positionX * 100}%, ${value.positionY * 100}%) scale(${value.scale}) rotate(${value.rotationDeg}deg)`,
+    transformOrigin: "center center",
+  } as const
+}
+
+function drawProgramFrame(
+  context: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  width: number,
+  height: number,
+  value: VisualTransformState,
+) {
+  const sourceWidth = video.videoWidth
+  const sourceHeight = video.videoHeight
+  if (!sourceWidth || !sourceHeight) return
+  const fitScale = value.fit === "cover"
+    ? Math.max(width / sourceWidth, height / sourceHeight)
+    : Math.min(width / sourceWidth, height / sourceHeight)
+  const renderedWidth = sourceWidth * fitScale * value.scale
+  const renderedHeight = sourceHeight * fitScale * value.scale
+  const sourceX = sourceWidth * value.cropLeft
+  const sourceY = sourceHeight * value.cropTop
+  const sourceCropWidth = sourceWidth * (1 - value.cropLeft - value.cropRight)
+  const sourceCropHeight = sourceHeight * (1 - value.cropTop - value.cropBottom)
+  const destinationX = -renderedWidth / 2 + renderedWidth * value.cropLeft
+  const destinationY = -renderedHeight / 2 + renderedHeight * value.cropTop
+  const destinationWidth = renderedWidth * (1 - value.cropLeft - value.cropRight)
+  const destinationHeight = renderedHeight * (1 - value.cropTop - value.cropBottom)
+  context.save()
+  context.fillStyle = "#000"
+  context.fillRect(0, 0, width, height)
+  context.globalAlpha = value.opacity
+  context.translate(width / 2 + value.positionX * width, height / 2 + value.positionY * height)
+  context.rotate(value.rotationDeg * Math.PI / 180)
+  context.drawImage(
+    video,
+    sourceX,
+    sourceY,
+    sourceCropWidth,
+    sourceCropHeight,
+    destinationX,
+    destinationY,
+    destinationWidth,
+    destinationHeight,
+  )
+  context.restore()
+}
+
 function createClipId(mediaId: string): string {
   const random = typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID().slice(0, 8)
@@ -374,6 +482,7 @@ function createClip(
     muted: false,
     fadeInFrames: 0,
     fadeOutFrames: 0,
+    visualTransform: defaultVisualTransform(),
   }
 }
 
@@ -1504,8 +1613,8 @@ export default function VideoEditPanel({
     setSelectedMarkerId(null)
   }, [])
   const captureEditorSnapshot = useCallback((): EditorSnapshot => ({
-    videoClips: videoClipsRef.current.map((clip) => ({ ...clip })),
-    audioClips: audioClipsRef.current.map((clip) => ({ ...clip })),
+    videoClips: videoClipsRef.current.map(cloneTimelineClip),
+    audioClips: audioClipsRef.current.map(cloneTimelineClip),
     tracks: tracksRef.current.map((track) => ({ ...track })),
     markers: markersRef.current.map((marker) => ({ ...marker })),
   }), [])
@@ -1516,8 +1625,8 @@ export default function VideoEditPanel({
     })
   }, [])
   const applyEditorSnapshot = useCallback((snapshot: EditorSnapshot) => {
-    const nextVideoClips = snapshot.videoClips.map((clip) => ({ ...clip }))
-    const nextAudioClips = snapshot.audioClips.map((clip) => ({ ...clip }))
+    const nextVideoClips = snapshot.videoClips.map(cloneTimelineClip)
+    const nextAudioClips = snapshot.audioClips.map(cloneTimelineClip)
     const nextTracks = snapshot.tracks.map((track) => ({ ...track }))
     const nextMarkers = snapshot.markers.map((marker) => ({ ...marker }))
     videoClipsRef.current = nextVideoClips
@@ -1591,6 +1700,22 @@ export default function VideoEditPanel({
     (selectedSyncGroupId ? audioClips.find((clip) => clip.syncGroupId === selectedSyncGroupId) : undefined) ||
     audioClips[0]
   ), [audioClips, selectedClipId, selectedSyncGroupId])
+  const updateSelectedVisualTransform = useCallback((patch: Partial<VisualTransformState>) => {
+    if (!selectedVideoClip) return
+    setVideoClips((clips) => clips.map((clip) => (
+      clip.clipId === selectedVideoClip.clipId
+        ? {
+            ...clip,
+            visualTransform: normalizedVisualTransform({ ...clip.visualTransform, ...patch }),
+          }
+        : clip
+    )))
+  }, [selectedVideoClip])
+  const resetSelectedVisualTransform = useCallback(() => {
+    if (!selectedVideoClip) return
+    recordUndoSnapshot()
+    updateSelectedVisualTransform(defaultVisualTransform())
+  }, [recordUndoSnapshot, selectedVideoClip, updateSelectedVisualTransform])
   const currentFrame = Math.round(currentTime * framesPerSecond)
   const currentVideoClip = useMemo(() => {
     for (const track of videoTracks) {
@@ -1621,6 +1746,14 @@ export default function VideoEditPanel({
   const currentAudioItem = currentAudioClip ? mediaById.get(currentAudioClip.mediaId) : undefined
   const currentAudioTrack = currentAudioClip ? trackById.get(currentAudioClip.trackId) : undefined
   const selectedVideoItem = selectedVideoClip ? mediaById.get(selectedVideoClip.mediaId) : undefined
+  const currentVisualTransform = useMemo(
+    () => normalizedVisualTransform(currentVideoClip?.visualTransform),
+    [currentVideoClip?.visualTransform],
+  )
+  const currentVisualTransformStyle = useMemo(
+    () => visualTransformStyle(currentVisualTransform),
+    [currentVisualTransform],
+  )
   const primaryMediaIndex = sourceVideoItem ? mediaIndexes[sourceVideoItem.id] : undefined
   const maxPxPerSecond = Math.max(220, framesPerSecond * FRAME_DETAIL_WIDTH)
   const playAudioThroughVideo = Boolean(
@@ -1688,6 +1821,18 @@ export default function VideoEditPanel({
       muted: Boolean(clip.muted),
       fade_in_frames: clip.fadeInFrames || 0,
       fade_out_frames: clip.fadeOutFrames || 0,
+      visual_transform: {
+        fit: clip.visualTransform.fit,
+        position_x: clip.visualTransform.positionX,
+        position_y: clip.visualTransform.positionY,
+        scale: clip.visualTransform.scale,
+        rotation_deg: clip.visualTransform.rotationDeg,
+        opacity: clip.visualTransform.opacity,
+        crop_left: clip.visualTransform.cropLeft,
+        crop_top: clip.visualTransform.cropTop,
+        crop_right: clip.visualTransform.cropRight,
+        crop_bottom: clip.visualTransform.cropBottom,
+      },
     })
     return {
       schema_version: "openreel.video_sequence.v1",
@@ -1793,6 +1938,18 @@ export default function VideoEditPanel({
         muted: clip.muted,
         fadeInFrames: clip.fade_in_frames,
         fadeOutFrames: clip.fade_out_frames,
+        visualTransform: normalizedVisualTransform({
+          fit: clip.visual_transform?.fit,
+          positionX: clip.visual_transform?.position_x,
+          positionY: clip.visual_transform?.position_y,
+          scale: clip.visual_transform?.scale,
+          rotationDeg: clip.visual_transform?.rotation_deg,
+          opacity: clip.visual_transform?.opacity,
+          cropLeft: clip.visual_transform?.crop_left,
+          cropTop: clip.visual_transform?.crop_top,
+          cropRight: clip.visual_transform?.crop_right,
+          cropBottom: clip.visual_transform?.crop_bottom,
+        }),
       }))
       const restoredTracks = document.spec.tracks.map((track): TimelineTrackState => ({
         id: track.id,
@@ -2049,9 +2206,24 @@ export default function VideoEditPanel({
     let callbackId = 0
     let animationFrame = 0
     let cancelled = false
+    let renderedFrames = 0
     const draw = () => {
       if (cancelled || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
-      context.drawImage(video, 0, 0, width, height)
+      drawProgramFrame(context, video, width, height, currentVisualTransform)
+      renderedFrames += 1
+      canvas.dataset.renderedFrames = String(renderedFrames)
+      canvas.dataset.visualSignature = [
+        currentVisualTransform.fit,
+        currentVisualTransform.positionX,
+        currentVisualTransform.positionY,
+        currentVisualTransform.scale,
+        currentVisualTransform.rotationDeg,
+        currentVisualTransform.opacity,
+        currentVisualTransform.cropTop,
+        currentVisualTransform.cropRight,
+        currentVisualTransform.cropBottom,
+        currentVisualTransform.cropLeft,
+      ].join(":")
     }
     const drawFrame = () => {
       draw()
@@ -2071,7 +2243,7 @@ export default function VideoEditPanel({
       if (callbackId) video.cancelVideoFrameCallback(callbackId)
       if (animationFrame) window.cancelAnimationFrame(animationFrame)
     }
-  }, [currentVideoClip?.clipId, currentVideoItem, mediaIndexes, playbackResolution])
+  }, [currentVideoClip?.clipId, currentVideoItem, currentVisualTransform, mediaIndexes, playbackResolution])
 
   const timeToFrame = useCallback((time: number) => (
     Math.max(0, Math.round(time * framesPerSecond))
@@ -3514,14 +3686,29 @@ export default function VideoEditPanel({
                 data-openreel-program-gap={programVideoGap || programAudioGap ? "true" : "false"}
                 data-program-video-gap={programVideoGap ? "true" : "false"}
                 data-program-audio-gap={programAudioGap ? "true" : "false"}
+                data-visual-fit={currentVisualTransform.fit}
+                data-visual-position-x={currentVisualTransform.positionX}
+                data-visual-position-y={currentVisualTransform.positionY}
+                data-visual-scale={currentVisualTransform.scale}
+                data-visual-rotation={currentVisualTransform.rotationDeg}
+                data-visual-opacity={currentVisualTransform.opacity}
+                data-visual-crop={`${currentVisualTransform.cropTop},${currentVisualTransform.cropRight},${currentVisualTransform.cropBottom},${currentVisualTransform.cropLeft}`}
               >
                 {currentVideoItem ? (
                   currentVideoItem.type === "image" ? (
-                    <img src={currentVideoItem.src} alt="" className="h-full w-full object-contain" draggable={false} />
+                    <img
+                      src={currentVideoItem.src}
+                      alt=""
+                      className="h-full w-full object-contain"
+                      style={currentVisualTransformStyle}
+                      draggable={false}
+                      data-openreel-preview-visual="true"
+                    />
                   ) : (
                     <video
                       ref={videoRef}
                       data-openreel-preview-video="true"
+                      data-openreel-preview-visual="true"
                       src={currentVideoItem.src || videoUrl}
                       muted={!playAudioThroughVideo || Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)}
                       preload="metadata"
@@ -3529,6 +3716,9 @@ export default function VideoEditPanel({
                         "object-contain [color-scheme:dark]",
                         playbackResolution === "full" ? "h-full w-full" : "pointer-events-none absolute h-px w-px opacity-0",
                       )}
+                      style={playbackResolution === "full"
+                        ? currentVisualTransformStyle
+                        : { ...currentVisualTransformStyle, opacity: 0 }}
                       onLoadedMetadata={(event) => {
                         const nextDuration = Number(event.currentTarget.duration || 0)
                         registerSourceDuration(currentVideoItem.src, nextDuration)
@@ -3879,6 +4069,154 @@ export default function VideoEditPanel({
                   边缘修剪受源素材范围约束。切割会同步处理已链接的画面与音频。
                 </div>
               </section>
+
+              {selectedVideoClip && (
+                <section className="border-b border-[#34383f] px-3 py-2.5" data-openreel-visual-inspector="true">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div>
+                      <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">画面</div>
+                      <div className="mt-0.5 font-mono text-[7px] text-[#666d76]">MOTION · CROP · OPACITY</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={resetSelectedVisualTransform}
+                      className="h-5 border border-[#3b4148] bg-[#25282d] px-2 text-[8px] text-[#a6abb2] hover:border-[#56606a] hover:bg-[#30343a] hover:text-white"
+                      aria-label="重置画面属性"
+                      data-openreel-reset-visual="true"
+                    >
+                      重置
+                    </button>
+                  </div>
+                  <div className="space-y-2 border border-[#30343a] bg-[#17191d] p-2">
+                    <label className="flex items-center justify-between gap-2 text-[8px] text-[#7f858e]">
+                      <span>适配</span>
+                      <select
+                        value={selectedVideoClip.visualTransform.fit}
+                        onFocus={recordUndoSnapshot}
+                        onChange={(event) => updateSelectedVisualTransform({ fit: event.target.value === "cover" ? "cover" : "contain" })}
+                        className="h-5 w-24 border border-[#3a3f46] bg-[#24272c] px-1 font-mono text-[8px] text-[#d5d9de] outline-none focus:border-[#579bd3]"
+                        aria-label="画面适配"
+                      >
+                        <option value="contain">适合</option>
+                        <option value="cover">填充</option>
+                      </select>
+                    </label>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <label className="text-[7px] text-[#737a83]">
+                        <span className="mb-0.5 block">位置 X</span>
+                        <span className="flex items-center border border-[#3a3f46] bg-[#24272c] focus-within:border-[#579bd3]">
+                          <input
+                            type="number"
+                            min="-200"
+                            max="200"
+                            step="0.5"
+                            value={Number((selectedVideoClip.visualTransform.positionX * 100).toFixed(1))}
+                            onFocus={recordUndoSnapshot}
+                            onChange={(event) => updateSelectedVisualTransform({ positionX: Number(event.target.value) / 100 })}
+                            className="h-5 min-w-0 flex-1 bg-transparent px-1 text-right font-mono text-[8px] text-[#d5d9de] outline-none"
+                            aria-label="画面位置 X"
+                          />
+                          <span className="pr-1 text-[7px] text-[#69717a]">%</span>
+                        </span>
+                      </label>
+                      <label className="text-[7px] text-[#737a83]">
+                        <span className="mb-0.5 block">位置 Y</span>
+                        <span className="flex items-center border border-[#3a3f46] bg-[#24272c] focus-within:border-[#579bd3]">
+                          <input
+                            type="number"
+                            min="-200"
+                            max="200"
+                            step="0.5"
+                            value={Number((selectedVideoClip.visualTransform.positionY * 100).toFixed(1))}
+                            onFocus={recordUndoSnapshot}
+                            onChange={(event) => updateSelectedVisualTransform({ positionY: Number(event.target.value) / 100 })}
+                            className="h-5 min-w-0 flex-1 bg-transparent px-1 text-right font-mono text-[8px] text-[#d5d9de] outline-none"
+                            aria-label="画面位置 Y"
+                          />
+                          <span className="pr-1 text-[7px] text-[#69717a]">%</span>
+                        </span>
+                      </label>
+                    </div>
+                    <label className="flex items-center gap-2">
+                      <span className="w-10 text-[8px] text-[#777d86]">缩放</span>
+                      <input
+                        type="range"
+                        min="10"
+                        max="400"
+                        step="1"
+                        value={selectedVideoClip.visualTransform.scale * 100}
+                        onFocus={recordUndoSnapshot}
+                        onPointerDown={recordUndoSnapshot}
+                        onChange={(event) => updateSelectedVisualTransform({ scale: Number(event.target.value) / 100 })}
+                        className="h-1 min-w-0 flex-1 accent-[#659ac0]"
+                        aria-label="画面缩放"
+                      />
+                      <span className="w-10 text-right font-mono text-[8px] text-[#c8ccd1]">{Math.round(selectedVideoClip.visualTransform.scale * 100)}%</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <span className="w-10 text-[8px] text-[#777d86]">旋转</span>
+                      <input
+                        type="range"
+                        min="-180"
+                        max="180"
+                        step="0.5"
+                        value={selectedVideoClip.visualTransform.rotationDeg}
+                        onFocus={recordUndoSnapshot}
+                        onPointerDown={recordUndoSnapshot}
+                        onChange={(event) => updateSelectedVisualTransform({ rotationDeg: Number(event.target.value) })}
+                        className="h-1 min-w-0 flex-1 accent-[#659ac0]"
+                        aria-label="画面旋转"
+                      />
+                      <span className="w-10 text-right font-mono text-[8px] text-[#c8ccd1]">{selectedVideoClip.visualTransform.rotationDeg.toFixed(1)}°</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <span className="w-10 text-[8px] text-[#777d86]">不透明</span>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={selectedVideoClip.visualTransform.opacity * 100}
+                        onFocus={recordUndoSnapshot}
+                        onPointerDown={recordUndoSnapshot}
+                        onChange={(event) => updateSelectedVisualTransform({ opacity: Number(event.target.value) / 100 })}
+                        className="h-1 min-w-0 flex-1 accent-[#659ac0]"
+                        aria-label="画面不透明度"
+                      />
+                      <span className="w-10 text-right font-mono text-[8px] text-[#c8ccd1]">{Math.round(selectedVideoClip.visualTransform.opacity * 100)}%</span>
+                    </label>
+                    <div className="border-t border-[#30343a] pt-2">
+                      <div className="mb-1.5 flex items-center justify-between text-[7px] uppercase tracking-[0.08em] text-[#666d76]">
+                        <span>矩形裁剪</span>
+                        <span>%</span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-1">
+                        {([
+                          ["左", "cropLeft", "画面裁剪左"],
+                          ["上", "cropTop", "画面裁剪上"],
+                          ["右", "cropRight", "画面裁剪右"],
+                          ["下", "cropBottom", "画面裁剪下"],
+                        ] as const).map(([label, key, ariaLabel]) => (
+                          <label key={key} className="min-w-0 text-center text-[7px] text-[#737a83]">
+                            <span className="mb-0.5 block">{label}</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="95"
+                              step="0.5"
+                              value={Number((selectedVideoClip.visualTransform[key] * 100).toFixed(1))}
+                              onFocus={recordUndoSnapshot}
+                              onChange={(event) => updateSelectedVisualTransform({ [key]: Number(event.target.value) / 100 })}
+                              className="h-5 w-full border border-[#3a3f46] bg-[#24272c] px-1 text-center font-mono text-[8px] text-[#d5d9de] outline-none focus:border-[#579bd3]"
+                              aria-label={ariaLabel}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              )}
 
               {selectedAudioClip && (
                 <section className="border-b border-[#34383f] px-3 py-2.5">

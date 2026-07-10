@@ -15,6 +15,7 @@ def sequence_spec(
     gain_db: float = 0.0,
     track_height_px: int = 76,
     marker_frame: int | None = None,
+    visual_transform: dict | None = None,
 ) -> video_edit_sequences.SequenceSpec:
     return video_edit_sequences.SequenceSpec.model_validate({
         "schema_version": video_edit_sequences.SEQUENCE_SCHEMA_VERSION,
@@ -45,6 +46,7 @@ def sequence_spec(
                 "source_in_frame": 0,
                 "source_frame_count": 361,
                 "linked_group_id": "link-1",
+                "visual_transform": visual_transform or {},
             },
             {
                 "id": "clip-audio-1",
@@ -94,12 +96,31 @@ async def test_sequence_persistence_revision_conflict_history_and_restore(tmp_pa
                 project_id="project-1",
                 node_id="video-1",
                 expected_revision=1,
-                spec=sequence_spec(gain_db=-6.0, track_height_px=112, marker_frame=48),
+                spec=sequence_spec(
+                    gain_db=-6.0,
+                    track_height_px=112,
+                    marker_frame=48,
+                    visual_transform={
+                        "fit": "cover",
+                        "position_x": 0.1,
+                        "position_y": -0.05,
+                        "scale": 1.25,
+                        "rotation_deg": 12.0,
+                        "opacity": 0.8,
+                        "crop_left": 0.1,
+                        "crop_top": 0.05,
+                        "crop_right": 0.04,
+                        "crop_bottom": 0.03,
+                    },
+                ),
             )
             assert updated.revision == 2
             assert updated.spec.clips[1].gain_db == -6.0
             assert updated.spec.tracks[0].height_px == 112
             assert updated.spec.markers[0].frame == 48
+            assert updated.spec.clips[0].visual_transform.fit == "cover"
+            assert updated.spec.clips[0].visual_transform.scale == 1.25
+            assert updated.spec.clips[0].visual_transform.crop_left == 0.1
 
             with pytest.raises(video_edit_sequences.SequenceRevisionConflict) as conflict:
                 await video_edit_sequences.save_sequence(
@@ -138,9 +159,13 @@ def test_sequence_contract_rejects_unknown_tracks_and_source_overflow() -> None:
     legacy_payload.pop("markers")
     for track in legacy_payload["tracks"]:
         track.pop("height_px")
+    for clip in legacy_payload["clips"]:
+        clip.pop("visual_transform")
     legacy = video_edit_sequences.SequenceSpec.model_validate(legacy_payload)
     assert legacy.markers == []
     assert all(track.height_px == 76 for track in legacy.tracks)
+    assert all(clip.visual_transform.scale == 1.0 for clip in legacy.clips)
+    assert all(clip.visual_transform.opacity == 1.0 for clip in legacy.clips)
 
     payload = sequence_spec().model_dump(mode="json")
     payload["clips"][0]["track_id"] = "missing"
@@ -156,4 +181,9 @@ def test_sequence_contract_rejects_unknown_tracks_and_source_overflow() -> None:
     payload = sequence_spec(marker_frame=48).model_dump(mode="json")
     payload["markers"].append({"id": "marker-1", "frame": 72, "label": "duplicate"})
     with pytest.raises(ValidationError, match="Marker ids must be unique"):
+        video_edit_sequences.SequenceSpec.model_validate(payload)
+
+    payload = sequence_spec().model_dump(mode="json")
+    payload["clips"][0]["visual_transform"].update({"crop_left": 0.6, "crop_right": 0.4})
+    with pytest.raises(ValidationError, match="Horizontal crop must leave visible content"):
         video_edit_sequences.SequenceSpec.model_validate(payload)
