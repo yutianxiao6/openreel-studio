@@ -8,7 +8,12 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.db.models import WorkflowNode
 from app.db.session import get_session
-from app.services import media_operations, timeline_thumbnails, video_edit_sequences
+from app.services import (
+    media_operations,
+    timeline_media_index,
+    timeline_thumbnails,
+    video_edit_sequences,
+)
 
 
 router = APIRouter()
@@ -128,6 +133,78 @@ async def restore_video_edit_sequence(
         ) from exc
     except video_edit_sequences.SequenceNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{project_id}/nodes/{node_id}/media-index")
+async def get_video_media_index(
+    project_id: str,
+    node_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    node = await _load_video_node(db, project_id=project_id, node_id=node_id)
+    try:
+        source = await media_operations.media_path_for_node(project_id, node, "video")
+        manifest = await timeline_media_index.ensure_media_index(project_id, source)
+    except (media_operations.MediaOperationError, timeline_media_index.TimelineMediaIndexError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return manifest.summary()
+
+
+@router.get("/{project_id}/nodes/{node_id}/frames")
+async def get_video_frame_index_page(
+    project_id: str,
+    node_id: str,
+    start: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=2_000),
+    db: AsyncSession = Depends(get_session),
+):
+    node = await _load_video_node(db, project_id=project_id, node_id=node_id)
+    try:
+        source = await media_operations.media_path_for_node(project_id, node, "video")
+        manifest = await timeline_media_index.ensure_media_index(project_id, source)
+    except (media_operations.MediaOperationError, timeline_media_index.TimelineMediaIndexError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return timeline_media_index.frame_page(manifest, start=start, limit=limit)
+
+
+@router.get("/{project_id}/nodes/{node_id}/frame-tiles/{tile_index}")
+async def get_video_frame_tile(
+    project_id: str,
+    node_id: str,
+    tile_index: int,
+    columns: int = Query(default=8, ge=1, le=16),
+    rows: int = Query(default=4, ge=1, le=8),
+    frame_width: int = Query(default=96, ge=48, le=192),
+    frame_height: int = Query(default=54, ge=28, le=108),
+    db: AsyncSession = Depends(get_session),
+):
+    node = await _load_video_node(db, project_id=project_id, node_id=node_id)
+    try:
+        source = await media_operations.media_path_for_node(project_id, node, "video")
+        tile, manifest, start_frame, actual_count = await timeline_media_index.ensure_frame_tile(
+            project_id,
+            source,
+            tile_index=tile_index,
+            columns=columns,
+            rows=rows,
+            frame_width=frame_width,
+            frame_height=frame_height,
+        )
+    except (media_operations.MediaOperationError, timeline_media_index.TimelineMediaIndexError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(
+        path=str(tile),
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "private, max-age=86400, immutable",
+            "Content-Disposition": f'inline; filename="{tile.name}"',
+            "X-OpenReel-Cache-Key": manifest.cache_key,
+            "X-OpenReel-Start-Frame": str(start_frame),
+            "X-OpenReel-Frame-Count": str(actual_count),
+            "X-OpenReel-Tile-Columns": str(columns),
+            "X-OpenReel-Tile-Rows": str(rows),
+        },
+    )
 
 
 @router.get("/{project_id}/nodes/{node_id}/timeline-sprite")
