@@ -6169,16 +6169,16 @@ function NodeCanvasContextPanel({
               aria-haspopup="dialog"
               onClick={() => setMediaParameterDialogOpen((value) => !value)}
               onPointerDown={(event) => event.stopPropagation()}
-	              className={`flex h-7 min-w-[160px] flex-1 items-center gap-1.5 rounded-md border px-2 text-left text-[11px] font-medium shadow-inner shadow-black/20 transition ${
+              className={`flex h-7 min-w-[160px] flex-1 items-center gap-1.5 rounded-md border px-2 text-left text-[11px] font-medium shadow-inner shadow-black/20 transition ${
                 mediaParameterDialogOpen
-	                  ? "border-zinc-100 bg-zinc-100 text-zinc-950"
-	                  : "border-white/[0.08] bg-[#1f1f1f] text-zinc-100 hover:border-white/[0.14] hover:bg-[#282828]"
-	              }`}
-	              title={mediaParameterSummary || "生成参数"}
-	            >
-              <span className={`h-3 w-3 shrink-0 rounded-[3px] border ${mediaParameterDialogOpen ? "border-zinc-800" : "border-zinc-300/70"}`} />
+                  ? "border-white/[0.28] bg-[#303030] text-zinc-100 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]"
+                  : "border-white/[0.08] bg-[#1f1f1f] text-zinc-100 hover:border-white/[0.14] hover:bg-[#282828]"
+              }`}
+              title={mediaParameterSummary || "生成参数"}
+            >
+              <span className={`h-3 w-3 shrink-0 rounded-[3px] border ${mediaParameterDialogOpen ? "border-zinc-200/80" : "border-zinc-300/70"}`} />
 	              <span className="min-w-0 flex-1 truncate">{mediaParameterSummary || "生成参数"}</span>
-              <span className={`shrink-0 ${mediaParameterDialogOpen ? "text-zinc-700" : "text-zinc-500"}`}>⌄</span>
+              <span className={`shrink-0 ${mediaParameterDialogOpen ? "text-zinc-300" : "text-zinc-500"}`}>⌄</span>
 	            </button>
 	          )}
 	          {(isImage || isVideo) && (
