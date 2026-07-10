@@ -107,6 +107,10 @@ interface VideoDurationSummary {
   step?: number | string | null
 }
 
+// Product fallback only. A declared provider, model profile, or protocol duration
+// always takes precedence over this editable 5–15 second range.
+const DEFAULT_VIDEO_DURATION_RULE: VideoDurationSummary = { min: 5, max: 15, step: 1 }
+
 interface VideoProtocolModeSummary {
   label?: string
   prompt_required?: boolean | null
@@ -2731,6 +2735,15 @@ function mergeVideoDurationRule(...items: Array<VideoDurationSummary | undefined
   }, {})
 }
 
+function hasDeclaredVideoDurationRule(rule: VideoDurationSummary): boolean {
+  return finiteNumber(rule.min) !== undefined
+    || finiteNumber(rule.max) !== undefined
+    || (Array.isArray(rule.allowed_values) && rule.allowed_values.some((value) => {
+      const parsed = finiteNumber(value)
+      return parsed !== undefined && parsed > 0
+    }))
+}
+
 function videoModeLimitHint(mode: string, config?: VideoProtocolModeSummary, durationRule?: VideoDurationSummary): string | undefined {
   const lines: string[] = []
   const fullLabel = String(config?.label || "").trim()
@@ -2818,7 +2831,7 @@ function videoDurationRuleForProvider(
   const allowedValues = ["supported_durations", "duration_values", "allowed_durations"]
     .map((key) => params[key])
     .find((value) => Array.isArray(value))
-  return mergeVideoDurationRule(
+  const rule = mergeVideoDurationRule(
     protocol?.duration,
     profile?.duration,
     modeConfig?.duration,
@@ -2829,6 +2842,7 @@ function videoDurationRuleForProvider(
       allowed_values: Array.isArray(allowedValues) ? allowedValues : undefined,
     },
   )
+  return hasDeclaredVideoDurationRule(rule) ? rule : DEFAULT_VIDEO_DURATION_RULE
 }
 
 function videoDurationBounds(rule: VideoDurationSummary): { min?: number; max?: number; step?: number; allowed: number[] } {

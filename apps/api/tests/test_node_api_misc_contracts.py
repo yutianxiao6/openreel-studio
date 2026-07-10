@@ -3097,6 +3097,16 @@ async def test_video_http_v1_t8_protocol_rejects_1080p_long_duration():
     assert error["supported_resolutions"] == ["720p"]
 
 
+def test_video_http_v1_duration_uses_product_default_when_config_is_missing():
+    assert media_provider._video_http_v1_duration(5, {}, {}, {}) == (5, None)
+    assert media_provider._video_http_v1_duration(15, {}, {}, {}) == (15, None)
+
+    duration, error = media_provider._video_http_v1_duration(16, {}, {}, {})
+
+    assert duration is None
+    assert error == "video_http_v1 duration 只支持 5-15 秒"
+
+
 @pytest.mark.asyncio
 async def test_video_http_v1_xai_protocol_uses_first_image_url():
     provider = _video_http_provider("grok-imagine-video-1.5", "xai_grok_imagine_video_1_5")

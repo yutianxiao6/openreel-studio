@@ -2070,6 +2070,10 @@ def _video_http_v1_duration(
         return duration, None
     minimum = _coerce_int(rules.get("min") or rules.get("duration_min"))
     maximum = _coerce_int(rules.get("max") or rules.get("duration_max"))
+    # Product fallback, not a model capability claim: use the same editable
+    # 5–15 second range as the node panel only when no duration rule exists.
+    if minimum is None and maximum is None and not allowed:
+        minimum, maximum = 5, 15
     if minimum is not None or maximum is not None:
         lower = minimum if minimum is not None else duration
         upper = maximum if maximum is not None else duration
