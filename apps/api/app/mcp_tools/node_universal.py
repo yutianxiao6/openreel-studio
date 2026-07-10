@@ -231,7 +231,7 @@ _NODE_FIELD_SCHEMA: dict[str, dict] = {
         "required": ["prompt", "aspect_ratio", "resolution"],
         "optional": [
             "title", "description", "quality",
-            "reference_images", "references", "depends_on", "model", "seed",
+            "reference_images", "references", "depends_on", "seed",
             "purpose", "prompt_source",
         ],
         "description": "通用图片节点。模型必须自己写最终图片 prompt、aspect_ratio 和精确像素 resolution；后端只按 prompt/fields/references 调图片服务，不判断它是人物、场景、分镜、首尾帧或故事模板。",
@@ -241,7 +241,7 @@ _NODE_FIELD_SCHEMA: dict[str, dict] = {
         "optional": [
             "title", "description", "duration_seconds", "aspect_ratio", "resolution",
             "reference_images", "reference_videos", "reference_audios", "media_references",
-            "references", "depends_on", "model", "video_mode", "mode",
+            "references", "depends_on", "video_mode", "mode",
             "first_frame_asset_id", "last_frame_asset_id",
             "generate_audio", "watermark", "return_last_frame", "seed",
             "priority", "execution_expires_after", "safety_identifier", "tools",
@@ -255,9 +255,9 @@ _NODE_FIELD_SCHEMA: dict[str, dict] = {
             "title", "description", "style", "instrumental", "format", "duration_seconds",
             "voice", "speed", "instructions",
             "negative_tags", "custom_mode", "callback_url",
-            "references", "depends_on", "model",
+            "references", "depends_on",
         ],
-        "description": "通用纯音频节点。模型必须自己写最终音频 prompt；fields.model 可填音频 Provider 名或模型名；TTS 语音可写 voice/speed/instructions，音乐可写 style/instrumental；后端只按 prompt/fields 调已配置的 audio provider。",
+        "description": "通用纯音频节点。模型必须自己写最终音频 prompt；TTS 语音可写 voice/speed/instructions，音乐可写 style/instrumental；后端只按 prompt/fields 调已配置的 audio provider。",
     },
 }
 
@@ -268,7 +268,7 @@ def _prompt_guidance_for_type(node_type: str) -> dict[str, Any] | None:
             "required_before_prompt": [
                 "先理解图片用途:人物/场景/宫格分镜/单张分镜/首尾帧/故事模板。",
                 "按当前 skill 的要求自己写最终图片 prompt；用户自定义写法只放进 skill。",
-                "创建 image 节点必须写 fields.aspect_ratio 和精确像素 fields.resolution；不要写 2k/4k/8k。16:9 常用 2560x1440，最高 3840x2160；9:16 常用 1440x2560，最高 2160x3840。",
+                "创建 image 节点必须写 fields.aspect_ratio 和精确像素 fields.resolution；不要写 1k/2k/4k 这种档位。16:9 常用 1920x1080；9:16 常用 1080x1920。",
             ],
             "record_fields": [
                 "fields.prompt_source",
@@ -360,15 +360,201 @@ async def _merge_stage_into_fusion(
         # 节点已不存在,构造空 fusion 返回防止上层崩
         return {"type": "fusion", "subject": subj, "stages": []}
     existing = node.get("output") if isinstance(node, dict) else None
+    raw_existing = existing
+    project_id = str(node.get("project_id") or "") if isinstance(node, dict) else ""
     if isinstance(existing, str):
         try:
             existing = json.loads(existing)
         except (json.JSONDecodeError, TypeError):
             existing = None
+            raw_existing = raw_existing.strip() if isinstance(raw_existing, str) else raw_existing
+
+    def _media_from_output(value: Any) -> dict[str, str]:
+        if isinstance(value, list):
+            for item in value:
+                parsed = _media_from_output(item)
+                if parsed:
+                    return parsed
+            return {}
+        if not isinstance(value, dict):
+            if isinstance(value, str):
+                text = value.strip()
+                if text and (text.startswith(("http://", "https://")) or text.startswith("/")):
+                    return {"url": text}
+                if text.startswith("{") or text.startswith("["):
+                    try:
+                        parsed = json.loads(text)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = None
+                    else:
+                        return _media_from_output(parsed)
+            return {}
+        direct = {
+            "local_url": value.get("local_url"),
+            "url": value.get("url"),
+            "remote_url": value.get("remote_url"),
+            "composite_url": value.get("composite_url"),
+            "thumbnail_url": value.get("thumbnail_url"),
+            "poster": value.get("poster"),
+            "last_frame_url": value.get("last_frame_url"),
+        }
+        if (
+            not any(
+                isinstance(value_, str) and value_.strip()
+                for value_ in (direct["local_url"], direct["url"], direct["remote_url"])
+            )
+            and isinstance(value, dict)
+        ):
+            for fallback_key in ("composite_url", "thumbnail_url", "poster", "last_frame_url"):
+                fallback_value = direct.get(fallback_key)
+                if isinstance(fallback_value, str) and fallback_value.strip():
+                    direct["url"] = fallback_value.strip()
+                    break
+        if not any(isinstance(url, str) and url for url in direct.values()):
+            for key in ("output", "result", "images", "data", "history", "media_history"):
+                if key not in value:
+                    continue
+                candidate = _media_from_output(value.get(key))
+                if candidate:
+                    direct.update(candidate)
+                    break
+
+        if not any(isinstance(url, str) and url for url in direct.values()):
+            path_candidates = [
+                value.get("path"),
+                value.get("local_path"),
+            ]
+            source_path = None
+            for path_candidate in path_candidates:
+                if isinstance(path_candidate, str) and path_candidate.strip():
+                    source_path = path_candidate.strip()
+                    break
+            if source_path:
+                path = Path(source_path).expanduser()
+                if project_id and not path.is_absolute():
+                    path = _storage_root() / project_id / path
+                if path.exists() and path.is_file():
+                    local_url = _local_url_for_storage_path(project_id, path)
+                    if local_url:
+                        direct["local_url"] = local_url
+                        direct["url"] = local_url
+                        direct["local_path"] = str(path)
+                    else:
+                        direct["local_path"] = str(path)
+                        direct["url"] = str(path)
+        if not any(isinstance(url, str) and url for url in direct.values()):
+            images = value.get("images")
+            if isinstance(images, list) and images:
+                first = images[0]
+                if isinstance(first, dict):
+                    direct.update({
+                        "local_url": first.get("local_url"),
+                        "url": first.get("url"),
+                        "remote_url": first.get("remote_url"),
+                    })
+        meta: dict[str, str] = {}
+        for key in ("size", "size_requested", "size_final", "aspect_ratio", "quality"):
+            val = value.get(key)
+            if isinstance(val, str) and val.strip():
+                meta[key] = val.strip()
+        for key in ("local_url", "url", "remote_url", "local_path", "path"):
+            val = direct.get(key)
+            if isinstance(val, str) and val.strip():
+                meta[key] = val.strip()
+        for key in ("composite_url", "thumbnail_url", "poster", "last_frame_url"):
+            val = direct.get(key)
+            if isinstance(val, str) and val.strip():
+                meta[key] = val.strip()
+        for key in ("local_path", "path"):
+            raw = value.get(key)
+            if isinstance(raw, str) and raw.strip() and "local_path" not in meta:
+                meta[key] = raw.strip()
+        return meta
+
+    def _is_image_stage_name(name: Any) -> bool:
+        text = str(name or "").strip()
+        if not text:
+            return False
+        if re.search(r"提示词|prompt", text, flags=re.IGNORECASE):
+            return False
+        return bool(re.search(r"图|首帧|尾帧|模板|参考|image|storyboard|output|img", text, flags=re.IGNORECASE))
+
+    def _stage_has_image_url(stage: dict) -> bool:
+        return any(
+            isinstance(value, str) and value.strip()
+            for value in (
+                stage.get("url"),
+                stage.get("local_url"),
+                stage.get("remote_url"),
+                stage.get("composite_url"),
+                stage.get("thumbnail_url"),
+                stage.get("poster"),
+                stage.get("last_frame_url"),
+            )
+        )
+
+    def _pick_success_media_from_stages(stages_list: list[dict[str, Any]]) -> dict[str, str]:
+        for stage in reversed(stages_list):
+            if not isinstance(stage, dict):
+                continue
+            if not _is_image_stage_name(stage.get("name")):
+                continue
+            status_value = str(stage.get("status") or "").strip().lower()
+            if status_value and status_value not in {"completed", "success", "succeeded", "done"}:
+                continue
+            candidate = _media_from_output(stage)
+            if candidate:
+                return candidate
+        for stage in reversed(stages_list):
+            if not isinstance(stage, dict):
+                continue
+            if not _stage_has_image_url(stage):
+                continue
+            status_value = str(stage.get("status") or "").strip().lower()
+            if status_value and status_value not in {"completed", "success", "succeeded", "done"}:
+                continue
+            candidate = _media_from_output(stage)
+            if candidate:
+                return candidate
+        return {}
+
+    def _pick_success_media_from_history(output_obj: Any) -> dict[str, str]:
+        for entry in media_history.media_history_from_output(output_obj):
+            if not isinstance(entry, dict):
+                continue
+            candidate = _media_from_output(entry.get("output"))
+            if candidate:
+                return candidate
+        return {}
+
+    seeded_stage = None
     if not isinstance(existing, dict) or existing.get("type") != "fusion":
         existing = {"type": "fusion", "subject": subj, "stages": []}
+        raw_media = _media_from_output(raw_existing)
+        if raw_media:
+            seeded_stage = {
+                "name": stage_name,
+                "status": "completed",
+                "url": raw_media.get("url"),
+                "local_url": raw_media.get("local_url"),
+                "remote_url": raw_media.get("remote_url"),
+            }
+            size_hint = raw_media.get("size") or raw_media.get("size_requested") or raw_media.get("size_final")
+            if size_hint:
+                seeded_stage["size"] = size_hint
+            if raw_media.get("aspect_ratio"):
+                seeded_stage["aspect_ratio"] = raw_media["aspect_ratio"]
+            if raw_media.get("quality"):
+                seeded_stage["quality"] = raw_media["quality"]
 
     stages = [dict(s) for s in (existing.get("stages") or []) if isinstance(s, dict)]
+    if not stages and seeded_stage:
+        stages.append(seeded_stage)
+
+    incoming_media = any(
+        isinstance(v, str) and v.strip()
+        for v in (url, local_url, remote_url)
+    )
     payload: dict[str, Any] = {"name": stage_name, "status": status}
     for k, v in (
         ("url", url), ("local_url", local_url), ("remote_url", remote_url),
@@ -379,12 +565,67 @@ async def _merge_stage_into_fusion(
         if v is not None:
             payload[k] = v
 
-    found = False
+    target_index = None
     for i, s in enumerate(stages):
         if s.get("name") == stage_name:
-            # 若 status=completed 且新 payload 没带 error → 清掉旧 error
-            merged = {**s, **payload}
-            if status == "completed":
+            target_index = i
+            break
+    if target_index is None:
+        for i in range(len(stages) - 1, -1, -1):
+            if _is_image_stage_name(stages[i].get("name")):
+                target_index = i
+                break
+        if target_index is None:
+            for i in range(len(stages) - 1, -1, -1):
+                if _stage_has_image_url(stages[i]):
+                    target_index = i
+                    break
+    found = False
+    if target_index is not None:
+        stage = stages[target_index]
+        if status in {"running", "failed"} and not incoming_media:
+            fallback = _media_from_output(stage)
+            if not _stage_has_image_url(stage):
+                fallback = _pick_success_media_from_stages(stages) or _pick_success_media_from_history(existing)
+            if fallback:
+                if not payload.get("url"):
+                    payload["url"] = (
+                        fallback.get("url")
+                        or fallback.get("local_url")
+                        or fallback.get("composite_url")
+                        or fallback.get("thumbnail_url")
+                        or fallback.get("poster")
+                        or fallback.get("last_frame_url")
+                    )
+                if not payload.get("local_url"):
+                    payload["local_url"] = (
+                        fallback.get("local_url")
+                        or fallback.get("url")
+                        or fallback.get("composite_url")
+                        or fallback.get("thumbnail_url")
+                    )
+                if not payload.get("remote_url"):
+                    payload["remote_url"] = (
+                        fallback.get("remote_url")
+                        or fallback.get("url")
+                        or fallback.get("composite_url")
+                    )
+        merged = {**stage, **payload}
+        if status == "completed":
+            for key in (
+                "error",
+                "error_message",
+                "image_error",
+                "provider_msg",
+                "error_kind",
+                "error_source",
+                "http_code",
+                "endpoint",
+                "diagnostics",
+            ):
+                merged.pop(key, None)
+        elif status == "running":
+            if error is None:
                 for key in (
                     "error",
                     "error_message",
@@ -397,26 +638,39 @@ async def _merge_stage_into_fusion(
                     "diagnostics",
                 ):
                     merged.pop(key, None)
-            elif status == "running":
-                if url is None and local_url is None and remote_url is None:
-                    for key in ("url", "local_url", "remote_url"):
-                        merged.pop(key, None)
-                if error is None:
-                    for key in (
-                        "error",
-                        "error_message",
-                        "image_error",
-                        "provider_msg",
-                        "error_kind",
-                        "error_source",
-                        "http_code",
-                        "endpoint",
-                        "diagnostics",
-                    ):
-                        merged.pop(key, None)
-            stages[i] = merged
-            found = True
-            break
+        stages[target_index] = merged
+        found = True
+
+    if target_index is None:
+        if status in {"running", "failed"} and not incoming_media:
+            fallback = _pick_success_media_from_stages(stages) or _pick_success_media_from_history(existing)
+            if fallback:
+                if not payload.get("url"):
+                    payload["url"] = (
+                        fallback.get("url")
+                        or fallback.get("local_url")
+                        or fallback.get("composite_url")
+                        or fallback.get("thumbnail_url")
+                        or fallback.get("poster")
+                        or fallback.get("last_frame_url")
+                    )
+                if not payload.get("local_url"):
+                    payload["local_url"] = (
+                        fallback.get("local_url")
+                        or fallback.get("url")
+                        or fallback.get("composite_url")
+                        or fallback.get("thumbnail_url")
+                    )
+                if not payload.get("remote_url"):
+                    payload["remote_url"] = (
+                        fallback.get("remote_url")
+                        or fallback.get("url")
+                        or fallback.get("composite_url")
+                    )
+        # 没有可匹配阶段时，先新增阶段（保持 prompt/历史阶段不变）
+        stages.append(payload)
+        found = True
+
     if not found:
         stages.append(payload)
 
@@ -520,9 +774,9 @@ _TITLE_BUILDERS: dict[str, Callable[[dict], str]] = {
 
 _EXACT_RESOLUTION_RE = re.compile(r"^(\d{2,5})x(\d{2,5})$")
 _COMMON_RESOLUTION_BY_ASPECT = {
-    "16:9": "2560x1440",
-    "9:16": "1440x2560",
-    "1:1": "2048x2048",
+    "16:9": "1920x1080",
+    "9:16": "1080x1920",
+    "1:1": "1080x1080",
 }
 _MAX_4K_PIXEL_AREA = 3840 * 2160
 _MAX_4K_DIMENSION = 3840
@@ -538,7 +792,6 @@ _DIRECT_INPUT_PATCH_KEYS = {
     "image_prompt",
     "last_frame_asset_id",
     "media_references",
-    "model",
     "mode",
     "negative_prompt",
     "no_visual_references",
@@ -565,7 +818,7 @@ _REVIEW_PASSED_STATUSES = {"pass", "passed", "approved", "ok", "true"}
 def _resolution_examples(aspect_ratio: str | None) -> str:
     aspect = (aspect_ratio or "16:9").strip()
     primary = _COMMON_RESOLUTION_BY_ASPECT.get(aspect)
-    examples = [v for v in [primary, "2560x1440", "1440x2560", "2048x2048"] if v]
+    examples = [v for v in [primary, "1920x1080", "1080x1920", "1080x1080"] if v]
     deduped = list(dict.fromkeys(examples))
     return "、".join(deduped)
 
@@ -584,7 +837,7 @@ def _parse_aspect_ratio(aspect_ratio: str | None) -> tuple[float, float, str]:
 
 
 def _resolve_size(resolution: str | None, aspect_ratio: str | None) -> str:
-    """Validate and return an exact provider size such as ``2560x1440``.
+    """Validate and return an exact provider size such as ``1080x1920``.
 
     Backend no longer converts tier labels or fixes mismatches. The model must
     write a concrete pixel size, then repair the node when validation fails.
@@ -599,7 +852,7 @@ def _resolve_size(resolution: str | None, aspect_ratio: str | None) -> str:
     match = _EXACT_RESOLUTION_RE.fullmatch(raw)
     if not match:
         raise ValueError(
-            "fields.resolution 必须是精确像素尺寸 '<width>x<height>'，不要写 2k/4k/8k 这种档位；"
+            "fields.resolution 必须是精确像素尺寸 '<width>x<height>'，不要写 1k/2k/4k 这种档位；"
             f"aspect_ratio={aspect} 可用示例: {_resolution_examples(aspect)}。"
         )
     width = int(match.group(1))
@@ -645,14 +898,14 @@ def _invalid_image_resolution_payload(
         },
         "hint": (
             "image 节点 fields.resolution 必须写精确像素尺寸 '<width>x<height>'，"
-            "并且与 fields.aspect_ratio 匹配；例如 16:9 写 2560x1440 或 3840x2160，"
-            "9:16 写 1440x2560 或 2160x3840。不要写 2k/4k/8k。"
+            "并且与 fields.aspect_ratio 匹配；例如 16:9 写 1920x1080，"
+            "9:16 写 1080x1920。不要写 1k/2k/4k。"
         ),
         "model_feedback": {
             "what_went_wrong": "图片节点分辨率字段不是后端可执行的精确像素值。",
             "how_to_fix": (
                 "使用 node.update 修正原节点 input_json.resolution，例如 "
-                "{\"resolution\":\"2560x1440\"}，再对同一个节点调用 node.run。"
+                "{\"resolution\":\"1080x1920\"}，再对同一个节点调用 node.run。"
             ),
         },
     }
@@ -1665,8 +1918,8 @@ async def node_get_creation_guide(project_id: str, type: str) -> dict:
     example_fields = {k: f"<{k}>" for k in schema.get("required", [])}
     example_fields.update(defaults)
     if type == "image":
-        example_fields["aspect_ratio"] = "16:9"
-        example_fields["resolution"] = "2560x1440"
+        example_fields["aspect_ratio"] = "9:16"
+        example_fields["resolution"] = "1080x1920"
 
     return {
         "ok": True,
@@ -2536,7 +2789,10 @@ def _field_filled(value: Any) -> bool:
 
 
 def _stage_has_image_url(stage: dict) -> bool:
-    return any(_field_filled(stage.get(k)) for k in ("url", "local_url", "remote_url"))
+    return any(
+        _field_filled(stage.get(k))
+        for k in ("url", "local_url", "remote_url", "composite_url", "thumbnail_url", "poster", "last_frame_url")
+    )
 
 
 def _completed_image_url_from_output(output: Any, *, include_direct: bool = True) -> str:
@@ -2549,7 +2805,7 @@ def _completed_image_url_from_output(output: Any, *, include_direct: bool = True
     if not isinstance(output, dict):
         return ""
     if include_direct:
-        for key in ("url", "local_url", "remote_url"):
+        for key in ("url", "local_url", "remote_url", "composite_url", "thumbnail_url", "poster", "last_frame_url"):
             value = output.get(key)
             if _field_filled(value):
                 return str(value)
@@ -2560,7 +2816,7 @@ def _completed_image_url_from_output(output: Any, *, include_direct: bool = True
                 continue
             if stage.get("status") != "completed" or not _stage_has_image_url(stage):
                 continue
-            for key in ("url", "local_url", "remote_url"):
+            for key in ("url", "local_url", "remote_url", "composite_url", "thumbnail_url", "poster", "last_frame_url"):
                 value = stage.get(key)
                 if _field_filled(value):
                     return str(value)
@@ -2696,7 +2952,7 @@ def _normalize_node_update_patch(node: dict, patch: dict) -> tuple[dict, dict | 
                 "error_kind": "invalid_patch_shape",
                 "hint": (
                     "修改节点字段时写 patch.input_json 或 patch.fields，例如 "
-                    "{\"input_json\":{\"resolution\":\"2560x1440\"}}。"
+                    "{\"input_json\":{\"resolution\":\"1080x1920\"}}。"
                 ),
             }
         input_delta.update(value)
@@ -3319,7 +3575,6 @@ _IMAGE_RENDER_FRESHNESS_KEYS = {
     "resolution",
     "quality",
     "clarity",
-    "model",
     "seed",
     "style",
     "references",
@@ -4562,6 +4817,20 @@ async def _run_audio_node(project_id: str, node_id: str, f: dict) -> dict:
     return result
 
 
+def _strip_transient_field_keys(value: Any, keys: set[str]) -> Any:
+    if not keys:
+        return value
+    if isinstance(value, dict):
+        return {
+            key: _strip_transient_field_keys(item, keys)
+            for key, item in value.items()
+            if key not in keys
+        }
+    if isinstance(value, list):
+        return [_strip_transient_field_keys(item, keys) for item in value]
+    return value
+
+
 _RUNNERS: dict[str, NodeRunner] = {
     "text": _run_text_node,
     "image": _run_image_node,
@@ -4575,6 +4844,7 @@ async def node_run(
     node_id: str,
     action: str | None = None,
     extra_fields: dict | None = None,
+    hidden_extra_field_keys: list[str] | None = None,
 ) -> dict:
     """跑这个节点。后端按 type 自动派发,自动管 status/产物落库。
 
@@ -4585,6 +4855,7 @@ async def node_run(
       "render":      仅 image — 用节点 prompt+参数出图。失败/不满意可先 node.update 改参数再 render。
       "force":       忽略已 completed 状态强制重跑准备阶段
     extra_fields:    临时补字段(不写回 input),render 时可临时替换 prompt 等
+    hidden_extra_field_keys: 临时字段名,会从持久化 output 和响应里移除
     """
     requested_node_id = node_id
     node_id = await _resolve_agent_node_id(project_id, node_id)
@@ -4608,7 +4879,13 @@ async def node_run(
     model_node_id = public_node_id_from_dict(node)
     project_node_id_map = await _node_public_id_map(project_id)
 
+    hidden_response_keys: set[str] = set()
+
+    def _visible_payload(payload: Any) -> Any:
+        return _strip_transient_field_keys(payload, hidden_response_keys)
+
     def _run_response(payload: dict[str, Any]) -> dict[str, Any]:
+        payload = _visible_payload(payload)
         mapped = publicize_node_refs(payload, {**project_node_id_map, node_id: model_node_id})
         if isinstance(mapped, dict):
             mapped["node_id"] = model_node_id
@@ -4663,9 +4940,15 @@ async def node_run(
     extra = _coerce_dict(extra_fields, "extra_fields")
     if extra:
         fields.update(extra)
+    hidden_response_keys = {
+        str(key).strip()
+        for key in (hidden_extra_field_keys or [])
+        if str(key).strip() and str(key).strip() in extra
+    }
+    visible_fields = _strip_transient_field_keys(fields, hidden_response_keys)
 
     if node_type == "image" and _image_operation_name(fields) and action in {None, "run", "force"}:
-        archived_output = await _archive_current_media_output_for_rerun(node_id, node, str(node_type), fields)
+        archived_output = await _archive_current_media_output_for_rerun(node_id, node, str(node_type), visible_fields)
         if action == "force":
             await canvas_tools.update_node(node_id, {"status": "idle", "error_message": None})
         await canvas_tools.update_node(node_id, {"status": "running", "error_message": None})
@@ -4752,7 +5035,7 @@ async def node_run(
         # 这样前端 SmartNode 的 StageImage 能渲染 skeleton(spinner + shimmer)占位,
         # 而不是只看到节点级 "生成中…" 文本,跟最终出图后的版面也保持一致。
         _subj, _stage_name = _SUBJECT_BY_TYPE.get(node_type, (node_type, "图片"))
-        archived_output = await _archive_current_media_output_for_rerun(node_id, node, str(node_type), fields)
+        archived_output = await _archive_current_media_output_for_rerun(node_id, node, str(node_type), visible_fields)
         # 透出当前规格让前端 skeleton 一旁就能显示
         _aspect = fields.get("aspect_ratio")
         if not _aspect:
@@ -4769,7 +5052,7 @@ async def node_run(
                 node_id, node_type, status="failed", error=err_text,
                 aspect_ratio=_aspect,
                 prompt=str(fields.get("prompt") or ""),
-                input_data=fields,
+                input_data=visible_fields,
             )
             await _emit_fusion_canvas_event(
                 node_id, status="failed",
@@ -4783,7 +5066,7 @@ async def node_run(
                 "hint": (
                     "用 node.update 修改原节点 fields.resolution 为精确像素尺寸后重试；"
                     f"aspect_ratio={_aspect} 可用示例: {_resolution_examples(_aspect)}。"
-                    "后端不会把 2k/4k 自动换算成像素，也不会自动重试。"
+                    "后端不会把 1k/2k/4k 自动换算成像素，也不会自动重试。"
                 ),
                 "suggested_next": "repair_resolution_then_rerun_original_node",
             })
@@ -4793,7 +5076,7 @@ async def node_run(
             size=_size_preview,
             aspect_ratio=_aspect,
             prompt=str(fields.get("prompt") or ""),
-            input_data=fields,
+            input_data=visible_fields,
         )
         await canvas_tools.update_node(
             node_id,
@@ -4814,7 +5097,7 @@ async def node_run(
             fusion = await _merge_stage_into_fusion(
                 node_id, node_type, status="failed", error=err_text,
                 prompt=str(fields.get("prompt") or ""),
-                input_data=fields,
+                input_data=visible_fields,
             )
             await canvas_tools.update_node(
                 node_id, {"status": "failed", "error_message": err_text},
@@ -4843,7 +5126,7 @@ async def node_run(
                 aspect_ratio=_aspect,
                 quality=result.get("quality_final") or fields.get("quality"),
                 prompt=str(fields.get("prompt") or ""),
-                input_data=fields,
+                input_data=visible_fields,
                 diagnostics=diagnosis,
             )
             await canvas_tools.update_node(
@@ -4890,7 +5173,7 @@ async def node_run(
             aspect_ratio=result.get("aspect_ratio"),
             quality=result.get("quality"),
             prompt=str(fields.get("prompt") or ""),
-            input_data=fields,
+            input_data=visible_fields,
         )
         await canvas_tools.update_node(
             node_id,
@@ -5011,7 +5294,7 @@ async def node_run(
 
     archived_output = None
     if node_type in {"image", "video", "audio"}:
-        archived_output = await _archive_current_media_output_for_rerun(node_id, node, str(node_type), fields)
+        archived_output = await _archive_current_media_output_for_rerun(node_id, node, str(node_type), visible_fields)
 
     if action == "force":
         await canvas_tools.update_node(node_id, {"status": "idle", "error_message": None})
@@ -5090,9 +5373,10 @@ async def node_run(
 
     if node_type in {"video", "audio"} and isinstance(result, dict) and result.get("status") in {"queued", "running"}:
         result = media_history.preserve_media_history(result, archived_output)
+        visible_result = _visible_payload(result)
         await canvas_tools.update_node(
             node_id,
-            {"status": "running", "error_message": None, "output_data": result},
+            {"status": "running", "error_message": None, "output_data": visible_result},
         )
         try:
             from app.agent.orchestrator import emit_canvas_event
@@ -5103,7 +5387,7 @@ async def node_run(
                     "payload": {
                         "id": node_id,
                         "status": "running",
-                        "output": result,
+                        "output": visible_result,
                         "job_id": result.get("job_id"),
                     },
                 },
@@ -5117,7 +5401,7 @@ async def node_run(
             "status": result.get("status"),
             "async": True,
             "job_id": result.get("job_id"),
-            "result": result,
+            "result": visible_result,
         })
 
     if isinstance(result, dict) and result.get("error"):
@@ -5138,7 +5422,8 @@ async def node_run(
 
     if node_type in {"image", "video", "audio"} and isinstance(result, dict):
         result = media_history.preserve_media_history(result, archived_output)
+    visible_result = _visible_payload(result)
     await canvas_tools.update_node(
-        node_id, {"status": "completed", "output_data": result},
+        node_id, {"status": "completed", "output_data": visible_result},
     )
-    return _run_response({"node_id": node_id, "type": node_type, "result": result})
+    return _run_response({"node_id": node_id, "type": node_type, "result": visible_result})

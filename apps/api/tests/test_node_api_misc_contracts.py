@@ -1193,6 +1193,98 @@ async def test_completed_fusion_stage_clears_previous_error_diagnostics(monkeypa
     assert updates[-1]["output_data"] == fusion
 
 
+@pytest.mark.asyncio
+async def test_merge_stage_into_fusion_preserves_legacy_nested_output_on_render_fail(monkeypatch):
+    updates: list[dict] = []
+
+    async def fake_get_node(node_id: str):
+        assert node_id == "image-1"
+        return {
+            "id": node_id,
+            "type": "image",
+            "project_id": "project-1",
+            "output": {
+                "type": "image",
+                "status": "completed",
+                "result": {
+                    "output": {
+                        "url": "/api/media/project-1/legacy.png",
+                    },
+                },
+            },
+        }
+
+    async def fake_update_node(node_id: str, patch: dict):
+        updates.append(patch)
+        return {"id": node_id}
+
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+
+    fusion = await node_universal._merge_stage_into_fusion(
+        "image-1",
+        "image",
+        status="failed",
+        error="bad response body",
+        prompt="测试",
+        size="1080x1920",
+    )
+
+    stage = fusion["stages"][0]
+    assert stage["name"] == "图片"
+    assert stage["status"] == "failed"
+    assert stage["url"] == "/api/media/project-1/legacy.png"
+    assert stage["error"] == "bad response body"
+    assert updates and updates[-1]["output_data"] == fusion
+
+
+@pytest.mark.asyncio
+async def test_media_provider_raw_http_fallback_parses_body_when_response_path_mismatch(monkeypatch):
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, data: Any):
+            self._data = data
+            self.text = json.dumps(data)
+
+        def json(self):
+            return self._data
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url: str, json: dict, headers: dict):
+            assert url == "https://example.test"
+            return FakeResponse({"result": {"data": {"url": "/api/media/project-1/generated.png"}}})
+
+    provider = SimpleNamespace(
+        base_url="https://example.test",
+        api_key="token",
+        params_json="{}",
+    )
+
+    monkeypatch.setattr(media_provider.httpx, "AsyncClient", FakeClient)
+
+    result = await media_provider._call_raw_http(
+        provider,
+        prompt="cute cat",
+        negative_prompt=None,
+        size="1080x1920",
+        reference_images=None,
+        extra_override={"_response_image_path": ["missing", "url"]},
+    )
+
+    assert result.get("images") == [{"url": "/api/media/project-1/generated.png", "b64": None}]
+
+
 def test_media_provider_timeout_default_is_interactive(monkeypatch):
     monkeypatch.delenv("DRAMA_IMAGE_PROVIDER_TIMEOUT_SECONDS", raising=False)
 
@@ -5056,7 +5148,7 @@ async def test_cleanup_interrupted_media_nodes_marks_running_stage_failed(monkey
 
 
 @pytest.mark.asyncio
-async def test_running_fusion_stage_clears_stale_completed_url(monkeypatch):
+async def test_running_fusion_stage_preserves_last_successful_image(monkeypatch):
     updates: list[dict] = []
 
     async def fake_get_node(node_id: str):
@@ -5092,11 +5184,115 @@ async def test_running_fusion_stage_clears_stale_completed_url(monkeypatch):
 
     stage = fusion["stages"][0]
     assert stage["status"] == "running"
-    assert "url" not in stage
-    assert "local_url" not in stage
-    assert "remote_url" not in stage
+    assert stage["url"] == "/api/media/project/old.png"
+    assert stage["local_url"] == "/api/media/project/old.png"
+    assert stage["remote_url"] == "https://example.test/old.png"
     assert "error" not in stage
     assert updates == [{"output_data": fusion}]
+
+
+@pytest.mark.asyncio
+async def test_merge_stage_into_fusion_recovers_failed_media_from_history(monkeypatch):
+    updates: list[dict] = []
+
+    async def fake_get_node(node_id: str):
+        assert node_id == "image-1"
+        return {
+            "id": node_id,
+            "type": "image",
+            "output": {
+                "type": "fusion",
+                "subject": "image",
+                "status": "running",
+                "stages": [
+                    {
+                        "name": "提示词",
+                        "status": "completed",
+                        "text": "prompt",
+                    },
+                ],
+                "history": [
+                    {
+                        "id": "hist-1",
+                        "output": {
+                            "type": "image",
+                            "status": "completed",
+                            "local_url": "/api/media/project/history.png",
+                        },
+                    },
+                ],
+            },
+        }
+
+    async def fake_update_node(node_id: str, patch: dict):
+        updates.append(patch)
+        return {"id": node_id}
+
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+
+    fusion = await node_universal._merge_stage_into_fusion(
+        "image-1",
+        "image",
+        status="failed",
+        error="bad response body",
+        prompt="测试",
+        size="1080x1920",
+    )
+
+    assert len(fusion["stages"]) == 2
+    stage = fusion["stages"][-1]
+    assert stage["name"] == "图片"
+    assert stage["status"] == "failed"
+    assert stage["local_url"] == "/api/media/project/history.png"
+    assert stage["error"] == "bad response body"
+    assert updates and updates[-1]["output_data"] == fusion
+
+
+@pytest.mark.asyncio
+async def test_merge_stage_into_fusion_recovers_failed_media_from_composite_url(monkeypatch):
+    updates: list[dict] = []
+
+    async def fake_get_node(node_id: str):
+        assert node_id == "image-1"
+        return {
+            "id": node_id,
+            "type": "image",
+            "output": {
+                "type": "fusion",
+                "subject": "image",
+                "stages": [
+                    {
+                        "name": "结果",
+                        "status": "completed",
+                        "composite_url": "/api/media/project/legacy-composite.png",
+                    },
+                ],
+            },
+        }
+
+    async def fake_update_node(node_id: str, patch: dict):
+        updates.append(patch)
+        return {"id": node_id}
+
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+
+    fusion = await node_universal._merge_stage_into_fusion(
+        "image-1",
+        "image",
+        status="failed",
+        error="bad response body",
+        prompt="测试",
+        size="1080x1920",
+    )
+
+    stage = fusion["stages"][0]
+    assert stage["name"] == "图片"
+    assert stage["status"] == "failed"
+    assert stage["url"] == "/api/media/project/legacy-composite.png"
+    assert stage["error"] == "bad response body"
+    assert updates and updates[-1]["output_data"] == fusion
 
 
 @pytest.mark.asyncio

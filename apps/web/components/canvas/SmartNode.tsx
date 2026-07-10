@@ -28,6 +28,10 @@ export interface StageData {
   url?: string
   local_url?: string
   remote_url?: string
+  composite_url?: string
+  thumbnail_url?: string
+  poster?: string
+  last_frame_url?: string
   local_path?: string
   asset_id?: string
   duration_seconds?: number
@@ -174,10 +178,10 @@ function isImageStageName(name: string | undefined): boolean {
 function imageFromPreview(preview?: PreviewData): { primary: string; secondary?: string; status?: string; width?: number; height?: number } | null {
   if (!preview) return null
   if (preview.type === "fusion" && Array.isArray(preview.stages)) {
-    const imageStage = preview.stages.find((stage) => isImageStageName(stage.name) && (stage.local_url || stage.url || stage.remote_url))
+    const imageStage = preview.stages.find((stage) => isImageStageName(stage.name) && (stage.local_url || stage.url || stage.remote_url || stage.composite_url))
       ?? preview.stages.find((stage) => isImageStageName(stage.name) && stage.status === "running")
     if (!imageStage) return null
-    const primary = resolveMediaUrl(imageStage.local_url || imageStage.url)
+    const primary = resolveMediaUrl(imageStage.local_url || imageStage.url || imageStage.composite_url)
     const secondary = resolveMediaUrl(imageStage.remote_url)
     return primary
       ? { primary, secondary, status: imageStage.status, width: imageStage.width, height: imageStage.height }
@@ -355,7 +359,7 @@ function ratioFromPreviewLike(item?: {
 function fusionMediaStage(preview: PreviewData | undefined, nodeType: "image" | "video"): StageData | undefined {
   if (preview?.type !== "fusion" || !Array.isArray(preview.stages)) return undefined
   if (nodeType === "image") {
-    return preview.stages.find((stage) => isImageStageName(stage.name) && hasMediaUrl(stage.local_url, stage.url, stage.remote_url))
+    return preview.stages.find((stage) => isImageStageName(stage.name) && hasMediaUrl(stage.local_url, stage.url, stage.remote_url, stage.composite_url))
   }
   return preview.stages.find((stage) =>
     /视频|video|clip/i.test(stage.name ?? "") &&
@@ -599,7 +603,7 @@ function StageDot({ status }: { status?: string }) {
 
 function StageImage({ stage, compact }: { stage: StageData; compact?: boolean }) {
   // Prefer local URL (stable). Fall back to remote URL via onError if needed.
-  const primary = resolveMediaUrl(stage.local_url || stage.url)
+  const primary = resolveMediaUrl(stage.local_url || stage.url || stage.composite_url)
   const secondary = resolveMediaUrl(stage.remote_url)
   const hasMeta = stage.size || stage.aspect_ratio || stage.quality
   // 生成中且尚未有图 → 渲染 skeleton + spinner 占位,与最终图同区域,避免节点尺寸跳变
@@ -664,7 +668,7 @@ function StagesContent({ stages, compact }: { stages: StageData[]; compact?: boo
   return (
     <div className={cn("space-y-1.5", compact ? "mt-1.5" : "mt-2")}>
       {stages.map((s, i) => {
-        const hasImage = !!(s.local_url || s.url || s.remote_url)
+        const hasImage = !!(s.local_url || s.url || s.remote_url || s.composite_url)
         return (
           <div key={i} className="rounded border border-gray-800 bg-black/20 px-2 py-1.5">
             <div className="flex items-center gap-1.5 mb-1">
