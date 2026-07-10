@@ -39,6 +39,7 @@ interface VideoEditPanelProps {
 
 type BusyAction = "frame" | "tail" | "split" | "trim" | "concat-video" | "concat-audio" | null
 type TimelineTool = "select" | "blade"
+type TrimMode = "normal" | "ripple" | "rolling"
 type PreviewScale = "fit" | "50" | "75" | "100"
 
 interface TimelineClipState {
@@ -98,6 +99,8 @@ type EditorIconName =
   | "plus"
   | "pointer"
   | "redo"
+  | "ripple"
+  | "rolling"
   | "step-back"
   | "step-forward"
   | "undo"
@@ -129,6 +132,8 @@ function EditorIcon({ name, className }: { name: EditorIconName; className?: str
       {name === "close" && <path d="m5 5 10 10M15 5 5 15" />}
       {name === "undo" && <><path d="M6.5 6H3v-3.5" /><path d="M3.2 5.7A7 7 0 1 1 4.6 14" /></>}
       {name === "redo" && <><path d="M13.5 6H17v-3.5" /><path d="M16.8 5.7A7 7 0 1 0 15.4 14" /></>}
+      {name === "ripple" && <><path d="M4 4v12M8 7l-3 3 3 3M11 6h5M11 10h5M11 14h5" /></>}
+      {name === "rolling" && <><path d="M10 3v14M3 7h5M5.5 4.5 8 7 5.5 9.5M17 13h-5M14.5 10.5 12 13l2.5 2.5" /></>}
     </svg>
   )
 }
@@ -618,6 +623,7 @@ const TimelineClip = memo(function TimelineClip({
   item,
   kind,
   activeTool,
+  trimMode,
   pxPerSecond,
   sequenceFps,
   viewport,
@@ -638,6 +644,7 @@ const TimelineClip = memo(function TimelineClip({
   item: VideoEditPanelMediaNode
   kind: "video" | "audio"
   activeTool: TimelineTool
+  trimMode: TrimMode
   pxPerSecond: number
   sequenceFps: number
   viewport: TimelineViewport
@@ -735,6 +742,7 @@ const TimelineClip = memo(function TimelineClip({
       data-muted={clip.muted ? "true" : "false"}
       data-fade-in-frames={clip.fadeInFrames || 0}
       data-fade-out-frames={clip.fadeOutFrames || 0}
+      data-trim-mode={trimMode}
       onPointerDown={beginMove}
       className={cn(
         "group/clip absolute top-1.5 h-[64px] overflow-hidden rounded-[2px] border shadow-[0_1px_2px_rgba(0,0,0,.55)]",
@@ -804,9 +812,11 @@ const TimelineClip = memo(function TimelineClip({
             ? "border-[#d5ebff] bg-[#8bc8f5]/10 hover:bg-[#8bc8f5]/25"
             : "border-[#d4f4e4] bg-[#8fd8b6]/10 hover:bg-[#8fd8b6]/25",
           selected && "opacity-100",
+          trimMode === "ripple" && "border-[#e2b96f] bg-[#c38b32]/15",
+          trimMode === "rolling" && "border-[#c19be6] bg-[#8b63b2]/15",
         )}
-        title="收放起点"
-        aria-label="收放起点"
+        title={trimMode === "normal" ? "收放起点" : trimMode === "ripple" ? "波纹裁剪起点" : "滚动编辑起点"}
+        aria-label={trimMode === "normal" ? "收放起点" : trimMode === "ripple" ? "波纹裁剪起点" : "滚动编辑起点"}
       />
       <button
         type="button"
@@ -818,9 +828,11 @@ const TimelineClip = memo(function TimelineClip({
             ? "border-[#d5ebff] bg-[#8bc8f5]/10 hover:bg-[#8bc8f5]/25"
             : "border-[#d4f4e4] bg-[#8fd8b6]/10 hover:bg-[#8fd8b6]/25",
           selected && "opacity-100",
+          trimMode === "ripple" && "border-[#e2b96f] bg-[#c38b32]/15",
+          trimMode === "rolling" && "border-[#c19be6] bg-[#8b63b2]/15",
         )}
-        title="收放终点"
-        aria-label="收放终点"
+        title={trimMode === "normal" ? "收放终点" : trimMode === "ripple" ? "波纹裁剪终点" : "滚动编辑终点"}
+        aria-label={trimMode === "normal" ? "收放终点" : trimMode === "ripple" ? "波纹裁剪终点" : "滚动编辑终点"}
       />
     </div>
   )
@@ -861,6 +873,7 @@ export default function VideoEditPanel({
   const [currentTime, setCurrentTime] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [tool, setTool] = useState<TimelineTool>("select")
+  const [trimMode, setTrimMode] = useState<TrimMode>("normal")
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const [previewScale, setPreviewScale] = useState<PreviewScale>("fit")
   const [audioTrackMuted, setAudioTrackMuted] = useState(false)
@@ -1164,6 +1177,8 @@ export default function VideoEditPanel({
     setHistoryDepth({ undo: 0, redo: 0 })
     setSequenceRevision(0)
     setSequenceLoaded(false)
+    setTool("select")
+    setTrimMode("normal")
     setVideoClips([])
     setAudioClips([])
     setAudioTrackMuted(false)
@@ -1691,13 +1706,101 @@ export default function VideoEditPanel({
     edgeFrame: number,
   ) => {
     const primaryClips = kind === "video" ? videoClips : audioClips
-    const linkedClips = kind === "video" ? audioClips : videoClips
+    const allClips = [...videoClips, ...audioClips]
     const original = primaryClips.find((clip) => clip.clipId === clipId)
     if (!original) return
-    const linked = linkedClips.filter((clip) => clipsShareTimelineRange(clip, original))
-    const group = [original, ...linked]
+    const linkedGroup = (clip: TimelineClipState) => allClips.filter((candidate) => (
+      candidate.clipId === clip.clipId || clipsShareTimelineRange(candidate, clip)
+    ))
+    const group = linkedGroup(original)
     const groupIds = new Set(group.map((clip) => clip.clipId))
     const snappedEdgeFrame = snapFrameToBoundaries(edgeFrame, groupIds)
+    const clampFades = (clip: TimelineClipState, durationFrames: number): TimelineClipState => {
+      const fadeInFrames = Math.min(clip.fadeInFrames || 0, durationFrames)
+      const fadeOutFrames = Math.min(clip.fadeOutFrames || 0, durationFrames - fadeInFrames)
+      return { ...clip, durationFrames, fadeInFrames, fadeOutFrames, fullSource: false }
+    }
+    const sourceEndBoundary = (clip: TimelineClipState) => {
+      const item = mediaById.get(clip.mediaId)
+      if (item?.type === "image") return Number.POSITIVE_INFINITY
+      const sourceFrameCount = sourceFrameCountForClip(clip) || clip.sourceInFrame + clip.durationFrames
+      return clip.startFrame + Math.max(1, sourceFrameCount - clip.sourceInFrame)
+    }
+    const applyUpdates = (updates: Map<string, TimelineClipState>) => {
+      setVideoClips((clips) => clips.map((clip) => updates.get(clip.clipId) || clip))
+      setAudioClips((clips) => clips.map((clip) => updates.get(clip.clipId) || clip))
+    }
+
+    if (trimMode === "rolling") {
+      const ordered = [...primaryClips].sort((left, right) => left.startFrame - right.startFrame)
+      const leftPrimary = edge === "end"
+        ? original
+        : ordered.find((clip) => clip.clipId !== original.clipId && clipEndFrame(clip) === original.startFrame)
+      const rightPrimary = edge === "start"
+        ? original
+        : ordered.find((clip) => clip.clipId !== original.clipId && clip.startFrame === clipEndFrame(original))
+      if (!leftPrimary || !rightPrimary) return
+      const leftGroup = linkedGroup(leftPrimary)
+      const rightGroup = linkedGroup(rightPrimary)
+      const boundaryFrame = edge === "end" ? clipEndFrame(original) : original.startFrame
+      const minimumBoundary = Math.max(
+        ...leftGroup.map((clip) => clip.startFrame + 1),
+        ...rightGroup.map((clip) => clip.startFrame - clip.sourceInFrame),
+      )
+      const maximumBoundary = Math.min(
+        ...leftGroup.map(sourceEndBoundary),
+        ...rightGroup.map((clip) => clipEndFrame(clip) - 1),
+      )
+      const nextBoundary = Math.round(clamp(edgeFrame, minimumBoundary, maximumBoundary))
+      const deltaFrames = nextBoundary - boundaryFrame
+      const updates = new Map<string, TimelineClipState>()
+      for (const clip of leftGroup) {
+        updates.set(clip.clipId, clampFades(clip, clip.durationFrames + deltaFrames))
+      }
+      for (const clip of rightGroup) {
+        updates.set(clip.clipId, clampFades({
+          ...clip,
+          startFrame: clip.startFrame + deltaFrames,
+          sourceInFrame: clip.sourceInFrame + deltaFrames,
+        }, clip.durationFrames - deltaFrames))
+      }
+      applyUpdates(updates)
+      return
+    }
+
+    if (trimMode === "ripple") {
+      const oldEndFrame = clipEndFrame(original)
+      let timelineDeltaFrames = 0
+      const updates = new Map<string, TimelineClipState>()
+      if (edge === "start") {
+        const requestedDelta = snappedEdgeFrame - original.startFrame
+        const minimumDelta = Math.max(...group.map((clip) => -clip.sourceInFrame))
+        const maximumDelta = Math.min(...group.map((clip) => clip.durationFrames - 1))
+        const sourceDeltaFrames = Math.round(clamp(requestedDelta, minimumDelta, maximumDelta))
+        timelineDeltaFrames = -sourceDeltaFrames
+        for (const clip of group) {
+          updates.set(clip.clipId, clampFades({
+            ...clip,
+            sourceInFrame: clip.sourceInFrame + sourceDeltaFrames,
+          }, clip.durationFrames - sourceDeltaFrames))
+        }
+      } else {
+        const minimumEndFrame = Math.max(...group.map((clip) => clip.startFrame + 1))
+        const maximumEndFrame = Math.min(...group.map(sourceEndBoundary))
+        const nextEndFrame = Math.round(clamp(snappedEdgeFrame, minimumEndFrame, maximumEndFrame))
+        timelineDeltaFrames = nextEndFrame - oldEndFrame
+        for (const clip of group) {
+          updates.set(clip.clipId, clampFades(clip, clip.durationFrames + timelineDeltaFrames))
+        }
+      }
+      for (const clip of allClips) {
+        if (!groupIds.has(clip.clipId) && clip.startFrame >= oldEndFrame) {
+          updates.set(clip.clipId, { ...clip, startFrame: Math.max(0, clip.startFrame + timelineDeltaFrames) })
+        }
+      }
+      applyUpdates(updates)
+      return
+    }
 
     let nextStartFrame = original.startFrame
     let nextDurationFrames = original.durationFrames
@@ -1722,33 +1825,62 @@ export default function VideoEditPanel({
       nextDurationFrames = Math.max(1, nextEndFrame - original.startFrame)
     }
 
-    const applyRange = (clip: TimelineClipState): TimelineClipState => {
+    const updates = new Map<string, TimelineClipState>()
+    for (const clip of group) {
+      updates.set(clip.clipId, clampFades({
+        ...clip,
+        startFrame: nextStartFrame,
+        sourceInFrame: nextSourceInFrame,
+      }, nextDurationFrames))
+    }
+    applyUpdates(updates)
+  }, [audioClips, mediaById, snapFrameToBoundaries, sourceFrameCountForClip, trimMode, videoClips])
+
+  const updateSelectedClipFrameValue = useCallback((
+    field: "startFrame" | "sourceInFrame" | "durationFrames",
+    rawValue: number,
+  ) => {
+    if (!selectedTimelineClip || !Number.isFinite(rawValue)) return
+    const allClips = [...videoClips, ...audioClips]
+    const group = allClips.filter((clip) => (
+      clip.clipId === selectedTimelineClip.clipId || clipsShareTimelineRange(clip, selectedTimelineClip)
+    ))
+    const groupIds = new Set(group.map((clip) => clip.clipId))
+    const value = Math.round(rawValue)
+    let nextStartFrame = selectedTimelineClip.startFrame
+    let nextSourceInFrame = selectedTimelineClip.sourceInFrame
+    let nextDurationFrames = selectedTimelineClip.durationFrames
+    if (field === "startFrame") {
+      nextStartFrame = Math.max(0, value)
+    } else if (field === "sourceInFrame") {
+      const maximumSourceIn = Math.min(...group.map((clip) => {
+        const sourceFrameCount = sourceFrameCountForClip(clip)
+        return sourceFrameCount ? Math.max(0, sourceFrameCount - clip.durationFrames) : Number.MAX_SAFE_INTEGER
+      }))
+      nextSourceInFrame = Math.round(clamp(value, 0, maximumSourceIn))
+    } else {
+      const maximumDuration = Math.min(...group.map((clip) => {
+        const sourceFrameCount = sourceFrameCountForClip(clip)
+        return sourceFrameCount ? Math.max(1, sourceFrameCount - clip.sourceInFrame) : Number.MAX_SAFE_INTEGER
+      }))
+      nextDurationFrames = Math.round(clamp(value, 1, maximumDuration))
+    }
+    const applyValue = (clip: TimelineClipState): TimelineClipState => {
       const fadeInFrames = Math.min(clip.fadeInFrames || 0, nextDurationFrames)
       const fadeOutFrames = Math.min(clip.fadeOutFrames || 0, nextDurationFrames - fadeInFrames)
       return {
         ...clip,
         startFrame: nextStartFrame,
-        durationFrames: nextDurationFrames,
         sourceInFrame: nextSourceInFrame,
+        durationFrames: nextDurationFrames,
         fadeInFrames,
         fadeOutFrames,
         fullSource: false,
       }
     }
-    if (kind === "video") {
-      setVideoClips((clips) => clips.map((clip) => clip.clipId === clipId ? applyRange(clip) : clip))
-      if (linked.length > 0) {
-        const linkedIds = new Set(linked.map((clip) => clip.clipId))
-        setAudioClips((clips) => clips.map((clip) => linkedIds.has(clip.clipId) ? applyRange(clip) : clip))
-      }
-      return
-    }
-    setAudioClips((clips) => clips.map((clip) => clip.clipId === clipId ? applyRange(clip) : clip))
-    if (linked.length > 0) {
-      const linkedIds = new Set(linked.map((clip) => clip.clipId))
-      setVideoClips((clips) => clips.map((clip) => linkedIds.has(clip.clipId) ? applyRange(clip) : clip))
-    }
-  }, [audioClips, mediaById, snapFrameToBoundaries, sourceFrameCountForClip, videoClips])
+    setVideoClips((clips) => clips.map((clip) => groupIds.has(clip.clipId) ? applyValue(clip) : clip))
+    setAudioClips((clips) => clips.map((clip) => groupIds.has(clip.clipId) ? applyValue(clip) : clip))
+  }, [audioClips, selectedTimelineClip, sourceFrameCountForClip, videoClips])
 
   const splitTimelineAtFrame = useCallback((splitFrame: number, targetClipId?: string) => {
     const safeSplitFrame = Math.max(0, Math.round(splitFrame))
@@ -1836,10 +1968,23 @@ export default function VideoEditPanel({
       }
       if (!(commandKey || event.altKey) && key === "v") {
         setTool("select")
+        setTrimMode("normal")
         return
       }
       if (!(commandKey || event.altKey) && key === "c") {
         setTool("blade")
+        return
+      }
+      if (!(commandKey || event.altKey) && key === "b") {
+        event.preventDefault()
+        setTool("select")
+        setTrimMode("ripple")
+        return
+      }
+      if (!(commandKey || event.altKey) && key === "n") {
+        event.preventDefault()
+        setTool("select")
+        setTrimMode("rolling")
         return
       }
       if (!commandKey) return
@@ -2111,8 +2256,60 @@ export default function VideoEditPanel({
               <section className="border-b border-[#34383f] px-3 py-2.5">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">片段属性</div>
-                  <div className="font-mono text-[8px] text-[#707680]">SNAP {SNAP_PIXELS}px</div>
+                  <div className="font-mono text-[8px] text-[#707680]">{trimMode.toUpperCase()} · SNAP {SNAP_PIXELS}px</div>
                 </div>
+                {selectedTimelineClip && (
+                  <div className="mb-2 space-y-1.5 border border-[#30343a] bg-[#17191d] p-2" data-openreel-frame-inspector="true">
+                    <label className="flex items-center justify-between gap-2 text-[8px] text-[#7f858e]">
+                      <span>时间线起始帧</span>
+                      <span className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={selectedTimelineClip.startFrame}
+                          onFocus={recordUndoSnapshot}
+                          onChange={(event) => updateSelectedClipFrameValue("startFrame", Number(event.target.value))}
+                          className="h-5 w-20 rounded-[2px] border border-[#3a3f46] bg-[#24272c] px-1.5 text-right font-mono text-[8px] text-[#d5d9de] outline-none focus:border-[#579bd3]"
+                          aria-label="时间线起始帧"
+                        />
+                        <span>f</span>
+                      </span>
+                    </label>
+                    <label className="flex items-center justify-between gap-2 text-[8px] text-[#7f858e]">
+                      <span>源入点帧</span>
+                      <span className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={selectedTimelineClip.sourceInFrame}
+                          onFocus={recordUndoSnapshot}
+                          onChange={(event) => updateSelectedClipFrameValue("sourceInFrame", Number(event.target.value))}
+                          className="h-5 w-20 rounded-[2px] border border-[#3a3f46] bg-[#24272c] px-1.5 text-right font-mono text-[8px] text-[#d5d9de] outline-none focus:border-[#579bd3]"
+                          aria-label="源入点帧"
+                        />
+                        <span>f</span>
+                      </span>
+                    </label>
+                    <label className="flex items-center justify-between gap-2 text-[8px] text-[#7f858e]">
+                      <span>片段持续帧</span>
+                      <span className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={selectedTimelineClip.durationFrames}
+                          onFocus={recordUndoSnapshot}
+                          onChange={(event) => updateSelectedClipFrameValue("durationFrames", Number(event.target.value))}
+                          className="h-5 w-20 rounded-[2px] border border-[#3a3f46] bg-[#24272c] px-1.5 text-right font-mono text-[8px] text-[#d5d9de] outline-none focus:border-[#579bd3]"
+                          aria-label="片段持续帧"
+                        />
+                        <span>f</span>
+                      </span>
+                    </label>
+                  </div>
+                )}
                 {selectedVideoClip && (
                   <div className="mb-2 divide-y divide-[#30343a] border-y border-[#30343a] text-[9px]">
                     <div className="flex items-center justify-between py-1.5">
@@ -2261,8 +2458,19 @@ export default function VideoEditPanel({
           <div className="flex h-9 shrink-0 items-center justify-between border-b border-[#34383f] bg-[#202328] px-2">
             <div className="flex items-center gap-2">
               <div className="mr-1 flex h-9 items-center border-b-2 border-[#4d92c5] px-1 text-[10px] font-semibold text-[#e2e4e7]">时间线 1</div>
-              <ToolButton label="选择" icon="pointer" active={tool === "select"} onClick={() => setTool("select")} />
+              <ToolButton label="选择 (V)" icon="pointer" active={tool === "select" && trimMode === "normal"} onClick={() => {
+                setTool("select")
+                setTrimMode("normal")
+              }} />
               <ToolButton label="切割" icon="blade" active={tool === "blade"} onClick={() => setTool("blade")} />
+              <ToolButton label="波纹裁剪 (B)" icon="ripple" active={tool === "select" && trimMode === "ripple"} onClick={() => {
+                setTool("select")
+                setTrimMode("ripple")
+              }} />
+              <ToolButton label="滚动编辑 (N)" icon="rolling" active={tool === "select" && trimMode === "rolling"} onClick={() => {
+                setTool("select")
+                setTrimMode("rolling")
+              }} />
               <div className="ml-1 h-4 w-px bg-[#3b4047]" />
               <ToolButton label="撤销 (Ctrl+Z)" icon="undo" disabled={historyDepth.undo === 0} onClick={undoEditor} />
               <ToolButton label="重做 (Ctrl+Shift+Z)" icon="redo" disabled={historyDepth.redo === 0} onClick={redoEditor} />
@@ -2307,6 +2515,7 @@ export default function VideoEditPanel({
             data-openreel-timeline-scroll="true"
             data-px-per-second={pxPerSecond.toFixed(4)}
             data-track-label-width={TRACK_LABEL_WIDTH}
+            data-trim-mode={trimMode}
             className="relative min-h-0 w-full min-w-0 flex-1 overflow-auto bg-[#15171a]"
             onPointerDown={handleTimelineBackgroundDown}
           >
@@ -2353,6 +2562,7 @@ export default function VideoEditPanel({
                       item={item}
                       kind="video"
                       activeTool={tool}
+                      trimMode={trimMode}
                       pxPerSecond={pxPerSecond}
                       sequenceFps={framesPerSecond}
                       viewport={timelineViewport}
@@ -2461,6 +2671,7 @@ export default function VideoEditPanel({
                       item={item}
                       kind="audio"
                       activeTool={tool}
+                      trimMode={trimMode}
                       pxPerSecond={pxPerSecond}
                       sequenceFps={framesPerSecond}
                       viewport={timelineViewport}

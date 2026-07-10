@@ -347,7 +347,114 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
     const redoRestoredSplit = (await readClips(page)).length === 4
 
-    await panel.getByRole("button", { name: "选择", exact: true }).click()
+    await panel.getByRole("button", { name: "选择 (V)", exact: true }).click()
+    await page.keyboard.press("b")
+    const rippleModeActivated = await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-trim-mode") === "ripple"
+    await resizeEdge(page, page.locator('[data-clip-kind="video"]').first(), "end", -84)
+    await page.waitForTimeout(250)
+    clips = await readClips(page)
+    let trimmedVideoParts = clips.filter((clip) => clip.kind === "video").sort((a, b) => a.startFrame - b.startFrame)
+    let trimmedAudioParts = clips.filter((clip) => clip.kind === "audio").sort((a, b) => a.startFrame - b.startFrame)
+    const rippleDeltaFrames = trimmedVideoParts[0].durationFrames - videoParts[0].durationFrames
+    const rippleTrimSemantics = (
+      rippleModeActivated &&
+      rippleDeltaFrames < 0 &&
+      trimmedVideoParts[0].startFrame + trimmedVideoParts[0].durationFrames === trimmedVideoParts[1].startFrame &&
+      trimmedVideoParts[1].startFrame === videoParts[1].startFrame + rippleDeltaFrames &&
+      trimmedVideoParts[1].sourceInFrame === videoParts[1].sourceInFrame &&
+      aligned(trimmedVideoParts[0], trimmedAudioParts[0]) &&
+      aligned(trimmedVideoParts[1], trimmedAudioParts[1])
+    )
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction((expectedFrame) => (
+      Number(document.querySelector('[data-clip-kind="video"]')?.dataset.durationFrames || 0) === expectedFrame
+    ), videoParts[0].durationFrames)
+
+    await resizeEdge(page, page.locator('[data-clip-kind="video"]').nth(1), "start", 84)
+    await page.waitForTimeout(250)
+    clips = await readClips(page)
+    trimmedVideoParts = clips.filter((clip) => clip.kind === "video").sort((a, b) => a.startFrame - b.startFrame)
+    trimmedAudioParts = clips.filter((clip) => clip.kind === "audio").sort((a, b) => a.startFrame - b.startFrame)
+    const rippleIncomingSourceDelta = trimmedVideoParts[1].sourceInFrame - videoParts[1].sourceInFrame
+    const rippleIncomingTrimSemantics = (
+      rippleIncomingSourceDelta > 0 &&
+      trimmedVideoParts[0].durationFrames === videoParts[0].durationFrames &&
+      trimmedVideoParts[1].startFrame === videoParts[1].startFrame &&
+      trimmedVideoParts[1].durationFrames === videoParts[1].durationFrames - rippleIncomingSourceDelta &&
+      aligned(trimmedVideoParts[1], trimmedAudioParts[1])
+    )
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction((expectedFrame) => (
+      Number(document.querySelectorAll('[data-clip-kind="video"]')[1]?.dataset.durationFrames || 0) === expectedFrame
+    ), videoParts[1].durationFrames)
+
+    await page.keyboard.press("n")
+    const rollingModeActivated = await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-trim-mode") === "rolling"
+    await resizeEdge(page, page.locator('[data-clip-kind="video"]').first(), "end", 42)
+    await page.waitForTimeout(250)
+    clips = await readClips(page)
+    trimmedVideoParts = clips.filter((clip) => clip.kind === "video").sort((a, b) => a.startFrame - b.startFrame)
+    trimmedAudioParts = clips.filter((clip) => clip.kind === "audio").sort((a, b) => a.startFrame - b.startFrame)
+    const rollingDeltaFrames = trimmedVideoParts[0].durationFrames - videoParts[0].durationFrames
+    const originalSequenceEndFrame = videoParts[1].startFrame + videoParts[1].durationFrames
+    const rollingTrimSemantics = (
+      rollingModeActivated &&
+      rollingDeltaFrames > 0 &&
+      trimmedVideoParts[0].startFrame + trimmedVideoParts[0].durationFrames === trimmedVideoParts[1].startFrame &&
+      trimmedVideoParts[1].sourceInFrame === videoParts[1].sourceInFrame + rollingDeltaFrames &&
+      trimmedVideoParts[1].durationFrames === videoParts[1].durationFrames - rollingDeltaFrames &&
+      trimmedVideoParts[1].startFrame + trimmedVideoParts[1].durationFrames === originalSequenceEndFrame &&
+      aligned(trimmedVideoParts[0], trimmedAudioParts[0]) &&
+      aligned(trimmedVideoParts[1], trimmedAudioParts[1])
+    )
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction((expectedFrame) => (
+      Number(document.querySelector('[data-clip-kind="video"]')?.dataset.durationFrames || 0) === expectedFrame
+    ), videoParts[0].durationFrames)
+
+    await resizeEdge(page, page.locator('[data-clip-kind="video"]').nth(1), "start", -42)
+    await page.waitForTimeout(250)
+    clips = await readClips(page)
+    trimmedVideoParts = clips.filter((clip) => clip.kind === "video").sort((a, b) => a.startFrame - b.startFrame)
+    trimmedAudioParts = clips.filter((clip) => clip.kind === "audio").sort((a, b) => a.startFrame - b.startFrame)
+    const rollingIncomingDeltaFrames = trimmedVideoParts[1].startFrame - videoParts[1].startFrame
+    const rollingIncomingTrimSemantics = (
+      rollingIncomingDeltaFrames < 0 &&
+      trimmedVideoParts[0].durationFrames === videoParts[0].durationFrames + rollingIncomingDeltaFrames &&
+      trimmedVideoParts[0].startFrame + trimmedVideoParts[0].durationFrames === trimmedVideoParts[1].startFrame &&
+      trimmedVideoParts[1].sourceInFrame === videoParts[1].sourceInFrame + rollingIncomingDeltaFrames &&
+      trimmedVideoParts[1].durationFrames === videoParts[1].durationFrames - rollingIncomingDeltaFrames &&
+      trimmedVideoParts[1].startFrame + trimmedVideoParts[1].durationFrames === originalSequenceEndFrame &&
+      aligned(trimmedVideoParts[0], trimmedAudioParts[0]) &&
+      aligned(trimmedVideoParts[1], trimmedAudioParts[1])
+    )
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction((expectedFrame) => (
+      Number(document.querySelectorAll('[data-clip-kind="video"]')[1]?.dataset.startFrame || 0) === expectedFrame
+    ), videoParts[1].startFrame)
+
+    await page.keyboard.press("v")
+    await page.locator('[data-clip-kind="video"]').nth(1).click()
+    const exactDurationFrames = videoParts[1].durationFrames - 10
+    await page.getByLabel("片段持续帧").fill(String(exactDurationFrames))
+    await page.waitForTimeout(800)
+    clips = await readClips(page)
+    trimmedVideoParts = clips.filter((clip) => clip.kind === "video").sort((a, b) => a.startFrame - b.startFrame)
+    trimmedAudioParts = clips.filter((clip) => clip.kind === "audio").sort((a, b) => a.startFrame - b.startFrame)
+    const exactPersistedClip = latestSequenceSpec?.clips?.find((clip) => clip.id === trimmedVideoParts[1].clipId)
+    const exactFrameInputs = (
+      trimmedVideoParts[1].durationFrames === exactDurationFrames &&
+      trimmedVideoParts[1].startFrame === videoParts[1].startFrame &&
+      trimmedVideoParts[1].sourceInFrame === videoParts[1].sourceInFrame &&
+      aligned(trimmedVideoParts[1], trimmedAudioParts[1]) &&
+      exactPersistedClip?.duration_frames === exactDurationFrames
+    )
+    await panel.getByRole("button", { name: "选择 (V)", exact: true }).click()
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction((expectedFrame) => (
+      Number(document.querySelectorAll('[data-clip-kind="video"]')[1]?.dataset.durationFrames || 0) === expectedFrame
+    ), videoParts[1].durationFrames)
+
     await page.locator('[data-clip-kind="video"]').first().click()
     await page.keyboard.press("Delete")
     await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 2)
@@ -545,6 +652,7 @@ async function main() {
     if (await pauseButton.isVisible().catch(() => false)) await pauseButton.click()
 
     if (SCREENSHOT_PATH) {
+      await page.keyboard.press("n")
       await page.evaluate(() => {
         const inspectorScroller = document.querySelector('[data-openreel-inspector-pane="true"] .overflow-y-auto')
         if (inspectorScroller) inspectorScroller.scrollTop = inspectorScroller.scrollHeight
@@ -560,7 +668,7 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && normalDeleteKeepsGap && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && normalDeleteKeepsGap && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
       initialAligned,
       movedTogether,
       clampedAtTimelineStart,
@@ -573,6 +681,15 @@ async function main() {
       integerFrameTruth,
       undoRestoredBeforeSplit,
       redoRestoredSplit,
+      rippleTrimSemantics,
+      rippleDeltaFrames,
+      rippleIncomingTrimSemantics,
+      rippleIncomingSourceDelta,
+      rollingTrimSemantics,
+      rollingDeltaFrames,
+      rollingIncomingTrimSemantics,
+      rollingIncomingDeltaFrames,
+      exactFrameInputs,
       normalDeleteKeepsGap,
       rippleDeleteClosesGap,
       audioControlsPersisted,
