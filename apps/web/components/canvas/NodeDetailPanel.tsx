@@ -2801,12 +2801,34 @@ function videoModeConfig(
 }
 
 function videoDurationRuleForProvider(
+  provider: MediaProviderOption | undefined,
   protocol: VideoProtocolSummary | undefined,
   profile: VideoProtocolProfileSummary | undefined,
   mode: string,
 ): VideoDurationSummary {
   const modeConfig = videoModeConfig(protocol, mode, profile)
-  return mergeVideoDurationRule(protocol?.duration, profile?.duration, modeConfig?.duration)
+  const params = provider?.params || {}
+  const firstFiniteParam = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = finiteNumber(params[key])
+      if (value !== undefined) return value
+    }
+    return undefined
+  }
+  const allowedValues = ["supported_durations", "duration_values", "allowed_durations"]
+    .map((key) => params[key])
+    .find((value) => Array.isArray(value))
+  return mergeVideoDurationRule(
+    protocol?.duration,
+    profile?.duration,
+    modeConfig?.duration,
+    {
+      min: firstFiniteParam("duration_min", "min_duration", "minDuration"),
+      max: firstFiniteParam("duration_max", "max_duration", "maxDuration"),
+      step: firstFiniteParam("duration_step", "step_duration", "durationStep"),
+      allowed_values: Array.isArray(allowedValues) ? allowedValues : undefined,
+    },
+  )
 }
 
 function videoDurationBounds(rule: VideoDurationSummary): { min?: number; max?: number; step?: number; allowed: number[] } {
@@ -2885,13 +2907,16 @@ function videoReferenceRuleHint(
 }
 
 function videoSupportedRatiosForProvider(
+  provider: MediaProviderOption | undefined,
   protocol: VideoProtocolSummary | undefined,
   profile: VideoProtocolProfileSummary | undefined,
   mode: string,
 ): string[] {
   const modeConfig = videoModeConfig(protocol, mode, profile)
+  const providerValues = mediaProviderParamStringArray(provider, "supported_ratios", "ratios", "supported_aspect_ratios")
   const values = (
-    stringArray(modeConfig?.supported_ratios).length ? stringArray(modeConfig?.supported_ratios)
+    providerValues.length ? providerValues
+      : stringArray(modeConfig?.supported_ratios).length ? stringArray(modeConfig?.supported_ratios)
       : stringArray(profile?.supported_ratios).length ? stringArray(profile?.supported_ratios)
       : stringArray(protocol?.supported_ratios).length ? stringArray(protocol?.supported_ratios)
       : []
@@ -2900,13 +2925,15 @@ function videoSupportedRatiosForProvider(
 }
 
 function videoSupportedResolutionsForProvider(
+  provider: MediaProviderOption | undefined,
   protocol: VideoProtocolSummary | undefined,
   profile: VideoProtocolProfileSummary | undefined,
   mode: string,
-  _fallbackModelName: string,
 ): string[] {
   const modeConfig = videoModeConfig(protocol, mode, profile)
-  const values = stringArray(modeConfig?.supported_resolutions).length ? stringArray(modeConfig?.supported_resolutions)
+  const providerValues = mediaProviderParamStringArray(provider, "supported_resolutions", "resolutions")
+  const values = providerValues.length ? providerValues
+    : stringArray(modeConfig?.supported_resolutions).length ? stringArray(modeConfig?.supported_resolutions)
     : stringArray(profile?.supported_resolutions).length ? stringArray(profile?.supported_resolutions)
     : stringArray(protocol?.supported_resolutions).length ? stringArray(protocol?.supported_resolutions)
     : []
@@ -2914,16 +2941,28 @@ function videoSupportedResolutionsForProvider(
 }
 
 function defaultVideoResolutionForProvider(
+  provider: MediaProviderOption | undefined,
   protocol: VideoProtocolSummary | undefined,
   profile: VideoProtocolProfileSummary | undefined,
   mode: string,
-  fallbackModelName: string,
 ): string {
   const modeConfig = videoModeConfig(protocol, mode, profile)
-  const direct = String(modeConfig?.default_resolution || profile?.default_resolution || protocol?.default_resolution || "").trim().toLowerCase()
-  const supported = videoSupportedResolutionsForProvider(protocol, profile, mode, fallbackModelName)
+  const direct = mediaProviderParamText(provider, "default_resolution", "resolution").toLowerCase()
+    || String(modeConfig?.default_resolution || profile?.default_resolution || protocol?.default_resolution || "").trim().toLowerCase()
+  const supported = videoSupportedResolutionsForProvider(provider, protocol, profile, mode)
   if (direct && supported.includes(direct)) return direct
   return supported[0] || ""
+}
+
+function defaultVideoAspectRatioForProvider(
+  provider: MediaProviderOption | undefined,
+  protocol: VideoProtocolSummary | undefined,
+  profile: VideoProtocolProfileSummary | undefined,
+  mode: string,
+): string {
+  const modeConfig = videoModeConfig(protocol, mode, profile)
+  return mediaProviderParamText(provider, "default_ratio", "aspect_ratio", "aspectRatio")
+    || String(modeConfig?.default_ratio || profile?.default_ratio || protocol?.default_ratio || "").trim()
 }
 
 function videoAspectSelectOptions(
@@ -2973,22 +3012,25 @@ function mediaResolutionButtonLabel(value: string, label?: string): string {
 
 function normalizeVideoDraftForMode(
   draft: EditableNodeDraft,
+  provider: MediaProviderOption | undefined,
   protocol: VideoProtocolSummary | undefined,
   profile: VideoProtocolProfileSummary | undefined,
   mode: string,
-  fallbackModelName: string,
 ): Pick<EditableNodeDraft, "video_mode" | "resolution" | "aspect_ratio" | "duration_seconds"> {
-  const supported = videoSupportedResolutionsForProvider(protocol, profile, mode, fallbackModelName)
+  const supported = videoSupportedResolutionsForProvider(provider, protocol, profile, mode)
   const draftResolution = draft.resolution.trim().toLowerCase()
   const resolution = supported.length === 0 || supported.includes(draftResolution)
     ? draft.resolution
-    : defaultVideoResolutionForProvider(protocol, profile, mode, fallbackModelName)
-  const ratios = videoSupportedRatiosForProvider(protocol, profile, mode)
+    : defaultVideoResolutionForProvider(provider, protocol, profile, mode)
+  const ratios = videoSupportedRatiosForProvider(provider, protocol, profile, mode)
   const currentRatio = normalizeVideoAspectRatio(draft.aspect_ratio)
-  const aspect_ratio = ratios.length === 0 || ratios.includes(currentRatio) ? currentRatio : ratios[0] || currentRatio
+  const defaultRatio = defaultVideoAspectRatioForProvider(provider, protocol, profile, mode)
+  const aspect_ratio = ratios.length === 0 || ratios.includes(currentRatio)
+    ? currentRatio
+    : ratios.includes(defaultRatio) ? defaultRatio : ratios[0] || currentRatio
   const duration_seconds = normalizeVideoDurationForRule(
     draft.duration_seconds,
-    videoDurationRuleForProvider(protocol, profile, mode),
+    videoDurationRuleForProvider(provider, protocol, profile, mode),
   )
   return { video_mode: mode, resolution, aspect_ratio, duration_seconds }
 }
@@ -3139,8 +3181,7 @@ function removeNodeReferencesFromContainer(
 }
 
 function normalizeVideoAspectRatio(value: string): string {
-  const text = value.trim()
-  return text || "16:9"
+  return value.trim()
 }
 
 function draftFromNode(node: NodeFull): EditableNodeDraft {
@@ -3180,7 +3221,7 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
     format: firstText(input.format, output.format),
     negative_tags: firstText(input.negative_tags, input.negativeTags, output.negative_tags, output.negativeTags),
     aspect_ratio: node.type === "video"
-      ? normalizeVideoAspectRatio(firstText(input.aspect_ratio, output.aspect_ratio))
+      ? firstText(input.aspect_ratio, output.aspect_ratio)
       : firstText(input.aspect_ratio, output.aspect_ratio) || (node.type === "image" ? "9:16" : ""),
     resolution: firstText(input.resolution, input.size, output.resolution, output.size)
       || (node.type === "image" ? defaultImageResolutionForAspect(firstText(input.aspect_ratio, output.aspect_ratio) || "9:16") : ""),
@@ -4404,24 +4445,34 @@ function NodeEditView({
   const providerVideoRatios = mediaProviderParamStringArray(selectedVideoProvider, "supported_ratios", "ratios", "supported_aspect_ratios")
   const supportedVideoResolutions = providerVideoResolutions.length
     ? providerVideoResolutions
-    : videoSupportedResolutionsForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode, selectedVideoModelName)
+    : videoSupportedResolutionsForProvider(selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
   const supportedVideoRatios = providerVideoRatios.length
     ? providerVideoRatios.filter((item) => item !== "adaptive")
-    : videoSupportedRatiosForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
-  const videoAspectOptions = videoAspectSelectOptions(draft.aspect_ratio, supportedVideoRatios)
+    : videoSupportedRatiosForProvider(selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const defaultVideoAspectRatio = defaultVideoAspectRatioForProvider(selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const activeVideoAspectRatio = draft.aspect_ratio.trim() || defaultVideoAspectRatio || supportedVideoRatios[0] || ""
+  const videoAspectOptions = videoAspectSelectOptions(activeVideoAspectRatio, supportedVideoRatios)
   const videoResolutionOptions = videoResolutionSelectOptions(draft.resolution, supportedVideoResolutions)
   const providerDefaultVideoResolution = mediaProviderParamText(selectedVideoProvider, "default_resolution", "resolution").toLowerCase()
   const activeVideoResolution = draft.resolution || (providerDefaultVideoResolution && supportedVideoResolutions.includes(providerDefaultVideoResolution)
     ? providerDefaultVideoResolution
     : defaultVideoResolutionForProvider(
+    selectedVideoProvider,
     selectedVideoProtocol,
     selectedVideoProfile,
     activeVideoMode,
-    selectedVideoModelName,
   ))
   const activeVideoModeConfig = videoModeConfig(selectedVideoProtocol, activeVideoMode, selectedVideoProfile)
-  const activeVideoDurationRule = videoDurationRuleForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const activeVideoDurationRule = videoDurationRuleForProvider(selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
   const activeVideoDurationBounds = videoDurationBounds(activeVideoDurationRule)
+  const videoDurationConfigured = activeVideoDurationBounds.min !== undefined
+    || activeVideoDurationBounds.max !== undefined
+    || activeVideoDurationBounds.allowed.length > 0
+  const videoDurationMin = activeVideoDurationBounds.min ?? activeVideoDurationBounds.allowed[0] ?? 0
+  const videoDurationMax = activeVideoDurationBounds.max
+    ?? activeVideoDurationBounds.allowed[activeVideoDurationBounds.allowed.length - 1]
+    ?? activeVideoDurationBounds.min
+    ?? 0
   const imageAspectRatio = normalizeImageAspectRatio(draft.aspect_ratio)
   const updateImageAspectRatio = (aspect_ratio: string) => {
     const nextAspectRatio = normalizeImageAspectRatio(aspect_ratio)
@@ -4437,12 +4488,12 @@ function NodeEditView({
     const video_mode = effectiveVideoMode(draft.video_mode, modeOptions)
     onChange({
       model,
-      ...normalizeVideoDraftForMode(draft, protocol, profile, video_mode, modelForResolution),
+      ...normalizeVideoDraftForMode(draft, selectedProvider, protocol, profile, video_mode),
     })
   }
   const updateVideoMode = (videoMode: string) => {
     const mode = effectiveVideoMode(videoMode, videoModeOptions)
-    onChange(normalizeVideoDraftForMode(draft, selectedVideoProtocol, selectedVideoProfile, mode, selectedVideoModelName))
+    onChange(normalizeVideoDraftForMode(draft, selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, mode))
   }
   const updateAudioProvider = (providerName: string) => {
     onChange({ model: providerName })
@@ -4692,7 +4743,7 @@ function NodeEditView({
             />
             <MediaOptionGrid
               label="比例"
-              value={normalizeVideoAspectRatio(draft.aspect_ratio)}
+              value={activeVideoAspectRatio}
               options={videoAspectOptions}
               onChange={(aspect_ratio) => onChange({ aspect_ratio })}
               columns="grid-cols-3"
@@ -4707,20 +4758,26 @@ function NodeEditView({
               onChange={(resolution) => onChange({ resolution })}
               columns="grid-cols-4"
             />
-            <DraftField label="时长">
-              <input
-                type="number"
-                min={activeVideoDurationBounds.min ?? 1}
-                max={activeVideoDurationBounds.max}
-                step={activeVideoDurationBounds.step ?? 1}
-                inputMode="numeric"
-                value={draft.duration_seconds}
-                onChange={(event) => onChange({ duration_seconds: event.target.value })}
-                onBlur={(event) => onChange({ duration_seconds: normalizeVideoDurationForRule(event.target.value, activeVideoDurationRule) })}
-                className={inputClass}
-                placeholder="秒"
-              />
-            </DraftField>
+            {videoDurationConfigured ? (
+              <DraftField label="时长">
+                <input
+                  type="number"
+                  min={videoDurationMin}
+                  max={videoDurationMax}
+                  step={activeVideoDurationBounds.step ?? 1}
+                  inputMode="numeric"
+                  value={draft.duration_seconds}
+                  onChange={(event) => onChange({ duration_seconds: event.target.value })}
+                  onBlur={(event) => onChange({ duration_seconds: normalizeVideoDurationForRule(event.target.value, activeVideoDurationRule) })}
+                  className={inputClass}
+                  placeholder="秒"
+                />
+              </DraftField>
+            ) : (
+              <div className="rounded-md border border-white/[0.08] bg-white/[0.035] px-3 py-2 text-xs leading-5 text-zinc-500">
+                当前模型未声明可编辑的视频时长范围。
+              </div>
+            )}
           </div>
           {!hasConfiguredVideoProviders && (
             <div className="mt-3 rounded-md border border-amber-500/20 bg-amber-950/15 px-3 py-2 text-xs leading-5 text-amber-100/80">
@@ -4884,7 +4941,7 @@ function NodeEditView({
                   )}
                   <ChipControl
                     label="画幅"
-                    value={normalizeVideoAspectRatio(draft.aspect_ratio)}
+                    value={activeVideoAspectRatio}
                     options={videoAspectOptions}
                     placeholder="比例"
                     onChange={(aspect_ratio) => onChange({ aspect_ratio })}
@@ -5573,9 +5630,11 @@ function MediaParameterDialog({
   imageAspectRatio,
   imageResolution,
   videoAspectOptions,
+  activeVideoAspectRatio,
   activeVideoResolution,
   videoResolutionOptions,
   videoDurationValue,
+  videoDurationConfigured,
   videoDurationMin,
   videoDurationMax,
   videoDurationStep,
@@ -5593,9 +5652,11 @@ function MediaParameterDialog({
   imageAspectRatio: string
   imageResolution: string
   videoAspectOptions: SelectOption[]
+  activeVideoAspectRatio: string
   activeVideoResolution: string
   videoResolutionOptions: SelectOption[]
   videoDurationValue: number
+  videoDurationConfigured: boolean
   videoDurationMin: number
   videoDurationMax: number
   videoDurationStep: number
@@ -5741,7 +5802,7 @@ function MediaParameterDialog({
             <div className="grid gap-3">
               <MediaOptionGrid
                 label="比例"
-                value={normalizeVideoAspectRatio(draft.aspect_ratio)}
+                value={activeVideoAspectRatio}
                 options={videoAspectOptions}
                 onChange={(aspect_ratio) => onChange({ aspect_ratio })}
                 columns="grid-cols-5"
@@ -5759,32 +5820,38 @@ function MediaParameterDialog({
                 columns="grid-cols-4"
                 compact
               />
-              <DraftField label="视频时长">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="range"
-                    min={videoDurationMin}
-                    max={videoDurationMax}
-                    step={videoDurationStep}
-                    value={Number.isFinite(videoDurationValue) ? videoDurationValue : videoDurationMin}
-                    onChange={(event) => onChange({ duration_seconds: event.target.value })}
-                    className="h-1.5 min-w-0 flex-1 accent-cyan-300"
-                  />
-                  <input
-                    type="number"
-                    min={videoDurationMin}
-                    max={videoDurationMax}
-                    step={videoDurationStep}
-                    inputMode="numeric"
-                    value={draft.duration_seconds}
-                    onChange={(event) => onChange({ duration_seconds: event.target.value })}
-                    onBlur={(event) => onChange({ duration_seconds: normalizeVideoDurationForRule(event.target.value, videoDurationRule) })}
-                    className="h-8 w-14 rounded-md border border-white/[0.12] bg-white/[0.05] px-2 text-xs text-zinc-100 outline-none [color-scheme:dark] focus:border-cyan-300/45"
-                    placeholder="秒"
-                  />
-                  <span className="text-[11px] text-zinc-500">秒</span>
+              {videoDurationConfigured ? (
+                <DraftField label="视频时长">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={videoDurationMin}
+                      max={videoDurationMax}
+                      step={videoDurationStep}
+                      value={Number.isFinite(videoDurationValue) ? videoDurationValue : videoDurationMin}
+                      onChange={(event) => onChange({ duration_seconds: event.target.value })}
+                      className="h-1.5 min-w-0 flex-1 accent-cyan-300"
+                    />
+                    <input
+                      type="number"
+                      min={videoDurationMin}
+                      max={videoDurationMax}
+                      step={videoDurationStep}
+                      inputMode="numeric"
+                      value={draft.duration_seconds}
+                      onChange={(event) => onChange({ duration_seconds: event.target.value })}
+                      onBlur={(event) => onChange({ duration_seconds: normalizeVideoDurationForRule(event.target.value, videoDurationRule) })}
+                      className="h-8 w-14 rounded-md border border-white/[0.12] bg-white/[0.05] px-2 text-xs text-zinc-100 outline-none [color-scheme:dark] focus:border-cyan-300/45"
+                      placeholder="秒"
+                    />
+                    <span className="text-[11px] text-zinc-500">秒</span>
+                  </div>
+                </DraftField>
+              ) : (
+                <div className="rounded-lg border border-white/[0.08] bg-white/[0.035] px-2.5 py-2 text-[11px] leading-4 text-zinc-500">
+                  当前模型未声明可编辑的视频时长范围。
                 </div>
-              </DraftField>
+              )}
             </div>
           )}
 
@@ -5924,23 +5991,25 @@ function NodeCanvasContextPanel({
   const providerVideoRatios = mediaProviderParamStringArray(selectedVideoProvider, "supported_ratios", "ratios", "supported_aspect_ratios")
   const supportedVideoResolutions = providerVideoResolutions.length
     ? providerVideoResolutions
-    : videoSupportedResolutionsForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode, selectedVideoModelName)
+    : videoSupportedResolutionsForProvider(selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
   const supportedVideoRatios = providerVideoRatios.length
     ? providerVideoRatios.filter((item) => item !== "adaptive")
-    : videoSupportedRatiosForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
-  const videoAspectOptions = videoAspectSelectOptions(draft.aspect_ratio, supportedVideoRatios)
+    : videoSupportedRatiosForProvider(selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const defaultVideoAspectRatio = defaultVideoAspectRatioForProvider(selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const activeVideoAspectRatio = draft.aspect_ratio.trim() || defaultVideoAspectRatio || supportedVideoRatios[0] || ""
+  const videoAspectOptions = videoAspectSelectOptions(activeVideoAspectRatio, supportedVideoRatios)
   const videoResolutionOptions = videoResolutionSelectOptions(draft.resolution, supportedVideoResolutions)
   const providerDefaultVideoResolution = mediaProviderParamText(selectedVideoProvider, "default_resolution", "resolution").toLowerCase()
   const activeVideoResolution = draft.resolution || (providerDefaultVideoResolution && supportedVideoResolutions.includes(providerDefaultVideoResolution)
     ? providerDefaultVideoResolution
     : defaultVideoResolutionForProvider(
+    selectedVideoProvider,
     selectedVideoProtocol,
     selectedVideoProfile,
     activeVideoMode,
-    selectedVideoModelName,
   ))
   const activeVideoModeConfig = videoModeConfig(selectedVideoProtocol, activeVideoMode, selectedVideoProfile)
-  const activeVideoDurationRule = videoDurationRuleForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const activeVideoDurationRule = videoDurationRuleForProvider(selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
   const activeVideoDurationBounds = videoDurationBounds(activeVideoDurationRule)
   const videoReferenceRule = videoReferenceRuleHint(
     activeVideoModeConfig,
@@ -5966,13 +6035,19 @@ function NodeCanvasContextPanel({
   const imageResolutionTierLabel = IMAGE_RESOLUTION_TIER_OPTIONS.find((item) => item.value === imageResolutionTier(imageResolutionValue))?.label || "1K"
   const videoResolutionLabel = activeVideoResolution ? mediaResolutionButtonLabel(activeVideoResolution) : ""
   const videoDurationValue = Number.parseFloat(draft.duration_seconds)
-  const videoDurationMin = activeVideoDurationBounds.min ?? 1
-  const videoDurationMax = activeVideoDurationBounds.max ?? Math.max(videoDurationMin, Number.isFinite(videoDurationValue) ? videoDurationValue : 10)
+  const videoDurationConfigured = activeVideoDurationBounds.min !== undefined
+    || activeVideoDurationBounds.max !== undefined
+    || activeVideoDurationBounds.allowed.length > 0
+  const videoDurationMin = activeVideoDurationBounds.min ?? activeVideoDurationBounds.allowed[0] ?? 0
+  const videoDurationMax = activeVideoDurationBounds.max
+    ?? activeVideoDurationBounds.allowed[activeVideoDurationBounds.allowed.length - 1]
+    ?? activeVideoDurationBounds.min
+    ?? 0
   const videoDurationStep = activeVideoDurationBounds.step ?? 1
   const mediaParameterSummary = isImage
     ? [imageAspectRatio, imageQualityLabel(draft.quality), imageResolutionTierLabel].filter(Boolean).join(" · ")
     : isVideo
-      ? [normalizeVideoAspectRatio(draft.aspect_ratio), videoResolutionLabel, mediaDurationLabel(draft.duration_seconds)].filter(Boolean).join(" · ")
+      ? [activeVideoAspectRatio, videoResolutionLabel, mediaDurationLabel(draft.duration_seconds)].filter(Boolean).join(" · ")
       : isAudio
         ? [
           selectedAudioMode === "music" ? "音乐" : selectedAudioMode === "tts" ? "语音" : "音频",
@@ -6000,12 +6075,12 @@ function NodeCanvasContextPanel({
     const video_mode = effectiveVideoMode(draft.video_mode, modeOptions)
     onChange({
       model,
-      ...normalizeVideoDraftForMode(draft, protocol, profile, video_mode, modelForResolution),
+      ...normalizeVideoDraftForMode(draft, selectedProvider, protocol, profile, video_mode),
     })
   }
   const updateVideoMode = (videoMode: string) => {
     const mode = effectiveVideoMode(videoMode, videoModeOptions)
-    onChange(normalizeVideoDraftForMode(draft, selectedVideoProtocol, selectedVideoProfile, mode, selectedVideoModelName))
+    onChange(normalizeVideoDraftForMode(draft, selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, mode))
   }
   const implicitReferenceImages = referenceMentionCandidateRefs(referenceMentionCandidates)
   const updatePrompt = (prompt: string, selected?: ReferenceMentionCandidate) => {
@@ -6245,9 +6320,11 @@ function NodeCanvasContextPanel({
           imageAspectRatio={imageAspectRatio}
           imageResolution={imageResolutionValue}
           videoAspectOptions={videoAspectOptions}
+          activeVideoAspectRatio={activeVideoAspectRatio}
           activeVideoResolution={activeVideoResolution}
           videoResolutionOptions={videoResolutionOptions}
           videoDurationValue={videoDurationValue}
+          videoDurationConfigured={videoDurationConfigured}
           videoDurationMin={videoDurationMin}
           videoDurationMax={videoDurationMax}
           videoDurationStep={videoDurationStep}
