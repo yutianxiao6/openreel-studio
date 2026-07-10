@@ -187,6 +187,11 @@ async function seekTimelineSeconds(page, seconds) {
   if (!box) throw new Error("Timeline has no seek box")
   const scale = Number(await timeline.getAttribute("data-px-per-second"))
   const labelWidth = Number(await timeline.getAttribute("data-track-label-width"))
+  await timeline.evaluate((element, { seconds: targetSeconds, scale: pxPerSecond, labelWidth: stickyWidth }) => {
+    const contentX = targetSeconds * pxPerSecond
+    const visibleWidth = Math.max(1, element.clientWidth - stickyWidth)
+    element.scrollLeft = Math.max(0, contentX - visibleWidth / 2)
+  }, { seconds, scale, labelWidth })
   const scrollLeft = await timeline.evaluate((element) => element.scrollLeft)
   await page.mouse.click(box.x + labelWidth + seconds * scale - scrollLeft, box.y + 12)
   await page.waitForTimeout(150)
@@ -1289,6 +1294,127 @@ async function main() {
       layout.timeline.height > layout.preview.height,
     )
 
+    const transitionClips = await readClips(page)
+    const transitionVideoParts = transitionClips
+      .filter((clip) => clip.kind === "video" && clip.trackId === "v1")
+      .sort((left, right) => left.startFrame - right.startFrame)
+    const transitionAudioParts = transitionClips
+      .filter((clip) => clip.kind === "audio" && clip.trackId === "a1")
+      .sort((left, right) => left.startFrame - right.startFrame)
+    if (transitionVideoParts.length !== 2 || transitionAudioParts.length !== 2) {
+      throw new Error(`Transition cut unavailable: ${JSON.stringify(transitionClips)}`)
+    }
+    const transitionCutFrame = transitionVideoParts[1].startFrame
+    await page.locator(`[data-clip-id="${transitionVideoParts[1].clipId}"]`).click()
+    await page.getByRole("button", { name: "添加视频交叉叠化", exact: true }).click()
+    await page.getByRole("button", { name: "添加音频恒功率交叉淡化", exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-transition="true"]').length === 2)
+    await page.getByLabel("视频交叉叠化时长帧", { exact: true }).fill("18")
+    await page.waitForFunction(() => (
+      document.querySelector('[data-transition-kind="video_cross_dissolve"]')?.getAttribute("data-transition-duration-frames") === "18"
+    ))
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction(() => (
+      document.querySelector('[data-transition-kind="video_cross_dissolve"]')?.getAttribute("data-transition-duration-frames") === "24"
+    ))
+    const transitionUndoRestored = true
+    await page.keyboard.press("Control+Shift+z")
+    await page.waitForFunction(() => (
+      document.querySelector('[data-transition-kind="video_cross_dissolve"]')?.getAttribute("data-transition-duration-frames") === "18"
+    ))
+    const transitionRedoRestored = true
+    await page.waitForTimeout(900)
+    const persistedTransitions = latestSequenceSpec?.transitions || []
+    const transitionsPersisted = (
+      persistedTransitions.length === 2 &&
+      persistedTransitions.some((transition) => (
+        transition.kind === "video_cross_dissolve" &&
+        transition.duration_frames === 18 &&
+        transition.outgoing_clip_id === transitionVideoParts[0].clipId &&
+        transition.incoming_clip_id === transitionVideoParts[1].clipId
+      )) &&
+      persistedTransitions.some((transition) => (
+        transition.kind === "audio_constant_power" &&
+        transition.duration_frames === 24 &&
+        transition.outgoing_clip_id === transitionAudioParts[0].clipId &&
+        transition.incoming_clip_id === transitionAudioParts[1].clipId
+      ))
+    )
+    await seekTimelineSeconds(page, transitionCutFrame / 24)
+    await page.waitForFunction(() => {
+      const monitor = document.querySelector('[data-openreel-program-gap]')
+      return Boolean(
+        monitor?.getAttribute("data-active-video-transition") &&
+        monitor?.getAttribute("data-active-audio-transition") &&
+        ["single-source", "dual-source"].includes(monitor?.getAttribute("data-video-transition-compositor") || "") &&
+        ["video-source", "single-source", "dual-source"].includes(monitor?.getAttribute("data-audio-transition-compositor") || "")
+      )
+    })
+    const transitionPreviewState = await page.evaluate(() => {
+      const monitor = document.querySelector('[data-openreel-program-gap]')
+      const outgoingAudio = document.querySelector('[data-openreel-transition-audio="outgoing"]')
+      const incomingAudio = document.querySelector('[data-openreel-transition-audio="incoming"]')
+      const secondaryVideo = document.querySelector('[data-openreel-transition-video="true"]')
+      const primaryVisual = document.querySelector('[data-openreel-preview-visual="true"]')
+      const primaryVideo = document.querySelector('[data-openreel-preview-video="true"]')
+      const outgoingPower = Number(monitor?.getAttribute("data-audio-outgoing-gain") || 0)
+      const incomingPower = Number(monitor?.getAttribute("data-audio-incoming-gain") || 0)
+      return {
+        videoProgress: Number(monitor?.getAttribute("data-video-transition-progress") || 0),
+        audioProgress: Number(monitor?.getAttribute("data-audio-transition-progress") || 0),
+        outgoingPower,
+        incomingPower,
+        powerSum: outgoingPower ** 2 + incomingPower ** 2,
+        videoCompositor: monitor?.getAttribute("data-video-transition-compositor") || "",
+        audioCompositor: monitor?.getAttribute("data-audio-transition-compositor") || "",
+        secondaryLayer: secondaryVideo?.getAttribute("data-transition-layer") || "",
+        secondaryOpacity: Number(secondaryVideo?.getAttribute("data-transition-layer-opacity") || 0),
+        primaryOpacity: Number(primaryVisual?.style.opacity || 0),
+        audioElementCount: document.querySelectorAll('[data-openreel-transition-audio]').length,
+        outgoingVolume: Number((outgoingAudio || primaryVideo)?.volume || 0),
+        incomingVolume: Number(incomingAudio?.volume || 0),
+      }
+    })
+    const expectedOutgoingTransitionVolume = Math.pow(10, (-6 + transitionAudioParts[0].gainDb) / 20) * Math.SQRT1_2
+    const expectedIncomingTransitionVolume = Math.pow(10, (-6 + transitionAudioParts[1].gainDb) / 20) * Math.SQRT1_2
+    const videoTransitionPreviewCorrect = transitionPreviewState.videoCompositor === "single-source"
+      ? transitionPreviewState.secondaryLayer === "" && Math.abs(transitionPreviewState.primaryOpacity - 0.85) < 0.01
+      : transitionPreviewState.secondaryLayer === "outgoing" && transitionPreviewState.secondaryOpacity === 1
+    const audioTransitionPreviewCorrect = transitionPreviewState.audioCompositor === "video-source"
+      ? transitionPreviewState.audioElementCount === 0 &&
+        Math.abs(transitionPreviewState.outgoingVolume - Math.hypot(expectedOutgoingTransitionVolume, expectedIncomingTransitionVolume)) < 0.03
+      : transitionPreviewState.audioCompositor === "single-source"
+      ? transitionPreviewState.audioElementCount === 1 &&
+        Math.abs(transitionPreviewState.outgoingVolume - Math.hypot(expectedOutgoingTransitionVolume, expectedIncomingTransitionVolume)) < 0.03
+      : transitionPreviewState.audioElementCount === 2 &&
+        Math.abs(transitionPreviewState.outgoingVolume - expectedOutgoingTransitionVolume) < 0.03 &&
+        Math.abs(transitionPreviewState.incomingVolume - expectedIncomingTransitionVolume) < 0.03
+    const dualSourceTransitionPreview = (
+      Math.abs(transitionPreviewState.videoProgress - 0.5) < 0.06 &&
+      Math.abs(transitionPreviewState.audioProgress - 0.5) < 0.06 &&
+      Math.abs(transitionPreviewState.powerSum - 1) < 0.02 &&
+      videoTransitionPreviewCorrect &&
+      audioTransitionPreviewCorrect
+    )
+    await page.getByLabel("回放分辨率", { exact: true }).selectOption("half")
+    await page.waitForFunction(() => {
+      const primary = document.querySelector('[data-openreel-program-canvas="true"]')
+      const secondary = document.querySelector('[data-openreel-transition-program-canvas="true"]')
+      const compositor = document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-video-transition-compositor")
+      return Number(primary?.getAttribute("data-rendered-frames") || 0) >= 1 && (
+        compositor === "single-source" || Number(secondary?.getAttribute("data-rendered-frames") || 0) >= 1
+      )
+    })
+    const reducedResolutionTransitionPreview = true
+    await page.getByLabel("回放分辨率", { exact: true }).selectOption("full")
+    const basicTransitions = (
+      transitionsPersisted &&
+      transitionUndoRestored &&
+      transitionRedoRestored &&
+      dualSourceTransitionPreview &&
+      reducedResolutionTransitionPreview
+    )
+
     const baselineProbe = await measureAnimationFrames(page)
 
     await page.evaluate(() => {
@@ -1343,6 +1469,7 @@ async function main() {
     await panel.waitFor({ state: "visible" })
     await page.waitForFunction(() => document.querySelectorAll('[data-openreel-track-row="true"]').length === 4)
     await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-transition="true"]').length === 2)
     const sequenceReopenPersisted = await page.evaluate(({ expectedTrackHeight, expectedMarkerFrame }) => {
       const v2 = document.querySelector('[data-openreel-track-id="v2"]')
       const a2 = document.querySelector('[data-openreel-track-id="a2"]')
@@ -1360,6 +1487,9 @@ async function main() {
         monitor?.getAttribute("data-visual-fit") === "cover" &&
         monitor?.getAttribute("data-visual-scale") === "1.15" &&
         monitor?.getAttribute("data-visual-crop") === "0.03,0.04,0.02,0.06" &&
+        document.querySelectorAll('[data-openreel-transition="true"]').length === 2 &&
+        document.querySelector('[data-transition-kind="video_cross_dissolve"]')?.getAttribute("data-transition-duration-frames") === "18" &&
+        document.querySelector('[data-transition-kind="audio_constant_power"]')?.getAttribute("data-transition-duration-frames") === "24" &&
         names.includes("补充画面") &&
         names.includes("补充声音")
       )
@@ -1367,16 +1497,42 @@ async function main() {
     await page.locator('[data-clip-kind="video"]').nth(1).click()
     await page.getByLabel("源素材入点帧", { exact: true }).fill("24")
     await page.getByLabel("源素材出点帧", { exact: true }).fill("120")
+    await seekTimelineSeconds(page, transitionCutFrame / 24)
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-active-video-transition")))
 
     if (SCREENSHOT_PATH) {
-      await page.evaluate(() => document.activeElement?.blur())
+      await page.evaluate(() => {
+        document.activeElement?.blur()
+        window.scrollTo(0, 0)
+        document.documentElement.scrollLeft = 0
+        document.documentElement.scrollTop = 0
+        document.body.scrollLeft = 0
+        document.body.scrollTop = 0
+      })
       await page.keyboard.press("n")
       await page.evaluate(() => {
-        const inspectorScroller = document.querySelector('[data-openreel-inspector-pane="true"] .overflow-y-auto')
-        const visualInspector = document.querySelector('[data-openreel-visual-inspector="true"]')
-        if (inspectorScroller && visualInspector) {
-          inspectorScroller.scrollTop = Math.max(0, visualInspector.offsetTop - 62)
+        const secondVideoClip = document.querySelectorAll('[data-clip-kind="video"]')[1]
+        if (secondVideoClip) {
+          const rect = secondVideoClip.getBoundingClientRect()
+          secondVideoClip.dispatchEvent(new PointerEvent("pointerdown", {
+            bubbles: true,
+            button: 0,
+            pointerId: 1,
+            clientX: rect.left + rect.width / 2,
+            clientY: rect.top + rect.height / 2,
+          }))
+          window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerId: 1 }))
         }
+        window.scrollTo(0, 0)
+      })
+      await page.waitForFunction(() => Boolean(document.querySelector('[data-openreel-transition-inspector="true"]')))
+      await page.evaluate(() => {
+        const inspectorScroller = document.querySelector('[data-openreel-inspector-pane="true"] .overflow-y-auto')
+        const transitionInspector = document.querySelector('[data-openreel-transition-inspector="true"]')
+        if (inspectorScroller && transitionInspector) {
+          inspectorScroller.scrollTop = Math.max(0, transitionInspector.offsetTop - 62)
+        }
+        window.scrollTo(0, 0)
       })
       await page.waitForTimeout(120)
       await page.screenshot({ path: SCREENSHOT_PATH, fullPage: false })
@@ -1391,8 +1547,17 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: basicVisualControls && programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: basicVisualControls && basicTransitions && programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
       basicVisualControls,
+      basicTransitions,
+      transitionsPersisted,
+      transitionUndoRestored,
+      transitionRedoRestored,
+      dualSourceTransitionPreview,
+      reducedResolutionTransitionPreview,
+      transitionCutFrame,
+      transitionPreviewState,
+      persistedTransitions,
       visualPreviewApplied,
       visualTransformPersisted,
       transformedReducedCanvas,

@@ -96,12 +96,22 @@ class SequenceClip(BaseModel):
     visual_transform: SequenceVisualTransform = Field(default_factory=SequenceVisualTransform)
 
 
+class SequenceTransition(BaseModel):
+    id: str = Field(min_length=1, max_length=240)
+    kind: Literal["video_cross_dissolve", "audio_constant_power"]
+    track_id: str = Field(min_length=1, max_length=120)
+    outgoing_clip_id: str = Field(min_length=1, max_length=240)
+    incoming_clip_id: str = Field(min_length=1, max_length=240)
+    duration_frames: int = Field(ge=2, le=2_400)
+
+
 class SequenceSpec(BaseModel):
     schema_version: Literal[SEQUENCE_SCHEMA_VERSION] = SEQUENCE_SCHEMA_VERSION
     settings: SequenceSettings
     tracks: list[SequenceTrack]
     clips: list[SequenceClip]
     markers: list[SequenceMarker] = Field(default_factory=list)
+    transitions: list[SequenceTransition] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_graph(self) -> "SequenceSpec":
@@ -117,7 +127,11 @@ class SequenceSpec(BaseModel):
         marker_ids = [marker.id for marker in self.markers]
         if len(marker_ids) != len(set(marker_ids)):
             raise ValueError("Marker ids must be unique")
+        transition_ids = [transition.id for transition in self.transitions]
+        if len(transition_ids) != len(set(transition_ids)):
+            raise ValueError("Transition ids must be unique")
         known_tracks = {track.id: track for track in self.tracks}
+        known_clips = {clip.id: clip for clip in self.clips}
         for clip in self.clips:
             if clip.track_id not in known_tracks:
                 raise ValueError(f"Unknown clip track: {clip.track_id}")
@@ -127,6 +141,55 @@ class SequenceSpec(BaseModel):
                     raise ValueError(f"Clip exceeds source frame count: {clip.id}")
             if clip.fade_in_frames + clip.fade_out_frames > clip.duration_frames:
                 raise ValueError(f"Clip fades exceed duration: {clip.id}")
+        transition_cuts: set[tuple[str, str, str]] = set()
+        transition_ranges: dict[str, list[tuple[int, int, str]]] = {}
+        for transition in self.transitions:
+            track = known_tracks.get(transition.track_id)
+            outgoing = known_clips.get(transition.outgoing_clip_id)
+            incoming = known_clips.get(transition.incoming_clip_id)
+            if track is None:
+                raise ValueError(f"Unknown transition track: {transition.track_id}")
+            if outgoing is None or incoming is None:
+                raise ValueError(f"Unknown transition clip: {transition.id}")
+            if outgoing.id == incoming.id:
+                raise ValueError(f"Transition clips must be different: {transition.id}")
+            if outgoing.track_id != track.id or incoming.track_id != track.id:
+                raise ValueError(f"Transition clips must belong to its track: {transition.id}")
+            expected_kind = "video" if transition.kind == "video_cross_dissolve" else "audio"
+            if track.kind != expected_kind:
+                raise ValueError(f"Transition kind does not match track: {transition.id}")
+            cut_frame = outgoing.timeline_start_frame + outgoing.duration_frames
+            if cut_frame != incoming.timeline_start_frame:
+                raise ValueError(f"Transition clips must be adjacent: {transition.id}")
+            cut_key = (track.id, outgoing.id, incoming.id)
+            if cut_key in transition_cuts:
+                raise ValueError(f"Transition cut must be unique: {transition.id}")
+            transition_cuts.add(cut_key)
+            outgoing_handle_frames = transition.duration_frames // 2
+            incoming_handle_frames = transition.duration_frames - outgoing_handle_frames
+            if outgoing_handle_frames > outgoing.duration_frames or incoming_handle_frames > incoming.duration_frames:
+                raise ValueError(f"Transition exceeds visible clip duration: {transition.id}")
+            if outgoing.source_frame_count is not None:
+                source_out = outgoing.source_in_frame + outgoing.duration_frames
+                if source_out + incoming_handle_frames > outgoing.source_frame_count:
+                    raise ValueError(f"Outgoing clip lacks transition tail handle: {transition.id}")
+            if incoming.source_frame_count is not None and incoming.source_in_frame < outgoing_handle_frames:
+                raise ValueError(f"Incoming clip lacks transition head handle: {transition.id}")
+            transition_ranges.setdefault(track.id, []).append((
+                cut_frame - outgoing_handle_frames,
+                cut_frame + incoming_handle_frames,
+                transition.id,
+            ))
+        for ranges in transition_ranges.values():
+            previous_end = -1
+            previous_id = ""
+            for start_frame, end_frame, transition_id in sorted(ranges):
+                if start_frame < previous_end:
+                    raise ValueError(
+                        f"Transition ranges overlap: {previous_id}, {transition_id}"
+                    )
+                previous_end = end_frame
+                previous_id = transition_id
         return self
 
 

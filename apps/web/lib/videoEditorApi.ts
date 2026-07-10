@@ -105,6 +105,15 @@ export interface VideoEditorClipSpec {
   visual_transform: VideoEditorVisualTransformSpec
 }
 
+export interface VideoEditorTransitionSpec {
+  id: string
+  kind: "video_cross_dissolve" | "audio_constant_power"
+  track_id: string
+  outgoing_clip_id: string
+  incoming_clip_id: string
+  duration_frames: number
+}
+
 export interface VideoEditorSequenceSpec {
   schema_version: "openreel.video_sequence.v1"
   settings: {
@@ -117,6 +126,7 @@ export interface VideoEditorSequenceSpec {
   tracks: VideoEditorTrackSpec[]
   clips: VideoEditorClipSpec[]
   markers: VideoEditorMarkerSpec[]
+  transitions: VideoEditorTransitionSpec[]
 }
 
 export interface VideoEditorSequenceDocument {

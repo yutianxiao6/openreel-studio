@@ -66,6 +66,67 @@ def sequence_spec(
     })
 
 
+def transition_sequence_payload() -> dict:
+    payload = sequence_spec().model_dump(mode="json")
+    payload["clips"] = [
+        {
+            "id": "video-out",
+            "track_id": "v1",
+            "media_id": "video-1",
+            "timeline_start_frame": 0,
+            "duration_frames": 96,
+            "source_in_frame": 24,
+            "source_frame_count": 240,
+        },
+        {
+            "id": "video-in",
+            "track_id": "v1",
+            "media_id": "video-1",
+            "timeline_start_frame": 96,
+            "duration_frames": 96,
+            "source_in_frame": 120,
+            "source_frame_count": 240,
+        },
+        {
+            "id": "audio-out",
+            "track_id": "a1",
+            "media_id": "embedded-audio:video-1",
+            "timeline_start_frame": 0,
+            "duration_frames": 96,
+            "source_in_frame": 24,
+            "source_frame_count": 240,
+        },
+        {
+            "id": "audio-in",
+            "track_id": "a1",
+            "media_id": "embedded-audio:video-1",
+            "timeline_start_frame": 96,
+            "duration_frames": 96,
+            "source_in_frame": 120,
+            "source_frame_count": 240,
+        },
+    ]
+    payload["transitions"] = [
+        {
+            "id": "video-dissolve-1",
+            "kind": "video_cross_dissolve",
+            "track_id": "v1",
+            "outgoing_clip_id": "video-out",
+            "incoming_clip_id": "video-in",
+            "duration_frames": 24,
+        },
+        {
+            "id": "audio-crossfade-1",
+            "kind": "audio_constant_power",
+            "track_id": "a1",
+            "outgoing_clip_id": "audio-out",
+            "incoming_clip_id": "audio-in",
+            "duration_frames": 24,
+        },
+    ]
+    return payload
+
+
 @pytest.mark.asyncio
 async def test_sequence_persistence_revision_conflict_history_and_restore(tmp_path: Path) -> None:
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'video-editor.db'}", future=True)
@@ -90,6 +151,7 @@ async def test_sequence_persistence_revision_conflict_history_and_restore(tmp_pa
             assert created.spec.clips[0].duration_frames == 120
             assert created.spec.tracks[0].height_px == 76
             assert created.spec.markers == []
+            assert created.spec.transitions == []
 
             updated = await video_edit_sequences.save_sequence(
                 db,
@@ -157,12 +219,14 @@ async def test_sequence_persistence_revision_conflict_history_and_restore(tmp_pa
 def test_sequence_contract_rejects_unknown_tracks_and_source_overflow() -> None:
     legacy_payload = sequence_spec().model_dump(mode="json")
     legacy_payload.pop("markers")
+    legacy_payload.pop("transitions")
     for track in legacy_payload["tracks"]:
         track.pop("height_px")
     for clip in legacy_payload["clips"]:
         clip.pop("visual_transform")
     legacy = video_edit_sequences.SequenceSpec.model_validate(legacy_payload)
     assert legacy.markers == []
+    assert legacy.transitions == []
     assert all(track.height_px == 76 for track in legacy.tracks)
     assert all(clip.visual_transform.scale == 1.0 for clip in legacy.clips)
     assert all(clip.visual_transform.opacity == 1.0 for clip in legacy.clips)
@@ -186,4 +250,37 @@ def test_sequence_contract_rejects_unknown_tracks_and_source_overflow() -> None:
     payload = sequence_spec().model_dump(mode="json")
     payload["clips"][0]["visual_transform"].update({"crop_left": 0.6, "crop_right": 0.4})
     with pytest.raises(ValidationError, match="Horizontal crop must leave visible content"):
+        video_edit_sequences.SequenceSpec.model_validate(payload)
+
+
+def test_sequence_contract_validates_cut_transitions_and_source_handles() -> None:
+    sequence = video_edit_sequences.SequenceSpec.model_validate(transition_sequence_payload())
+    assert [transition.duration_frames for transition in sequence.transitions] == [24, 24]
+    assert sequence.transitions[0].kind == "video_cross_dissolve"
+    assert sequence.transitions[1].kind == "audio_constant_power"
+
+    payload = transition_sequence_payload()
+    payload["clips"][1]["timeline_start_frame"] = 97
+    with pytest.raises(ValidationError, match="must be adjacent"):
+        video_edit_sequences.SequenceSpec.model_validate(payload)
+
+    payload = transition_sequence_payload()
+    payload["clips"][0]["source_frame_count"] = 131
+    with pytest.raises(ValidationError, match="lacks transition tail handle"):
+        video_edit_sequences.SequenceSpec.model_validate(payload)
+
+    payload = transition_sequence_payload()
+    payload["clips"][1]["source_in_frame"] = 11
+    with pytest.raises(ValidationError, match="lacks transition head handle"):
+        video_edit_sequences.SequenceSpec.model_validate(payload)
+
+    payload = transition_sequence_payload()
+    payload["transitions"][0]["track_id"] = "a1"
+    with pytest.raises(ValidationError, match="belong to its track"):
+        video_edit_sequences.SequenceSpec.model_validate(payload)
+
+    payload = transition_sequence_payload()
+    duplicate = {**payload["transitions"][0], "id": "duplicate-cut-transition"}
+    payload["transitions"].append(duplicate)
+    with pytest.raises(ValidationError, match="cut must be unique"):
         video_edit_sequences.SequenceSpec.model_validate(payload)

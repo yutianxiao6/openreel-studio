@@ -92,11 +92,23 @@ interface TimelineMarkerState {
   label: string
 }
 
+type TimelineTransitionKind = "video_cross_dissolve" | "audio_constant_power"
+
+interface TimelineTransitionState {
+  id: string
+  kind: TimelineTransitionKind
+  trackId: string
+  outgoingClipId: string
+  incomingClipId: string
+  durationFrames: number
+}
+
 interface EditorSnapshot {
   videoClips: TimelineClipState[]
   audioClips: TimelineClipState[]
   tracks: TimelineTrackState[]
   markers: TimelineMarkerState[]
+  transitions: TimelineTransitionState[]
 }
 
 interface TimelineViewport {
@@ -341,6 +353,14 @@ function clipEndFrame(clip: TimelineClipState): number {
   return clip.startFrame + clip.durationFrames
 }
 
+function transitionFrameRange(transition: TimelineTransitionState, cutFrame: number) {
+  const outgoingFrames = Math.floor(transition.durationFrames / 2)
+  return {
+    startFrame: cutFrame - outgoingFrames,
+    endFrame: cutFrame + transition.durationFrames - outgoingFrames,
+  }
+}
+
 function clipsShareTimelineRange(a: TimelineClipState, b: TimelineClipState): boolean {
   return Boolean(a.syncGroupId && b.syncGroupId && a.syncGroupId === b.syncGroupId)
 }
@@ -420,8 +440,7 @@ function drawProgramFrame(
   const destinationWidth = renderedWidth * (1 - value.cropLeft - value.cropRight)
   const destinationHeight = renderedHeight * (1 - value.cropTop - value.cropBottom)
   context.save()
-  context.fillStyle = "#000"
-  context.fillRect(0, 0, width, height)
+  context.clearRect(0, 0, width, height)
   context.globalAlpha = value.opacity
   context.translate(width / 2 + value.positionX * width, height / 2 + value.positionY * height)
   context.rotate(value.rotationDeg * Math.PI / 180)
@@ -451,6 +470,13 @@ function createMarkerId(): string {
     ? crypto.randomUUID().slice(0, 8)
     : Math.random().toString(36).slice(2, 10)
   return `marker:${Date.now().toString(36)}:${random}`
+}
+
+function createTransitionId(kind: TimelineTransitionKind): string {
+  const random = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10)
+  return `transition:${kind}:${Date.now().toString(36)}:${random}`
 }
 
 function createSyncGroupId(seed = "media"): string {
@@ -1398,6 +1424,10 @@ export default function VideoEditPanel({
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const programCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const transitionVideoRef = useRef<HTMLVideoElement | null>(null)
+  const transitionProgramCanvasRef = useRef<HTMLCanvasElement | null>(null)
+  const transitionOutgoingAudioRef = useRef<HTMLAudioElement | null>(null)
+  const transitionIncomingAudioRef = useRef<HTMLAudioElement | null>(null)
   const decodedVideoClockRef = useRef<{ mediaTime: number; observedAt: number } | null>(null)
   const suppressMediaClockUntilRef = useRef(0)
   const sourcePreviewRef = useRef<HTMLVideoElement | null>(null)
@@ -1416,6 +1446,7 @@ export default function VideoEditPanel({
   const audioClipsRef = useRef<TimelineClipState[]>([])
   const tracksRef = useRef<TimelineTrackState[]>(defaultTimelineTracks())
   const markersRef = useRef<TimelineMarkerState[]>([])
+  const transitionsRef = useRef<TimelineTransitionState[]>([])
   const selectedClipIdsRef = useRef<Set<string>>(new Set())
   const [sourceDurations, setSourceDurations] = useState<Record<string, number>>({})
   const [mediaIndexes, setMediaIndexes] = useState<Record<string, VideoEditorMediaIndex>>({})
@@ -1436,6 +1467,7 @@ export default function VideoEditPanel({
   const [loopRange, setLoopRange] = useState({ inFrame: 0, outFrame: 0 })
   const [tracks, setTracks] = useState<TimelineTrackState[]>(defaultTimelineTracks)
   const [markers, setMarkers] = useState<TimelineMarkerState[]>([])
+  const [transitions, setTransitions] = useState<TimelineTransitionState[]>([])
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null)
   const [activeVideoTrackId, setActiveVideoTrackId] = useState("v1")
   const [activeAudioTrackId, setActiveAudioTrackId] = useState("a1")
@@ -1459,6 +1491,7 @@ export default function VideoEditPanel({
   audioClipsRef.current = audioClips
   tracksRef.current = tracks
   markersRef.current = markers
+  transitionsRef.current = transitions
   selectedClipIdsRef.current = selectedClipIds
   const framesPerSecond = sequenceFrameRate.numerator / sequenceFrameRate.denominator
   const trackById = useMemo(() => new Map(tracks.map((track) => [track.id, track])), [tracks])
@@ -1617,6 +1650,7 @@ export default function VideoEditPanel({
     audioClips: audioClipsRef.current.map(cloneTimelineClip),
     tracks: tracksRef.current.map((track) => ({ ...track })),
     markers: markersRef.current.map((marker) => ({ ...marker })),
+    transitions: transitionsRef.current.map((transition) => ({ ...transition })),
   }), [])
   const updateHistoryDepth = useCallback(() => {
     setHistoryDepth({
@@ -1629,14 +1663,17 @@ export default function VideoEditPanel({
     const nextAudioClips = snapshot.audioClips.map(cloneTimelineClip)
     const nextTracks = snapshot.tracks.map((track) => ({ ...track }))
     const nextMarkers = snapshot.markers.map((marker) => ({ ...marker }))
+    const nextTransitions = snapshot.transitions.map((transition) => ({ ...transition }))
     videoClipsRef.current = nextVideoClips
     audioClipsRef.current = nextAudioClips
     tracksRef.current = nextTracks
     markersRef.current = nextMarkers
+    transitionsRef.current = nextTransitions
     setVideoClips(nextVideoClips)
     setAudioClips(nextAudioClips)
     setTracks(nextTracks)
     setMarkers(nextMarkers)
+    setTransitions(nextTransitions)
     setActiveVideoTrackId((current) => nextTracks.some((track) => track.id === current && track.kind === "video")
       ? current
       : nextTracks.find((track) => track.kind === "video")?.id || "v1")
@@ -1700,6 +1737,115 @@ export default function VideoEditPanel({
     (selectedSyncGroupId ? audioClips.find((clip) => clip.syncGroupId === selectedSyncGroupId) : undefined) ||
     audioClips[0]
   ), [audioClips, selectedClipId, selectedSyncGroupId])
+  const selectedVideoOutgoingClip = useMemo(() => (
+    selectedVideoClip
+      ? videoClips.find((clip) => (
+          clip.trackId === selectedVideoClip.trackId &&
+          clipEndFrame(clip) === selectedVideoClip.startFrame &&
+          clip.clipId !== selectedVideoClip.clipId
+        ))
+      : undefined
+  ), [selectedVideoClip, videoClips])
+  const selectedAudioOutgoingClip = useMemo(() => (
+    selectedAudioClip
+      ? audioClips.find((clip) => (
+          clip.trackId === selectedAudioClip.trackId &&
+          clipEndFrame(clip) === selectedAudioClip.startFrame &&
+          clip.clipId !== selectedAudioClip.clipId
+        ))
+      : undefined
+  ), [audioClips, selectedAudioClip])
+  const selectedVideoTransition = useMemo(() => (
+    selectedVideoClip && selectedVideoOutgoingClip
+      ? transitions.find((transition) => (
+          transition.kind === "video_cross_dissolve" &&
+          transition.outgoingClipId === selectedVideoOutgoingClip.clipId &&
+          transition.incomingClipId === selectedVideoClip.clipId
+        ))
+      : undefined
+  ), [selectedVideoClip, selectedVideoOutgoingClip, transitions])
+  const selectedAudioTransition = useMemo(() => (
+    selectedAudioClip && selectedAudioOutgoingClip
+      ? transitions.find((transition) => (
+          transition.kind === "audio_constant_power" &&
+          transition.outgoingClipId === selectedAudioOutgoingClip.clipId &&
+          transition.incomingClipId === selectedAudioClip.clipId
+        ))
+      : undefined
+  ), [selectedAudioClip, selectedAudioOutgoingClip, transitions])
+  const maxTransitionDuration = useCallback((
+    outgoing: TimelineClipState,
+    incoming: TimelineClipState,
+    excludeTransitionId?: string,
+  ) => {
+    const outgoingSourceFrames = sourceFrameCountForClip(outgoing)
+    const outgoingTailHandle = outgoingSourceFrames === null
+      ? 2_400
+      : Math.max(0, outgoingSourceFrames - outgoing.sourceInFrame - outgoing.durationFrames)
+    const incomingSourceFrames = sourceFrameCountForClip(incoming)
+    const incomingHeadHandle = incomingSourceFrames === null ? 2_400 : incoming.sourceInFrame
+    let maxOutgoingSide = Math.min(outgoing.durationFrames, incomingHeadHandle)
+    let maxIncomingSide = Math.min(incoming.durationFrames, outgoingTailHandle)
+    const allClips = new Map([...videoClips, ...audioClips].map((clip) => [clip.clipId, clip]))
+    for (const transition of transitions) {
+      if (transition.id === excludeTransitionId || transition.trackId !== incoming.trackId) continue
+      const existingIncoming = allClips.get(transition.incomingClipId)
+      if (!existingIncoming) continue
+      const range = transitionFrameRange(transition, existingIncoming.startFrame)
+      if (range.endFrame <= incoming.startFrame) {
+        maxOutgoingSide = Math.min(maxOutgoingSide, incoming.startFrame - range.endFrame)
+      } else if (range.startFrame >= incoming.startFrame) {
+        maxIncomingSide = Math.min(maxIncomingSide, range.startFrame - incoming.startFrame)
+      } else {
+        return 0
+      }
+    }
+    const durationFrames = Math.min(2_400, maxOutgoingSide * 2 + 1, maxIncomingSide * 2)
+    return durationFrames >= 2 ? durationFrames : 0
+  }, [audioClips, sourceFrameCountForClip, transitions, videoClips])
+  const setCutTransition = useCallback((
+    kind: TimelineTransitionKind,
+    outgoing: TimelineClipState | undefined,
+    incoming: TimelineClipState | undefined,
+    existing: TimelineTransitionState | undefined,
+  ) => {
+    if (existing) {
+      recordUndoSnapshot()
+      setTransitions((current) => current.filter((transition) => transition.id !== existing.id))
+      return
+    }
+    if (!outgoing || !incoming) {
+      setError("请选择剪切点右侧的相邻片段")
+      return
+    }
+    const maxDuration = maxTransitionDuration(outgoing, incoming)
+    if (maxDuration < 2) {
+      setError("素材把手不足：请先向外裁剪前后片段，为转场保留源画面")
+      return
+    }
+    recordUndoSnapshot()
+    setTransitions((current) => [...current, {
+      id: createTransitionId(kind),
+      kind,
+      trackId: incoming.trackId,
+      outgoingClipId: outgoing.clipId,
+      incomingClipId: incoming.clipId,
+      durationFrames: Math.min(24, maxDuration),
+    }])
+    setError(null)
+  }, [maxTransitionDuration, recordUndoSnapshot])
+  const updateCutTransitionDuration = useCallback((
+    transition: TimelineTransitionState,
+    outgoing: TimelineClipState,
+    incoming: TimelineClipState,
+    value: number,
+  ) => {
+    const maxDuration = maxTransitionDuration(outgoing, incoming, transition.id)
+    const durationFrames = Math.round(clamp(value, 2, maxDuration))
+    setTransitions((current) => current.map((candidate) => (
+      candidate.id === transition.id ? { ...candidate, durationFrames } : candidate
+    )))
+  }, [maxTransitionDuration])
   const updateSelectedVisualTransform = useCallback((patch: Partial<VisualTransformState>) => {
     if (!selectedVideoClip) return
     setVideoClips((clips) => clips.map((clip) => (
@@ -1745,6 +1891,86 @@ export default function VideoEditPanel({
   const currentVideoItem = currentVideoClip ? mediaById.get(currentVideoClip.mediaId) : undefined
   const currentAudioItem = currentAudioClip ? mediaById.get(currentAudioClip.mediaId) : undefined
   const currentAudioTrack = currentAudioClip ? trackById.get(currentAudioClip.trackId) : undefined
+  const activeVideoTransition = useMemo(() => {
+    for (const track of videoTracks) {
+      if (!track.visible) continue
+      for (const transition of transitions) {
+        if (transition.kind !== "video_cross_dissolve" || transition.trackId !== track.id) continue
+        const outgoing = videoClips.find((clip) => clip.clipId === transition.outgoingClipId)
+        const incoming = videoClips.find((clip) => clip.clipId === transition.incomingClipId)
+        if (!outgoing || !incoming) continue
+        const range = transitionFrameRange(transition, incoming.startFrame)
+        if (currentFrame >= range.startFrame && currentFrame < range.endFrame) {
+          return {
+            transition,
+            outgoing,
+            incoming,
+            range,
+            progress: clamp((currentFrame - range.startFrame) / transition.durationFrames, 0, 1),
+          }
+        }
+      }
+    }
+    return undefined
+  }, [currentFrame, transitions, videoClips, videoTracks])
+  const activeAudioTransition = useMemo(() => {
+    const hasSolo = audioTracks.some((track) => track.solo)
+    for (const track of audioTracks) {
+      if (track.muted || (hasSolo && !track.solo)) continue
+      for (const transition of transitions) {
+        if (transition.kind !== "audio_constant_power" || transition.trackId !== track.id) continue
+        const outgoing = audioClips.find((clip) => clip.clipId === transition.outgoingClipId)
+        const incoming = audioClips.find((clip) => clip.clipId === transition.incomingClipId)
+        if (!outgoing || !incoming) continue
+        const range = transitionFrameRange(transition, incoming.startFrame)
+        if (currentFrame >= range.startFrame && currentFrame < range.endFrame) {
+          const progress = clamp((currentFrame - range.startFrame) / transition.durationFrames, 0, 1)
+          return {
+            transition,
+            outgoing,
+            incoming,
+            outgoingItem: mediaById.get(outgoing.mediaId),
+            incomingItem: mediaById.get(incoming.mediaId),
+            track,
+            range,
+            progress,
+            outgoingPower: Math.cos(progress * Math.PI / 2),
+            incomingPower: Math.sin(progress * Math.PI / 2),
+          }
+        }
+      }
+    }
+    return undefined
+  }, [audioClips, audioTracks, currentFrame, mediaById, transitions])
+  const videoTransitionSingleSource = Boolean(
+    activeVideoTransition &&
+    mediaById.get(activeVideoTransition.outgoing.mediaId)?.src === mediaById.get(activeVideoTransition.incoming.mediaId)?.src &&
+    activeVideoTransition.outgoing.sourceInFrame - activeVideoTransition.outgoing.startFrame ===
+      activeVideoTransition.incoming.sourceInFrame - activeVideoTransition.incoming.startFrame &&
+    JSON.stringify(activeVideoTransition.outgoing.visualTransform) === JSON.stringify(activeVideoTransition.incoming.visualTransform),
+  )
+  const audioTransitionSingleSource = Boolean(
+    activeAudioTransition &&
+    activeAudioTransition.outgoingItem?.src === activeAudioTransition.incomingItem?.src &&
+    activeAudioTransition.outgoing.sourceInFrame - activeAudioTransition.outgoing.startFrame ===
+      activeAudioTransition.incoming.sourceInFrame - activeAudioTransition.incoming.startFrame,
+  )
+  const audioTransitionThroughVideo = Boolean(
+    audioTransitionSingleSource &&
+    currentVideoItem?.type === "video" &&
+    activeAudioTransition?.outgoingItem?.synthetic &&
+    activeAudioTransition.outgoingItem.src === currentVideoItem.src,
+  )
+  const transitionVideoClip = activeVideoTransition && !videoTransitionSingleSource
+    ? (currentVideoClip?.clipId === activeVideoTransition.outgoing.clipId
+        ? activeVideoTransition.incoming
+        : activeVideoTransition.outgoing)
+    : undefined
+  const transitionVideoItem = transitionVideoClip ? mediaById.get(transitionVideoClip.mediaId) : undefined
+  const transitionVisualTransform = useMemo(
+    () => normalizedVisualTransform(transitionVideoClip?.visualTransform),
+    [transitionVideoClip?.visualTransform],
+  )
   const selectedVideoItem = selectedVideoClip ? mediaById.get(selectedVideoClip.mediaId) : undefined
   const currentVisualTransform = useMemo(
     () => normalizedVisualTransform(currentVideoClip?.visualTransform),
@@ -1757,6 +1983,7 @@ export default function VideoEditPanel({
   const primaryMediaIndex = sourceVideoItem ? mediaIndexes[sourceVideoItem.id] : undefined
   const maxPxPerSecond = Math.max(220, framesPerSecond * FRAME_DETAIL_WIDTH)
   const playAudioThroughVideo = Boolean(
+    !activeAudioTransition &&
     currentVideoClip &&
     currentAudioClip &&
     currentVideoItem?.type === "video" &&
@@ -1776,7 +2003,11 @@ export default function VideoEditPanel({
     : sequenceEndFrame
   const playbackClockSource = playbackDirection < 0
     ? "timeline"
-    : currentAudioClip && currentAudioItem && !playAudioThroughVideo
+    : audioTransitionThroughVideo && currentVideoClip && currentVideoItem?.type === "video"
+      ? "video-pts"
+      : activeAudioTransition?.outgoingItem || activeAudioTransition?.incomingItem
+      ? "audio-transition"
+      : currentAudioClip && currentAudioItem && !playAudioThroughVideo
       ? "audio"
       : currentVideoClip && currentVideoItem?.type === "video"
         ? "video-pts"
@@ -1865,8 +2096,16 @@ export default function VideoEditPanel({
         frame: marker.frame,
         label: marker.label,
       })),
+      transitions: transitions.map((transition) => ({
+        id: transition.id,
+        kind: transition.kind,
+        track_id: transition.trackId,
+        outgoing_clip_id: transition.outgoingClipId,
+        incoming_clip_id: transition.incomingClipId,
+        duration_frames: transition.durationFrames,
+      })),
     }
-  }, [audioClips, markers, primaryMediaIndex, sequenceFrameRate, sourceFrameCountForClip, tracks, videoClips])
+  }, [audioClips, markers, primaryMediaIndex, sequenceFrameRate, sourceFrameCountForClip, tracks, transitions, videoClips])
 
   useEffect(() => {
     let cancelled = false
@@ -1907,6 +2146,7 @@ export default function VideoEditPanel({
     setSelectedClipId(null)
     setSelectedClipIds(new Set())
     setMarkers([])
+    setTransitions([])
     setSelectedMarkerId(null)
     setVideoClips([])
     setAudioClips([])
@@ -1967,6 +2207,14 @@ export default function VideoEditPanel({
       setSequenceFrameRate(document.spec.settings.frame_rate)
       setTracks(restoredTracks)
       setMarkers(document.spec.markers || [])
+      setTransitions((document.spec.transitions || []).map((transition) => ({
+        id: transition.id,
+        kind: transition.kind,
+        trackId: transition.track_id,
+        outgoingClipId: transition.outgoing_clip_id,
+        incomingClipId: transition.incoming_clip_id,
+        durationFrames: transition.duration_frames,
+      })))
       setVideoClips(restored.filter((clip) => trackKinds.get(
         document.spec.clips.find((item) => item.id === clip.clipId)?.track_id || "",
       ) === "video"))
@@ -2034,6 +2282,7 @@ export default function VideoEditPanel({
     setAudioClips(primaryAudio
       ? [createClip(primaryAudio.id, "a1", 0, durationFrames, 0, syncGroupId, true)]
       : [])
+    setTransitions([])
     setSelectedClipId(null)
     setSelectedClipIds(new Set())
     setCurrentTime(0)
@@ -2060,6 +2309,21 @@ export default function VideoEditPanel({
           : clip
       }))
   }, [audioTimelineItems, sourceFrameCountForClip, visualItems])
+
+  useEffect(() => {
+    if (!sequenceLoaded) return
+    const clipsById = new Map([...videoClips, ...audioClips].map((clip) => [clip.clipId, clip]))
+    setTransitions((current) => {
+      const valid = current.filter((transition) => {
+        const outgoing = clipsById.get(transition.outgoingClipId)
+        const incoming = clipsById.get(transition.incomingClipId)
+        if (!outgoing || !incoming || outgoing.trackId !== transition.trackId || incoming.trackId !== transition.trackId) return false
+        if (clipEndFrame(outgoing) !== incoming.startFrame) return false
+        return transition.durationFrames <= maxTransitionDuration(outgoing, incoming, transition.id)
+      })
+      return valid.length === current.length ? current : valid
+    })
+  }, [audioClips, maxTransitionDuration, sequenceLoaded, videoClips])
 
   useEffect(() => {
     if (!sequenceLoaded || initializedNodeRef.current !== nodeId) return
@@ -2106,6 +2370,30 @@ export default function VideoEditPanel({
   }, [currentTime, currentVideoClip, framesPerSecond, mediaById, playbackDirection, playing])
 
   useEffect(() => {
+    const video = transitionVideoRef.current
+    if (!video || !transitionVideoClip || transitionVideoItem?.type !== "video") {
+      video?.pause()
+      return
+    }
+    const sourceFrameCount = sourceFrameCountForClip(transitionVideoClip)
+    const localFrame = clamp(
+      currentFrame - transitionVideoClip.startFrame + transitionVideoClip.sourceInFrame,
+      0,
+      Math.max(0, (sourceFrameCount || Number.MAX_SAFE_INTEGER) - 1),
+    )
+    const localTime = localFrame / framesPerSecond
+    if (playing && playbackDirection > 0) {
+      if (video.paused) {
+        if (Math.abs((video.currentTime || 0) - localTime) > 0.15) video.currentTime = localTime
+        void video.play().catch(() => undefined)
+      }
+    } else {
+      if (Math.abs((video.currentTime || 0) - localTime) > 0.04) video.currentTime = localTime
+      video.pause()
+    }
+  }, [currentFrame, framesPerSecond, playbackDirection, playing, sourceFrameCountForClip, transitionVideoClip, transitionVideoItem])
+
+  useEffect(() => {
     if (!currentAudioClip) return
     const localFrame = clamp(currentFrame - currentAudioClip.startFrame, 0, currentAudioClip.durationFrames)
     const fadeInFrames = currentAudioClip.fadeInFrames || 0
@@ -2117,6 +2405,63 @@ export default function VideoEditPanel({
     if (videoRef.current && playAudioThroughVideo) videoRef.current.volume = amplitude
     if (audioRef.current) audioRef.current.volume = amplitude
   }, [currentAudioClip, currentAudioTrack?.gainDb, currentFrame, playAudioThroughVideo])
+
+  useEffect(() => {
+    const outgoingAudio = transitionOutgoingAudioRef.current
+    const incomingAudio = transitionIncomingAudioRef.current
+    if (!activeAudioTransition) {
+      outgoingAudio?.pause()
+      incomingAudio?.pause()
+      return
+    }
+    if (audioTransitionThroughVideo) {
+      outgoingAudio?.pause()
+      incomingAudio?.pause()
+      const outgoingAmplitude = activeAudioTransition.outgoing.muted
+        ? 0
+        : gainAmplitude((activeAudioTransition.outgoing.gainDb || 0) + activeAudioTransition.track.gainDb) * activeAudioTransition.outgoingPower
+      const incomingAmplitude = activeAudioTransition.incoming.muted
+        ? 0
+        : gainAmplitude((activeAudioTransition.incoming.gainDb || 0) + activeAudioTransition.track.gainDb) * activeAudioTransition.incomingPower
+      if (videoRef.current) videoRef.current.volume = Math.min(1, Math.hypot(outgoingAmplitude, incomingAmplitude))
+      return
+    }
+    const syncAudio = (
+      audio: HTMLAudioElement | null,
+      clip: TimelineClipState,
+      power: number,
+    ) => {
+      if (!audio) return
+      const sourceFrameCount = sourceFrameCountForClip(clip)
+      const localFrame = clamp(
+        currentFrame - clip.startFrame + clip.sourceInFrame,
+        0,
+        Math.max(0, (sourceFrameCount || Number.MAX_SAFE_INTEGER) - 1),
+      )
+      const localTime = localFrame / framesPerSecond
+      const clipAmplitude = clip.muted
+        ? 0
+        : gainAmplitude((clip.gainDb || 0) + activeAudioTransition.track.gainDb) * power
+      const pairedAmplitude = audioTransitionSingleSource && clip.clipId === activeAudioTransition.outgoing.clipId
+        ? (activeAudioTransition.incoming.muted
+            ? 0
+            : gainAmplitude((activeAudioTransition.incoming.gainDb || 0) + activeAudioTransition.track.gainDb) * activeAudioTransition.incomingPower)
+        : 0
+      audio.volume = Math.min(1, audioTransitionSingleSource ? Math.hypot(clipAmplitude, pairedAmplitude) : clipAmplitude)
+      if (playing && playbackDirection > 0) {
+        if (audio.paused) {
+          if (Math.abs((audio.currentTime || 0) - localTime) > 0.15) audio.currentTime = localTime
+          void audio.play().catch(() => undefined)
+        }
+      } else {
+        if (Math.abs((audio.currentTime || 0) - localTime) > 0.04) audio.currentTime = localTime
+        audio.pause()
+      }
+    }
+    syncAudio(outgoingAudio, activeAudioTransition.outgoing, activeAudioTransition.outgoingPower)
+    if (audioTransitionSingleSource) incomingAudio?.pause()
+    else syncAudio(incomingAudio, activeAudioTransition.incoming, activeAudioTransition.incomingPower)
+  }, [activeAudioTransition, audioTransitionSingleSource, audioTransitionThroughVideo, currentFrame, framesPerSecond, playbackDirection, playing, sourceFrameCountForClip])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -2201,7 +2546,7 @@ export default function VideoEditPanel({
     const height = Math.max(16, Math.round((mediaIndex?.height || 720) * factor))
     canvas.width = width
     canvas.height = height
-    const context = canvas.getContext("2d", { alpha: false })
+    const context = canvas.getContext("2d", { alpha: true })
     if (!context) return
     let callbackId = 0
     let animationFrame = 0
@@ -2244,6 +2589,48 @@ export default function VideoEditPanel({
       if (animationFrame) window.cancelAnimationFrame(animationFrame)
     }
   }, [currentVideoClip?.clipId, currentVideoItem, currentVisualTransform, mediaIndexes, playbackResolution])
+
+  useEffect(() => {
+    const video = transitionVideoRef.current
+    const canvas = transitionProgramCanvasRef.current
+    if (!video || !canvas || transitionVideoItem?.type !== "video" || playbackResolution === "full") return
+    const mediaIndex = mediaIndexes[transitionVideoItem.id]
+    const factor = playbackResolution === "half" ? 0.5 : 0.25
+    const width = Math.max(16, Math.round((mediaIndex?.width || 1280) * factor))
+    const height = Math.max(16, Math.round((mediaIndex?.height || 720) * factor))
+    canvas.width = width
+    canvas.height = height
+    const context = canvas.getContext("2d", { alpha: true })
+    if (!context) return
+    let callbackId = 0
+    let animationFrame = 0
+    let cancelled = false
+    let renderedFrames = 0
+    const draw = () => {
+      if (cancelled || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
+      drawProgramFrame(context, video, width, height, transitionVisualTransform)
+      renderedFrames += 1
+      canvas.dataset.renderedFrames = String(renderedFrames)
+    }
+    const drawFrame = () => {
+      draw()
+      if (typeof video.requestVideoFrameCallback === "function") {
+        callbackId = video.requestVideoFrameCallback(drawFrame)
+      } else {
+        animationFrame = window.requestAnimationFrame(drawFrame)
+      }
+    }
+    video.addEventListener("loadeddata", draw)
+    video.addEventListener("seeked", draw)
+    drawFrame()
+    return () => {
+      cancelled = true
+      video.removeEventListener("loadeddata", draw)
+      video.removeEventListener("seeked", draw)
+      if (callbackId) video.cancelVideoFrameCallback(callbackId)
+      if (animationFrame) window.cancelAnimationFrame(animationFrame)
+    }
+  }, [mediaIndexes, playbackResolution, transitionVideoClip?.clipId, transitionVideoItem, transitionVisualTransform])
 
   const timeToFrame = useCallback((time: number) => (
     Math.max(0, Math.round(time * framesPerSecond))
@@ -2363,6 +2750,9 @@ export default function VideoEditPanel({
     if (playing) {
       video?.pause()
       audioRef.current?.pause()
+      transitionVideoRef.current?.pause()
+      transitionOutgoingAudioRef.current?.pause()
+      transitionIncomingAudioRef.current?.pause()
       setPlaying(false)
       return
     }
@@ -2392,6 +2782,7 @@ export default function VideoEditPanel({
     setPlaying(true)
   }, [playbackEnd])
 
+  const activeTransitionAudioClockClip = activeAudioTransition?.outgoing
   useEffect(() => {
     if (!playing) return
     if (playbackEnd <= 0) {
@@ -2409,7 +2800,16 @@ export default function VideoEditPanel({
         timelineTime += deltaSeconds * playbackDirection
       } else {
         let sampledMediaClock = false
-        if (now >= suppressMediaClockUntilRef.current && playbackClockSource === "audio" && currentAudioClip) {
+        if (now >= suppressMediaClockUntilRef.current && playbackClockSource === "audio-transition" && activeTransitionAudioClockClip) {
+          const audio = transitionOutgoingAudioRef.current
+          if (audio && !audio.paused && audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            const sampledTimelineTime = activeTransitionAudioClockClip.startFrame / framesPerSecond + (
+              audio.currentTime - activeTransitionAudioClockClip.sourceInFrame / framesPerSecond
+            )
+            timelineTime = Math.max(timelineTime, sampledTimelineTime)
+            sampledMediaClock = true
+          }
+        } else if (now >= suppressMediaClockUntilRef.current && playbackClockSource === "audio" && currentAudioClip) {
           const audio = audioRef.current
           if (audio && !audio.paused && audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
             const sampledTimelineTime = currentAudioClip.startFrame / framesPerSecond + Math.max(
@@ -2471,6 +2871,7 @@ export default function VideoEditPanel({
         suppressMediaClockUntilRef.current = now + 120
         currentTimeRef.current = timelineTime
         if (playheadRef.current) playheadRef.current.style.left = `${TRACK_LABEL_WIDTH + timelineTime * pxPerSecond}px`
+        if (timelineRef.current) timelineRef.current.dataset.currentFrame = String(Math.round(timelineTime * framesPerSecond))
         setCurrentTime(timelineTime)
         frame = window.requestAnimationFrame(tick)
         return
@@ -2478,8 +2879,12 @@ export default function VideoEditPanel({
       if (playbackDirection > 0 && timelineTime >= playbackEnd - 0.015) {
         videoRef.current?.pause()
         audioRef.current?.pause()
+        transitionVideoRef.current?.pause()
+        transitionOutgoingAudioRef.current?.pause()
+        transitionIncomingAudioRef.current?.pause()
         currentTimeRef.current = playbackEnd
         if (playheadRef.current) playheadRef.current.style.left = `${TRACK_LABEL_WIDTH + playbackEnd * pxPerSecond}px`
+        if (timelineRef.current) timelineRef.current.dataset.currentFrame = String(Math.round(playbackEnd * framesPerSecond))
         setCurrentTime(playbackEnd)
         setPlaying(false)
         return
@@ -2487,14 +2892,19 @@ export default function VideoEditPanel({
       if (playbackDirection < 0 && timelineTime <= 0) {
         videoRef.current?.pause()
         audioRef.current?.pause()
+        transitionVideoRef.current?.pause()
+        transitionOutgoingAudioRef.current?.pause()
+        transitionIncomingAudioRef.current?.pause()
         currentTimeRef.current = 0
         if (playheadRef.current) playheadRef.current.style.left = `${TRACK_LABEL_WIDTH}px`
+        if (timelineRef.current) timelineRef.current.dataset.currentFrame = "0"
         setCurrentTime(0)
         setPlaying(false)
         return
       }
       currentTimeRef.current = timelineTime
       if (playheadRef.current) playheadRef.current.style.left = `${TRACK_LABEL_WIDTH + timelineTime * pxPerSecond}px`
+      if (timelineRef.current) timelineRef.current.dataset.currentFrame = String(Math.round(timelineTime * framesPerSecond))
       if (now - lastUiCommit >= PLAYBACK_UI_FRAME_MS) {
         lastUiCommit = now
         setCurrentTime(timelineTime)
@@ -2503,7 +2913,7 @@ export default function VideoEditPanel({
     }
     frame = window.requestAnimationFrame(tick)
     return () => window.cancelAnimationFrame(frame)
-  }, [currentAudioClip, currentVideoClip, effectiveLoopOutFrame, framesPerSecond, loopEnabled, loopRange.inFrame, playAudioThroughVideo, playbackClockSource, playbackDirection, playbackEnd, playing, pxPerSecond])
+  }, [activeTransitionAudioClockClip, currentAudioClip, currentVideoClip, effectiveLoopOutFrame, framesPerSecond, loopEnabled, loopRange.inFrame, playAudioThroughVideo, playbackClockSource, playbackDirection, playbackEnd, playing, pxPerSecond])
 
   const runOperation = async (action: BusyAction, input: Parameters<typeof runProjectMediaOperation>[1]) => {
     if (!action || busy) return
@@ -3228,6 +3638,9 @@ export default function VideoEditPanel({
         event.preventDefault()
         videoRef.current?.pause()
         audioRef.current?.pause()
+        transitionVideoRef.current?.pause()
+        transitionOutgoingAudioRef.current?.pause()
+        transitionIncomingAudioRef.current?.pause()
         setPlaying(false)
         return
       }
@@ -3357,10 +3770,26 @@ export default function VideoEditPanel({
   const previewScaleStyle = previewScale === "fit"
     ? { height: "min(100%, 280px)", width: "auto", maxWidth: "100%" }
     : { width: `${previewScale}%`, maxWidth: "640px" }
+  const visualTransitionProgress = activeVideoTransition?.progress || 0
+  const currentVisualIsIncoming = Boolean(
+    activeVideoTransition && currentVideoClip?.clipId === activeVideoTransition.incoming.clipId,
+  )
+  const transitionVisualIsIncoming = Boolean(
+    activeVideoTransition && transitionVideoClip?.clipId === activeVideoTransition.incoming.clipId,
+  )
+  const currentVisualLayerOpacity = activeVideoTransition && !videoTransitionSingleSource && currentVisualIsIncoming
+    ? visualTransitionProgress
+    : 1
+  const transitionVisualLayerOpacity = activeVideoTransition && transitionVisualIsIncoming
+    ? visualTransitionProgress
+    : 1
+  const currentVisualLayerZ = currentVisualIsIncoming ? 20 : 10
+  const transitionVisualLayerZ = transitionVisualIsIncoming ? 20 : 10
 
   const renderTimelineTrack = (track: TimelineTrackState) => {
     const kindClips = track.kind === "video" ? videoClips : audioClips
     const trackClips = kindClips.filter((clip) => clip.trackId === track.id)
+    const trackTransitions = transitions.filter((transition) => transition.trackId === track.id)
     const gaps = timelineGaps(trackClips, sequenceEndFrame)
     const isActive = track.kind === "video" ? activeVideoTrackId === track.id : activeAudioTrackId === track.id
     const sameKindCount = tracks.filter((candidate) => candidate.kind === track.kind).length
@@ -3545,6 +3974,37 @@ export default function VideoEditPanel({
               />
             )
           })}
+          {trackTransitions.map((transition) => {
+            const incoming = trackClips.find((clip) => clip.clipId === transition.incomingClipId)
+            if (!incoming) return null
+            const range = transitionFrameRange(transition, incoming.startFrame)
+            const width = Math.max(12, transition.durationFrames / framesPerSecond * pxPerSecond)
+            return (
+              <div
+                key={transition.id}
+                data-openreel-transition="true"
+                data-transition-id={transition.id}
+                data-transition-kind={transition.kind}
+                data-transition-duration-frames={transition.durationFrames}
+                data-transition-cut-frame={incoming.startFrame}
+                className={cn(
+                  "pointer-events-none absolute bottom-1.5 top-1.5 z-20 overflow-hidden border shadow-[0_1px_4px_rgba(0,0,0,.45)]",
+                  transition.kind === "video_cross_dissolve"
+                    ? "border-[#8fc8ed] bg-[linear-gradient(135deg,rgba(57,113,151,.92)_0%,rgba(105,165,204,.7)_49%,rgba(37,77,105,.94)_50%,rgba(66,130,170,.88)_100%)] text-[#e4f5ff]"
+                    : "border-[#82c9a6] bg-[linear-gradient(155deg,rgba(32,92,65,.92)_0%,rgba(93,169,128,.82)_48%,rgba(32,92,65,.92)_100%)] text-[#e3f9ed]",
+                )}
+                style={{
+                  left: range.startFrame / framesPerSecond * pxPerSecond,
+                  width,
+                }}
+              >
+                <span className="absolute inset-0 flex items-center justify-center truncate px-1 font-mono text-[6px] font-semibold tracking-[0.08em] drop-shadow">
+                  {transition.kind === "video_cross_dissolve" ? "DISSOLVE" : "XFADE"}
+                </span>
+                <span className="absolute bottom-0 right-0 bg-black/45 px-0.5 font-mono text-[6px]">{transition.durationFrames}f</span>
+              </div>
+            )
+          })}
         </div>
         <button
           type="button"
@@ -3693,14 +4153,28 @@ export default function VideoEditPanel({
                 data-visual-rotation={currentVisualTransform.rotationDeg}
                 data-visual-opacity={currentVisualTransform.opacity}
                 data-visual-crop={`${currentVisualTransform.cropTop},${currentVisualTransform.cropRight},${currentVisualTransform.cropBottom},${currentVisualTransform.cropLeft}`}
+                data-active-video-transition={activeVideoTransition?.transition.id || ""}
+                data-video-transition-progress={activeVideoTransition ? activeVideoTransition.progress.toFixed(4) : ""}
+                data-video-transition-compositor={activeVideoTransition ? (videoTransitionSingleSource ? "single-source" : "dual-source") : ""}
+                data-active-audio-transition={activeAudioTransition?.transition.id || ""}
+                data-audio-transition-progress={activeAudioTransition ? activeAudioTransition.progress.toFixed(4) : ""}
+                data-audio-transition-compositor={activeAudioTransition
+                  ? (audioTransitionThroughVideo ? "video-source" : audioTransitionSingleSource ? "single-source" : "dual-source")
+                  : ""}
+                data-audio-outgoing-gain={activeAudioTransition ? activeAudioTransition.outgoingPower.toFixed(4) : ""}
+                data-audio-incoming-gain={activeAudioTransition ? activeAudioTransition.incomingPower.toFixed(4) : ""}
               >
                 {currentVideoItem ? (
                   currentVideoItem.type === "image" ? (
                     <img
                       src={currentVideoItem.src}
                       alt=""
-                      className="h-full w-full object-contain"
-                      style={currentVisualTransformStyle}
+                      className={cn("h-full w-full object-contain", activeVideoTransition && "absolute inset-0")}
+                      style={{
+                        ...currentVisualTransformStyle,
+                        zIndex: currentVisualLayerZ,
+                        opacity: currentVisualTransform.opacity * currentVisualLayerOpacity,
+                      }}
                       draggable={false}
                       data-openreel-preview-visual="true"
                     />
@@ -3710,14 +4184,22 @@ export default function VideoEditPanel({
                       data-openreel-preview-video="true"
                       data-openreel-preview-visual="true"
                       src={currentVideoItem.src || videoUrl}
-                      muted={!playAudioThroughVideo || Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)}
+                      muted={audioTransitionThroughVideo
+                        ? false
+                        : Boolean(activeAudioTransition) || !playAudioThroughVideo || Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)}
                       preload="metadata"
                       className={cn(
                         "object-contain [color-scheme:dark]",
-                        playbackResolution === "full" ? "h-full w-full" : "pointer-events-none absolute h-px w-px opacity-0",
+                        playbackResolution === "full"
+                          ? cn("h-full w-full", activeVideoTransition && "absolute inset-0")
+                          : "pointer-events-none absolute h-px w-px opacity-0",
                       )}
                       style={playbackResolution === "full"
-                        ? currentVisualTransformStyle
+                        ? {
+                            ...currentVisualTransformStyle,
+                            zIndex: currentVisualLayerZ,
+                            opacity: currentVisualTransform.opacity * currentVisualLayerOpacity,
+                          }
                         : { ...currentVisualTransformStyle, opacity: 0 }}
                       onLoadedMetadata={(event) => {
                         const nextDuration = Number(event.currentTarget.duration || 0)
@@ -3728,20 +4210,93 @@ export default function VideoEditPanel({
                 ) : (
                   <div className="absolute bottom-2 right-2 border border-white/10 bg-black/70 px-1.5 py-0.5 font-mono text-[7px] tracking-[0.08em] text-[#5f656d]">BLACK · GAP</div>
                 )}
+                {transitionVideoItem && (
+                  transitionVideoItem.type === "image" ? (
+                    <img
+                      src={transitionVideoItem.src}
+                      alt=""
+                      className="absolute inset-0 h-full w-full object-contain"
+                      style={{
+                        ...visualTransformStyle(transitionVisualTransform),
+                        zIndex: transitionVisualLayerZ,
+                        opacity: transitionVisualTransform.opacity * transitionVisualLayerOpacity,
+                      }}
+                      draggable={false}
+                      data-openreel-transition-visual="true"
+                      data-transition-layer={transitionVisualIsIncoming ? "incoming" : "outgoing"}
+                    />
+                  ) : (
+                    <video
+                      ref={transitionVideoRef}
+                      src={transitionVideoItem.src}
+                      muted
+                      preload="metadata"
+                      className={cn(
+                        "object-contain [color-scheme:dark]",
+                        playbackResolution === "full"
+                          ? "absolute inset-0 h-full w-full"
+                          : "pointer-events-none absolute h-px w-px opacity-0",
+                      )}
+                      style={playbackResolution === "full"
+                        ? {
+                            ...visualTransformStyle(transitionVisualTransform),
+                            zIndex: transitionVisualLayerZ,
+                            opacity: transitionVisualTransform.opacity * transitionVisualLayerOpacity,
+                          }
+                        : { opacity: 0 }}
+                      data-openreel-transition-video="true"
+                      data-transition-layer={transitionVisualIsIncoming ? "incoming" : "outgoing"}
+                      data-transition-layer-opacity={transitionVisualLayerOpacity.toFixed(4)}
+                    />
+                  )
+                )}
                 {currentVideoItem?.type === "video" && playbackResolution !== "full" && (
                   <canvas
                     ref={programCanvasRef}
                     data-openreel-program-canvas="true"
                     data-playback-resolution={playbackResolution}
-                    className="h-full w-full object-contain"
+                    className="absolute inset-0 h-full w-full object-contain"
+                    style={{ zIndex: currentVisualLayerZ, opacity: currentVisualLayerOpacity }}
+                  />
+                )}
+                {transitionVideoItem?.type === "video" && playbackResolution !== "full" && (
+                  <canvas
+                    ref={transitionProgramCanvasRef}
+                    data-openreel-transition-program-canvas="true"
+                    data-playback-resolution={playbackResolution}
+                    className="absolute inset-0 h-full w-full object-contain"
+                    style={{ zIndex: transitionVisualLayerZ, opacity: transitionVisualLayerOpacity }}
                   />
                 )}
                 {!programVideoGap && programAudioGap && (
                   <div className="pointer-events-none absolute bottom-2 right-2 border border-white/10 bg-black/70 px-1.5 py-0.5 font-mono text-[7px] tracking-[0.08em] text-[#8b918f]">SILENCE</div>
                 )}
               </div>
-              {currentAudioItem && !playAudioThroughVideo && (
+              {currentAudioItem && !playAudioThroughVideo && !activeAudioTransition && (
                 <audio data-openreel-preview-audio="true" ref={audioRef} src={currentAudioItem.src} preload="metadata" muted={Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)} />
+              )}
+              {activeAudioTransition?.outgoingItem && !audioTransitionThroughVideo && (
+                <audio
+                  data-openreel-transition-audio="outgoing"
+                  data-transition-gain={(audioTransitionSingleSource
+                    ? Math.hypot(
+                        gainAmplitude((activeAudioTransition.outgoing.gainDb || 0) + activeAudioTransition.track.gainDb) * activeAudioTransition.outgoingPower,
+                        gainAmplitude((activeAudioTransition.incoming.gainDb || 0) + activeAudioTransition.track.gainDb) * activeAudioTransition.incomingPower,
+                      )
+                    : activeAudioTransition.outgoingPower).toFixed(4)}
+                  ref={transitionOutgoingAudioRef}
+                  src={activeAudioTransition.outgoingItem.src}
+                  preload="metadata"
+                />
+              )}
+              {activeAudioTransition?.incomingItem && !audioTransitionSingleSource && !audioTransitionThroughVideo && (
+                <audio
+                  data-openreel-transition-audio="incoming"
+                  data-transition-gain={activeAudioTransition.incomingPower.toFixed(4)}
+                  ref={transitionIncomingAudioRef}
+                  src={activeAudioTransition.incomingItem.src}
+                  preload="metadata"
+                />
               )}
             </div>
 
@@ -4215,6 +4770,125 @@ export default function VideoEditPanel({
                       </div>
                     </div>
                   </div>
+                </section>
+              )}
+
+              {(selectedVideoOutgoingClip || selectedAudioOutgoingClip) && (
+                <section className="border-b border-[#34383f] px-3 py-2.5" data-openreel-transition-inspector="true">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div>
+                      <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">转场</div>
+                      <div className="mt-0.5 font-mono text-[7px] text-[#666d76]">CUT POINT · SOURCE HANDLES</div>
+                    </div>
+                    <span className="font-mono text-[7px] text-[#737a83]">{selectedTimelineClip?.startFrame || 0}f</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {selectedVideoClip && selectedVideoOutgoingClip && (
+                      <div className="border border-[#334653] bg-[#171b1f] p-1.5" data-transition-inspector-kind="video_cross_dissolve">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-[8px] font-medium text-[#c7dcea]">视频交叉叠化</div>
+                            <div className="mt-0.5 font-mono text-[6px] text-[#647784]">LINEAR DISSOLVE</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setCutTransition(
+                              "video_cross_dissolve",
+                              selectedVideoOutgoingClip,
+                              selectedVideoClip,
+                              selectedVideoTransition,
+                            )}
+                            className={cn(
+                              "h-5 shrink-0 border px-2 text-[7px]",
+                              selectedVideoTransition
+                                ? "border-[#72545a] bg-[#3a272b] text-[#d8a9af] hover:bg-[#4a2f35]"
+                                : "border-[#456b84] bg-[#23445a] text-[#d5efff] hover:bg-[#2d5873]",
+                            )}
+                            aria-label={selectedVideoTransition ? "删除视频交叉叠化" : "添加视频交叉叠化"}
+                          >
+                            {selectedVideoTransition ? "移除" : "添加"}
+                          </button>
+                        </div>
+                        {selectedVideoTransition && (
+                          <label className="mt-1.5 flex items-center justify-between gap-2 border-t border-[#2d3941] pt-1.5 text-[7px] text-[#788892]">
+                            <span>持续帧</span>
+                            <span className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min="2"
+                                max={maxTransitionDuration(selectedVideoOutgoingClip, selectedVideoClip, selectedVideoTransition.id)}
+                                step="1"
+                                value={selectedVideoTransition.durationFrames}
+                                onFocus={recordUndoSnapshot}
+                                onChange={(event) => updateCutTransitionDuration(
+                                  selectedVideoTransition,
+                                  selectedVideoOutgoingClip,
+                                  selectedVideoClip,
+                                  Number(event.target.value),
+                                )}
+                                className="h-5 w-16 border border-[#3a4650] bg-[#242a2f] px-1 text-right font-mono text-[8px] text-[#d9e8f2] outline-none focus:border-[#579bd3]"
+                                aria-label="视频交叉叠化时长帧"
+                              />
+                              <span>f</span>
+                            </span>
+                          </label>
+                        )}
+                      </div>
+                    )}
+                    {selectedAudioClip && selectedAudioOutgoingClip && (
+                      <div className="border border-[#33483e] bg-[#171b19] p-1.5" data-transition-inspector-kind="audio_constant_power">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-[8px] font-medium text-[#c6e3d3]">音频恒功率交叉淡化</div>
+                            <div className="mt-0.5 font-mono text-[6px] text-[#627a6d]">COS / SIN POWER</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setCutTransition(
+                              "audio_constant_power",
+                              selectedAudioOutgoingClip,
+                              selectedAudioClip,
+                              selectedAudioTransition,
+                            )}
+                            className={cn(
+                              "h-5 shrink-0 border px-2 text-[7px]",
+                              selectedAudioTransition
+                                ? "border-[#72545a] bg-[#3a272b] text-[#d8a9af] hover:bg-[#4a2f35]"
+                                : "border-[#426c57] bg-[#234938] text-[#d9f5e5] hover:bg-[#2e5b47]",
+                            )}
+                            aria-label={selectedAudioTransition ? "删除音频恒功率交叉淡化" : "添加音频恒功率交叉淡化"}
+                          >
+                            {selectedAudioTransition ? "移除" : "添加"}
+                          </button>
+                        </div>
+                        {selectedAudioTransition && (
+                          <label className="mt-1.5 flex items-center justify-between gap-2 border-t border-[#2d3b34] pt-1.5 text-[7px] text-[#778a7f]">
+                            <span>持续帧</span>
+                            <span className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min="2"
+                                max={maxTransitionDuration(selectedAudioOutgoingClip, selectedAudioClip, selectedAudioTransition.id)}
+                                step="1"
+                                value={selectedAudioTransition.durationFrames}
+                                onFocus={recordUndoSnapshot}
+                                onChange={(event) => updateCutTransitionDuration(
+                                  selectedAudioTransition,
+                                  selectedAudioOutgoingClip,
+                                  selectedAudioClip,
+                                  Number(event.target.value),
+                                )}
+                                className="h-5 w-16 border border-[#3b4841] bg-[#242a27] px-1 text-right font-mono text-[8px] text-[#dbece3] outline-none focus:border-[#5c9f7d]"
+                                aria-label="音频恒功率交叉淡化时长帧"
+                              />
+                              <span>f</span>
+                            </span>
+                          </label>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="mt-1.5 text-[7px] leading-3 text-[#666d76]">转场居中于剪切点，并严格占用两侧源素材把手。</div>
                 </section>
               )}
 
