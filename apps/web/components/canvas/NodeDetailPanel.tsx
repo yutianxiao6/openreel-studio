@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent, type MouseEvent } from "react"
 import { motion } from "framer-motion"
+import { createPortal } from "react-dom"
 import {
   callTool,
   getVideoProviderProtocols,
@@ -15,11 +16,6 @@ import {
   uploadFile,
   uploadProjectNodeMedia,
 } from "@/lib/api"
-import {
-  VIDEO_RESOLUTION_OPTIONS,
-  defaultVideoResolutionForModel,
-  videoSupportedResolutionsForModel,
-} from "@/lib/videoModelOptions"
 import { videoReferenceImageLimit } from "@/lib/videoProtocolLimits"
 import {
   inputFieldsFromNodeInput,
@@ -161,53 +157,105 @@ const EDITABLE_NODE_TYPES = new Set(["text", "image", "video", "audio"])
 type ImageResolutionPreset = {
   label: string
   value: string
-  tier: "1080p" | "2k" | "4k"
+  tier: ImageResolutionTier
 }
 
-const CUSTOM_IMAGE_RESOLUTION_VALUE = "__custom__"
+type ImageResolutionTier = "1k" | "2k" | "4k"
 
-const IMAGE_RESOLUTION_PRESETS: Record<string, ImageResolutionPreset[]> = {
-  "16:9": [
-    { label: "1080p · 1920x1080", value: "1920x1080", tier: "1080p" },
-    { label: "2K · 2560x1440", value: "2560x1440", tier: "2k" },
-    { label: "4K · 3840x2160", value: "3840x2160", tier: "4k" },
-  ],
-  "9:16": [
-    { label: "1080p · 1080x1920", value: "1080x1920", tier: "1080p" },
-    { label: "2K · 1440x2560", value: "1440x2560", tier: "2k" },
-    { label: "4K · 2160x3840", value: "2160x3840", tier: "4k" },
-  ],
-  "1:1": [
-    { label: "1080p · 1080x1080", value: "1080x1080", tier: "1080p" },
-    { label: "2K · 2048x2048", value: "2048x2048", tier: "2k" },
-  ],
+const IMAGE_RESOLUTION_TIER_OPTIONS: Array<{ label: string; value: ImageResolutionTier }> = [
+  { label: "1K", value: "1k" },
+  { label: "2K", value: "2k" },
+  { label: "4K", value: "4k" },
+]
+
+const IMAGE_RESOLUTION_TIER_SHORT_EDGE: Record<ImageResolutionTier, number> = {
+  "1k": 1080,
+  "2k": 1440,
+  "4k": 2160,
+}
+
+const IMAGE_ASPECT_RATIO_GRID_OPTIONS = [
+  { label: "9:16", value: "9:16" },
+  { label: "16:9", value: "16:9" },
+  { label: "1:1", value: "1:1" },
+  { label: "1:2", value: "1:2" },
+  { label: "2:1", value: "2:1" },
+  { label: "3:4", value: "3:4" },
+  { label: "4:3", value: "4:3" },
+  { label: "2:3", value: "2:3" },
+  { label: "3:2", value: "3:2" },
+  { label: "4:5", value: "4:5" },
+  { label: "5:4", value: "5:4" },
+  { label: "21:9", value: "21:9" },
+  { label: "9:21", value: "9:21" },
+]
+
+const MAX_IMAGE_PIXEL_AREA = 3840 * 2160
+
+function parseAspectRatio(value: string): { width: number; height: number; value: string } | null {
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/)
+  if (!match) return null
+  const width = Number.parseFloat(match[1])
+  const height = Number.parseFloat(match[2])
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null
+  return { width, height, value: `${match[1]}:${match[2]}` }
 }
 
 function normalizeImageAspectRatio(value: string): string {
-  return Object.prototype.hasOwnProperty.call(IMAGE_RESOLUTION_PRESETS, value) ? value : "16:9"
+  return parseAspectRatio(value)?.value || "9:16"
 }
 
-function imageResolutionTier(value: string): ImageResolutionPreset["tier"] {
-  for (const presets of Object.values(IMAGE_RESOLUTION_PRESETS)) {
-    const match = presets.find((item) => item.value === value)
-    if (match) return match.tier
+function roundToMultipleOfEight(value: number): number {
+  return Math.max(8, Math.round(value / 8) * 8)
+}
+
+function imageResolutionForAspectTier(aspectRatio: string, tier: ImageResolutionTier): string {
+  const aspect = parseAspectRatio(aspectRatio) || { width: 9, height: 16, value: "9:16" }
+  if (aspect.value === "1:1") {
+    const size = tier === "1k" ? 1080 : tier === "2k" ? 2048 : 2880
+    return `${size}x${size}`
   }
-  return "2k"
+  const shortEdge = IMAGE_RESOLUTION_TIER_SHORT_EDGE[tier]
+  let width = aspect.width >= aspect.height ? shortEdge * (aspect.width / aspect.height) : shortEdge
+  let height = aspect.width >= aspect.height ? shortEdge : shortEdge * (aspect.height / aspect.width)
+  if (width * height > MAX_IMAGE_PIXEL_AREA) {
+    const scale = Math.sqrt(MAX_IMAGE_PIXEL_AREA / (width * height))
+    width *= scale
+    height *= scale
+  }
+  return `${roundToMultipleOfEight(width)}x${roundToMultipleOfEight(height)}`
 }
 
-function defaultImageResolutionForAspect(aspectRatio: string, preferredTier: ImageResolutionPreset["tier"] = "2k"): string {
-  const presets = IMAGE_RESOLUTION_PRESETS[normalizeImageAspectRatio(aspectRatio)]
-  return presets.find((item) => item.tier === preferredTier)?.value || presets[0]?.value || "2560x1440"
+function imageResolutionPresetsForAspect(aspectRatio: string): ImageResolutionPreset[] {
+  const aspect = normalizeImageAspectRatio(aspectRatio)
+  return IMAGE_RESOLUTION_TIER_OPTIONS.map((item) => ({
+    label: `${item.label} · ${imageResolutionForAspectTier(aspect, item.value)}`,
+    value: imageResolutionForAspectTier(aspect, item.value),
+    tier: item.value,
+  }))
+}
+
+function imageResolutionTier(value: string): ImageResolutionTier {
+  const parsed = parseImageResolution(value)
+  if (!parsed) return "1k"
+  const width = Number.parseInt(parsed.width, 10)
+  const height = Number.parseInt(parsed.height, 10)
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return "1k"
+  const shortEdge = Math.min(width, height)
+  const area = width * height
+  if (area >= MAX_IMAGE_PIXEL_AREA * 0.75 || shortEdge >= 1900) return "4k"
+  if (shortEdge >= 1300 || area >= 2_800_000) return "2k"
+  return "1k"
+}
+
+function defaultImageResolutionForAspect(aspectRatio: string, preferredTier: ImageResolutionTier = "1k"): string {
+  return imageResolutionForAspectTier(normalizeImageAspectRatio(aspectRatio), preferredTier)
 }
 
 function parseImageResolution(value: string): { width: string; height: string } | null {
   const match = value.trim().match(/^(\d+)\s*[xX×]\s*(\d+)$/)
   if (!match) return null
   return { width: match[1], height: match[2] }
-}
-
-function sanitizePixelInput(value: string): string {
-  return value.replace(/[^\d]/g, "").slice(0, 5)
 }
 
 const EMPTY_DRAFT: EditableNodeDraft = {
@@ -234,22 +282,22 @@ const EMPTY_DRAFT: EditableNodeDraft = {
   reference_audios: [],
 }
 
-const VIDEO_ASPECT_RATIO_OPTIONS = ["16:9", "9:16", "3:2", "2:3", "1:1"]
-const IMAGE_ASPECT_RATIO_OPTIONS = [
-  { label: "横版", value: "16:9" },
-  { label: "竖版", value: "9:16" },
-  { label: "方图", value: "1:1" },
-]
 const IMAGE_QUALITY_OPTIONS = [
-  { label: "高质量", value: "high" },
-  { label: "标准", value: "medium" },
-  { label: "草稿", value: "low" },
+  { label: "低画质", value: "low" },
+  { label: "标准画质", value: "medium" },
+  { label: "高画质", value: "high" },
 ]
-const IMAGE_CLARITY_OPTIONS = [
-  { label: "自然", value: "natural" },
-  { label: "细节", value: "detailed" },
-  { label: "锐利", value: "sharp" },
-]
+
+function imageQualityLabel(value: string): string {
+  const normalized = value.trim().toLowerCase()
+  return IMAGE_QUALITY_OPTIONS.find((item) => item.value === normalized)?.label || value || "标准画质"
+}
+
+function mediaDurationLabel(value: string): string {
+  const parsed = Number.parseFloat(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return ""
+  return `${Number.isInteger(parsed) ? parsed : parsed.toFixed(1).replace(/\.0$/, "")}s`
+}
 const VIDEO_MODE_LABELS: Record<string, string> = {
   text_to_video: "文生视频",
   first_frame: "图生视频",
@@ -2493,6 +2541,27 @@ function mediaProviderHint(provider?: MediaProviderOption, error?: string | null
   return "设置里还没有启用的生成模型。"
 }
 
+function mediaProviderParamStringArray(provider: MediaProviderOption | undefined, ...keys: string[]): string[] {
+  const params = provider?.params || {}
+  for (const key of keys) {
+    const value = params[key]
+    if (Array.isArray(value)) {
+      const items = value.map((item) => String(item || "").trim()).filter(Boolean)
+      if (items.length > 0) return items
+    }
+  }
+  return []
+}
+
+function mediaProviderParamText(provider: MediaProviderOption | undefined, ...keys: string[]): string {
+  const params = provider?.params || {}
+  for (const key of keys) {
+    const text = String(params[key] || "").trim()
+    if (text) return text
+  }
+  return ""
+}
+
 function enabledLlmProviders(providers: LlmProviderOption[]): LlmProviderOption[] {
   return providers.filter((provider) => provider.enabled !== false)
 }
@@ -2819,26 +2888,27 @@ function videoSupportedRatiosForProvider(
   mode: string,
 ): string[] {
   const modeConfig = videoModeConfig(protocol, mode, profile)
-  return (
+  const values = (
     stringArray(modeConfig?.supported_ratios).length ? stringArray(modeConfig?.supported_ratios)
       : stringArray(profile?.supported_ratios).length ? stringArray(profile?.supported_ratios)
       : stringArray(protocol?.supported_ratios).length ? stringArray(protocol?.supported_ratios)
-      : VIDEO_ASPECT_RATIO_OPTIONS
-  ).filter((item) => item !== "adaptive")
+      : []
+  )
+  return Array.from(new Set(values)).filter((item) => item !== "adaptive")
 }
 
 function videoSupportedResolutionsForProvider(
   protocol: VideoProtocolSummary | undefined,
   profile: VideoProtocolProfileSummary | undefined,
   mode: string,
-  fallbackModelName: string,
+  _fallbackModelName: string,
 ): string[] {
   const modeConfig = videoModeConfig(protocol, mode, profile)
   const values = stringArray(modeConfig?.supported_resolutions).length ? stringArray(modeConfig?.supported_resolutions)
     : stringArray(profile?.supported_resolutions).length ? stringArray(profile?.supported_resolutions)
     : stringArray(protocol?.supported_resolutions).length ? stringArray(protocol?.supported_resolutions)
-    : videoSupportedResolutionsForModel(fallbackModelName)
-  return values.length ? values : videoSupportedResolutionsForModel(fallbackModelName)
+    : []
+  return Array.from(new Set(values.map((item) => item.toLowerCase())))
 }
 
 function defaultVideoResolutionForProvider(
@@ -2848,35 +2918,55 @@ function defaultVideoResolutionForProvider(
   fallbackModelName: string,
 ): string {
   const modeConfig = videoModeConfig(protocol, mode, profile)
-  const direct = String(modeConfig?.default_resolution || profile?.default_resolution || protocol?.default_resolution || "").trim()
+  const direct = String(modeConfig?.default_resolution || profile?.default_resolution || protocol?.default_resolution || "").trim().toLowerCase()
   const supported = videoSupportedResolutionsForProvider(protocol, profile, mode, fallbackModelName)
   if (direct && supported.includes(direct)) return direct
-  return supported.includes("720p") ? "720p" : supported[0] || defaultVideoResolutionForModel(fallbackModelName)
+  return supported[0] || ""
+}
+
+function videoAspectSelectOptions(
+  selectedRatio: string,
+  supportedRatios: string[],
+): SelectOption[] {
+  const current = normalizeVideoAspectRatio(selectedRatio)
+  const supported = Array.from(new Set(supportedRatios.filter(Boolean)))
+  if (supported.length === 0) {
+    return current
+      ? [{ label: `当前: ${current}`, value: current, disabled: true }]
+      : [{ label: "未配置比例", value: "", disabled: true }]
+  }
+  return [
+    ...(current && !supported.includes(current)
+      ? [{ label: `当前: ${current}`, value: current, disabled: true }]
+      : []),
+    ...supported.map((value) => ({ label: value, value })),
+  ]
 }
 
 function videoResolutionSelectOptions(
   selectedResolution: string,
   supportedResolutions: string[],
 ): Array<{ label: string; value: string; disabled?: boolean }> {
-  const current = selectedResolution.trim()
-  const knownValues = new Set<string>(VIDEO_RESOLUTION_OPTIONS.map((item) => item.value))
-  const customSupported = supportedResolutions
-    .filter((value) => value && !knownValues.has(value))
-    .map((value) => ({ label: value, value, disabled: false }))
+  const current = selectedResolution.trim().toLowerCase()
+  const supported = Array.from(new Set(supportedResolutions.map((item) => item.toLowerCase()).filter(Boolean)))
+  if (supported.length === 0) {
+    return current
+      ? [{ label: `当前: ${current}`, value: current, disabled: true }]
+      : [{ label: "未配置清晰度", value: "", disabled: true }]
+  }
   return [
-    ...(current && !supportedResolutions.includes(current)
+    ...(current && !supported.includes(current)
       ? [{ label: `当前: ${current}`, value: current, disabled: true }]
       : []),
-    ...VIDEO_RESOLUTION_OPTIONS.map((item) => {
-      const supported = supportedResolutions.includes(item.value)
-      return {
-        label: `${item.label}${item.placeholder ? " (占位)" : ""}${supported ? "" : " (不支持)"}`,
-        value: item.value,
-        disabled: !supported,
-      }
-    }),
-    ...customSupported,
+    ...supported.map((value) => ({ label: value, value, disabled: false })),
   ]
+}
+
+function mediaResolutionButtonLabel(value: string, label?: string): string {
+  const text = (label || value).replace(/\s*\(.+\)\s*$/, "").trim()
+  if (/^\d+$/.test(text)) return `${text}P`
+  if (/^\d+p$/i.test(value)) return value.toUpperCase()
+  return text.toUpperCase()
 }
 
 function normalizeVideoDraftForMode(
@@ -2887,12 +2977,13 @@ function normalizeVideoDraftForMode(
   fallbackModelName: string,
 ): Pick<EditableNodeDraft, "video_mode" | "resolution" | "aspect_ratio" | "duration_seconds"> {
   const supported = videoSupportedResolutionsForProvider(protocol, profile, mode, fallbackModelName)
-  const resolution = supported.includes(draft.resolution)
+  const draftResolution = draft.resolution.trim().toLowerCase()
+  const resolution = supported.length === 0 || supported.includes(draftResolution)
     ? draft.resolution
     : defaultVideoResolutionForProvider(protocol, profile, mode, fallbackModelName)
   const ratios = videoSupportedRatiosForProvider(protocol, profile, mode)
   const currentRatio = normalizeVideoAspectRatio(draft.aspect_ratio)
-  const aspect_ratio = ratios.includes(currentRatio) ? currentRatio : ratios[0] || currentRatio
+  const aspect_ratio = ratios.length === 0 || ratios.includes(currentRatio) ? currentRatio : ratios[0] || currentRatio
   const duration_seconds = normalizeVideoDurationForRule(
     draft.duration_seconds,
     videoDurationRuleForProvider(protocol, profile, mode),
@@ -3088,9 +3179,9 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
     negative_tags: firstText(input.negative_tags, input.negativeTags, output.negative_tags, output.negativeTags),
     aspect_ratio: node.type === "video"
       ? normalizeVideoAspectRatio(firstText(input.aspect_ratio, output.aspect_ratio))
-      : firstText(input.aspect_ratio, output.aspect_ratio) || (node.type === "image" ? "16:9" : ""),
+      : firstText(input.aspect_ratio, output.aspect_ratio) || (node.type === "image" ? "9:16" : ""),
     resolution: firstText(input.resolution, input.size, output.resolution, output.size)
-      || (node.type === "image" ? defaultImageResolutionForAspect(firstText(input.aspect_ratio, output.aspect_ratio) || "16:9") : node.type === "video" ? "720p" : ""),
+      || (node.type === "image" ? defaultImageResolutionForAspect(firstText(input.aspect_ratio, output.aspect_ratio) || "9:16") : ""),
     quality: firstText(input.quality, output.quality) || (node.type === "image" ? "high" : ""),
     clarity: firstText(input.clarity, output.clarity) || (node.type === "image" ? "detailed" : ""),
     duration_seconds: firstText(input.duration_seconds, input.duration, output.duration_seconds, output.duration),
@@ -3495,40 +3586,48 @@ function ChipControl({
   options,
   placeholder,
   onChange,
+  allowCustom = true,
 }: {
   label: string
   value: string
-  options: string[]
+  options: Array<string | SelectOption>
   placeholder?: string
   onChange: (value: string) => void
+  allowCustom?: boolean
 }) {
+  const normalizedOptions = options.map((option) => (
+    typeof option === "string" ? { label: option, value: option } : option
+  ))
   return (
     <div className="space-y-1.5">
       <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-zinc-500">{label}</div>
       <div className="flex flex-wrap items-center gap-1.5">
-        {options.map((option) => {
-          const active = value === option
+        {normalizedOptions.map((option) => {
+          const active = value === option.value
           return (
             <button
-              key={option}
+              key={`${option.value}:${option.label}`}
               type="button"
-              onClick={() => onChange(option)}
-              className={`rounded-md border px-2.5 py-1.5 text-xs transition ${
+              onClick={() => onChange(option.value)}
+              disabled={option.disabled}
+              className={`rounded-md border px-2.5 py-1.5 text-xs transition disabled:cursor-not-allowed disabled:opacity-45 ${
                 active
                   ? "border-cyan-300/35 bg-cyan-300/12 text-cyan-100"
                   : "border-transparent bg-white/[0.06] text-zinc-300 hover:bg-white/[0.1] hover:text-zinc-50"
               }`}
             >
-              {option}
+              {option.label}
             </button>
           )
         })}
-        <input
-          value={options.includes(value) ? "" : value}
-          onChange={(event) => onChange(event.target.value)}
-          className="h-8 min-w-0 flex-1 rounded-md border border-white/[0.1] bg-[#080c13] px-2 text-xs text-zinc-100 outline-none [color-scheme:dark] placeholder:text-zinc-500 focus:border-cyan-300/45"
-          placeholder={placeholder || "自定义"}
-        />
+        {allowCustom && (
+          <input
+            value={normalizedOptions.some((option) => option.value === value) ? "" : value}
+            onChange={(event) => onChange(event.target.value)}
+            className="h-8 min-w-0 flex-1 rounded-md border border-white/[0.1] bg-[#080c13] px-2 text-xs text-zinc-100 outline-none [color-scheme:dark] placeholder:text-zinc-500 focus:border-cyan-300/45"
+            placeholder={placeholder || "自定义"}
+          />
+        )}
       </div>
     </div>
   )
@@ -3613,6 +3712,51 @@ function SegmentedControl({
   )
 }
 
+function MediaOptionGrid({
+  label,
+  value,
+  options,
+  onChange,
+  columns = "grid-cols-3",
+  hint,
+}: {
+  label: string
+  value: string
+  options: SelectOption[]
+  onChange: (value: string) => void
+  columns?: string
+  hint?: string
+}) {
+  const visibleOptions = options.length > 0 ? options : [{ label: "未配置", value: "", disabled: true }]
+  return (
+    <div className="rounded-lg border border-white/[0.08] bg-black/20 p-2">
+      <div className="mb-1.5 text-[10px] font-medium text-zinc-500">{label}</div>
+      <div className={`grid ${columns} gap-1.5`}>
+        {visibleOptions.map((option) => {
+          const active = value === option.value
+          return (
+            <button
+              key={`${option.value}:${option.label}`}
+              type="button"
+              onClick={() => onChange(option.value)}
+              disabled={option.disabled}
+              title={option.hint || option.label}
+              className={`min-h-8 rounded-md border px-2 py-1 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                active
+                  ? "border-zinc-100 bg-zinc-100 text-zinc-950 shadow-[0_8px_18px_rgba(255,255,255,0.10)]"
+                  : "border-white/[0.08] bg-white/[0.035] text-zinc-300 hover:border-white/[0.16] hover:bg-white/[0.07] hover:text-zinc-50"
+              }`}
+            >
+              {option.label}
+            </button>
+          )
+        })}
+      </div>
+      {hint && <div className="mt-1.5 text-[10px] leading-4 text-zinc-600">{hint}</div>}
+    </div>
+  )
+}
+
 function ImageResolutionControl({
   aspectRatio,
   resolution,
@@ -3623,71 +3767,24 @@ function ImageResolutionControl({
   onChange: (value: string) => void
 }) {
   const normalizedAspect = normalizeImageAspectRatio(aspectRatio)
-  const presets = IMAGE_RESOLUTION_PRESETS[normalizedAspect]
+  const presets = imageResolutionPresetsForAspect(normalizedAspect)
   const defaultResolution = defaultImageResolutionForAspect(normalizedAspect, imageResolutionTier(resolution))
   const parsed = parseImageResolution(resolution) || parseImageResolution(defaultResolution) || { width: "", height: "" }
-  const [width, setWidth] = useState(parsed.width)
-  const [height, setHeight] = useState(parsed.height)
+  const exactResolution = parsed.width && parsed.height ? `${parsed.width}x${parsed.height}` : defaultResolution
 
   useEffect(() => {
-    const next = parseImageResolution(resolution) || parseImageResolution(defaultResolution) || { width: "", height: "" }
-    setWidth(next.width)
-    setHeight(next.height)
-  }, [defaultResolution, resolution])
-
-  const selectedPreset = presets.some((item) => item.value === resolution)
-    ? resolution
-    : CUSTOM_IMAGE_RESOLUTION_VALUE
-
-  const updateDimension = (key: "width" | "height", rawValue: string) => {
-    const nextValue = sanitizePixelInput(rawValue)
-    const nextWidth = key === "width" ? nextValue : width
-    const nextHeight = key === "height" ? nextValue : height
-    if (key === "width") setWidth(nextValue)
-    else setHeight(nextValue)
-    if (nextWidth && nextHeight) onChange(`${nextWidth}x${nextHeight}`)
-  }
+    if (!resolution) onChange(defaultResolution)
+  }, [defaultResolution, onChange, resolution])
 
   return (
     <div className="space-y-2">
-      <SelectControl
-        label="常用分辨率"
-        value={selectedPreset}
-        options={[
-          ...presets.map((item) => ({ label: item.label, value: item.value })),
-          { label: "自定义", value: CUSTOM_IMAGE_RESOLUTION_VALUE },
-        ]}
-        onChange={(value) => {
-          if (value === CUSTOM_IMAGE_RESOLUTION_VALUE) return
-          onChange(value)
-        }}
-        hint="预设会写入精确像素值；自定义时直接改下面的宽和高。"
+      <MediaOptionGrid
+        label="清晰度"
+        value={presets.find((item) => item.value === resolution)?.value || defaultResolution}
+        options={presets.map((item) => ({ label: item.label.split(" · ")[0], value: item.value, hint: item.label }))}
+        onChange={onChange}
       />
-      <div className="grid grid-cols-2 gap-2">
-        <DraftField label="宽(px)">
-          <input
-            type="number"
-            min={8}
-            step={8}
-            inputMode="numeric"
-            value={width}
-            onChange={(event) => updateDimension("width", event.target.value)}
-            className={inputClass}
-          />
-        </DraftField>
-        <DraftField label="高(px)">
-          <input
-            type="number"
-            min={8}
-            step={8}
-            inputMode="numeric"
-            value={height}
-            onChange={(event) => updateDimension("height", event.target.value)}
-            className={inputClass}
-          />
-        </DraftField>
-      </div>
-      <div className="text-[10px] text-zinc-600">保存值：{width && height ? `${width}x${height}` : "请输入宽和高"}</div>
+      <div className="text-[10px] text-zinc-600">保存值：{exactResolution}</div>
     </div>
   )
 }
@@ -4264,15 +4361,26 @@ function NodeEditView({
   const selectedVideoProfile = videoProfileForModel(selectedVideoProtocol, selectedVideoModelName)
   const videoModeOptions = videoProtocolModeOptions(selectedVideoProtocol, selectedVideoProfile)
   const activeVideoMode = effectiveVideoMode(draft.video_mode, videoModeOptions)
-  const supportedVideoResolutions = videoSupportedResolutionsForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode, selectedVideoModelName)
-  const supportedVideoRatios = videoSupportedRatiosForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const providerVideoResolutions = mediaProviderParamStringArray(selectedVideoProvider, "supported_resolutions", "resolutions")
+    .map((item) => item.toLowerCase())
+  const providerVideoRatios = mediaProviderParamStringArray(selectedVideoProvider, "supported_ratios", "ratios", "supported_aspect_ratios")
+  const supportedVideoResolutions = providerVideoResolutions.length
+    ? providerVideoResolutions
+    : videoSupportedResolutionsForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode, selectedVideoModelName)
+  const supportedVideoRatios = providerVideoRatios.length
+    ? providerVideoRatios.filter((item) => item !== "adaptive")
+    : videoSupportedRatiosForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const videoAspectOptions = videoAspectSelectOptions(draft.aspect_ratio, supportedVideoRatios)
   const videoResolutionOptions = videoResolutionSelectOptions(draft.resolution, supportedVideoResolutions)
-  const activeVideoResolution = draft.resolution || defaultVideoResolutionForProvider(
+  const providerDefaultVideoResolution = mediaProviderParamText(selectedVideoProvider, "default_resolution", "resolution").toLowerCase()
+  const activeVideoResolution = draft.resolution || (providerDefaultVideoResolution && supportedVideoResolutions.includes(providerDefaultVideoResolution)
+    ? providerDefaultVideoResolution
+    : defaultVideoResolutionForProvider(
     selectedVideoProtocol,
     selectedVideoProfile,
     activeVideoMode,
     selectedVideoModelName,
-  )
+  ))
   const activeVideoModeConfig = videoModeConfig(selectedVideoProtocol, activeVideoMode, selectedVideoProfile)
   const activeVideoDurationRule = videoDurationRuleForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
   const activeVideoDurationBounds = videoDurationBounds(activeVideoDurationRule)
@@ -4433,11 +4541,12 @@ function NodeEditView({
               onChange={(model) => onChange({ model })}
               hint={mediaProviderHint(selectedImageProvider, mediaConfigError)}
             />
-            <SegmentedControl
-              label="画幅"
+            <MediaOptionGrid
+              label="比例"
               value={imageAspectRatio}
-              options={IMAGE_ASPECT_RATIO_OPTIONS}
+              options={IMAGE_ASPECT_RATIO_GRID_OPTIONS}
               onChange={updateImageAspectRatio}
+              columns="grid-cols-3 sm:grid-cols-4"
             />
             <ImageResolutionControl
               aspectRatio={imageAspectRatio}
@@ -4445,18 +4554,12 @@ function NodeEditView({
               onChange={(resolution) => onChange({ resolution })}
             />
             <div className="grid gap-3">
-              <SegmentedControl
-                label="质量"
+              <MediaOptionGrid
+                label="画质"
                 value={draft.quality}
                 options={IMAGE_QUALITY_OPTIONS}
                 onChange={(quality) => onChange({ quality })}
-              />
-              <SegmentedControl
-                label="清晰度"
-                value={draft.clarity}
-                options={IMAGE_CLARITY_OPTIONS}
-                onChange={(clarity) => onChange({ clarity })}
-                hint="清晰度会作为画面细节要求写入出图提示词。"
+                columns="grid-cols-3"
               />
             </div>
           </div>
@@ -4549,18 +4652,22 @@ function NodeEditView({
               onChange={updateVideoModel}
               hint={mediaProviderHint(selectedVideoProvider, mediaConfigError)}
             />
-            <ChipControl
-              label="画幅"
+            <MediaOptionGrid
+              label="比例"
               value={normalizeVideoAspectRatio(draft.aspect_ratio)}
-              options={supportedVideoRatios}
-              placeholder="比例"
+              options={videoAspectOptions}
               onChange={(aspect_ratio) => onChange({ aspect_ratio })}
+              columns="grid-cols-3"
             />
-            <SelectControl
-              label="分辨率"
+            <MediaOptionGrid
+              label="清晰度"
               value={activeVideoResolution}
-              options={videoResolutionOptions}
+              options={videoResolutionOptions.map((item) => ({
+                ...item,
+                label: mediaResolutionButtonLabel(item.value, item.label),
+              }))}
               onChange={(resolution) => onChange({ resolution })}
+              columns="grid-cols-4"
             />
             <DraftField label="时长">
               <input
@@ -4740,9 +4847,10 @@ function NodeEditView({
                   <ChipControl
                     label="画幅"
                     value={normalizeVideoAspectRatio(draft.aspect_ratio)}
-                    options={supportedVideoRatios}
+                    options={videoAspectOptions}
                     placeholder="比例"
                     onChange={(aspect_ratio) => onChange({ aspect_ratio })}
+                    allowCustom={false}
                   />
                 </>
               ) : (
@@ -5418,6 +5526,243 @@ function NodePanelTextHistoryButton({
   )
 }
 
+function MediaParameterDialog({
+  open,
+  nodeType,
+  draft,
+  selectedAudioMode,
+  imageAspectRatio,
+  imageResolution,
+  videoAspectOptions,
+  activeVideoResolution,
+  videoResolutionOptions,
+  videoDurationValue,
+  videoDurationMin,
+  videoDurationMax,
+  videoDurationStep,
+  videoDurationRule,
+  onClose,
+  onChange,
+  onImageAspectRatio,
+  onImageResolution,
+}: {
+  open: boolean
+  nodeType: "image" | "video" | "audio"
+  draft: EditableNodeDraft
+  selectedAudioMode: AudioProviderMode
+  imageAspectRatio: string
+  imageResolution: string
+  videoAspectOptions: SelectOption[]
+  activeVideoResolution: string
+  videoResolutionOptions: SelectOption[]
+  videoDurationValue: number
+  videoDurationMin: number
+  videoDurationMax: number
+  videoDurationStep: number
+  videoDurationRule: VideoDurationSummary
+  onClose: () => void
+  onChange: (patch: Partial<EditableNodeDraft>) => void
+  onImageAspectRatio: (value: string) => void
+  onImageResolution: (value: string) => void
+}) {
+  useEffect(() => {
+    if (!open) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return
+      event.preventDefault()
+      onClose()
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [onClose, open])
+
+  if (!open || typeof document === "undefined") return null
+
+  const title = nodeType === "image" ? "图片生成参数" : nodeType === "video" ? "视频生成参数" : "音频生成参数"
+  const icon = nodeType === "image" ? "图" : nodeType === "video" ? "影" : "声"
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/48 p-4 backdrop-blur-[2px]"
+      role="presentation"
+      onClick={onClose}
+      onMouseDown={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="openreel-media-parameter-dialog-title"
+        className="flex max-h-[min(680px,calc(100dvh-32px))] w-[min(520px,calc(100vw-32px))] flex-col overflow-hidden rounded-xl border border-white/[0.13] bg-[#171b23]/98 text-zinc-100 shadow-[0_30px_110px_rgba(0,0,0,0.72)] ring-1 ring-cyan-200/[0.06]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex shrink-0 items-center gap-2.5 border-b border-white/[0.08] bg-[#20252e]/96 px-4 py-3">
+          <span className="flex h-7 w-7 items-center justify-center rounded-md border border-white/[0.12] bg-white/[0.07] text-[11px] font-semibold text-zinc-200">
+            {icon}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div id="openreel-media-parameter-dialog-title" className="text-sm font-semibold text-zinc-50">{title}</div>
+            <div className="mt-0.5 text-[10px] text-zinc-500">参数会保存到当前节点，关闭弹窗不会丢失编辑。</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-lg leading-none text-zinc-500 transition hover:bg-white/10 hover:text-zinc-100"
+            aria-label="关闭生成参数"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="min-h-0 overflow-y-auto bg-[#0d1118] p-3.5 sm:p-4">
+          {nodeType === "image" && (
+            <div className="grid gap-2.5">
+              <MediaOptionGrid
+                label="画质"
+                value={draft.quality}
+                options={IMAGE_QUALITY_OPTIONS}
+                onChange={(quality) => onChange({ quality })}
+                columns="grid-cols-3"
+              />
+              <MediaOptionGrid
+                label="比例"
+                value={imageAspectRatio}
+                options={IMAGE_ASPECT_RATIO_GRID_OPTIONS}
+                onChange={onImageAspectRatio}
+                columns="grid-cols-4"
+              />
+              <ImageResolutionControl
+                aspectRatio={imageAspectRatio}
+                resolution={imageResolution}
+                onChange={onImageResolution}
+              />
+            </div>
+          )}
+
+          {nodeType === "video" && (
+            <div className="grid gap-2.5">
+              <MediaOptionGrid
+                label="比例"
+                value={normalizeVideoAspectRatio(draft.aspect_ratio)}
+                options={videoAspectOptions}
+                onChange={(aspect_ratio) => onChange({ aspect_ratio })}
+                columns="grid-cols-4"
+              />
+              <MediaOptionGrid
+                label="清晰度"
+                value={activeVideoResolution}
+                options={videoResolutionOptions.map((item) => ({
+                  ...item,
+                  label: mediaResolutionButtonLabel(item.value, item.label),
+                }))}
+                onChange={(resolution) => onChange({ resolution })}
+                columns="grid-cols-4"
+              />
+              <DraftField label="视频时长">
+                <div className="grid gap-2 rounded-lg border border-white/[0.08] bg-black/20 p-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min={videoDurationMin}
+                      max={videoDurationMax}
+                      step={videoDurationStep}
+                      value={Number.isFinite(videoDurationValue) ? videoDurationValue : videoDurationMin}
+                      onChange={(event) => onChange({ duration_seconds: event.target.value })}
+                      className="h-2 min-w-0 flex-1 accent-cyan-300"
+                    />
+                    <input
+                      type="number"
+                      min={videoDurationMin}
+                      max={videoDurationMax}
+                      step={videoDurationStep}
+                      inputMode="numeric"
+                      value={draft.duration_seconds}
+                      onChange={(event) => onChange({ duration_seconds: event.target.value })}
+                      onBlur={(event) => onChange({ duration_seconds: normalizeVideoDurationForRule(event.target.value, videoDurationRule) })}
+                      className="h-8 w-16 rounded-md border border-white/[0.1] bg-[#080c13] px-2 text-xs text-zinc-100 outline-none [color-scheme:dark] focus:border-cyan-300/45"
+                      placeholder="秒"
+                    />
+                  </div>
+                </div>
+              </DraftField>
+            </div>
+          )}
+
+          {nodeType === "audio" && (
+            <div className="grid gap-2.5">
+              {selectedAudioMode === "tts" && (
+                <>
+                  <ChipControl
+                    label="声音"
+                    value={draft.voice}
+                    options={["alloy", "nova", "shimmer", "onyx"]}
+                    placeholder="TTS voice"
+                    onChange={(voice) => onChange({ voice })}
+                  />
+                  <ChipControl
+                    label="语速"
+                    value={draft.speed}
+                    options={["0.8", "1", "1.2"]}
+                    placeholder="默认"
+                    onChange={(speed) => onChange({ speed })}
+                  />
+                  <ChipControl
+                    label="格式"
+                    value={draft.format}
+                    options={["mp3", "wav", "m4a"]}
+                    placeholder="默认"
+                    onChange={(format) => onChange({ format })}
+                  />
+                </>
+              )}
+              {selectedAudioMode === "music" && (
+                <>
+                  <DraftField label="风格">
+                    <input
+                      value={draft.style}
+                      onChange={(event) => onChange({ style: event.target.value })}
+                      className="h-8 w-full rounded-md border border-white/[0.1] bg-[#080c13] px-2 text-xs text-zinc-100 outline-none [color-scheme:dark] placeholder:text-zinc-500 focus:border-cyan-300/45"
+                      placeholder="ambient piano, cinematic, lo-fi..."
+                    />
+                  </DraftField>
+                  <ChipControl
+                    label="时长"
+                    value={draft.duration_seconds}
+                    options={["30", "60", "120"]}
+                    placeholder="秒"
+                    onChange={(duration_seconds) => onChange({ duration_seconds })}
+                  />
+                  <ToggleControl
+                    label="纯音乐"
+                    checked={draft.instrumental}
+                    onChange={(instrumental) => onChange({ instrumental })}
+                  />
+                </>
+              )}
+              {selectedAudioMode === "unknown" && (
+                <div className="rounded-md border border-white/[0.08] bg-white/[0.04] px-3 py-2 text-xs leading-5 text-zinc-400">
+                  当前音频模型未声明可编辑的生成参数。
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-white/[0.08] bg-[#171b23] px-4 py-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-white/[0.1] bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-zinc-300 transition hover:bg-white/[0.09] hover:text-zinc-50"
+          >
+            完成
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 function NodeCanvasContextPanel({
   node,
   draft,
@@ -5486,15 +5831,26 @@ function NodeCanvasContextPanel({
   const selectedVideoProfile = videoProfileForModel(selectedVideoProtocol, selectedVideoModelName)
   const videoModeOptions = videoProtocolModeOptions(selectedVideoProtocol, selectedVideoProfile)
   const activeVideoMode = effectiveVideoMode(draft.video_mode, videoModeOptions)
-  const supportedVideoResolutions = videoSupportedResolutionsForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode, selectedVideoModelName)
-  const supportedVideoRatios = videoSupportedRatiosForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const providerVideoResolutions = mediaProviderParamStringArray(selectedVideoProvider, "supported_resolutions", "resolutions")
+    .map((item) => item.toLowerCase())
+  const providerVideoRatios = mediaProviderParamStringArray(selectedVideoProvider, "supported_ratios", "ratios", "supported_aspect_ratios")
+  const supportedVideoResolutions = providerVideoResolutions.length
+    ? providerVideoResolutions
+    : videoSupportedResolutionsForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode, selectedVideoModelName)
+  const supportedVideoRatios = providerVideoRatios.length
+    ? providerVideoRatios.filter((item) => item !== "adaptive")
+    : videoSupportedRatiosForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
+  const videoAspectOptions = videoAspectSelectOptions(draft.aspect_ratio, supportedVideoRatios)
   const videoResolutionOptions = videoResolutionSelectOptions(draft.resolution, supportedVideoResolutions)
-  const activeVideoResolution = draft.resolution || defaultVideoResolutionForProvider(
+  const providerDefaultVideoResolution = mediaProviderParamText(selectedVideoProvider, "default_resolution", "resolution").toLowerCase()
+  const activeVideoResolution = draft.resolution || (providerDefaultVideoResolution && supportedVideoResolutions.includes(providerDefaultVideoResolution)
+    ? providerDefaultVideoResolution
+    : defaultVideoResolutionForProvider(
     selectedVideoProtocol,
     selectedVideoProfile,
     activeVideoMode,
     selectedVideoModelName,
-  )
+  ))
   const activeVideoModeConfig = videoModeConfig(selectedVideoProtocol, activeVideoMode, selectedVideoProfile)
   const activeVideoDurationRule = videoDurationRuleForProvider(selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
   const activeVideoDurationBounds = videoDurationBounds(activeVideoDurationRule)
@@ -5513,9 +5869,33 @@ function NodeCanvasContextPanel({
     : dirty
       ? "bg-amber-300 shadow-[0_0_14px_rgba(252,211,77,0.45)]"
       : "bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.3)]"
+  const [mediaParameterDialogOpen, setMediaParameterDialogOpen] = useState(false)
   const compactSelectClass = "h-7 min-w-0 appearance-none rounded-md border border-white/[0.08] bg-[#1f1f1f] px-2 text-[11px] font-medium text-zinc-100 shadow-inner shadow-black/20 outline-none [color-scheme:dark] transition focus:border-white/[0.18] focus:bg-[#262626] focus:text-zinc-50 hover:border-white/[0.14] hover:bg-[#282828] [&>option]:bg-[#1f1f1f] [&>option]:text-zinc-100"
-  const textareaHeightClass = isText ? "min-h-[96px]" : isVideo ? "min-h-[78px]" : "min-h-[88px]"
+  const textareaHeightClass = isVideo ? "min-h-[78px]" : isAudio ? "min-h-[88px]" : "min-h-[96px]"
   const promptMaxRows = isText ? 7 : isVideo ? 6 : 7
+  const imageResolutionValue = draft.resolution || defaultImageResolutionForAspect(imageAspectRatio)
+  const imageResolutionTierLabel = IMAGE_RESOLUTION_TIER_OPTIONS.find((item) => item.value === imageResolutionTier(imageResolutionValue))?.label || "1K"
+  const videoResolutionLabel = activeVideoResolution ? mediaResolutionButtonLabel(activeVideoResolution) : ""
+  const videoDurationValue = Number.parseFloat(draft.duration_seconds)
+  const videoDurationMin = activeVideoDurationBounds.min ?? 1
+  const videoDurationMax = activeVideoDurationBounds.max ?? Math.max(videoDurationMin, Number.isFinite(videoDurationValue) ? videoDurationValue : 10)
+  const videoDurationStep = activeVideoDurationBounds.step ?? 1
+  const mediaParameterSummary = isImage
+    ? [imageAspectRatio, imageQualityLabel(draft.quality), imageResolutionTierLabel].filter(Boolean).join(" · ")
+    : isVideo
+      ? [normalizeVideoAspectRatio(draft.aspect_ratio), videoResolutionLabel, mediaDurationLabel(draft.duration_seconds)].filter(Boolean).join(" · ")
+      : isAudio
+        ? [
+          selectedAudioMode === "music" ? "音乐" : selectedAudioMode === "tts" ? "语音" : "音频",
+          mediaDurationLabel(draft.duration_seconds),
+          draft.format,
+        ].filter(Boolean).join(" · ")
+        : ""
+  const hasMediaParameterToggle = isImage || isVideo || isAudio
+
+  useEffect(() => {
+    setMediaParameterDialogOpen(false)
+  }, [node.id, node.type])
 
   const updateImageAspectRatio = (aspectRatio: string) => {
     const nextAspectRatio = normalizeImageAspectRatio(aspectRatio)
@@ -5548,7 +5928,8 @@ function NodeCanvasContextPanel({
   }
 
   return (
-    <div className="flex max-h-full min-h-0 w-full flex-col gap-2 rounded-xl border border-white/[0.1] bg-[#252525]/96 p-2.5 text-zinc-100 shadow-[0_24px_70px_rgba(0,0,0,0.46)] backdrop-blur-xl">
+    <>
+      <div className="flex max-h-full min-h-0 w-full flex-col gap-2 rounded-xl border border-white/[0.1] bg-[#252525]/96 p-2.5 text-zinc-100 shadow-[0_24px_70px_rgba(0,0,0,0.46)] backdrop-blur-xl">
       <div className="flex shrink-0 items-center gap-1.5 px-0.5">
         <span
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-white/[0.09] bg-white/[0.06] text-zinc-300 shadow-inner shadow-white/[0.03]"
@@ -5677,85 +6058,41 @@ function NodeCanvasContextPanel({
                 : isVideo
                   ? mediaProviderSelectOptions(enabledVideoProviders, draft.model, selectedVideoProvider)
                   : mediaProviderSelectOptions(enabledAudioProviders, draft.model, selectedAudioProvider)
-              ).map((option) => (
-                <option
-                  key={`${option.value}:${option.label}`}
-                  value={option.value}
-                  disabled={option.disabled}
+	              ).map((option) => (
+	                <option
+	                  key={`${option.value}:${option.label}`}
+	                  value={option.value}
+	                  disabled={option.disabled}
                   className="bg-[#1f1f1f] text-zinc-100"
                 >
                   {option.label}
-                </option>
-              ))}
-            </select>
-          )}
+	                </option>
+	              ))}
+	            </select>
+	          )}
 
-          {isImage && (
-            <>
-              <select
-                value={imageAspectRatio}
-                onChange={(event) => updateImageAspectRatio(event.target.value)}
-                className={`${compactSelectClass} w-[76px]`}
-                title="画幅"
-              >
-                {IMAGE_ASPECT_RATIO_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-              <select
-                value={draft.resolution || defaultImageResolutionForAspect(imageAspectRatio)}
-                onChange={(event) => onChange({ resolution: event.target.value })}
-                className={`${compactSelectClass} w-[150px]`}
-                title="分辨率"
-              >
-                {IMAGE_RESOLUTION_PRESETS[imageAspectRatio].map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </>
-          )}
-
-          {isVideo && (
-            <>
-              <select
-                value={normalizeVideoAspectRatio(draft.aspect_ratio)}
-                onChange={(event) => onChange({ aspect_ratio: event.target.value })}
-                className={`${compactSelectClass} w-[70px]`}
-                title="画幅"
-              >
-                {supportedVideoRatios.map((item) => <option key={item} value={item}>{item}</option>)}
-              </select>
-              <select
-                value={activeVideoResolution}
-                onChange={(event) => onChange({ resolution: event.target.value })}
-                className={`${compactSelectClass} w-[92px]`}
-                title="分辨率"
-              >
-                {videoResolutionOptions.map((item) => <option key={item.value} value={item.value} disabled={item.disabled}>{item.label}</option>)}
-              </select>
-              <input
-                type="number"
-                min={activeVideoDurationBounds.min ?? 1}
-                max={activeVideoDurationBounds.max}
-                step={activeVideoDurationBounds.step ?? 1}
-                inputMode="numeric"
-                value={draft.duration_seconds}
-                onChange={(event) => onChange({ duration_seconds: event.target.value })}
-                onBlur={(event) => onChange({ duration_seconds: normalizeVideoDurationForRule(event.target.value, activeVideoDurationRule) })}
-                className={`${compactSelectClass} w-14`}
-                placeholder="秒"
-                title="时长"
-              />
-            </>
-          )}
-
-          {isAudio && selectedAudioMode === "music" && (
-            <input
-              value={draft.style}
-              onChange={(event) => onChange({ style: event.target.value })}
-              className={`${compactSelectClass} min-w-[140px] flex-1 placeholder:text-zinc-500`}
-              placeholder="音乐风格"
-            />
-          )}
-          {(isImage || isVideo) && (
-            <label
-              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-transparent bg-transparent text-zinc-300 transition hover:border-white/[0.12] hover:bg-white/[0.06] hover:text-zinc-50"
+	          {hasMediaParameterToggle && (
+	            <button
+	              type="button"
+	              data-openreel-node-parameter-toggle="true"
+              aria-expanded={mediaParameterDialogOpen}
+              aria-haspopup="dialog"
+              onClick={() => setMediaParameterDialogOpen((value) => !value)}
+	              className={`flex h-7 min-w-[160px] flex-1 items-center gap-1.5 rounded-md border px-2 text-left text-[11px] font-medium shadow-inner shadow-black/20 transition ${
+                mediaParameterDialogOpen
+	                  ? "border-zinc-100 bg-zinc-100 text-zinc-950"
+	                  : "border-white/[0.08] bg-[#1f1f1f] text-zinc-100 hover:border-white/[0.14] hover:bg-[#282828]"
+	              }`}
+	              title={mediaParameterSummary || "生成参数"}
+	            >
+              <span className={`h-3 w-3 shrink-0 rounded-[3px] border ${mediaParameterDialogOpen ? "border-zinc-800" : "border-zinc-300/70"}`} />
+	              <span className="min-w-0 flex-1 truncate">{mediaParameterSummary || "生成参数"}</span>
+              <span className={`shrink-0 ${mediaParameterDialogOpen ? "text-zinc-700" : "text-zinc-500"}`}>⌄</span>
+	            </button>
+	          )}
+	          {(isImage || isVideo) && (
+	            <label
+	              className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-transparent bg-transparent text-zinc-300 transition hover:border-white/[0.12] hover:bg-white/[0.06] hover:text-zinc-50"
               aria-label={uploadingOutput ? "上传中" : "上传成品"}
               title={uploadingOutput ? "上传中" : "上传成品"}
             >
@@ -5806,7 +6143,30 @@ function NodeCanvasContextPanel({
       ) : (
         <NodePanelMediaHistoryStrip node={node} />
       )}
-    </div>
+      </div>
+      {hasMediaParameterToggle && (
+        <MediaParameterDialog
+          open={mediaParameterDialogOpen}
+          nodeType={isImage ? "image" : isVideo ? "video" : "audio"}
+          draft={draft}
+          selectedAudioMode={selectedAudioMode}
+          imageAspectRatio={imageAspectRatio}
+          imageResolution={imageResolutionValue}
+          videoAspectOptions={videoAspectOptions}
+          activeVideoResolution={activeVideoResolution}
+          videoResolutionOptions={videoResolutionOptions}
+          videoDurationValue={videoDurationValue}
+          videoDurationMin={videoDurationMin}
+          videoDurationMax={videoDurationMax}
+          videoDurationStep={videoDurationStep}
+          videoDurationRule={activeVideoDurationRule}
+          onClose={() => setMediaParameterDialogOpen(false)}
+          onChange={onChange}
+          onImageAspectRatio={updateImageAspectRatio}
+          onImageResolution={(resolution) => onChange({ resolution })}
+        />
+      )}
+    </>
   )
 }
 

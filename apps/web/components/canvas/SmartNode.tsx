@@ -1685,8 +1685,8 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
             </div>
           )}
 
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/78 via-black/28 to-transparent px-3 pb-2.5 pt-10">
-            <div className="line-clamp-2 min-w-0 text-[13px] font-semibold leading-4 text-white drop-shadow" title={data.title}>
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-40 bg-gradient-to-t from-black/88 via-black/54 to-transparent px-2.5 pb-2.5 pt-10">
+            <div className="line-clamp-1 min-w-0 text-[12px] font-semibold leading-4 text-white drop-shadow" title={data.title}>
               {data.title || "未命名"}
             </div>
             {audio?.duration && data.type === "audio" && (
