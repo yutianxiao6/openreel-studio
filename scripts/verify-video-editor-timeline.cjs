@@ -112,6 +112,40 @@ async function dragClipToTrack(page, locator, targetTrackId, deltaX = 0) {
   await page.mouse.up()
 }
 
+async function probeSnapGuide(page, locator, deltaX) {
+  const box = await locator.boundingBox()
+  if (!box) throw new Error("Clip has no snap probe box")
+  const x = box.x + box.width / 2
+  const y = box.y + box.height / 2
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x + deltaX, y, { steps: 5 })
+  const guide = await page.locator('[data-openreel-snap-guide="true"]').count()
+  const frame = await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-snap-guide-frame")
+  await page.mouse.up()
+  return { visible: guide > 0, frame: Number(frame || -1) }
+}
+
+async function marqueeSelectSecondCut(page) {
+  const timeline = page.locator('[data-openreel-timeline-scroll="true"]')
+  const secondVideo = page.locator('[data-clip-kind="video"]').nth(1)
+  const secondAudio = page.locator('[data-clip-kind="audio"]').nth(1)
+  const timelineBox = await timeline.boundingBox()
+  const videoBox = await secondVideo.boundingBox()
+  const audioBox = await secondAudio.boundingBox()
+  if (!timelineBox || !videoBox || !audioBox) throw new Error("Marquee targets unavailable")
+  const startX = Math.min(timelineBox.x + timelineBox.width - 20, videoBox.x + videoBox.width + 80)
+  const startY = videoBox.y + videoBox.height / 2
+  const endX = videoBox.x + 12
+  const endY = audioBox.y + audioBox.height - 4
+  await page.mouse.move(startX, startY)
+  await page.mouse.down()
+  await page.mouse.move(endX, endY, { steps: 8 })
+  const visible = await page.locator('[data-openreel-marquee="true"]').isVisible().catch(() => false)
+  await page.mouse.up()
+  return visible
+}
+
 async function resizeEdge(page, locator, edge, deltaX) {
   const box = await locator.boundingBox()
   if (!box) throw new Error("Clip has no bounding box")
@@ -357,7 +391,9 @@ async function main() {
     const splitBox = await videoClip.boundingBox()
     if (!splitBox) throw new Error("Video clip has no split target")
     await page.mouse.click(splitBox.x + splitBox.width * 0.55, splitBox.y + splitBox.height / 2)
-    await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
+    await page.waitForTimeout(500)
+    const splitClipCount = await page.locator("[data-openreel-timeline-clip]").count()
+    if (splitClipCount !== 4) throw new Error(`Expected four clips after split, got ${splitClipCount}: ${JSON.stringify(await readClips(page))}`)
     clips = await readClips(page)
     const videoParts = clips.filter((clip) => clip.kind === "video").sort((a, b) => a.start - b.start)
     const audioParts = clips.filter((clip) => clip.kind === "audio").sort((a, b) => a.start - b.start)
@@ -399,9 +435,11 @@ async function main() {
       aligned(trimmedVideoParts[1], trimmedAudioParts[1])
     )
     await page.keyboard.press("Control+z")
-    await page.waitForFunction((expectedFrame) => (
-      Number(document.querySelector('[data-clip-kind="video"]')?.dataset.durationFrames || 0) === expectedFrame
-    ), videoParts[0].durationFrames)
+    await page.waitForTimeout(500)
+    const rippleUndoState = await readClips(page)
+    if (rippleUndoState.find((clip) => clip.kind === "video")?.durationFrames !== videoParts[0].durationFrames) {
+      throw new Error(`Ripple undo mismatch: ${JSON.stringify(rippleUndoState)}`)
+    }
 
     await resizeEdge(page, page.locator('[data-clip-kind="video"]').nth(1), "start", 84)
     await page.waitForTimeout(250)
@@ -417,9 +455,11 @@ async function main() {
       aligned(trimmedVideoParts[1], trimmedAudioParts[1])
     )
     await page.keyboard.press("Control+z")
-    await page.waitForFunction((expectedFrame) => (
-      Number(document.querySelectorAll('[data-clip-kind="video"]')[1]?.dataset.durationFrames || 0) === expectedFrame
-    ), videoParts[1].durationFrames)
+    await page.waitForTimeout(500)
+    const rippleIncomingUndoState = await readClips(page)
+    if (rippleIncomingUndoState.filter((clip) => clip.kind === "video")[1]?.durationFrames !== videoParts[1].durationFrames) {
+      throw new Error(`Ripple incoming undo mismatch: ${JSON.stringify(rippleIncomingUndoState)}`)
+    }
 
     await page.keyboard.press("n")
     const rollingModeActivated = await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-trim-mode") === "rolling"
@@ -573,6 +613,26 @@ async function main() {
       fadeStartVolume < fullGainVolume * 0.75 &&
       Math.abs(fullGainVolume - Math.pow(10, -6 / 20)) < 0.03
     )
+    await page.locator('[data-clip-kind="audio"]').first().click()
+    await page.evaluate(() => document.activeElement?.blur())
+    await page.keyboard.press("g")
+    const audioGainShortcut = await page.evaluate(() => document.activeElement?.matches('[data-openreel-clip-gain="true"]') === true)
+    await panel.getByText("OpenReel Edit", { exact: true }).click()
+
+    const sourceVideoItem = page.locator('[data-openreel-media-item="true"][data-media-type="video"]').first()
+    await sourceVideoItem.click()
+    await page.getByLabel("源监视器播放头", { exact: true }).fill("24")
+    await panel.getByText("OpenReel Edit", { exact: true }).click()
+    await page.keyboard.press("i")
+    await page.getByLabel("源监视器播放头", { exact: true }).fill("119")
+    await panel.getByText("OpenReel Edit", { exact: true }).click()
+    await page.keyboard.press("o")
+    const sourceMarksApplied = await page.evaluate(() => {
+      const monitor = document.querySelector('[data-openreel-source-monitor="true"]')
+      return monitor?.getAttribute("data-source-in-frame") === "24" &&
+        monitor?.getAttribute("data-source-out-frame") === "120" &&
+        monitor?.getAttribute("data-source-cursor-frame") === "119"
+    })
 
     await panel.getByRole("button", { name: "添加视频轨道", exact: true }).click()
     await panel.getByRole("button", { name: "添加音频轨道", exact: true }).click()
@@ -627,6 +687,8 @@ async function main() {
       insertedVideo && insertedAudio && shiftedVideo && splitRightVideo && splitRightAudio &&
       aligned(insertedVideo, insertedAudio) &&
       insertedVideo.startFrame === insertFrame &&
+      insertedVideo.sourceInFrame === 24 &&
+      insertedVideo.durationFrames === 96 &&
       aligned(splitRightVideo, splitRightAudio) &&
       splitRightVideo.startFrame === insertFrame + insertedVideo.durationFrames &&
       shiftedVideo.startFrame === videoParts[1].startFrame + insertedVideo.durationFrames &&
@@ -690,6 +752,65 @@ async function main() {
     await page.keyboard.press("Control+Shift+z")
     await page.waitForFunction(() => document.querySelectorAll('[data-openreel-track-row="true"]').length === 4)
     const dynamicTrackHistory = true
+
+    await panel.getByRole("button", { name: "选择 (V)", exact: true }).click()
+    await page.locator('[data-clip-kind="video"]').first().click()
+    const linkedSelection = await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-selected-clip-count") === "2"
+    await page.locator('[data-clip-kind="video"]').first().click({ modifiers: ["Alt"] })
+    const independentSelection = (
+      await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-selected-clip-count") === "1" &&
+      await page.locator('[data-clip-kind="video"]').first().getAttribute("data-selected") === "true" &&
+      await page.locator('[data-clip-kind="audio"]').first().getAttribute("data-selected") === "false"
+    )
+    await page.keyboard.down("Alt")
+    await dragHorizontally(page, page.locator('[data-clip-kind="video"]').first(), 42)
+    await page.keyboard.up("Alt")
+    await page.waitForTimeout(200)
+    const independentMoveClips = await readClips(page)
+    const independentMove = (
+      independentMoveClips.find((clip) => clip.kind === "video")?.startFrame > 0 &&
+      independentMoveClips.find((clip) => clip.kind === "audio")?.startFrame === 0
+    )
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction(() => (
+      document.querySelectorAll('[data-clip-kind="video"]').length === 2 &&
+      Number(document.querySelector('[data-clip-kind="video"]')?.dataset.startFrame || -1) === 0 &&
+      Number(document.querySelector('[data-clip-kind="audio"]')?.dataset.startFrame || -1) === 0
+    ))
+    await page.locator('[data-clip-kind="video"]').first().click({ modifiers: ["Alt"] })
+    await page.locator('[data-clip-kind="video"]').nth(1).click({ modifiers: ["Control"] })
+    const additiveSelection = await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-selected-clip-count") === "3"
+    const marqueeVisible = await marqueeSelectSecondCut(page)
+    await page.waitForTimeout(100)
+    const marqueeSelection = (
+      marqueeVisible &&
+      await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-selected-clip-count") === "2" &&
+      await page.locator('[data-clip-kind="video"]').nth(1).getAttribute("data-selected") === "true" &&
+      await page.locator('[data-clip-kind="audio"]').nth(1).getAttribute("data-selected") === "true"
+    )
+    await page.keyboard.press("s")
+    const snappingDisabled = await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-snapping-enabled") === "false"
+    await page.keyboard.press("s")
+    const snappingEnabled = await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-snapping-enabled") === "true"
+    await page.locator('[data-clip-kind="video"]').first().click()
+    const snapGuide = await probeSnapGuide(page, page.locator('[data-clip-kind="video"]').first(), 5)
+    const visibleSnapGuide = snapGuide.visible && [0, videoParts[1].startFrame].includes(snapGuide.frame)
+    const snapGuideCleared = await page.locator('[data-openreel-snap-guide="true"]').count() === 0
+
+    await page.keyboard.press("ArrowUp")
+    const previousEditFrame = Number(await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-current-frame"))
+    await page.keyboard.press("ArrowDown")
+    const nextEditFrame = Number(await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-current-frame"))
+    const editPointNavigation = previousEditFrame === 0 && nextEditFrame === videoParts[1].startFrame
+    await page.keyboard.press("j")
+    await page.waitForTimeout(260)
+    await page.keyboard.press("k")
+    const reverseShuttleFrame = Number(await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-current-frame"))
+    await page.keyboard.press("l")
+    await page.waitForTimeout(260)
+    await page.keyboard.press("k")
+    const forwardShuttleFrame = Number(await page.locator('[data-openreel-timeline-scroll="true"]').getAttribute("data-current-frame"))
+    const shuttleShortcuts = reverseShuttleFrame < nextEditFrame && forwardShuttleFrame > reverseShuttleFrame
 
     const anchorX = timelineBox.x + timelineBox.width * 0.5
     const readZoomAnchor = () => page.evaluate((clientX) => {
@@ -837,8 +958,11 @@ async function main() {
       )
     })
     await page.locator('[data-clip-kind="video"]').nth(1).click()
+    await page.getByLabel("源素材入点帧", { exact: true }).fill("24")
+    await page.getByLabel("源素材出点帧", { exact: true }).fill("120")
 
     if (SCREENSHOT_PATH) {
+      await page.evaluate(() => document.activeElement?.blur())
       await page.keyboard.press("n")
       await page.evaluate(() => {
         const inspectorScroller = document.querySelector('[data-openreel-inspector-pane="true"] .overflow-y-auto')
@@ -857,7 +981,7 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && normalDeleteKeepsGap && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && dynamicTracksPersisted && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && normalDeleteKeepsGap && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && sourceMarksApplied && dynamicTracksPersisted && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
       initialAligned,
       movedTogether,
       clampedAtTimelineStart,
@@ -870,6 +994,20 @@ async function main() {
       integerFrameTruth,
       undoRestoredBeforeSplit,
       redoRestoredSplit,
+      linkedSelection,
+      independentSelection,
+      independentMove,
+      additiveSelection,
+      marqueeSelection,
+      snappingDisabled,
+      snappingEnabled,
+      visibleSnapGuide,
+      snapGuideFrame: snapGuide.frame,
+      snapGuideCleared,
+      editPointNavigation,
+      reverseShuttleFrame,
+      forwardShuttleFrame,
+      shuttleShortcuts,
       rippleTrimSemantics,
       rippleDeltaFrames,
       rippleIncomingTrimSemantics,
@@ -884,6 +1022,8 @@ async function main() {
       audioControlsPersisted,
       audioControls,
       audioPreviewMixApplied,
+      audioGainShortcut,
+      sourceMarksApplied,
       fadeStartVolume,
       fadeStartState,
       fullGainVolume,
