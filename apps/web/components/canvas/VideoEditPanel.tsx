@@ -45,6 +45,7 @@ type PreviewScale = "fit" | "50" | "75" | "100"
 interface TimelineClipState {
   clipId: string
   mediaId: string
+  trackId: string
   startFrame: number
   durationFrames: number
   sourceInFrame: number
@@ -56,12 +57,23 @@ interface TimelineClipState {
   fadeOutFrames?: number
 }
 
+interface TimelineTrackState {
+  id: string
+  kind: "video" | "audio"
+  name: string
+  order: number
+  locked: boolean
+  syncLocked: boolean
+  visible: boolean
+  muted: boolean
+  solo: boolean
+  gainDb: number
+}
+
 interface EditorSnapshot {
   videoClips: TimelineClipState[]
   audioClips: TimelineClipState[]
-  audioTrackMuted: boolean
-  audioTrackSolo: boolean
-  audioTrackGainDb: number
+  tracks: TimelineTrackState[]
 }
 
 interface TimelineViewport {
@@ -216,6 +228,7 @@ function createSyncGroupId(seed = "media"): string {
 
 function createClip(
   mediaId: string,
+  trackId: string,
   startFrame: number,
   durationFrames: number,
   sourceInFrame = 0,
@@ -225,6 +238,7 @@ function createClip(
   return {
     clipId: createClipId(mediaId),
     mediaId,
+    trackId,
     startFrame: Math.max(0, Math.round(startFrame)),
     durationFrames: Math.max(1, Math.round(durationFrames)),
     sourceInFrame: Math.max(0, Math.round(sourceInFrame)),
@@ -235,6 +249,119 @@ function createClip(
     fadeInFrames: 0,
     fadeOutFrames: 0,
   }
+}
+
+function defaultTimelineTracks(): TimelineTrackState[] {
+  return [
+    {
+      id: "v1",
+      kind: "video",
+      name: "视频 1",
+      order: 0,
+      locked: false,
+      syncLocked: true,
+      visible: true,
+      muted: false,
+      solo: false,
+      gainDb: 0,
+    },
+    {
+      id: "a1",
+      kind: "audio",
+      name: "音频 1",
+      order: 0,
+      locked: false,
+      syncLocked: true,
+      visible: true,
+      muted: false,
+      solo: false,
+      gainDb: 0,
+    },
+  ]
+}
+
+function clipRightSegment(
+  clip: TimelineClipState,
+  startFrame: number,
+  groupIds: Map<string, string>,
+): TimelineClipState {
+  const sourceDelta = startFrame - clip.startFrame
+  const groupKey = clip.syncGroupId || clip.clipId
+  const syncGroupId = groupIds.get(groupKey) || createSyncGroupId(groupKey)
+  groupIds.set(groupKey, syncGroupId)
+  return {
+    ...clip,
+    clipId: createClipId(clip.mediaId),
+    startFrame,
+    durationFrames: clipEndFrame(clip) - startFrame,
+    sourceInFrame: clip.sourceInFrame + sourceDelta,
+    syncGroupId,
+    fullSource: false,
+    fadeInFrames: 0,
+  }
+}
+
+function insertGapIntoClips(
+  clips: TimelineClipState[],
+  insertionFrame: number,
+  durationFrames: number,
+  affectedTrackIds: Set<string>,
+  rightGroupIds: Map<string, string>,
+): TimelineClipState[] {
+  return clips.flatMap((clip) => {
+    if (!affectedTrackIds.has(clip.trackId) || clipEndFrame(clip) <= insertionFrame) return [clip]
+    if (clip.startFrame >= insertionFrame) {
+      return [{ ...clip, startFrame: clip.startFrame + durationFrames }]
+    }
+    const leftDuration = insertionFrame - clip.startFrame
+    const right = clipRightSegment(clip, insertionFrame, rightGroupIds)
+    return [
+      {
+        ...clip,
+        durationFrames: leftDuration,
+        fullSource: false,
+        fadeOutFrames: 0,
+      },
+      {
+        ...right,
+        startFrame: insertionFrame + durationFrames,
+        fadeOutFrames: Math.min(clip.fadeOutFrames || 0, right.durationFrames),
+      },
+    ]
+  })
+}
+
+function overwriteClipsInRange(
+  clips: TimelineClipState[],
+  startFrame: number,
+  durationFrames: number,
+  targetTrackIds: Set<string>,
+  rightGroupIds: Map<string, string>,
+): TimelineClipState[] {
+  const endFrame = startFrame + durationFrames
+  return clips.flatMap((clip) => {
+    const oldEndFrame = clipEndFrame(clip)
+    if (!targetTrackIds.has(clip.trackId) || oldEndFrame <= startFrame || clip.startFrame >= endFrame) {
+      return [clip]
+    }
+    const next: TimelineClipState[] = []
+    if (clip.startFrame < startFrame) {
+      next.push({
+        ...clip,
+        durationFrames: startFrame - clip.startFrame,
+        fullSource: false,
+        fadeOutFrames: 0,
+      })
+    }
+    if (oldEndFrame > endFrame) {
+      const right = clipRightSegment(clip, endFrame, rightGroupIds)
+      next.push({
+        ...right,
+        fadeOutFrames: Math.min(clip.fadeOutFrames || 0, right.durationFrames),
+      })
+    }
+    return next
+  })
 }
 
 function splitClipsAt(
@@ -569,9 +696,15 @@ function ActionButton({
 const MediaBinItem = memo(function MediaBinItem({
   item,
   onInsert,
+  onOverwrite,
+  onSelect,
+  selected,
 }: {
   item: VideoEditPanelMediaNode
   onInsert: (item: VideoEditPanelMediaNode) => void
+  onOverwrite: (item: VideoEditPanelMediaNode) => void
+  onSelect: (item: VideoEditPanelMediaNode) => void
+  selected?: boolean
 }) {
   return (
     <div
@@ -580,8 +713,15 @@ const MediaBinItem = memo(function MediaBinItem({
         event.dataTransfer.effectAllowed = "copy"
         event.dataTransfer.setData("openreel/media-id", item.id)
       }}
+      onClick={() => onSelect(item)}
       onDoubleClick={() => onInsert(item)}
-      className="group min-w-0 cursor-grab border border-transparent bg-[#1b1e22] p-1 transition hover:border-[#4b515a] hover:bg-[#22262b] active:cursor-grabbing"
+      data-openreel-media-item="true"
+      data-media-id={item.id}
+      data-media-type={item.type}
+      className={cn(
+        "group min-w-0 cursor-grab border bg-[#1b1e22] p-1 transition hover:border-[#4b515a] hover:bg-[#22262b] active:cursor-grabbing",
+        selected ? "border-[#5596c5] bg-[#222d36]" : "border-transparent",
+      )}
     >
       <div className="relative aspect-video w-full overflow-hidden bg-[#090a0c]">
         {item.type === "video" ? (
@@ -596,18 +736,34 @@ const MediaBinItem = memo(function MediaBinItem({
         <div className="absolute bottom-1 left-1 flex h-4 w-4 items-center justify-center bg-black/70 text-[#d7dadd]">
           <EditorIcon name={item.type === "video" ? "film" : item.type === "audio" ? "audio" : "image"} className="h-2.5 w-2.5" />
         </div>
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation()
-            onInsert(item)
-          }}
-          className="absolute bottom-1 right-1 flex h-5 w-5 items-center justify-center border border-white/20 bg-black/75 text-white opacity-0 transition hover:bg-[#315f83] group-hover:opacity-100"
-          title="插入轨道"
-          aria-label="插入轨道"
-        >
-          <EditorIcon name="plus" className="h-3 w-3" />
-        </button>
+        <div className="absolute bottom-1 right-1 flex gap-0.5 opacity-0 transition group-hover:opacity-100">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              onSelect(item)
+              onInsert(item)
+            }}
+            className="flex h-5 min-w-5 items-center justify-center border border-white/20 bg-black/80 px-1 font-mono text-[8px] text-white hover:bg-[#315f83]"
+            title="插入到目标轨道 (,)"
+            aria-label={`插入素材 ${item.title}`}
+          >
+            ,
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              onSelect(item)
+              onOverwrite(item)
+            }}
+            className="flex h-5 min-w-5 items-center justify-center border border-white/20 bg-black/80 px-1 font-mono text-[8px] text-white hover:bg-[#7b5f35]"
+            title="覆盖到目标轨道 (.)"
+            aria-label={`覆盖素材 ${item.title}`}
+          >
+            .
+          </button>
+        </div>
       </div>
       <div className="min-w-0 px-0.5 pb-0.5 pt-1">
         <div className="truncate text-[10px] font-medium text-[#d7dadd]">{item.title || "未命名素材"}</div>
@@ -632,6 +788,7 @@ const TimelineClip = memo(function TimelineClip({
   waveformNodeId,
   trackGainDb,
   trackMuted,
+  disabled,
   selected,
   onBeginEdit,
   onSelect,
@@ -653,10 +810,11 @@ const TimelineClip = memo(function TimelineClip({
   waveformNodeId?: string
   trackGainDb?: number
   trackMuted?: boolean
+  disabled?: boolean
   selected?: boolean
   onBeginEdit: () => void
   onSelect: (clipId: string) => void
-  onDragStartFrame: (kind: "video" | "audio", clipId: string, startFrame: number) => void
+  onDragStartFrame: (kind: "video" | "audio", clipId: string, startFrame: number, trackId: string) => void
   onResizeEdge: (kind: "video" | "audio", clipId: string, edge: "start" | "end", edgeFrame: number) => void
   onCutAtFrame: (frame: number, clipId: string) => void
 }) {
@@ -667,7 +825,7 @@ const TimelineClip = memo(function TimelineClip({
   const sourceInSeconds = clip.sourceInFrame / sequenceFps
 
   const beginMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return
+    if (event.button !== 0 || disabled) return
     const target = event.target as HTMLElement | null
     if (target?.dataset.edgeHandle) return
     event.preventDefault()
@@ -691,7 +849,10 @@ const TimelineClip = memo(function TimelineClip({
         historyRecorded = true
       }
       const deltaFrames = Math.round((moveEvent.clientX - startX) / pxPerSecond * sequenceFps)
-      onDragStartFrame(kind, clip.clipId, Math.max(0, initialStartFrame + deltaFrames))
+      const targetRow = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)
+        ?.closest<HTMLElement>(`[data-openreel-track-kind="${kind}"]`)
+      const targetTrackId = targetRow?.dataset.openreelTrackId || clip.trackId
+      onDragStartFrame(kind, clip.clipId, Math.max(0, initialStartFrame + deltaFrames), targetTrackId)
     }
     const onEnd = () => {
       setDragging(false)
@@ -703,6 +864,7 @@ const TimelineClip = memo(function TimelineClip({
   }
 
   const beginResize = (edge: "start" | "end", event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (disabled) return
     event.preventDefault()
     event.stopPropagation()
     onSelect(clip.clipId)
@@ -730,6 +892,8 @@ const TimelineClip = memo(function TimelineClip({
       data-openreel-timeline-clip="true"
       data-clip-kind={kind}
       data-clip-id={clip.clipId}
+      data-media-id={clip.mediaId}
+      data-track-id={clip.trackId}
       data-sync-group-id={clip.syncGroupId || ""}
       data-start={(clip.startFrame / sequenceFps).toFixed(6)}
       data-duration={clipDurationSeconds.toFixed(6)}
@@ -753,6 +917,7 @@ const TimelineClip = memo(function TimelineClip({
         activeTool === "blade" && "cursor-crosshair",
         dragging && "cursor-grabbing opacity-85",
         !dragging && activeTool !== "blade" && "cursor-grab",
+        disabled && "cursor-not-allowed opacity-60",
       )}
       style={{ left, width }}
     >
@@ -862,9 +1027,7 @@ export default function VideoEditPanel({
   const redoStackRef = useRef<EditorSnapshot[]>([])
   const videoClipsRef = useRef<TimelineClipState[]>([])
   const audioClipsRef = useRef<TimelineClipState[]>([])
-  const audioTrackMutedRef = useRef(false)
-  const audioTrackSoloRef = useRef(false)
-  const audioTrackGainDbRef = useRef(0)
+  const tracksRef = useRef<TimelineTrackState[]>(defaultTimelineTracks())
   const [sourceDurations, setSourceDurations] = useState<Record<string, number>>({})
   const [mediaIndexes, setMediaIndexes] = useState<Record<string, VideoEditorMediaIndex>>({})
   const [sequenceLoaded, setSequenceLoaded] = useState(false)
@@ -876,9 +1039,10 @@ export default function VideoEditPanel({
   const [trimMode, setTrimMode] = useState<TrimMode>("normal")
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const [previewScale, setPreviewScale] = useState<PreviewScale>("fit")
-  const [audioTrackMuted, setAudioTrackMuted] = useState(false)
-  const [audioTrackSolo, setAudioTrackSolo] = useState(false)
-  const [audioTrackGainDb, setAudioTrackGainDb] = useState(0)
+  const [tracks, setTracks] = useState<TimelineTrackState[]>(defaultTimelineTracks)
+  const [activeVideoTrackId, setActiveVideoTrackId] = useState("v1")
+  const [activeAudioTrackId, setActiveAudioTrackId] = useState("a1")
+  const [selectedMediaId, setSelectedMediaId] = useState(nodeId)
   const [timelineViewport, setTimelineViewport] = useState<TimelineViewport>({
     startFrame: 0,
     endFrame: DEFAULT_TIMELINE_SECONDS * DEFAULT_FRAME_RATE,
@@ -892,10 +1056,15 @@ export default function VideoEditPanel({
   currentTimeRef.current = currentTime
   videoClipsRef.current = videoClips
   audioClipsRef.current = audioClips
-  audioTrackMutedRef.current = audioTrackMuted
-  audioTrackSoloRef.current = audioTrackSolo
-  audioTrackGainDbRef.current = audioTrackGainDb
+  tracksRef.current = tracks
   const framesPerSecond = sequenceFrameRate.numerator / sequenceFrameRate.denominator
+  const trackById = useMemo(() => new Map(tracks.map((track) => [track.id, track])), [tracks])
+  const videoTracks = useMemo(() => tracks
+    .filter((track) => track.kind === "video")
+    .sort((left, right) => right.order - left.order), [tracks])
+  const audioTracks = useMemo(() => tracks
+    .filter((track) => track.kind === "audio")
+    .sort((left, right) => left.order - right.order), [tracks])
 
   const visualItems = useMemo(
     () => mediaNodes.filter((item) => (item.type === "video" || item.type === "image") && item.src),
@@ -938,6 +1107,7 @@ export default function VideoEditPanel({
     entries.push(...embeddedAudioItems)
     return new Map(entries.map((item) => [item.id, item]))
   }, [embeddedAudioItems, mediaNodes])
+  const selectedMediaItem = mediaById.get(selectedMediaId) || mediaById.get(nodeId) || mediaNodes[0]
   const audioItemForVideo = useCallback((item: VideoEditPanelMediaNode | undefined) => {
     if (!item || item.type !== "video") return undefined
     return explicitAudioBySourceKey.get(mediaSourceKey(item)) || embeddedAudioByVideoId.get(item.id)
@@ -976,9 +1146,7 @@ export default function VideoEditPanel({
   const captureEditorSnapshot = useCallback((): EditorSnapshot => ({
     videoClips: videoClipsRef.current.map((clip) => ({ ...clip })),
     audioClips: audioClipsRef.current.map((clip) => ({ ...clip })),
-    audioTrackMuted: audioTrackMutedRef.current,
-    audioTrackSolo: audioTrackSoloRef.current,
-    audioTrackGainDb: audioTrackGainDbRef.current,
+    tracks: tracksRef.current.map((track) => ({ ...track })),
   }), [])
   const updateHistoryDepth = useCallback(() => {
     setHistoryDepth({
@@ -989,16 +1157,19 @@ export default function VideoEditPanel({
   const applyEditorSnapshot = useCallback((snapshot: EditorSnapshot) => {
     const nextVideoClips = snapshot.videoClips.map((clip) => ({ ...clip }))
     const nextAudioClips = snapshot.audioClips.map((clip) => ({ ...clip }))
+    const nextTracks = snapshot.tracks.map((track) => ({ ...track }))
     videoClipsRef.current = nextVideoClips
     audioClipsRef.current = nextAudioClips
-    audioTrackMutedRef.current = snapshot.audioTrackMuted
-    audioTrackSoloRef.current = snapshot.audioTrackSolo
-    audioTrackGainDbRef.current = snapshot.audioTrackGainDb
+    tracksRef.current = nextTracks
     setVideoClips(nextVideoClips)
     setAudioClips(nextAudioClips)
-    setAudioTrackMuted(snapshot.audioTrackMuted)
-    setAudioTrackSolo(snapshot.audioTrackSolo)
-    setAudioTrackGainDb(snapshot.audioTrackGainDb)
+    setTracks(nextTracks)
+    setActiveVideoTrackId((current) => nextTracks.some((track) => track.id === current && track.kind === "video")
+      ? current
+      : nextTracks.find((track) => track.kind === "video")?.id || "v1")
+    setActiveAudioTrackId((current) => nextTracks.some((track) => track.id === current && track.kind === "audio")
+      ? current
+      : nextTracks.find((track) => track.kind === "audio")?.id || "a1")
     setSelectedClipId(null)
     setPlaying(false)
   }, [])
@@ -1055,16 +1226,34 @@ export default function VideoEditPanel({
     audioClips[0]
   ), [audioClips, selectedClipId, selectedSyncGroupId])
   const currentFrame = Math.round(currentTime * framesPerSecond)
-  const currentVideoClip = useMemo(
-    () => videoClips.find((clip) => currentFrame >= clip.startFrame && currentFrame < clipEndFrame(clip)),
-    [currentFrame, videoClips],
-  )
-  const currentAudioClip = useMemo(
-    () => audioClips.find((clip) => currentFrame >= clip.startFrame && currentFrame < clipEndFrame(clip)),
-    [audioClips, currentFrame],
-  )
+  const currentVideoClip = useMemo(() => {
+    for (const track of videoTracks) {
+      if (!track.visible) continue
+      const clip = videoClips.find((candidate) => (
+        candidate.trackId === track.id &&
+        currentFrame >= candidate.startFrame &&
+        currentFrame < clipEndFrame(candidate)
+      ))
+      if (clip) return clip
+    }
+    return undefined
+  }, [currentFrame, videoClips, videoTracks])
+  const currentAudioClip = useMemo(() => {
+    const hasSolo = audioTracks.some((track) => track.solo)
+    for (const track of audioTracks) {
+      if (track.muted || (hasSolo && !track.solo)) continue
+      const clip = audioClips.find((candidate) => (
+        candidate.trackId === track.id &&
+        currentFrame >= candidate.startFrame &&
+        currentFrame < clipEndFrame(candidate)
+      ))
+      if (clip && !clip.muted) return clip
+    }
+    return undefined
+  }, [audioClips, audioTracks, currentFrame])
   const currentVideoItem = currentVideoClip ? mediaById.get(currentVideoClip.mediaId) : undefined
   const currentAudioItem = currentAudioClip ? mediaById.get(currentAudioClip.mediaId) : undefined
+  const currentAudioTrack = currentAudioClip ? trackById.get(currentAudioClip.trackId) : undefined
   const selectedVideoItem = selectedVideoClip ? mediaById.get(selectedVideoClip.mediaId) : undefined
   const primaryMediaIndex = sourceVideoItem ? mediaIndexes[sourceVideoItem.id] : undefined
   const maxPxPerSecond = Math.max(220, framesPerSecond * FRAME_DETAIL_WIDTH)
@@ -1096,9 +1285,9 @@ export default function VideoEditPanel({
   }, [pxPerSecond, timelineDuration])
   const sequenceSpec = useMemo<VideoEditorSequenceSpec>(() => {
     const frameRate = sequenceFrameRate
-    const clipSpec = (clip: TimelineClipState, trackId: "v1" | "a1") => ({
+    const clipSpec = (clip: TimelineClipState) => ({
       id: clip.clipId,
-      track_id: trackId,
+      track_id: clip.trackId,
       media_id: clip.mediaId,
       timeline_start_frame: clip.startFrame,
       duration_frames: clip.durationFrames,
@@ -1119,38 +1308,24 @@ export default function VideoEditPanel({
         audio_sample_rate: primaryMediaIndex?.audio.sample_rate || 48_000,
         audio_channels: primaryMediaIndex?.audio.channels || 2,
       },
-      tracks: [
-        {
-          id: "v1",
-          kind: "video",
-          name: "视频 1",
-          order: 0,
-          locked: false,
-          sync_locked: true,
-          visible: true,
-          muted: false,
-          solo: false,
-          gain_db: 0,
-        },
-        {
-          id: "a1",
-          kind: "audio",
-          name: "音频 1",
-          order: 0,
-          locked: false,
-          sync_locked: true,
-          visible: true,
-          muted: audioTrackMuted,
-          solo: audioTrackSolo,
-          gain_db: audioTrackGainDb,
-        },
-      ],
+      tracks: tracks.map((track) => ({
+        id: track.id,
+        kind: track.kind,
+        name: track.name,
+        order: track.order,
+        locked: track.locked,
+        sync_locked: track.syncLocked,
+        visible: track.visible,
+        muted: track.muted,
+        solo: track.solo,
+        gain_db: track.gainDb,
+      })),
       clips: [
-        ...videoClips.map((clip) => clipSpec(clip, "v1")),
-        ...audioClips.map((clip) => clipSpec(clip, "a1")),
+        ...videoClips.map(clipSpec),
+        ...audioClips.map(clipSpec),
       ],
     }
-  }, [audioClips, audioTrackGainDb, audioTrackMuted, audioTrackSolo, primaryMediaIndex, sequenceFrameRate, sourceFrameCountForClip, videoClips])
+  }, [audioClips, primaryMediaIndex, sequenceFrameRate, sourceFrameCountForClip, tracks, videoClips])
 
   useEffect(() => {
     let cancelled = false
@@ -1181,9 +1356,10 @@ export default function VideoEditPanel({
     setTrimMode("normal")
     setVideoClips([])
     setAudioClips([])
-    setAudioTrackMuted(false)
-    setAudioTrackSolo(false)
-    setAudioTrackGainDb(0)
+    setTracks(defaultTimelineTracks())
+    setActiveVideoTrackId("v1")
+    setActiveAudioTrackId("a1")
+    setSelectedMediaId(nodeId)
     void getVideoEditorSequence(projectId, nodeId).then((document) => {
       if (cancelled) return
       if (!document) {
@@ -1194,6 +1370,7 @@ export default function VideoEditPanel({
       const restored = document.spec.clips.map((clip): TimelineClipState => ({
         clipId: clip.id,
         mediaId: clip.media_id,
+        trackId: clip.track_id,
         startFrame: clip.timeline_start_frame,
         durationFrames: clip.duration_frames,
         sourceInFrame: clip.source_in_frame,
@@ -1208,17 +1385,28 @@ export default function VideoEditPanel({
         fadeInFrames: clip.fade_in_frames,
         fadeOutFrames: clip.fade_out_frames,
       }))
+      const restoredTracks = document.spec.tracks.map((track): TimelineTrackState => ({
+        id: track.id,
+        kind: track.kind,
+        name: track.name,
+        order: track.order,
+        locked: track.locked,
+        syncLocked: track.sync_locked,
+        visible: track.visible,
+        muted: track.muted,
+        solo: track.solo,
+        gainDb: track.gain_db,
+      }))
       setSequenceFrameRate(document.spec.settings.frame_rate)
+      setTracks(restoredTracks)
       setVideoClips(restored.filter((clip) => trackKinds.get(
         document.spec.clips.find((item) => item.id === clip.clipId)?.track_id || "",
       ) === "video"))
       setAudioClips(restored.filter((clip) => trackKinds.get(
         document.spec.clips.find((item) => item.id === clip.clipId)?.track_id || "",
       ) === "audio"))
-      const audioTrack = document.spec.tracks.find((track) => track.id === "a1")
-      setAudioTrackMuted(Boolean(audioTrack?.muted))
-      setAudioTrackSolo(Boolean(audioTrack?.solo))
-      setAudioTrackGainDb(audioTrack?.gain_db || 0)
+      setActiveVideoTrackId(restoredTracks.find((track) => track.kind === "video")?.id || "v1")
+      setActiveAudioTrackId(restoredTracks.find((track) => track.kind === "audio")?.id || "a1")
       sequenceRevisionRef.current = document.revision
       lastSavedSequenceRef.current = JSON.stringify(document.spec)
       setSequenceRevision(document.revision)
@@ -1273,17 +1461,15 @@ export default function VideoEditPanel({
     const syncGroupId = primary.type === "video" && mediaSourceKey(primary) === primarySourceKey
       ? primarySyncGroupId
       : undefined
-    setVideoClips([createClip(primary.id, 0, durationFrames, 0, syncGroupId, primary.type === "video")])
+    setVideoClips([createClip(primary.id, "v1", 0, durationFrames, 0, syncGroupId, primary.type === "video")])
     const primaryAudio = primary.type === "video" ? audioItemForVideo(primary) : undefined
     setAudioClips(primaryAudio
-      ? [createClip(primaryAudio.id, 0, durationFrames, 0, syncGroupId, true)]
+      ? [createClip(primaryAudio.id, "a1", 0, durationFrames, 0, syncGroupId, true)]
       : [])
     setSelectedClipId(null)
     setCurrentTime(0)
     setPlaying(false)
-    setAudioTrackMuted(false)
-    setAudioTrackSolo(false)
-    setAudioTrackGainDb(0)
+    setTracks(defaultTimelineTracks())
     setError(null)
   }, [audioItemForVideo, framesPerSecond, nodeId, primarySourceKey, primarySyncGroupId, sequenceLoaded, sourceDurationForItem, sourceFrameCountForItem, videoItems, visualItems])
 
@@ -1358,10 +1544,10 @@ export default function VideoEditPanel({
     const fadeIn = fadeInFrames > 0 ? Math.min(1, localFrame / fadeInFrames) : 1
     const remainingFrames = Math.max(0, currentAudioClip.durationFrames - localFrame)
     const fadeOut = fadeOutFrames > 0 ? Math.min(1, remainingFrames / fadeOutFrames) : 1
-    const amplitude = Math.min(1, gainAmplitude((currentAudioClip.gainDb || 0) + audioTrackGainDb) * Math.min(fadeIn, fadeOut))
+    const amplitude = Math.min(1, gainAmplitude((currentAudioClip.gainDb || 0) + (currentAudioTrack?.gainDb || 0)) * Math.min(fadeIn, fadeOut))
     if (videoRef.current && playAudioThroughVideo) videoRef.current.volume = amplitude
     if (audioRef.current) audioRef.current.volume = amplitude
-  }, [audioTrackGainDb, currentAudioClip, currentFrame, playAudioThroughVideo])
+  }, [currentAudioClip, currentAudioTrack?.gainDb, currentFrame, playAudioThroughVideo])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -1599,48 +1785,176 @@ export default function VideoEditPanel({
     return Math.max(0, Math.round(endDistance < startDistance ? snappedEndStartFrame : snappedStartFrame))
   }, [snapFrameToBoundaries])
 
-  const insertMediaItem = useCallback((item: VideoEditPanelMediaNode, startAt?: number) => {
+  const updateTrack = useCallback((trackId: string, patch: Partial<TimelineTrackState>) => {
+    setTracks((current) => current.map((track) => track.id === trackId ? { ...track, ...patch } : track))
+  }, [])
+
+  const addTrack = useCallback((kind: "video" | "audio") => {
     recordUndoSnapshot()
+    const prefix = kind === "video" ? "v" : "a"
+    const sameKind = tracks.filter((track) => track.kind === kind)
+    const nextNumber = Math.max(0, ...sameKind.map((track) => Number(track.id.match(/\d+$/)?.[0] || 0))) + 1
+    const nextTrack: TimelineTrackState = {
+      id: `${prefix}${nextNumber}`,
+      kind,
+      name: `${kind === "video" ? "视频" : "音频"} ${nextNumber}`,
+      order: Math.max(-1, ...sameKind.map((track) => track.order)) + 1,
+      locked: false,
+      syncLocked: true,
+      visible: true,
+      muted: false,
+      solo: false,
+      gainDb: 0,
+    }
+    setTracks((current) => [...current, nextTrack])
+    if (kind === "video") setActiveVideoTrackId(nextTrack.id)
+    else setActiveAudioTrackId(nextTrack.id)
+  }, [recordUndoSnapshot, tracks])
+
+  const deleteTrack = useCallback((trackId: string) => {
+    const track = trackById.get(trackId)
+    if (!track) return
+    if (tracks.filter((candidate) => candidate.kind === track.kind).length <= 1) {
+      setError("每种轨道至少保留一条")
+      return
+    }
+    if ([...videoClips, ...audioClips].some((clip) => clip.trackId === trackId)) {
+      setError("轨道中仍有片段，请先移动或删除片段")
+      return
+    }
+    recordUndoSnapshot()
+    const nextTracks = tracks
+      .filter((candidate) => candidate.id !== trackId)
+      .map((candidate) => candidate.kind === track.kind && candidate.order > track.order
+        ? { ...candidate, order: candidate.order - 1 }
+        : candidate)
+    setTracks(nextTracks)
+    if (track.kind === "video" && activeVideoTrackId === trackId) {
+      setActiveVideoTrackId(nextTracks.find((candidate) => candidate.kind === "video")?.id || "v1")
+    }
+    if (track.kind === "audio" && activeAudioTrackId === trackId) {
+      setActiveAudioTrackId(nextTracks.find((candidate) => candidate.kind === "audio")?.id || "a1")
+    }
+    setError(null)
+  }, [activeAudioTrackId, activeVideoTrackId, audioClips, recordUndoSnapshot, trackById, tracks, videoClips])
+
+  const reorderTrack = useCallback((trackId: string, direction: -1 | 1) => {
+    const track = trackById.get(trackId)
+    if (!track) return
+    const sameKind = tracks.filter((candidate) => candidate.kind === track.kind).sort((left, right) => left.order - right.order)
+    const index = sameKind.findIndex((candidate) => candidate.id === trackId)
+    const swap = sameKind[index + direction]
+    if (!swap) return
+    recordUndoSnapshot()
+    setTracks((current) => current.map((candidate) => {
+      if (candidate.id === track.id) return { ...candidate, order: swap.order }
+      if (candidate.id === swap.id) return { ...candidate, order: track.order }
+      return candidate
+    }))
+  }, [recordUndoSnapshot, trackById, tracks])
+
+  const placeMediaItem = useCallback((
+    item: VideoEditPanelMediaNode,
+    mode: "insert" | "overwrite",
+    startAt?: number,
+    explicitTrackId?: string,
+  ) => {
     const durationFrames = item.type === "image"
       ? Math.round(DEFAULT_CLIP_SECONDS * framesPerSecond)
       : sourceFrameCountForItem(item) || Math.round(DEFAULT_CLIP_SECONDS * framesPerSecond)
     const startFrame = snapFrameToBoundaries(timeToFrame(startAt ?? currentTimeRef.current))
-    if (item.type === "video") {
-      const syncGroupId = createSyncGroupId(mediaSourceKey(item))
-      const clip = createClip(item.id, startFrame, durationFrames, 0, syncGroupId, true)
-      setVideoClips((current) => [...current, clip])
-      const linkedAudio = audioItemForVideo(item)
-      if (linkedAudio) {
-        setAudioClips((current) => [...current, createClip(linkedAudio.id, startFrame, durationFrames, 0, syncGroupId, true)])
-      }
-      setSelectedClipId(clip.clipId)
+    const visualTrackId = item.type !== "audio"
+      ? (explicitTrackId && trackById.get(explicitTrackId)?.kind === "video" ? explicitTrackId : activeVideoTrackId)
+      : undefined
+    const audioTrackId = item.type === "audio"
+      ? (explicitTrackId && trackById.get(explicitTrackId)?.kind === "audio" ? explicitTrackId : activeAudioTrackId)
+      : activeAudioTrackId
+    const linkedAudio = item.type === "video" ? audioItemForVideo(item) : undefined
+    const targetTrackIds = new Set<string>([
+      ...(visualTrackId ? [visualTrackId] : []),
+      ...((item.type === "audio" || linkedAudio) && audioTrackId ? [audioTrackId] : []),
+    ])
+    const unavailable = [...targetTrackIds].find((trackId) => !trackById.has(trackId) || trackById.get(trackId)?.locked)
+    if (unavailable) {
+      setError(`目标轨道 ${unavailable.toUpperCase()} 已锁定或不存在`)
       return
     }
-    const clip = createClip(item.id, startFrame, durationFrames, 0, undefined, item.type === "audio")
+    recordUndoSnapshot()
+    const rightGroupIds = new Map<string, string>()
+    if (mode === "insert") {
+      const affectedTrackIds = new Set(tracks
+        .filter((track) => track.syncLocked && !track.locked)
+        .map((track) => track.id))
+      targetTrackIds.forEach((trackId) => affectedTrackIds.add(trackId))
+      setVideoClips((current) => insertGapIntoClips(current, startFrame, durationFrames, affectedTrackIds, rightGroupIds))
+      setAudioClips((current) => insertGapIntoClips(current, startFrame, durationFrames, affectedTrackIds, rightGroupIds))
+    } else {
+      setVideoClips((current) => overwriteClipsInRange(current, startFrame, durationFrames, targetTrackIds, rightGroupIds))
+      setAudioClips((current) => overwriteClipsInRange(current, startFrame, durationFrames, targetTrackIds, rightGroupIds))
+    }
+    if (item.type === "video") {
+      const syncGroupId = createSyncGroupId(mediaSourceKey(item))
+      const clip = createClip(item.id, visualTrackId || activeVideoTrackId, startFrame, durationFrames, 0, syncGroupId, true)
+      setVideoClips((current) => [...current, clip])
+      if (linkedAudio) {
+        setAudioClips((current) => [...current, createClip(linkedAudio.id, audioTrackId, startFrame, durationFrames, 0, syncGroupId, true)])
+      }
+      setSelectedClipId(clip.clipId)
+      setError(null)
+      return
+    }
+    const clip = createClip(
+      item.id,
+      item.type === "image" ? (visualTrackId || activeVideoTrackId) : audioTrackId,
+      startFrame,
+      durationFrames,
+      0,
+      undefined,
+      item.type === "audio",
+    )
     if (item.type === "image") {
       setVideoClips((current) => [...current, clip])
       setSelectedClipId(clip.clipId)
+      setError(null)
       return
     }
     setAudioClips((current) => [...current, clip])
-  }, [audioItemForVideo, framesPerSecond, recordUndoSnapshot, snapFrameToBoundaries, sourceFrameCountForItem, timeToFrame])
+    setSelectedClipId(clip.clipId)
+    setError(null)
+  }, [activeAudioTrackId, activeVideoTrackId, audioItemForVideo, framesPerSecond, recordUndoSnapshot, snapFrameToBoundaries, sourceFrameCountForItem, timeToFrame, trackById, tracks])
 
-  const handleTrackDrop = (kind: "video" | "audio", event: ReactDragEvent<HTMLDivElement>) => {
+  const insertMediaItem = useCallback((item: VideoEditPanelMediaNode) => {
+    placeMediaItem(item, "insert")
+  }, [placeMediaItem])
+
+  const overwriteMediaItem = useCallback((item: VideoEditPanelMediaNode) => {
+    placeMediaItem(item, "overwrite")
+  }, [placeMediaItem])
+
+  const handleTrackDrop = (track: TimelineTrackState, event: ReactDragEvent<HTMLDivElement>) => {
     event.preventDefault()
     event.stopPropagation()
     const id = event.dataTransfer.getData("openreel/media-id")
     const item = mediaById.get(id)
     const container = timelineRef.current
     if (!item || !container) return
-    if (kind === "video" && item.type === "audio") return
-    if (kind === "audio" && item.type !== "audio") return
-    insertMediaItem(item, timeFromPointer(event, container, pxPerSecond))
+    if (track.locked) return
+    if (track.kind === "video" && item.type === "audio") return
+    if (track.kind === "audio" && item.type !== "audio") return
+    placeMediaItem(
+      item,
+      event.shiftKey ? "insert" : "overwrite",
+      timeFromPointer(event, container, pxPerSecond),
+      track.id,
+    )
   }
 
-  const updateClipStartFrame = useCallback((kind: "video" | "audio", clipId: string, startFrame: number) => {
+  const updateClipStartFrame = useCallback((kind: "video" | "audio", clipId: string, startFrame: number, trackId: string) => {
     if (kind === "video") {
       const original = videoClips.find((clip) => clip.clipId === clipId)
-      if (!original) return
+      const sourceTrack = original ? trackById.get(original.trackId) : undefined
+      const targetTrack = trackById.get(trackId)
+      if (!original || sourceTrack?.locked || !targetTrack || targetTrack.kind !== "video" || targetTrack.locked) return
       const linkedAudioBaselines = new Map(
         audioClips
           .filter((clip) => mediaById.get(original.mediaId)?.type === "video" && clipsShareTimelineRange(clip, original))
@@ -1649,7 +1963,7 @@ export default function VideoEditPanel({
       const linkedClipIds = new Set([original.clipId, ...linkedAudioBaselines.keys()])
       const nextStartFrame = snapClipStartFrame(original, startFrame, linkedClipIds)
       setVideoClips((clips) => (
-        clips.map((clip) => clip.clipId === clipId ? { ...clip, startFrame: nextStartFrame } : clip)
+        clips.map((clip) => clip.clipId === clipId ? { ...clip, startFrame: nextStartFrame, trackId } : clip)
       ))
       if (linkedAudioBaselines.size > 0) {
         setAudioClips((clips) => (
@@ -1670,7 +1984,9 @@ export default function VideoEditPanel({
       return
     }
     const original = audioClips.find((clip) => clip.clipId === clipId)
-    if (!original) return
+    const sourceTrack = original ? trackById.get(original.trackId) : undefined
+    const targetTrack = trackById.get(trackId)
+    if (!original || sourceTrack?.locked || !targetTrack || targetTrack.kind !== "audio" || targetTrack.locked) return
     const linkedVideoBaselines = new Map(
       videoClips
         .filter((clip) => clipsShareTimelineRange(clip, original))
@@ -1679,7 +1995,7 @@ export default function VideoEditPanel({
     const linkedClipIds = new Set([original.clipId, ...linkedVideoBaselines.keys()])
     const nextStartFrame = snapClipStartFrame(original, startFrame, linkedClipIds)
     setAudioClips((clips) => (
-      clips.map((clip) => clip.clipId === clipId ? { ...clip, startFrame: nextStartFrame } : clip)
+      clips.map((clip) => clip.clipId === clipId ? { ...clip, startFrame: nextStartFrame, trackId } : clip)
     ))
     if (linkedVideoBaselines.size > 0) {
       setVideoClips((clips) => (
@@ -1697,7 +2013,7 @@ export default function VideoEditPanel({
         })
       ))
     }
-  }, [audioClips, mediaById, snapClipStartFrame, videoClips])
+  }, [audioClips, mediaById, snapClipStartFrame, trackById, videoClips])
 
   const resizeClipEdge = useCallback((
     kind: "video" | "audio",
@@ -1708,11 +2024,12 @@ export default function VideoEditPanel({
     const primaryClips = kind === "video" ? videoClips : audioClips
     const allClips = [...videoClips, ...audioClips]
     const original = primaryClips.find((clip) => clip.clipId === clipId)
-    if (!original) return
+    if (!original || trackById.get(original.trackId)?.locked) return
     const linkedGroup = (clip: TimelineClipState) => allClips.filter((candidate) => (
       candidate.clipId === clip.clipId || clipsShareTimelineRange(candidate, clip)
     ))
     const group = linkedGroup(original)
+    if (group.some((clip) => trackById.get(clip.trackId)?.locked)) return
     const groupIds = new Set(group.map((clip) => clip.clipId))
     const snappedEdgeFrame = snapFrameToBoundaries(edgeFrame, groupIds)
     const clampFades = (clip: TimelineClipState, durationFrames: number): TimelineClipState => {
@@ -1732,7 +2049,9 @@ export default function VideoEditPanel({
     }
 
     if (trimMode === "rolling") {
-      const ordered = [...primaryClips].sort((left, right) => left.startFrame - right.startFrame)
+      const ordered = primaryClips
+        .filter((clip) => clip.trackId === original.trackId)
+        .sort((left, right) => left.startFrame - right.startFrame)
       const leftPrimary = edge === "end"
         ? original
         : ordered.find((clip) => clip.clipId !== original.clipId && clipEndFrame(clip) === original.startFrame)
@@ -1794,7 +2113,8 @@ export default function VideoEditPanel({
         }
       }
       for (const clip of allClips) {
-        if (!groupIds.has(clip.clipId) && clip.startFrame >= oldEndFrame) {
+        const track = trackById.get(clip.trackId)
+        if (!groupIds.has(clip.clipId) && clip.startFrame >= oldEndFrame && track?.syncLocked && !track.locked) {
           updates.set(clip.clipId, { ...clip, startFrame: Math.max(0, clip.startFrame + timelineDeltaFrames) })
         }
       }
@@ -1834,13 +2154,14 @@ export default function VideoEditPanel({
       }, nextDurationFrames))
     }
     applyUpdates(updates)
-  }, [audioClips, mediaById, snapFrameToBoundaries, sourceFrameCountForClip, trimMode, videoClips])
+  }, [audioClips, mediaById, snapFrameToBoundaries, sourceFrameCountForClip, trackById, trimMode, videoClips])
 
   const updateSelectedClipFrameValue = useCallback((
     field: "startFrame" | "sourceInFrame" | "durationFrames",
     rawValue: number,
   ) => {
     if (!selectedTimelineClip || !Number.isFinite(rawValue)) return
+    if (trackById.get(selectedTimelineClip.trackId)?.locked) return
     const allClips = [...videoClips, ...audioClips]
     const group = allClips.filter((clip) => (
       clip.clipId === selectedTimelineClip.clipId || clipsShareTimelineRange(clip, selectedTimelineClip)
@@ -1880,18 +2201,24 @@ export default function VideoEditPanel({
     }
     setVideoClips((clips) => clips.map((clip) => groupIds.has(clip.clipId) ? applyValue(clip) : clip))
     setAudioClips((clips) => clips.map((clip) => groupIds.has(clip.clipId) ? applyValue(clip) : clip))
-  }, [audioClips, selectedTimelineClip, sourceFrameCountForClip, videoClips])
+  }, [audioClips, selectedTimelineClip, sourceFrameCountForClip, trackById, videoClips])
 
   const splitTimelineAtFrame = useCallback((splitFrame: number, targetClipId?: string) => {
     const safeSplitFrame = Math.max(0, Math.round(splitFrame))
     const target = targetClipId
       ? [...videoClips, ...audioClips].find((clip) => clip.clipId === targetClipId)
       : undefined
+    if (target && trackById.get(target.trackId)?.locked) return
     const targetClipIds = target
       ? new Set([...videoClips, ...audioClips]
-          .filter((clip) => clip.clipId === target.clipId || clipsShareTimelineRange(clip, target))
+          .filter((clip) => (
+            (clip.clipId === target.clipId || clipsShareTimelineRange(clip, target)) &&
+            !trackById.get(clip.trackId)?.locked
+          ))
           .map((clip) => clip.clipId))
-      : undefined
+      : new Set([...videoClips, ...audioClips]
+          .filter((clip) => !trackById.get(clip.trackId)?.locked)
+          .map((clip) => clip.clipId))
     const rightGroupIds = new Map<string, string>()
     const videoResult = splitClipsAt(videoClips, safeSplitFrame, rightGroupIds, targetClipIds)
     const audioResult = splitClipsAt(audioClips, safeSplitFrame, rightGroupIds, targetClipIds)
@@ -1901,14 +2228,15 @@ export default function VideoEditPanel({
       setSelectedClipId(videoResult.selectedRightClipId || audioResult.selectedRightClipId)
     }
     seekTo(frameToTime(safeSplitFrame))
-  }, [audioClips, frameToTime, seekTo, videoClips])
+  }, [audioClips, frameToTime, seekTo, trackById, videoClips])
 
   const deleteSelectedClips = useCallback((ripple = false) => {
     if (!selectedTimelineClip) return
+    if (trackById.get(selectedTimelineClip.trackId)?.locked) return
     const allClips = [...videoClips, ...audioClips]
     const deleteIds = new Set(
       allClips
-        .filter((clip) => (
+        .filter((clip) => !trackById.get(clip.trackId)?.locked && (
           clip.clipId === selectedTimelineClip.clipId ||
           Boolean(selectedTimelineClip.syncGroupId && clip.syncGroupId === selectedTimelineClip.syncGroupId)
         ))
@@ -1923,7 +2251,7 @@ export default function VideoEditPanel({
     const applyDeletion = (clips: TimelineClipState[]) => clips
       .filter((clip) => !deleteIds.has(clip.clipId))
       .map((clip) => (
-        ripple && clip.startFrame >= gapEndFrame
+        ripple && clip.startFrame >= gapEndFrame && Boolean(trackById.get(clip.trackId)?.syncLocked) && !trackById.get(clip.trackId)?.locked
           ? { ...clip, startFrame: Math.max(gapStartFrame, clip.startFrame - gapDurationFrames) }
           : clip
       ))
@@ -1931,7 +2259,7 @@ export default function VideoEditPanel({
     setAudioClips((clips) => applyDeletion(clips))
     setSelectedClipId(null)
     seekTo(frameToTime(gapStartFrame))
-  }, [audioClips, frameToTime, recordUndoSnapshot, seekTo, selectedTimelineClip, videoClips])
+  }, [audioClips, frameToTime, recordUndoSnapshot, seekTo, selectedTimelineClip, trackById, videoClips])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1987,6 +2315,22 @@ export default function VideoEditPanel({
         setTrimMode("rolling")
         return
       }
+      if (!(commandKey || event.altKey) && event.key === "," && selectedMediaItem) {
+        event.preventDefault()
+        placeMediaItem(selectedMediaItem, "insert")
+        return
+      }
+      if (!(commandKey || event.altKey) && event.key === "." && selectedMediaItem) {
+        event.preventDefault()
+        placeMediaItem(selectedMediaItem, "overwrite")
+        return
+      }
+      if (commandKey && key === "k") {
+        event.preventDefault()
+        recordUndoSnapshot()
+        splitTimelineAtFrame(timeToFrame(currentTimeRef.current))
+        return
+      }
       if (!commandKey) return
       if (event.key === "=" || event.key === "+") {
         event.preventDefault()
@@ -1999,7 +2343,7 @@ export default function VideoEditPanel({
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [deleteSelectedClips, framesPerSecond, pxPerSecond, redoEditor, seekTo, togglePlayback, undoEditor, zoomTimelineAt])
+  }, [deleteSelectedClips, framesPerSecond, placeMediaItem, pxPerSecond, recordUndoSnapshot, redoEditor, seekTo, selectedMediaItem, splitTimelineAtFrame, timeToFrame, togglePlayback, undoEditor, zoomTimelineAt])
 
   const handleTimelineBackgroundDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null
@@ -2023,6 +2367,167 @@ export default function VideoEditPanel({
   const previewScaleStyle = previewScale === "fit"
     ? { height: "min(100%, 280px)", width: "auto", maxWidth: "100%" }
     : { width: `${previewScale}%`, maxWidth: "640px" }
+
+  const renderTimelineTrack = (track: TimelineTrackState) => {
+    const kindClips = track.kind === "video" ? videoClips : audioClips
+    const trackClips = kindClips.filter((clip) => clip.trackId === track.id)
+    const isActive = track.kind === "video" ? activeVideoTrackId === track.id : activeAudioTrackId === track.id
+    const sameKindCount = tracks.filter((candidate) => candidate.kind === track.kind).length
+    const canDelete = sameKindCount > 1 && trackClips.length === 0
+    const activateTrack = () => {
+      if (track.kind === "video") setActiveVideoTrackId(track.id)
+      else setActiveAudioTrackId(track.id)
+    }
+    const toggleTrack = (patch: Partial<TimelineTrackState>) => {
+      recordUndoSnapshot()
+      updateTrack(track.id, patch)
+    }
+    const controlClass = (active = false) => cn(
+      "flex h-4 min-w-4 items-center justify-center rounded-[2px] border px-0.5 text-[7px] font-semibold",
+      active
+        ? "border-[#5d91b8] bg-[#315f83] text-[#e4f4ff]"
+        : "border-[#3b4148] bg-[#25282d] text-[#7b8189] hover:text-white",
+    )
+    return (
+      <div
+        key={track.id}
+        data-openreel-track-row="true"
+        data-openreel-track-id={track.id}
+        data-openreel-track-kind={track.kind}
+        data-track-locked={track.locked ? "true" : "false"}
+        data-track-sync-locked={track.syncLocked ? "true" : "false"}
+        data-track-visible={track.visible ? "true" : "false"}
+        data-track-muted={track.muted ? "true" : "false"}
+        data-track-active={isActive ? "true" : "false"}
+        className="relative grid h-[76px] border-b border-[#30343a]"
+        style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}
+      >
+        <div className={cn(
+          "sticky left-0 z-10 grid grid-cols-[30px_1fr] border-r bg-[#202328]",
+          isActive ? "border-[#6c9fc4]" : "border-[#3a3f46]",
+        )}>
+          <button
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={activateTrack}
+            className={cn(
+              "flex items-center justify-center border-r text-[10px] font-semibold",
+              track.kind === "video"
+                ? "border-[#3a3f46] bg-[#2b4f68] text-[#d8ecfa]"
+                : "border-[#3a3f46] bg-[#28503e] text-[#d8f1e4]",
+              isActive && "bg-[#477ca0] text-white",
+            )}
+            aria-label={`目标轨道 ${track.id.toUpperCase()}`}
+            title="设为插入/覆盖目标轨道"
+          >
+            {track.id.toUpperCase()}
+          </button>
+          <div className="flex min-w-0 flex-col justify-center gap-1 px-1.5">
+            <input
+              value={track.name}
+              maxLength={40}
+              onPointerDown={(event) => event.stopPropagation()}
+              onFocus={recordUndoSnapshot}
+              onChange={(event) => updateTrack(track.id, { name: event.target.value || track.name })}
+              className="h-4 min-w-0 border-0 bg-transparent px-0.5 text-[8px] font-medium text-[#d2d5d9] outline-none focus:bg-[#15171a] focus:text-white"
+              aria-label={`重命名轨道 ${track.id.toUpperCase()}`}
+            />
+            <div className="flex items-center gap-0.5">
+              <button type="button" className={controlClass()} onPointerDown={(event) => event.stopPropagation()} onClick={() => reorderTrack(track.id, track.kind === "video" ? 1 : -1)} title="上移轨道" aria-label={`上移轨道 ${track.id.toUpperCase()}`}>↑</button>
+              <button type="button" className={controlClass()} onPointerDown={(event) => event.stopPropagation()} onClick={() => reorderTrack(track.id, track.kind === "video" ? -1 : 1)} title="下移轨道" aria-label={`下移轨道 ${track.id.toUpperCase()}`}>↓</button>
+              <button type="button" className={controlClass(track.locked)} onPointerDown={(event) => event.stopPropagation()} onClick={() => toggleTrack({ locked: !track.locked })} title={track.locked ? "解锁轨道" : "锁定轨道"} aria-label={`${track.locked ? "解锁" : "锁定"}轨道 ${track.id.toUpperCase()}`}>L</button>
+              <button type="button" className={controlClass(track.syncLocked)} onPointerDown={(event) => event.stopPropagation()} onClick={() => toggleTrack({ syncLocked: !track.syncLocked })} title={track.syncLocked ? "关闭同步锁" : "启用同步锁"} aria-label={`${track.syncLocked ? "关闭" : "启用"}同步锁 ${track.id.toUpperCase()}`}>⇄</button>
+              {track.kind === "video" ? (
+                <button type="button" className={controlClass(track.visible)} onPointerDown={(event) => event.stopPropagation()} onClick={() => toggleTrack({ visible: !track.visible })} title={track.visible ? "隐藏视频轨道" : "显示视频轨道"} aria-label={`${track.visible ? "隐藏" : "显示"}轨道 ${track.id.toUpperCase()}`}>V</button>
+              ) : (
+                <>
+                  <button type="button" className={controlClass(track.solo)} onPointerDown={(event) => event.stopPropagation()} onClick={() => toggleTrack({ solo: !track.solo })} title={track.solo ? "取消独奏" : "独奏音频轨道"} aria-label={`${track.solo ? "取消独奏" : "独奏"}轨道 ${track.id.toUpperCase()}`} data-openreel-track-solo="true">S</button>
+                  <button type="button" className={controlClass(track.muted)} onPointerDown={(event) => event.stopPropagation()} onClick={() => toggleTrack({ muted: !track.muted })} title={track.muted ? "取消静音" : "静音音频轨道"} aria-label={`${track.muted ? "取消静音" : "静音"}轨道 ${track.id.toUpperCase()}`}>M</button>
+                </>
+              )}
+              <button type="button" disabled={!canDelete} className={cn(controlClass(), !canDelete && "cursor-not-allowed opacity-30")} onPointerDown={(event) => event.stopPropagation()} onClick={() => deleteTrack(track.id)} title={canDelete ? "删除空轨道" : "只能删除空的非末条轨道"} aria-label={`删除轨道 ${track.id.toUpperCase()}`}>×</button>
+            </div>
+            {track.kind === "audio" && (
+              <div className="flex items-center gap-1 text-[#737983]">
+                <input
+                  type="range"
+                  min="-60"
+                  max="0"
+                  step="0.5"
+                  value={track.gainDb}
+                  onPointerDown={(event) => {
+                    event.stopPropagation()
+                    recordUndoSnapshot()
+                  }}
+                  onChange={(event) => updateTrack(track.id, { gainDb: Number(event.target.value) })}
+                  className="h-1 w-10 min-w-0 accent-[#6fac8d]"
+                  aria-label={`音频轨道音量 ${track.id.toUpperCase()}`}
+                  data-openreel-track-gain="true"
+                />
+                <span className="font-mono text-[7px]">{track.gainDb.toFixed(0)}</span>
+              </div>
+            )}
+          </div>
+        </div>
+        <div
+          className={cn(
+            "relative [background-image:linear-gradient(90deg,rgba(255,255,255,.025)_1px,transparent_1px)] [background-size:84px_100%]",
+            track.locked ? "bg-[#1d1d20]" : "bg-[#17191d]",
+          )}
+          onPointerDown={activateTrack}
+          onDragOver={(event) => {
+            if (track.locked) return
+            event.preventDefault()
+            event.dataTransfer.dropEffect = event.shiftKey ? "copy" : "move"
+          }}
+          onDrop={(event) => handleTrackDrop(track, event)}
+        >
+          {trackClips.length === 0 && track.kind === "audio" && (
+            <div className="pointer-events-none absolute inset-2 flex items-center justify-center border border-dashed border-[#343940] text-[9px] text-[#5f656d]">
+              {track.locked ? "轨道已锁定" : "拖入音频 · Shift 为插入"}
+            </div>
+          )}
+          {trackClips.map((clip) => {
+            const item = mediaById.get(clip.mediaId)
+            if (!item) return null
+            if (track.kind === "video" && item.type !== "video" && item.type !== "image") return null
+            if (track.kind === "audio" && item.type !== "audio") return null
+            return (
+              <TimelineClip
+                key={clip.clipId}
+                projectId={projectId}
+                clip={clip}
+                item={item}
+                kind={track.kind}
+                activeTool={tool}
+                trimMode={trimMode}
+                pxPerSecond={pxPerSecond}
+                sequenceFps={framesPerSecond}
+                viewport={timelineViewport}
+                sourceDuration={sourceDurationForClip(clip)}
+                mediaIndex={track.kind === "video"
+                  ? (item.type === "video" ? mediaIndexes[item.id] : null)
+                  : mediaIndexes[mediaSourceKey(item)]}
+                waveformNodeId={track.kind === "audio" ? mediaSourceKey(item) : undefined}
+                trackGainDb={track.gainDb}
+                trackMuted={track.muted}
+                disabled={track.locked}
+                selected={clip.clipId === selectedClipId || Boolean(selectedSyncGroupId && clip.syncGroupId === selectedSyncGroupId)}
+                onBeginEdit={recordUndoSnapshot}
+                onSelect={(clipId) => {
+                  activateTrack()
+                  setSelectedClipId(clipId)
+                }}
+                onDragStartFrame={updateClipStartFrame}
+                onResizeEdge={resizeClipEdge}
+                onCutAtFrame={splitTimelineAtFrame}
+              />
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -2058,9 +2563,41 @@ export default function VideoEditPanel({
               <div className="flex h-full items-center border-b-2 border-[#4d92c5] text-[10px] font-semibold text-[#e3e5e8]">媒体池</div>
               <div className="mb-2 font-mono text-[9px] text-[#777d86]">{mediaNodes.length} ITEMS</div>
             </div>
+            <div className="flex h-8 shrink-0 items-center justify-between border-b border-[#30343a] bg-[#1c1f23] px-2">
+              <div className="min-w-0 truncate text-[9px] text-[#aeb3ba]">{selectedMediaItem?.title || "选择源素材"}</div>
+              <div className="flex shrink-0 gap-1">
+                <button
+                  type="button"
+                  disabled={!selectedMediaItem}
+                  onClick={() => selectedMediaItem && placeMediaItem(selectedMediaItem, "insert")}
+                  className="h-5 border border-[#3e4f5e] bg-[#263744] px-1.5 font-mono text-[8px] text-[#bcd9ee] hover:bg-[#315f83] disabled:opacity-35"
+                  aria-label="插入所选素材"
+                  title="插入 (,)"
+                >
+                  INSERT ,
+                </button>
+                <button
+                  type="button"
+                  disabled={!selectedMediaItem}
+                  onClick={() => selectedMediaItem && placeMediaItem(selectedMediaItem, "overwrite")}
+                  className="h-5 border border-[#594d3a] bg-[#3a3023] px-1.5 font-mono text-[8px] text-[#ead5b3] hover:bg-[#6b5330] disabled:opacity-35"
+                  aria-label="覆盖所选素材"
+                  title="覆盖 (.)"
+                >
+                  OVERWRITE .
+                </button>
+              </div>
+            </div>
             <div className="grid min-h-0 flex-1 auto-rows-max grid-cols-2 content-start gap-1.5 overflow-y-auto p-2">
               {mediaNodes.map((item) => (
-                <MediaBinItem key={item.id} item={item} onInsert={insertMediaItem} />
+                <MediaBinItem
+                  key={item.id}
+                  item={item}
+                  onInsert={insertMediaItem}
+                  onOverwrite={overwriteMediaItem}
+                  onSelect={(selected) => setSelectedMediaId(selected.id)}
+                  selected={item.id === selectedMediaItem?.id}
+                />
               ))}
               {mediaNodes.length === 0 && (
                 <div className="col-span-2 border border-dashed border-[#3a3f46] px-3 py-6 text-center text-[10px] leading-5 text-[#777d86]">
@@ -2088,7 +2625,7 @@ export default function VideoEditPanel({
                       ref={videoRef}
                       data-openreel-preview-video="true"
                       src={currentVideoItem.src || videoUrl}
-                      muted={audioTrackMuted || Boolean(currentAudioClip?.muted) || (Boolean(currentAudioItem) && !playAudioThroughVideo)}
+                      muted={Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted) || (Boolean(currentAudioItem) && !playAudioThroughVideo)}
                       preload="metadata"
                       className="h-full w-full object-contain [color-scheme:dark]"
                       onLoadedMetadata={(event) => {
@@ -2102,7 +2639,7 @@ export default function VideoEditPanel({
                 )}
               </div>
               {currentAudioItem && !playAudioThroughVideo && (
-                <audio ref={audioRef} src={currentAudioItem.src} preload="metadata" muted={audioTrackMuted || Boolean(currentAudioClip?.muted)} />
+                <audio ref={audioRef} src={currentAudioItem.src} preload="metadata" muted={Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)} />
               )}
             </div>
 
@@ -2472,6 +3009,11 @@ export default function VideoEditPanel({
                 setTrimMode("rolling")
               }} />
               <div className="ml-1 h-4 w-px bg-[#3b4047]" />
+              <button type="button" onClick={() => addTrack("video")} className="h-6 border border-[#3d4d59] bg-[#252b31] px-1.5 text-[8px] font-semibold text-[#b9d7eb] hover:bg-[#304a5c]" aria-label="添加视频轨道" title="添加视频轨道">+V</button>
+              <button type="button" onClick={() => addTrack("audio")} className="h-6 border border-[#3d5148] bg-[#252d29] px-1.5 text-[8px] font-semibold text-[#b8dfca] hover:bg-[#305141]" aria-label="添加音频轨道" title="添加音频轨道">+A</button>
+              <button type="button" disabled={!selectedMediaItem} onClick={() => selectedMediaItem && placeMediaItem(selectedMediaItem, "insert")} className="h-6 border border-[#3e4f5e] bg-[#263744] px-1.5 text-[8px] text-[#bcd9ee] hover:bg-[#315f83] disabled:opacity-35" aria-label="时间线插入编辑" title="插入所选素材 (,)">插入 ,</button>
+              <button type="button" disabled={!selectedMediaItem} onClick={() => selectedMediaItem && placeMediaItem(selectedMediaItem, "overwrite")} className="h-6 border border-[#594d3a] bg-[#3a3023] px-1.5 text-[8px] text-[#ead5b3] hover:bg-[#6b5330] disabled:opacity-35" aria-label="时间线覆盖编辑" title="覆盖所选素材 (.)">覆盖 .</button>
+              <div className="ml-1 h-4 w-px bg-[#3b4047]" />
               <ToolButton label="撤销 (Ctrl+Z)" icon="undo" disabled={historyDepth.undo === 0} onClick={undoEditor} />
               <ToolButton label="重做 (Ctrl+Shift+Z)" icon="redo" disabled={historyDepth.redo === 0} onClick={redoEditor} />
               <div className="ml-1 h-4 w-px bg-[#3b4047]" />
@@ -2535,162 +3077,8 @@ export default function VideoEditPanel({
               </div>
             </div>
 
-            <div className="relative grid h-[76px] border-b border-[#30343a]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
-              <div className="sticky left-0 z-10 grid grid-cols-[30px_1fr] border-r border-[#3a3f46] bg-[#202328]">
-                <div className="flex items-center justify-center border-r border-[#3a3f46] bg-[#2b4f68] text-[10px] font-semibold text-[#d8ecfa]">V1</div>
-                <div className="flex min-w-0 flex-col justify-center px-2">
-                  <div className="truncate text-[9px] font-medium text-[#d2d5d9]">视频 1</div>
-                  <div className="mt-1 flex items-center gap-1.5 text-[#737983]"><EditorIcon name="film" className="h-2.5 w-2.5" /><span className="text-[8px]">VIDEO</span></div>
-                </div>
-              </div>
-              <div
-                className="relative bg-[#17191d] [background-image:linear-gradient(90deg,rgba(255,255,255,.025)_1px,transparent_1px)] [background-size:84px_100%]"
-                onDragOver={(event) => {
-                  event.preventDefault()
-                  event.dataTransfer.dropEffect = "copy"
-                }}
-                onDrop={(event) => handleTrackDrop("video", event)}
-              >
-                {videoClips.map((clip) => {
-                  const item = mediaById.get(clip.mediaId)
-                  if (!item || (item.type !== "video" && item.type !== "image")) return null
-                  return (
-                    <TimelineClip
-                      key={clip.clipId}
-                      projectId={projectId}
-                      clip={clip}
-                      item={item}
-                      kind="video"
-                      activeTool={tool}
-                      trimMode={trimMode}
-                      pxPerSecond={pxPerSecond}
-                      sequenceFps={framesPerSecond}
-                      viewport={timelineViewport}
-                      sourceDuration={sourceDurationForClip(clip)}
-                      mediaIndex={item.type === "video" ? mediaIndexes[item.id] : null}
-                      selected={clip.clipId === selectedClipId || Boolean(selectedSyncGroupId && clip.syncGroupId === selectedSyncGroupId)}
-                      onBeginEdit={recordUndoSnapshot}
-                      onSelect={setSelectedClipId}
-                      onDragStartFrame={updateClipStartFrame}
-                      onResizeEdge={resizeClipEdge}
-                      onCutAtFrame={splitTimelineAtFrame}
-                    />
-                  )
-                })}
-              </div>
-            </div>
-
-            <div className="relative grid h-[76px] border-b border-[#30343a]" style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px` }}>
-              <div className="sticky left-0 z-10 grid grid-cols-[30px_1fr] border-r border-[#3a3f46] bg-[#202328]">
-                <div className="flex items-center justify-center border-r border-[#3a3f46] bg-[#28503e] text-[10px] font-semibold text-[#d8f1e4]">A1</div>
-                <div className="flex min-w-0 flex-col justify-center px-2">
-                  <div className="flex items-center justify-between gap-1">
-                    <div className="truncate text-[9px] font-medium text-[#d2d5d9]">音频 1</div>
-                    <div className="flex gap-0.5">
-                      <button
-                        type="button"
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={() => {
-                          recordUndoSnapshot()
-                          setAudioTrackSolo((value) => !value)
-                        }}
-                        className={cn(
-                          "flex h-4 w-4 items-center justify-center rounded-[2px] border text-[8px] font-semibold",
-                          audioTrackSolo
-                            ? "border-[#5d91b8] bg-[#315f83] text-[#dcefff]"
-                            : "border-[#3b4148] bg-[#25282d] text-[#7b8189] hover:text-white",
-                        )}
-                        title={audioTrackSolo ? "取消独奏" : "独奏音频轨道"}
-                        aria-label={audioTrackSolo ? "取消独奏" : "独奏音频轨道"}
-                        data-openreel-track-solo="true"
-                      >
-                        S
-                      </button>
-                      <button
-                        type="button"
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={() => {
-                          recordUndoSnapshot()
-                          setAudioTrackMuted((value) => !value)
-                        }}
-                        className={cn(
-                          "flex h-4 w-4 items-center justify-center rounded-[2px] border text-[8px] font-semibold",
-                          audioTrackMuted
-                            ? "border-[#b88a4f] bg-[#6b4b24] text-[#ffe1a8]"
-                            : "border-[#3b4148] bg-[#25282d] text-[#7b8189] hover:text-white",
-                        )}
-                        title={audioTrackMuted ? "取消静音" : "静音音频轨道"}
-                        aria-label={audioTrackMuted ? "取消静音" : "静音音频轨道"}
-                      >
-                        M
-                      </button>
-                    </div>
-                  </div>
-                  <div className="mt-1 flex items-center gap-1 text-[#737983]">
-                    <EditorIcon name="audio" className="h-2.5 w-2.5 shrink-0" />
-                    <input
-                      type="range"
-                      min="-60"
-                      max="0"
-                      step="0.5"
-                      value={audioTrackGainDb}
-                      onPointerDown={(event) => {
-                        event.stopPropagation()
-                        recordUndoSnapshot()
-                      }}
-                      onChange={(event) => setAudioTrackGainDb(Number(event.target.value))}
-                      className="h-1 w-9 min-w-0 accent-[#6fac8d]"
-                      aria-label="音频轨道音量"
-                      data-openreel-track-gain="true"
-                    />
-                    <span className="font-mono text-[7px]">{audioTrackGainDb.toFixed(0)}</span>
-                  </div>
-                </div>
-              </div>
-              <div
-                className="relative bg-[#17191d] [background-image:linear-gradient(90deg,rgba(255,255,255,.025)_1px,transparent_1px)] [background-size:84px_100%]"
-                onDragOver={(event) => {
-                  event.preventDefault()
-                  event.dataTransfer.dropEffect = "copy"
-                }}
-                onDrop={(event) => handleTrackDrop("audio", event)}
-              >
-                {audioClips.length === 0 && (
-                  <div className="absolute inset-2 flex items-center justify-center border border-dashed border-[#343940] text-[9px] text-[#5f656d]">
-                    将音频拖到这里对齐画面
-                  </div>
-                )}
-                {audioClips.map((clip) => {
-                  const item = mediaById.get(clip.mediaId)
-                  if (!item || item.type !== "audio") return null
-                  return (
-                    <TimelineClip
-                      key={clip.clipId}
-                      projectId={projectId}
-                      clip={clip}
-                      item={item}
-                      kind="audio"
-                      activeTool={tool}
-                      trimMode={trimMode}
-                      pxPerSecond={pxPerSecond}
-                      sequenceFps={framesPerSecond}
-                      viewport={timelineViewport}
-                      sourceDuration={sourceDurationForClip(clip)}
-                      mediaIndex={mediaIndexes[mediaSourceKey(item)]}
-                      waveformNodeId={mediaSourceKey(item)}
-                      trackGainDb={audioTrackGainDb}
-                      trackMuted={audioTrackMuted}
-                      selected={clip.clipId === selectedClipId || Boolean(selectedSyncGroupId && clip.syncGroupId === selectedSyncGroupId)}
-                      onBeginEdit={recordUndoSnapshot}
-                      onSelect={setSelectedClipId}
-                      onDragStartFrame={updateClipStartFrame}
-                      onResizeEdge={resizeClipEdge}
-                      onCutAtFrame={splitTimelineAtFrame}
-                    />
-                  )
-                })}
-              </div>
-            </div>
+            {videoTracks.map(renderTimelineTrack)}
+            {audioTracks.map(renderTimelineTrack)}
 
             <div
               ref={playheadRef}

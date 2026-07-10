@@ -45,6 +45,10 @@ function closeTime(a, b, tolerance = 0.03) {
   return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= tolerance
 }
 
+function clipEnd(clip) {
+  return clip.startFrame + clip.durationFrames
+}
+
 function pageUrl() {
   return `${WEB_URL.replace(/\/+$/, "")}/projects/${encodeURIComponent(PROJECT_ID)}`
 }
@@ -56,6 +60,8 @@ async function readClips(page) {
       index,
       kind: el.dataset.clipKind || "",
       clipId: el.dataset.clipId || "",
+      mediaId: el.dataset.mediaId || "",
+      trackId: el.dataset.trackId || "",
       syncGroupId: el.dataset.syncGroupId || "",
       start: Number(el.dataset.start || 0),
       duration: Number(el.dataset.duration || 0),
@@ -92,6 +98,17 @@ async function dragHorizontally(page, locator, deltaX) {
   await page.mouse.move(x, y)
   await page.mouse.down()
   await page.mouse.move(x + deltaX, y, { steps: 6 })
+  await page.mouse.up()
+}
+
+async function dragClipToTrack(page, locator, targetTrackId, deltaX = 0) {
+  const box = await locator.boundingBox()
+  const target = await page.locator(`[data-openreel-track-id="${targetTrackId}"]`).boundingBox()
+  if (!box || !target) throw new Error(`Could not drag clip to ${targetTrackId}`)
+  const x = box.x + box.width / 2
+  await page.mouse.move(x, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(x + deltaX, target.y + target.height / 2, { steps: 10 })
   await page.mouse.up()
 }
 
@@ -181,7 +198,23 @@ async function main() {
         return
       }
       if (request.method() === "GET") {
-        await route.fulfill({ status: 200, contentType: "application/json", body: "null" })
+        if (!latestSequenceSpec) {
+          await route.fulfill({ status: 200, contentType: "application/json", body: "null" })
+          return
+        }
+        const now = new Date().toISOString()
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            project_id: PROJECT_ID,
+            node_id: NODE_ID,
+            revision: mockedSequenceRevision,
+            spec: latestSequenceSpec,
+            created_at: now,
+            updated_at: now,
+          }),
+        })
         return
       }
       if (request.method() !== "PUT") {
@@ -483,8 +516,8 @@ async function main() {
     const timelineBox = await timeline.boundingBox()
     if (!timelineBox) throw new Error("Timeline has no bounding box")
     await page.locator('[data-clip-kind="audio"]').first().click()
-    await page.getByLabel("音频轨道音量").fill("-6")
-    await page.getByRole("button", { name: "独奏音频轨道", exact: true }).click()
+    await page.getByLabel("音频轨道音量 A1", { exact: true }).fill("-6")
+    await page.getByRole("button", { name: "独奏轨道 A1", exact: true }).click()
     await page.getByLabel("淡入时长").fill("24")
     await page.waitForTimeout(900)
     const audioControls = await page.evaluate(() => {
@@ -494,7 +527,7 @@ async function main() {
       const trackSolo = document.querySelector('[data-openreel-track-solo="true"]')
       return {
         trackGainDb: Number(trackGain?.value || 0),
-        trackSolo: trackSolo?.getAttribute("aria-label") === "取消独奏",
+        trackSolo: trackSolo?.getAttribute("aria-label") === "取消独奏轨道 A1",
         fadeInFrames: Number(audioClip?.dataset.fadeInFrames || 0),
         waveformGainDb: Number(waveform?.dataset.waveformGainDb || 0),
         waveformFadeIn: Number(waveform?.dataset.waveformFadeIn || 0),
@@ -515,20 +548,149 @@ async function main() {
     const initialTimelineScale = Number(await timeline.getAttribute("data-px-per-second"))
     const timelineLabelWidth = Number(await timeline.getAttribute("data-track-label-width"))
     const seekWithTimelineRuler = async (seconds) => {
+      const scrollLeft = await timeline.evaluate((element) => element.scrollLeft)
       await page.mouse.click(
-        timelineBox.x + timelineLabelWidth + seconds * initialTimelineScale,
+        timelineBox.x + timelineLabelWidth + seconds * initialTimelineScale - scrollLeft,
         timelineBox.y + 12,
       )
-      await page.waitForTimeout(120)
+      await page.waitForTimeout(250)
       return page.evaluate(() => Number(document.querySelector("[data-openreel-preview-video]")?.volume || 0))
     }
     const fadeStartVolume = await seekWithTimelineRuler(0.5)
+    const fadeStartState = await page.evaluate(() => {
+      const clip = document.querySelector('[data-clip-kind="audio"]')
+      const video = document.querySelector("[data-openreel-preview-video]")
+      return {
+        fadeInFrames: Number(clip?.dataset.fadeInFrames || 0),
+        videoCurrentTime: Number(video?.currentTime || 0),
+        volume: Number(video?.volume || 0),
+        muted: Boolean(video?.muted),
+      }
+    })
     const fullGainVolume = await seekWithTimelineRuler(1.5)
     const audioPreviewMixApplied = (
       fadeStartVolume > 0 &&
       fadeStartVolume < fullGainVolume * 0.75 &&
       Math.abs(fullGainVolume - Math.pow(10, -6 / 20)) < 0.03
     )
+
+    await panel.getByRole("button", { name: "添加视频轨道", exact: true }).click()
+    await panel.getByRole("button", { name: "添加音频轨道", exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-track-row="true"]').length === 4)
+    await page.getByLabel("重命名轨道 V2", { exact: true }).fill("补充画面")
+    await page.getByLabel("重命名轨道 A2", { exact: true }).fill("补充声音")
+    await page.waitForTimeout(800)
+    const dynamicTracksPersisted = (
+      latestSequenceSpec?.tracks?.length === 4 &&
+      latestSequenceSpec.tracks.some((track) => track.id === "v2" && track.name === "补充画面") &&
+      latestSequenceSpec.tracks.some((track) => track.id === "a2" && track.name === "补充声音")
+    )
+
+    const moveBefore = (await readClips(page)).find((clip) => clip.kind === "video" && clip.trackId === "v1")
+    await dragClipToTrack(page, page.locator('[data-clip-kind="video"][data-track-id="v1"]').first(), "v2")
+    await page.waitForFunction(() => document.querySelector('[data-clip-kind="video"]')?.dataset.trackId === "v2")
+    let multiTrackClips = await readClips(page)
+    const movedAcrossTrack = multiTrackClips.find((clip) => clip.clipId === moveBefore?.clipId)
+    const linkedAfterTrackMove = multiTrackClips.find((clip) => clip.kind === "audio" && clip.syncGroupId === movedAcrossTrack?.syncGroupId)
+    const crossTrackMovePreservedSource = Boolean(
+      moveBefore && movedAcrossTrack && linkedAfterTrackMove &&
+      movedAcrossTrack.trackId === "v2" &&
+      movedAcrossTrack.sourceInFrame === moveBefore.sourceInFrame &&
+      movedAcrossTrack.durationFrames === moveBefore.durationFrames &&
+      movedAcrossTrack.startFrame === linkedAfterTrackMove.startFrame &&
+      movedAcrossTrack.sourceInFrame === linkedAfterTrackMove.sourceInFrame
+    )
+    await panel.getByRole("button", { name: "选择 (V)", exact: true }).click()
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction((clipId) => document.querySelector(`[data-clip-id="${clipId}"]`)?.dataset.trackId === "v1", moveBefore.clipId)
+
+    await panel.getByRole("button", { name: "目标轨道 V2", exact: true }).click()
+    await panel.getByRole("button", { name: "目标轨道 A2", exact: true }).click()
+    await page.locator('[data-openreel-media-item="true"][data-media-type="video"]').first().click()
+    const insertFrame = Math.round(2 * videoParts[0].durationFrames / videoParts[0].duration)
+    await seekWithTimelineRuler(2)
+    await page.keyboard.press(",")
+    await page.waitForTimeout(800)
+    multiTrackClips = await readClips(page)
+    const insertedVideo = multiTrackClips.find((clip) => clip.kind === "video" && clip.trackId === "v2")
+    const insertedAudio = multiTrackClips.find((clip) => clip.kind === "audio" && clip.trackId === "a2")
+    const shiftedVideo = multiTrackClips.find((clip) => (
+      clip.kind === "video" && clip.trackId === "v1" && clip.sourceInFrame === videoParts[1].sourceInFrame
+    ))
+    const splitRightVideo = multiTrackClips.find((clip) => (
+      clip.kind === "video" && clip.trackId === "v1" && clip.sourceInFrame === videoParts[0].sourceInFrame + insertFrame
+    ))
+    const splitRightAudio = multiTrackClips.find((clip) => (
+      clip.kind === "audio" && clip.syncGroupId === splitRightVideo?.syncGroupId
+    ))
+    const insertEditSemantics = Boolean(
+      insertedVideo && insertedAudio && shiftedVideo && splitRightVideo && splitRightAudio &&
+      aligned(insertedVideo, insertedAudio) &&
+      insertedVideo.startFrame === insertFrame &&
+      aligned(splitRightVideo, splitRightAudio) &&
+      splitRightVideo.startFrame === insertFrame + insertedVideo.durationFrames &&
+      shiftedVideo.startFrame === videoParts[1].startFrame + insertedVideo.durationFrames &&
+      latestSequenceSpec?.clips?.some((clip) => clip.id === insertedVideo.clipId && clip.track_id === "v2")
+    )
+    if (insertedVideo || insertedAudio) {
+      await page.keyboard.press("Control+z")
+      await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
+    }
+
+    await panel.getByRole("button", { name: "目标轨道 V1", exact: true }).click()
+    const imageMedia = page.locator('[data-openreel-media-item="true"][data-media-type="image"]').first()
+    const imageMediaId = await imageMedia.getAttribute("data-media-id")
+    await imageMedia.click()
+    await seekWithTimelineRuler(2)
+    await page.keyboard.press(".")
+    await page.waitForFunction((mediaId) => Boolean(document.querySelector(`[data-media-id="${mediaId}"][data-clip-kind="video"]`)), imageMediaId)
+    await page.waitForTimeout(800)
+    multiTrackClips = await readClips(page)
+    const overwriteClip = multiTrackClips.find((clip) => clip.mediaId === imageMediaId && clip.trackId === "v1")
+    const overwrittenSourceParts = multiTrackClips
+      .filter((clip) => clip.kind === "video" && clip.trackId === "v1" && clip.mediaId === videoParts[0].mediaId)
+      .sort((left, right) => left.startFrame - right.startFrame)
+    const overwriteEditSemantics = Boolean(
+      overwriteClip && overwrittenSourceParts.length === 3 &&
+      overwrittenSourceParts[0].startFrame === 0 &&
+      clipEnd(overwrittenSourceParts[0]) === overwriteClip.startFrame &&
+      overwrittenSourceParts[1].startFrame === overwriteClip.startFrame + overwriteClip.durationFrames &&
+      overwrittenSourceParts[1].sourceInFrame === videoParts[0].sourceInFrame + overwrittenSourceParts[1].startFrame &&
+      overwrittenSourceParts[2].startFrame === videoParts[1].startFrame &&
+      latestSequenceSpec?.clips?.some((clip) => clip.id === overwriteClip.clipId && clip.track_id === "v1")
+    )
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
+
+    await page.getByRole("button", { name: "锁定轨道 V2", exact: true }).click()
+    await page.getByRole("button", { name: "隐藏轨道 V2", exact: true }).click()
+    await page.getByRole("button", { name: "关闭同步锁 A2", exact: true }).click()
+    await page.getByRole("button", { name: "静音轨道 A2", exact: true }).click()
+    await page.getByRole("button", { name: "上移轨道 V1", exact: true }).click()
+    await page.waitForTimeout(800)
+    const trackControlsPersisted = (
+      latestSequenceSpec?.tracks?.find((track) => track.id === "v2")?.locked === true &&
+      latestSequenceSpec?.tracks?.find((track) => track.id === "v2")?.visible === false &&
+      latestSequenceSpec?.tracks?.find((track) => track.id === "a2")?.sync_locked === false &&
+      latestSequenceSpec?.tracks?.find((track) => track.id === "a2")?.muted === true &&
+      latestSequenceSpec?.tracks?.find((track) => track.id === "v1")?.order === 1
+    )
+    const lockedMoveBefore = (await readClips(page)).find((clip) => clip.kind === "video" && clip.trackId === "v1")
+    await dragClipToTrack(page, page.locator('[data-clip-kind="video"][data-track-id="v1"]').first(), "v2")
+    await page.waitForTimeout(250)
+    const lockedTrackRejectedMove = (await readClips(page))
+      .find((clip) => clip.clipId === lockedMoveBefore?.clipId)?.trackId === "v1"
+
+    await panel.getByRole("button", { name: "添加视频轨道", exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-track-row="true"]').length === 5)
+    await page.getByRole("button", { name: "删除轨道 V3", exact: true }).click()
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-track-row="true"]').length === 4)
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-track-row="true"]').length === 5)
+    await page.keyboard.press("Control+Shift+z")
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-track-row="true"]').length === 4)
+    const dynamicTrackHistory = true
+
     const anchorX = timelineBox.x + timelineBox.width * 0.5
     const readZoomAnchor = () => page.evaluate((clientX) => {
       const element = document.querySelector('[data-openreel-timeline-scroll="true"]')
@@ -651,6 +813,31 @@ async function main() {
     const pauseButton = panel.getByRole("button", { name: "暂停", exact: true })
     if (await pauseButton.isVisible().catch(() => false)) await pauseButton.click()
 
+    await panel.getByRole("button", { name: "关闭编辑器", exact: true }).click()
+    await panel.waitFor({ state: "hidden" })
+    await page.evaluate(({ nodeId, videoUrl }) => {
+      window.dispatchEvent(new CustomEvent("openreel:edit-video-node", {
+        detail: { nodeId, title: "Video editor verification", videoUrl },
+      }))
+    }, { nodeId: NODE_ID, videoUrl: VIDEO_URL })
+    await panel.waitFor({ state: "visible" })
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-track-row="true"]').length === 4)
+    await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
+    const sequenceReopenPersisted = await page.evaluate(() => {
+      const v2 = document.querySelector('[data-openreel-track-id="v2"]')
+      const a2 = document.querySelector('[data-openreel-track-id="a2"]')
+      const names = Array.from(document.querySelectorAll('[aria-label^="重命名轨道"]')).map((input) => input.value)
+      return Boolean(
+        v2?.getAttribute("data-track-locked") === "true" &&
+        v2?.getAttribute("data-track-visible") === "false" &&
+        a2?.getAttribute("data-track-sync-locked") === "false" &&
+        a2?.getAttribute("data-track-muted") === "true" &&
+        names.includes("补充画面") &&
+        names.includes("补充声音")
+      )
+    })
+    await page.locator('[data-clip-kind="video"]').nth(1).click()
+
     if (SCREENSHOT_PATH) {
       await page.keyboard.press("n")
       await page.evaluate(() => {
@@ -658,6 +845,8 @@ async function main() {
         if (inspectorScroller) inspectorScroller.scrollTop = inspectorScroller.scrollHeight
       })
       await page.waitForTimeout(120)
+      await page.screenshot({ path: SCREENSHOT_PATH, fullPage: false })
+      await page.waitForTimeout(300)
       await page.screenshot({ path: SCREENSHOT_PATH, fullPage: false })
     }
 
@@ -668,7 +857,7 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && normalDeleteKeepsGap && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && normalDeleteKeepsGap && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && dynamicTracksPersisted && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
       initialAligned,
       movedTogether,
       clampedAtTimelineStart,
@@ -696,7 +885,16 @@ async function main() {
       audioControls,
       audioPreviewMixApplied,
       fadeStartVolume,
+      fadeStartState,
       fullGainVolume,
+      dynamicTracksPersisted,
+      crossTrackMovePreservedSource,
+      insertEditSemantics,
+      overwriteEditSemantics,
+      trackControlsPersisted,
+      lockedTrackRejectedMove,
+      dynamicTrackHistory,
+      sequenceReopenPersisted,
       zoomExpanded,
       zoomAnchorStable,
       zoomBefore,
