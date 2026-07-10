@@ -10,7 +10,12 @@ from app.db.models import Project, WorkflowNode
 from app.services import video_edit_sequences
 
 
-def sequence_spec(*, gain_db: float = 0.0) -> video_edit_sequences.SequenceSpec:
+def sequence_spec(
+    *,
+    gain_db: float = 0.0,
+    track_height_px: int = 76,
+    marker_frame: int | None = None,
+) -> video_edit_sequences.SequenceSpec:
     return video_edit_sequences.SequenceSpec.model_validate({
         "schema_version": video_edit_sequences.SEQUENCE_SCHEMA_VERSION,
         "settings": {
@@ -21,7 +26,13 @@ def sequence_spec(*, gain_db: float = 0.0) -> video_edit_sequences.SequenceSpec:
             "audio_channels": 2,
         },
         "tracks": [
-            {"id": "v1", "kind": "video", "name": "Video 1", "order": 0},
+            {
+                "id": "v1",
+                "kind": "video",
+                "name": "Video 1",
+                "order": 0,
+                "height_px": track_height_px,
+            },
             {"id": "a1", "kind": "audio", "name": "Audio 1", "order": 0},
         ],
         "clips": [
@@ -46,6 +57,9 @@ def sequence_spec(*, gain_db: float = 0.0) -> video_edit_sequences.SequenceSpec:
                 "linked_group_id": "link-1",
                 "gain_db": gain_db,
             },
+        ],
+        "markers": [] if marker_frame is None else [
+            {"id": "marker-1", "frame": marker_frame, "label": "M1"},
         ],
     })
 
@@ -72,16 +86,20 @@ async def test_sequence_persistence_revision_conflict_history_and_restore(tmp_pa
             )
             assert created.revision == 1
             assert created.spec.clips[0].duration_frames == 120
+            assert created.spec.tracks[0].height_px == 76
+            assert created.spec.markers == []
 
             updated = await video_edit_sequences.save_sequence(
                 db,
                 project_id="project-1",
                 node_id="video-1",
                 expected_revision=1,
-                spec=sequence_spec(gain_db=-6.0),
+                spec=sequence_spec(gain_db=-6.0, track_height_px=112, marker_frame=48),
             )
             assert updated.revision == 2
             assert updated.spec.clips[1].gain_db == -6.0
+            assert updated.spec.tracks[0].height_px == 112
+            assert updated.spec.markers[0].frame == 48
 
             with pytest.raises(video_edit_sequences.SequenceRevisionConflict) as conflict:
                 await video_edit_sequences.save_sequence(
@@ -109,11 +127,21 @@ async def test_sequence_persistence_revision_conflict_history_and_restore(tmp_pa
             )
             assert restored.revision == 3
             assert restored.spec.clips[1].gain_db == 0.0
+            assert restored.spec.tracks[0].height_px == 76
+            assert restored.spec.markers == []
     finally:
         await engine.dispose()
 
 
 def test_sequence_contract_rejects_unknown_tracks_and_source_overflow() -> None:
+    legacy_payload = sequence_spec().model_dump(mode="json")
+    legacy_payload.pop("markers")
+    for track in legacy_payload["tracks"]:
+        track.pop("height_px")
+    legacy = video_edit_sequences.SequenceSpec.model_validate(legacy_payload)
+    assert legacy.markers == []
+    assert all(track.height_px == 76 for track in legacy.tracks)
+
     payload = sequence_spec().model_dump(mode="json")
     payload["clips"][0]["track_id"] = "missing"
     with pytest.raises(ValidationError, match="Unknown clip track"):
@@ -123,4 +151,9 @@ def test_sequence_contract_rejects_unknown_tracks_and_source_overflow() -> None:
     payload["clips"][0]["source_in_frame"] = 300
     payload["clips"][0]["duration_frames"] = 120
     with pytest.raises(ValidationError, match="exceeds source frame count"):
+        video_edit_sequences.SequenceSpec.model_validate(payload)
+
+    payload = sequence_spec(marker_frame=48).model_dump(mode="json")
+    payload["markers"].append({"id": "marker-1", "frame": 72, "label": "duplicate"})
+    with pytest.raises(ValidationError, match="Marker ids must be unique"):
         video_edit_sequences.SequenceSpec.model_validate(payload)

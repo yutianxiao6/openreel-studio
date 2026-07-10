@@ -181,6 +181,17 @@ async function dragControl(page, locator, deltaX, deltaY) {
   await page.mouse.up()
 }
 
+async function seekTimelineSeconds(page, seconds) {
+  const timeline = page.locator('[data-openreel-timeline-scroll="true"]')
+  const box = await timeline.boundingBox()
+  if (!box) throw new Error("Timeline has no seek box")
+  const scale = Number(await timeline.getAttribute("data-px-per-second"))
+  const labelWidth = Number(await timeline.getAttribute("data-track-label-width"))
+  const scrollLeft = await timeline.evaluate((element) => element.scrollLeft)
+  await page.mouse.click(box.x + labelWidth + seconds * scale - scrollLeft, box.y + 12)
+  await page.waitForTimeout(150)
+}
+
 async function measureAnimationFrames(page, durationMs = 1000) {
   return page.evaluate((duration) => new Promise((resolve) => {
     let frames = 0
@@ -593,14 +604,71 @@ async function main() {
       Number(document.querySelectorAll('[data-clip-kind="video"]')[1]?.dataset.startFrame || 0) === expectedFrame
     ), videoParts[1].startFrame)
 
+    const markerFrame = 180
+    await seekTimelineSeconds(page, markerFrame / 24)
+    await page.keyboard.press("m")
+    await page.waitForFunction((expectedFrame) => (
+      document.querySelector('[data-openreel-sequence-marker="true"]')?.getAttribute("data-marker-frame") === String(expectedFrame)
+    ), markerFrame)
+    await page.waitForTimeout(800)
+    const markerAddedAndPersisted = (
+      latestSequenceSpec?.markers?.length === 1 &&
+      latestSequenceSpec.markers[0].frame === markerFrame
+    )
+    const markerSnapTargetId = videoParts[1].clipId
+    const markerSnapProbe = await probeSnapGuide(page, page.locator(`[data-clip-id="${markerSnapTargetId}"]`), 25)
+    await page.waitForTimeout(250)
+    const markerSnapState = (await readClips(page)).find((clip) => clip.clipId === markerSnapTargetId)
+    const markerSnapping = (
+      markerSnapProbe.visible &&
+      markerSnapProbe.frame === markerFrame &&
+      markerSnapState?.startFrame === markerFrame
+    )
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction(({ clipId, expectedFrame }) => (
+      Number(document.querySelector(`[data-clip-id="${clipId}"]`)?.dataset.startFrame || 0) === expectedFrame
+    ), { clipId: markerSnapTargetId, expectedFrame: videoParts[1].startFrame })
+    await page.keyboard.press("Control+z")
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-sequence-marker="true"]').length === 0)
+    const markerUndo = true
+    await page.keyboard.press("Control+Shift+z")
+    await page.waitForFunction(() => document.querySelectorAll('[data-openreel-sequence-marker="true"]').length === 1)
+    await page.waitForTimeout(800)
+    const markerHistory = markerUndo && latestSequenceSpec?.markers?.[0]?.frame === markerFrame
+
     await page.locator('[data-clip-kind="video"]').first().click()
     await page.keyboard.press("Delete")
     await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 2)
+    await page.waitForTimeout(250)
     let deleteResult = await readClips(page)
+    const explicitGapState = await page.evaluate(() => {
+      const gaps = Array.from(document.querySelectorAll('[data-openreel-sequence-gap="true"]')).map((gap) => ({
+        kind: gap.getAttribute("data-gap-kind"),
+        startFrame: Number(gap.getAttribute("data-gap-start-frame") || -1),
+        durationFrames: Number(gap.getAttribute("data-gap-duration-frames") || 0),
+      }))
+      const program = document.querySelector('[data-openreel-program-gap]')
+      return {
+        gaps,
+        videoGap: program?.getAttribute("data-program-video-gap") === "true",
+        audioGap: program?.getAttribute("data-program-audio-gap") === "true",
+        previewVideos: document.querySelectorAll('[data-openreel-preview-video]').length,
+        previewAudios: document.querySelectorAll('[data-openreel-preview-audio]').length,
+      }
+    })
+    const explicitGapSemantics = (
+      explicitGapState.gaps.length === 2 &&
+      explicitGapState.gaps.every((gap) => gap.startFrame === 0 && gap.durationFrames === videoParts[0].durationFrames) &&
+      explicitGapState.videoGap &&
+      explicitGapState.audioGap &&
+      explicitGapState.previewVideos === 0 &&
+      explicitGapState.previewAudios === 0
+    )
     const normalDeleteKeepsGap = (
       deleteResult.length === 2 &&
       aligned(deleteResult.find((clip) => clip.kind === "video"), deleteResult.find((clip) => clip.kind === "audio")) &&
-      deleteResult.every((clip) => clip.start > 0.5)
+      deleteResult.every((clip) => clip.start > 0.5) &&
+      explicitGapSemantics
     )
     await page.keyboard.press("Control+z")
     await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
@@ -608,11 +676,13 @@ async function main() {
     await page.locator('[data-clip-kind="video"]').first().click()
     await page.keyboard.press("Shift+Delete")
     await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 2)
+    await page.waitForFunction(() => document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-program-video-gap") === "false")
     deleteResult = await readClips(page)
     const rippleDeleteClosesGap = (
       deleteResult.length === 2 &&
       aligned(deleteResult.find((clip) => clip.kind === "video"), deleteResult.find((clip) => clip.kind === "audio")) &&
-      deleteResult.every((clip) => closeTime(clip.start, 0) && clip.sourceOffset > 0.5)
+      deleteResult.every((clip) => closeTime(clip.start, 0) && clip.sourceOffset > 0.5) &&
+      await page.locator('[data-openreel-sequence-gap="true"]').count() === 0
     )
     await page.keyboard.press("Control+z")
     await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
@@ -740,6 +810,29 @@ async function main() {
       latestSequenceSpec.tracks.some((track) => track.id === "v2" && track.name === "补充画面") &&
       latestSequenceSpec.tracks.some((track) => track.id === "a2" && track.name === "补充声音")
     )
+
+    const a1TrackRow = page.locator('[data-openreel-track-id="a1"]')
+    const trackHeightBefore = Number(await a1TrackRow.getAttribute("data-track-height"))
+    const waveformHeightBefore = (await a1TrackRow.locator('[data-openreel-real-waveform="true"]').first().boundingBox())?.height || 0
+    await dragControl(page, a1TrackRow.locator('[data-openreel-track-resize-handle="true"]'), 0, 34)
+    await page.waitForFunction((before) => (
+      Number(document.querySelector('[data-openreel-track-id="a1"]')?.getAttribute("data-track-height") || 0) > before
+    ), trackHeightBefore)
+    const trackHeightAfter = Number(await a1TrackRow.getAttribute("data-track-height"))
+    const waveformHeightAfter = (await a1TrackRow.locator('[data-openreel-real-waveform="true"]').first().boundingBox())?.height || 0
+    await page.waitForTimeout(800)
+    const trackResizePersisted = (
+      trackHeightAfter === trackHeightBefore + 34 &&
+      waveformHeightAfter > waveformHeightBefore &&
+      latestSequenceSpec?.tracks?.find((track) => track.id === "a1")?.height_px === trackHeightAfter
+    )
+    await page.keyboard.press("Control+z")
+    await page.waitForTimeout(300)
+    const trackHeightUndo = Number(await a1TrackRow.getAttribute("data-track-height"))
+    await page.keyboard.press("Control+Shift+z")
+    await page.waitForTimeout(300)
+    const trackHeightRedo = Number(await a1TrackRow.getAttribute("data-track-height"))
+    const trackResizeHistory = trackHeightUndo === trackHeightBefore && trackHeightRedo === trackHeightAfter
 
     const moveBefore = (await readClips(page)).find((clip) => clip.kind === "video" && clip.trackId === "v1")
     await dragClipToTrack(page, page.locator('[data-clip-kind="video"][data-track-id="v1"]').first(), "v2")
@@ -1049,19 +1142,23 @@ async function main() {
     await panel.waitFor({ state: "visible" })
     await page.waitForFunction(() => document.querySelectorAll('[data-openreel-track-row="true"]').length === 4)
     await page.waitForFunction(() => document.querySelectorAll("[data-openreel-timeline-clip]").length === 4)
-    const sequenceReopenPersisted = await page.evaluate(() => {
+    const sequenceReopenPersisted = await page.evaluate(({ expectedTrackHeight, expectedMarkerFrame }) => {
       const v2 = document.querySelector('[data-openreel-track-id="v2"]')
       const a2 = document.querySelector('[data-openreel-track-id="a2"]')
+      const a1 = document.querySelector('[data-openreel-track-id="a1"]')
+      const marker = document.querySelector('[data-openreel-sequence-marker="true"]')
       const names = Array.from(document.querySelectorAll('[aria-label^="重命名轨道"]')).map((input) => input.value)
       return Boolean(
         v2?.getAttribute("data-track-locked") === "true" &&
         v2?.getAttribute("data-track-visible") === "false" &&
         a2?.getAttribute("data-track-sync-locked") === "false" &&
         a2?.getAttribute("data-track-muted") === "true" &&
+        Number(a1?.getAttribute("data-track-height") || 0) === expectedTrackHeight &&
+        Number(marker?.getAttribute("data-marker-frame") || -1) === expectedMarkerFrame &&
         names.includes("补充画面") &&
         names.includes("补充声音")
       )
-    })
+    }, { expectedTrackHeight: trackHeightAfter, expectedMarkerFrame: markerFrame })
     await page.locator('[data-clip-kind="video"]').nth(1).click()
     await page.getByLabel("源素材入点帧", { exact: true }).fill("24")
     await page.getByLabel("源素材出点帧", { exact: true }).fill("120")
@@ -1089,7 +1186,7 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
       initialAligned,
       movedTogether,
       clampedAtTimelineStart,
@@ -1112,6 +1209,11 @@ async function main() {
       visibleSnapGuide,
       snapGuideFrame: snapGuide.frame,
       snapGuideCleared,
+      markerAddedAndPersisted,
+      markerSnapping,
+      markerSnapGuideFrame: markerSnapProbe.frame,
+      markerSnapState,
+      markerHistory,
       editPointNavigation,
       reverseShuttleFrame,
       forwardShuttleFrame,
@@ -1128,6 +1230,8 @@ async function main() {
       exactTimecodeInputs,
       timecodeState,
       normalDeleteKeepsGap,
+      explicitGapSemantics,
+      explicitGapState,
       rippleDeleteClosesGap,
       audioControlsPersisted,
       audioControls,
@@ -1144,6 +1248,14 @@ async function main() {
       fadeStartState,
       fullGainVolume,
       dynamicTracksPersisted,
+      trackResizePersisted,
+      trackResizeHistory,
+      trackHeightBefore,
+      trackHeightAfter,
+      trackHeightUndo,
+      trackHeightRedo,
+      waveformHeightBefore,
+      waveformHeightAfter,
       crossTrackMovePreservedSource,
       insertEditSemantics,
       overwriteEditSemantics,

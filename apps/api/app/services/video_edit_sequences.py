@@ -50,6 +50,13 @@ class SequenceTrack(BaseModel):
     muted: bool = False
     solo: bool = False
     gain_db: float = Field(default=0.0, ge=-120.0, le=24.0)
+    height_px: int = Field(default=76, ge=64, le=180)
+
+
+class SequenceMarker(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    frame: int = Field(ge=0)
+    label: str = Field(min_length=1, max_length=160)
 
 
 class SequenceClip(BaseModel):
@@ -72,6 +79,7 @@ class SequenceSpec(BaseModel):
     settings: SequenceSettings
     tracks: list[SequenceTrack]
     clips: list[SequenceClip]
+    markers: list[SequenceMarker] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_graph(self) -> "SequenceSpec":
@@ -84,6 +92,9 @@ class SequenceSpec(BaseModel):
         clip_ids = [clip.id for clip in self.clips]
         if len(clip_ids) != len(set(clip_ids)):
             raise ValueError("Clip ids must be unique")
+        marker_ids = [marker.id for marker in self.markers]
+        if len(marker_ids) != len(set(marker_ids)):
+            raise ValueError("Marker ids must be unique")
         known_tracks = {track.id: track for track in self.tracks}
         for clip in self.clips:
             if clip.track_id not in known_tracks:

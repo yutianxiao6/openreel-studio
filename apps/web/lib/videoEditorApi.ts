@@ -67,6 +67,13 @@ export interface VideoEditorTrackSpec {
   muted: boolean
   solo: boolean
   gain_db: number
+  height_px: number
+}
+
+export interface VideoEditorMarkerSpec {
+  id: string
+  frame: number
+  label: string
 }
 
 export interface VideoEditorClipSpec {
@@ -95,6 +102,7 @@ export interface VideoEditorSequenceSpec {
   }
   tracks: VideoEditorTrackSpec[]
   clips: VideoEditorClipSpec[]
+  markers: VideoEditorMarkerSpec[]
 }
 
 export interface VideoEditorSequenceDocument {
