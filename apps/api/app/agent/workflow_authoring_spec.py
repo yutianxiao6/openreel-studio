@@ -273,6 +273,20 @@ def _reference_selector_from_mapping(name: str, value: Any) -> dict[str, Any] | 
                     f"Reference selector {name!r} match_fields must be a non-empty list of field names"
                 )
             selector["match_fields"] = [item.strip() for item in match_fields]
+        if selector.get("from_group") not in (None, "", [], {}):
+            missing = [
+                key for key in ("source_step", "source_path", "match_fields")
+                if selector.get(key) in (None, "", [], {})
+            ]
+            if missing:
+                raise WorkflowAuthoringSpecError(
+                    f"Reference selector {name!r} from_group requires: {', '.join(missing)}"
+                )
+            source_path = str(selector.get("source_path") or "").strip()
+            if not source_path.startswith("output."):
+                raise WorkflowAuthoringSpecError(
+                    f"Reference selector {name!r} source_path must start with 'output.'"
+                )
         return selector
     text = str(value or "").strip()
     if not text:
@@ -887,6 +901,24 @@ def _compile_steps(steps: list[Any]) -> list[dict[str, Any]]:
     return compiled
 
 
+def _steps_use_vision_context(steps: list[Any]) -> bool:
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        for key in ("context_refs", "references"):
+            raw = step.get(key)
+            items = raw.values() if isinstance(raw, dict) else raw if isinstance(raw, list) else [raw]
+            if any(
+                isinstance(item, dict) and str(item.get("role") or "").strip() == "vision_context"
+                for item in items
+            ):
+                return True
+        children = step.get("steps")
+        if isinstance(children, list) and _steps_use_vision_context(children):
+            return True
+    return False
+
+
 def compile_authoring_workflow(raw: dict[str, Any]) -> dict[str, Any]:
     if not is_authoring_workflow(raw):
         return deepcopy(raw)
@@ -918,4 +950,8 @@ def compile_authoring_workflow(raw: dict[str, Any]) -> dict[str, Any]:
         value = _copy_non_empty(raw.get(key))
         if value is not None:
             compiled[key] = value
+    if _steps_use_vision_context(steps) and "core.vision_context" not in _coerce_string_list(compiled.get("required_capabilities")):
+        raise WorkflowAuthoringSpecError(
+            "vision_context requires root required_capabilities to include core.vision_context"
+        )
     return compiled

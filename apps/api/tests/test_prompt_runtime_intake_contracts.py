@@ -92,21 +92,17 @@ def test_workflow_build_prompt_uses_dedicated_cached_prefix() -> None:
     assert '"tool_profile": "workflow_build"' in result.cache_key
     assert result.diagnostics()["tool_profile"] == "workflow_build"
     assert len(result.system) < 5200
-    assert "schema='openreel.workflow.authoring.v1'" in result.system
-    assert "Canonical example" in result.system
-    assert "Collection schemas contain every field later read by loop children" in result.system
-    assert "Visible generated text uses text plus visible:true" in result.system
-    assert "Put the prompt there" in result.system
-    assert "needs/depends_on list upstream products" in result.system
-    assert "Cross-loop use requires the repeat group in needs" in result.system
+    assert "`openreel.workflow.authoring.v1`" in result.system
+    assert "Canonical fixed + dynamic pattern" in result.system
+    assert "Collections declare every later-read field" in result.system
+    assert "Media carries its own prompt" in result.system
     assert "core.vision_context" in result.system
-    assert "Fixed image refs" in result.system
-    assert "Dynamic selector" in result.system
-    assert "never `context_refs`" in result.system
-    assert "candidate media child is not `source_step`" in result.system
+    assert "Dynamic images use `references`, never `context_refs`" in result.system
+    assert "never its media child" in result.system
+    assert "object `match_fields`" in result.system
     assert "visual_reference" in result.system
-    assert "{{full_script.output}}" in result.system
-    assert "{{segment.segment_text}}" in result.system
+    assert "output.selected_ids" in result.system
+    assert "{{shot.duration_seconds}}" in result.system
     assert "After a repairable failure, continue from the returned `repair_ref`" in result.system
     assert "Ready means saved and inspected with `workflow.canvas.inspect`" in result.system
     assert "Patch again when visible outputs, loops, dependencies, or final outputs are missing" in result.system

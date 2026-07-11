@@ -89,37 +89,93 @@ AUTHORING_SPEC_EXAMPLE = {
 
 AUTHORING_SPEC_PROMPT_EXAMPLE = {
     "schema": "openreel.workflow.authoring.v1",
-    "id": "storyboard_video",
-    "name": "分镜视频",
+    "id": "dynamic_reference_video",
     "required_capabilities": ["core.vision_context"],
-    "inputs": [{"id": "plot", "type": "long_text", "required": True}],
-    "dimensions": {"segments": {"source": "steps.segments.output.items", "scope_key": "segment"}},
+    "dimensions": {
+        "assets": {"source": "steps.assets.output.items", "scope_key": "asset"},
+        "shots": {"source": "steps.shots.output.items", "scope_key": "shot"},
+    },
     "steps": [
-        {"id": "full_script", "kind": "text", "visible": True, "prompt_template": "根据 {{inputs.plot}} 写剧本。"},
         {
-            "id": "segments",
+            "id": "assets",
             "kind": "collection",
-            "needs": ["full_script"],
-            "prompt_template": "拆分 {{full_script.output}}。",
-            "output_schema": {"type": "collection", "items_key": "items", "fields": [{"id": "segment_text", "required": True}]},
+            "prompt_template": "输出素材及稳定 asset_id。",
+            "output_schema": {
+                "type": "collection",
+                "items_key": "items",
+                "fields": [{"id": "asset_id", "required": True}],
+            },
         },
         {
-            "id": "segment_loop",
+            "id": "asset_loop",
             "kind": "repeat",
-            "foreach": {"dimension": "segments"},
-            "item_name": "segment",
+            "needs": ["assets"],
+            "foreach": {"dimension": "assets"},
+            "item_name": "asset",
+            "steps": [{"id": "asset_image", "kind": "image", "prompt_template": "生成 {{asset.asset_id}}。"}],
+        },
+        {
+            "id": "shots",
+            "kind": "collection",
+            "needs": ["assets"],
+            "prompt_template": "输出镜头；asset_ids 只取自 {{assets.output}}。",
+            "output_schema": {
+                "type": "collection",
+                "items_key": "items",
+                "fields": [
+                    {"id": "prompt", "required": True},
+                    {"id": "asset_ids", "type": "array", "items": {"type": "string"}, "required": True},
+                    {"id": "duration_seconds", "type": "number", "required": True},
+                ],
+            },
+        },
+        {
+            "id": "shot_loop",
+            "kind": "repeat",
+            "needs": ["shots", "asset_loop"],
+            "foreach": {"dimension": "shots"},
+            "item_name": "shot",
             "steps": [
-                {"id": "storyboard", "kind": "image", "prompt_template": "为 {{segment.segment_text}} 生成分镜图。"},
+                {
+                    "id": "asset_selector",
+                    "kind": "plan",
+                    "prompt_template": "把 {{shot.asset_ids}} 原样输出为 selected_ids。",
+                    "output_schema": {
+                        "type": "object",
+                        "fields": [{"id": "selected_ids", "type": "array", "items": {"type": "string"}, "required": True}],
+                    },
+                },
+                {
+                    "id": "storyboard",
+                    "kind": "image",
+                    "prompt_template": "根据 {{shot.prompt}} 生成分镜图。",
+                },
                 {
                     "id": "video",
                     "kind": "video",
-                    "needs": ["storyboard"],
+                    "needs": ["storyboard", "asset_selector", "asset_loop"],
                     "context_refs": [
                         {"ref": "storyboard", "role": "vision_context"},
                         {"ref": "storyboard", "role": "visual_reference"},
                     ],
-                    "fields": {"duration_seconds": 5},
-                    "prompt_template": "看分镜图，为 {{segment.segment_text}} 写视频提示词。",
+                    "references": [
+                        {
+                            "from_group": "asset_loop",
+                            "source_step": "asset_selector",
+                            "source_path": "output.selected_ids",
+                            "match_fields": ["asset_id"],
+                            "role": "vision_context",
+                        },
+                        {
+                            "from_group": "asset_loop",
+                            "source_step": "asset_selector",
+                            "source_path": "output.selected_ids",
+                            "match_fields": ["asset_id"],
+                            "role": "visual_reference",
+                        },
+                    ],
+                    "fields": {"duration_seconds": "{{shot.duration_seconds}}"},
+                    "prompt_template": "看分镜图和选中的素材图，按 {{shot.prompt}} 写视频提示词。",
                 },
             ],
         },
@@ -134,36 +190,25 @@ AUTHORING_SPEC_EXAMPLE_JSON = json.dumps(
 
 
 AUTHORING_SPEC_GUIDE = """\
-## Authoring Spec
+## Authoring Spec: exact rules
 
-- Root schema='openreel.workflow.authoring.v1'; fields: id/name/inputs/defaults/dimensions/steps.
-- inputs are UI fields; use {{inputs.id}} in prompts, not one run's values.
-- Stable step ids; needs/depends_on list upstream products; prompt refs use {{step_id.output}}.
-- Processing kinds: text/plan/collection/plugin. Visible generated text uses text plus visible:true or output.canvas:true; canvas_text only copies text.
-- Media kinds image/video/audio are visible. Put the prompt there; the compiler creates its hidden prompt step.
-- Collections define output_schema.items_key/fields. Loops use a dimension sourced from `steps.collection.output.items`, then foreach.dimension/item_name.
-- Inspect dynamic loops with sample `context.collection.output.items`; UI values belong in inputs.
-- Cross-loop use requires the repeat group in needs. Qualified fixed refs use group.child, not bare child.
-- Core media settings go in `fields:{"width":1920,"height":1080,"duration_seconds":5}` (not top-level and not duration). Use numbers or input refs; dimensions are repeat axes.
-- Prompts use role/task/output/check, or one prompt_template.
+- Schema is `openreel.workflow.authoring.v1`; prompts read `{{inputs.id}}` and `{{step.output}}`. `needs` ids are upstream top-level steps/groups or earlier siblings.
+- Collections declare every later-read field in `output_schema` (`type:"collection"`, `items_key:"items"`, `fields`). Dimensions source `steps.<collection>.output.items`; repeats set `foreach.dimension`/`item_name`.
+- Media carries its own prompt; never author hidden `*_prompt`. Media options exist only in `fields` and use `duration_seconds`, never `duration`, `settings`, or top-level keys.
 
-Image-use roles:
-- `vision_context` means a text/LLM prompt must inspect image pixels; root `required_capabilities` must contain `core.vision_context`.
-- Fixed image refs use only `context_refs:[{"ref":"storyboard","role":"vision_context"}]` plus needs.
-- Dynamic selectors always go in `references`, never `context_refs`: `from_group` is the candidate image repeat group; `source_step` is the current repeat's upstream selector/planner; `source_path` is normally `output.selected_ids`; `match_fields` is a string list such as `["product_id","reuse_key"]`. Put both in needs.
-- The candidate media child is not `source_step`. If selected ids exist only on the loop item, add a current-loop plan/text step that outputs them, then select from that step.
-- `visual_reference` is only for image/video generation and does not send pixels to the prompt-writing LLM.
-- If one media step must first look at an image and then generate from it, author both roles on that media step. The compiler routes `vision_context` to its hidden prompt step and keeps `visual_reference` on the visible media product.
+## Image rules
 
-Canonical example:
+- `vision_context` gives pixels to the prompt LLM and requires root `required_capabilities:["core.vision_context"]`; `visual_reference` serves only the media generator.
+- Fixed images use `context_refs` with `ref` and belong in `needs`.
+- Dynamic images use `references`, never `context_refs`. All keys are required: `from_group`, `source_step`, `source_path`, `match_fields`, `role`. The group is the candidate image loop; source is an earlier current-loop selector, never its media child; path is normally `output.selected_ids`; match fields are non-empty strings such as `["asset_id"]`. Put selector and group in `needs`.
+- If ids only exist on the loop item, add a plan/text step that copies them to declared `selected_ids`. If LLM and generator both need a source, author both roles; compilation separates them.
+
+Invalid: selector in `context_refs`; path missing `output.`; object `match_fields`; missing dependency/capability; media options outside `fields`; manual media prompt sibling.
+
+## Canonical fixed + dynamic pattern
 ```json
 """ + AUTHORING_SPEC_EXAMPLE_JSON + """
 ```
 
-Self-check before writing:
-- Every dependency id exists and points upstream or to a sibling in the same repeat group.
-- Collection schemas contain every field later read by loop children.
-- Media steps carry their own prompt; no hand-written media_prompt sibling for the same product.
-- Every vision source and selector candidate is upstream; root capabilities include `core.vision_context`.
-- workflow.canvas.inspect should show expected repeat groups, canvas nodes, edges, and final image/video/audio outputs.
+Before apply_patch verify ids/dependencies, schema fields, dimensions, five selector keys, both roles, and media fields. Ready only when `workflow.canvas.inspect` expands samples with no issues and expected final outputs.
 """

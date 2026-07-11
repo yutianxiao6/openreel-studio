@@ -71,6 +71,12 @@ _BUILTIN_WORKFLOW_CAPABILITY_DETAILS = {
                 "source_path": "Path from source_step payload to the selected-identifier array, normally output.selected_ids.",
                 "match_fields": "Non-empty string list of identity fields present on candidate repeat scopes.",
             },
+            "invalid_forms": [
+                "selector object inside context_refs",
+                "source_step points to the candidate media child",
+                "source_path omits the output. prefix",
+                "match_fields contains mapping objects instead of strings",
+            ],
         },
         "media_reference_role": "visual_reference",
         "failure_behavior": "A declared fixed vision image that cannot be hydrated fails the step.",

@@ -861,6 +861,8 @@ async def test_workflow_protocol_info_lists_core_capabilities() -> None:
     assert vision_details["dynamic_images"]["field"] == "references"
     assert "never the candidate media child" in vision_details["dynamic_images"]["semantics"]["source_step"]
     assert "string list" in vision_details["dynamic_images"]["semantics"]["match_fields"]
+    assert "selector object inside context_refs" in vision_details["dynamic_images"]["invalid_forms"]
+    assert "source_path omits the output. prefix" in vision_details["dynamic_images"]["invalid_forms"]
     assert vision_details["media_reference_role"] == "visual_reference"
     assert "openreel.core" in result["available_extensions"]
 

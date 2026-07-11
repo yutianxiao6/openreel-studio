@@ -2,7 +2,11 @@ import pytest
 
 from app.agent import canvas_workflow_templates
 from app.agent.workflow_authoring_spec import WorkflowAuthoringSpecError, compile_authoring_workflow
-from app.agent.workflow_spec_prompt_contract import AUTHORING_SPEC_EXAMPLE, AUTHORING_SPEC_GUIDE
+from app.agent.workflow_spec_prompt_contract import (
+    AUTHORING_SPEC_EXAMPLE,
+    AUTHORING_SPEC_GUIDE,
+    AUTHORING_SPEC_PROMPT_EXAMPLE,
+)
 from app.agent.workflow_structured_output import (
     WorkflowStructuredOutputError,
     parse_structured_output,
@@ -13,17 +17,13 @@ from app.agent.workflow_structured_output import (
 def test_authoring_prompt_contract_example_compiles_to_repeated_video_workflow() -> None:
     compiled = compile_authoring_workflow(AUTHORING_SPEC_EXAMPLE)
 
-    assert "Canonical example" in AUTHORING_SPEC_GUIDE
-    assert "Visible generated text uses text plus visible:true" in AUTHORING_SPEC_GUIDE
-    assert "Put the prompt there" in AUTHORING_SPEC_GUIDE
-    assert "needs/depends_on list upstream products" in AUTHORING_SPEC_GUIDE
-    assert "Cross-loop use requires the repeat group in needs" in AUTHORING_SPEC_GUIDE
-    assert "not top-level and not duration" in AUTHORING_SPEC_GUIDE
+    assert "Canonical fixed + dynamic pattern" in AUTHORING_SPEC_GUIDE
+    assert "Media carries its own prompt" in AUTHORING_SPEC_GUIDE
+    assert "duration_seconds" in AUTHORING_SPEC_GUIDE
     assert "core.vision_context" in AUTHORING_SPEC_GUIDE
-    assert "Fixed image refs" in AUTHORING_SPEC_GUIDE
-    assert "Dynamic selector" in AUTHORING_SPEC_GUIDE
-    assert "never `context_refs`" in AUTHORING_SPEC_GUIDE
-    assert "candidate media child is not `source_step`" in AUTHORING_SPEC_GUIDE
+    assert "Dynamic images use `references`, never `context_refs`" in AUTHORING_SPEC_GUIDE
+    assert "never its media child" in AUTHORING_SPEC_GUIDE
+    assert "object `match_fields`" in AUTHORING_SPEC_GUIDE
     assert "visual_reference" in AUTHORING_SPEC_GUIDE
     assert compiled["workflow_spec_version"] == "openreel.workflow.v1"
     assert compiled["authoring_spec_version"] == "openreel.workflow.authoring.v1"
@@ -130,6 +130,22 @@ def test_authoring_media_step_routes_image_roles_to_prompt_and_product() -> None
     assert [selector["role"] for selector in product_step["reference_selectors"]] == ["visual_reference"]
 
 
+def test_prompt_dynamic_reference_example_compiles_to_exact_role_routes() -> None:
+    compiled = compile_authoring_workflow(AUTHORING_SPEC_PROMPT_EXAMPLE)
+    groups = {step["id"]: step for step in compiled["steps"]}
+    children = {step["id"]: step for step in groups["shot_loop"]["steps"]}
+
+    assert compiled["required_capabilities"] == ["core.vision_context"]
+    assert groups["asset_loop"]["depends_on"] == ["assets"]
+    assert groups["shot_loop"]["depends_on"] == ["shots", "asset_loop"]
+    assert children["asset_selector"]["output_schema"]["fields"][0]["id"] == "selected_ids"
+    assert children["video_prompt"]["context_refs"] == [{"ref": "storyboard", "role": "vision_context"}]
+    assert [item["role"] for item in children["video_prompt"]["reference_selectors"]] == ["vision_context"]
+    assert all(item.get("role") != "vision_context" for item in children["video"]["context_refs"])
+    assert [item["role"] for item in children["video"]["reference_selectors"]] == ["visual_reference"]
+    assert children["video"]["fields"]["duration_seconds"] == "{{shot.duration_seconds}}"
+
+
 def test_authoring_reference_selector_rejects_mapping_match_fields() -> None:
     with pytest.raises(WorkflowAuthoringSpecError, match="match_fields must be a non-empty list of field names"):
         compile_authoring_workflow({
@@ -146,6 +162,48 @@ def test_authoring_reference_selector_rejects_mapping_match_fields() -> None:
                 }],
                 "prompt_template": "生成图片。",
             }],
+        })
+
+
+@pytest.mark.parametrize("selector,error", [
+    (
+        {"from_group": "assets", "source_step": "selector", "match_fields": ["asset_id"]},
+        "from_group requires: source_path",
+    ),
+    (
+        {
+            "from_group": "assets",
+            "source_step": "selector",
+            "source_path": "selected_ids",
+            "match_fields": ["asset_id"],
+        },
+        "source_path must start with 'output.'",
+    ),
+])
+def test_authoring_dynamic_selector_rejects_incomplete_canonical_shape(selector: dict, error: str) -> None:
+    with pytest.raises(WorkflowAuthoringSpecError, match=error):
+        compile_authoring_workflow({
+            "schema": "openreel.workflow.authoring.v1",
+            "id": "invalid_dynamic_selector",
+            "steps": [{"id": "image", "kind": "image", "references": [selector], "prompt_template": "出图"}],
+        })
+
+
+def test_authoring_vision_context_requires_root_capability() -> None:
+    with pytest.raises(WorkflowAuthoringSpecError, match="vision_context requires root required_capabilities"):
+        compile_authoring_workflow({
+            "schema": "openreel.workflow.authoring.v1",
+            "id": "missing_vision_capability",
+            "steps": [
+                {"id": "storyboard", "kind": "image", "prompt_template": "分镜"},
+                {
+                    "id": "video",
+                    "kind": "video",
+                    "needs": ["storyboard"],
+                    "context_refs": [{"ref": "storyboard", "role": "vision_context"}],
+                    "prompt_template": "看图写提示词",
+                },
+            ],
         })
 
 

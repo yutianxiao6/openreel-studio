@@ -186,16 +186,15 @@ those images for generation, author both roles on the same media step. The
 authoring compiler moves `vision_context` entries to the hidden prompt step and
 keeps `visual_reference` entries on the visible media product.
 
-```json
-{
-  "references": {
-    "characters": {
-      "source": "frame_plan.output.appearing_characters",
-      "candidates": "character_reference"
-    }
-  }
-}
-```
+The same fixed or dynamic source therefore appears twice when both stages need
+it: once with `vision_context` and once with `visual_reference`.
+
+Frequent invalid authoring forms are: putting selector objects in
+`context_refs`; setting `source_step` to the candidate image child; omitting
+the `output.` prefix from `source_path`; using mapping objects inside
+`match_fields`; omitting the candidate repeat group from `needs`; declaring
+`vision_context` without root `core.vision_context`; writing media options
+outside `fields`; or hand-writing a media prompt sibling.
 
 The backend resolves matching candidates at execution time and writes concrete
 node references to the visible product node.
