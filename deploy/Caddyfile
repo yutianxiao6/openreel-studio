@@ -36,6 +36,7 @@
 	@public_media {
 		method GET HEAD
 		path /api/media/* /api/uploads/* /studio/api/media/* /studio/api/uploads/*
+		query expires=* signature=*
 	}
 	handle @public_media {
 		uri strip_prefix /studio
@@ -150,6 +151,7 @@ https://:3000 {
 	@public_media {
 		method GET HEAD
 		path /api/media/* /api/uploads/* /studio/api/media/* /studio/api/uploads/*
+		query expires=* signature=*
 	}
 	handle @public_media {
 		uri strip_prefix /studio

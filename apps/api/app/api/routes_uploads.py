@@ -16,12 +16,13 @@ import mimetypes
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from app.db.models import Project
 from app.db.session import session_scope
 from app.mcp_tools.file_tools import _project_dir, _safe_path, write_image_base64_cache
+from app.services.media_url_signing import verify_media_url_signature
 
 router = APIRouter()
 
@@ -45,6 +46,15 @@ def _classify(filename: str, mime_type: str | None) -> str:
     if suffix in _DOC_SUFFIXES:
         return "document"
     return "other"
+
+
+def _validate_signature_query(request: Request) -> None:
+    expires = request.query_params.get("expires")
+    signature = request.query_params.get("signature")
+    if expires is None and signature is None:
+        return
+    if not verify_media_url_signature(request.url.path, expires, signature):
+        raise HTTPException(status_code=403, detail="Invalid or expired media URL signature")
 
 
 @router.post("/{project_id}")
@@ -106,7 +116,8 @@ async def upload_file(project_id: str, file: UploadFile = File(...)) -> dict:
 
 
 @router.get("/{project_id}/file/{rel_path:path}")
-async def get_uploaded_file(project_id: str, rel_path: str):
+async def get_uploaded_file(project_id: str, rel_path: str, request: Request):
+    _validate_signature_query(request)
     try:
         target = _safe_path(project_id, rel_path)
     except ValueError as exc:
@@ -121,12 +132,13 @@ async def get_uploaded_file(project_id: str, rel_path: str):
     return FileResponse(
         str(resolved),
         media_type=mime_type,
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers={"Cache-Control": "private, max-age=3600"},
     )
 
 
 @router.get("/{project_id}/reference/{ref_id}")
-async def get_reference_asset_file(project_id: str, ref_id: str):
+async def get_reference_asset_file(project_id: str, ref_id: str, request: Request):
+    _validate_signature_query(request)
     async with session_scope() as session:
         project = await session.get(Project, project_id)
     if not project:

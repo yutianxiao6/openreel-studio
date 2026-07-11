@@ -28,6 +28,7 @@ from sqlmodel import select
 from app.config import settings
 from app.db.models import Asset, MediaProvider, WorkflowNode
 from app.db.session import session_scope
+from app.services.media_url_signing import MediaURLSigningError, sign_media_url
 
 
 ProgressCallback = Callable[[dict[str, Any]], Any]
@@ -3882,7 +3883,11 @@ def _public_media_url_for_ref(project_id: str, ref: str, public_base_url: str | 
             local_url = None
 
     if local_url and base:
-        return f"{base}{local_url}", None
+        try:
+            signed_url = sign_media_url(local_url)
+        except MediaURLSigningError as exc:
+            return None, str(exc)
+        return f"{base}{signed_url}", None
     if local_url:
         return None, (
             "当前 provider 选择了公网 URL 图片输入模式。"

@@ -2707,7 +2707,8 @@ async def test_json_image_url_adapters_default_to_data_url(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_json_image_url_adapters_can_use_public_url_mode():
+async def test_json_image_url_adapters_can_use_public_url_mode(monkeypatch):
+    monkeypatch.setenv("DRAMA_MEDIA_URL_SIGNING_SECRET", "test-only-secret")
     provider = SimpleNamespace(
         name="xai-grok-video",
         model_name="grok-imagine-video-1.5",
@@ -2725,7 +2726,13 @@ async def test_json_image_url_adapters_can_use_public_url_mode():
     )
 
     assert warning is None
-    assert image == {"url": "https://studio.example/api/media/proj-1/generated_images/source.png"}
+    assert image is not None
+    signed_url = image["url"]
+    assert signed_url.startswith(
+        "https://studio.example/api/media/proj-1/generated_images/source.png?"
+    )
+    assert "expires=" in signed_url
+    assert "signature=" in signed_url
 
 
 def test_public_url_mode_requires_public_base_for_local_media():

@@ -11,10 +11,11 @@ from __future__ import annotations
 import mimetypes
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from app.config import settings
+from app.services.media_url_signing import verify_media_url_signature
 
 router = APIRouter()
 
@@ -70,18 +71,29 @@ def _media_response(target: Path) -> FileResponse:
         path=str(target),
         media_type=mime or "application/octet-stream",
         headers={
-            "Cache-Control": "public, max-age=3600",
+            "Cache-Control": "private, max-age=3600",
             "Content-Disposition": _inline_content_disposition(target.name),
             "Accept-Ranges": "bytes",
         },
     )
 
 
+def _validate_signature_query(request: Request) -> None:
+    expires = request.query_params.get("expires")
+    signature = request.query_params.get("signature")
+    if expires is None and signature is None:
+        return
+    if not verify_media_url_signature(request.url.path, expires, signature):
+        raise HTTPException(status_code=403, detail="Invalid or expired media URL signature")
+
+
 @router.get("/{project_id}/{path:path}")
-async def get_media(project_id: str, path: str):
+async def get_media(project_id: str, path: str, request: Request):
+    _validate_signature_query(request)
     return _media_response(_resolve_media_target(project_id, path))
 
 
 @router.head("/{project_id}/{path:path}")
-async def head_media(project_id: str, path: str):
+async def head_media(project_id: str, path: str, request: Request):
+    _validate_signature_query(request)
     return _media_response(_resolve_media_target(project_id, path))
