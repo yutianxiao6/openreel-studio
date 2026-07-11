@@ -1372,6 +1372,18 @@ def load_builtin_templates(input_values: dict[str, Any] | None = None) -> list[d
     return templates
 
 
+def get_builtin_template(
+    template_id: str,
+    *,
+    input_values: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    wanted = str(template_id or "").strip()
+    for template in load_builtin_templates(input_values=input_values):
+        if str(template.get("id") or "") == wanted:
+            return template
+    raise WorkflowTemplateError(f"Built-in workflow template not found: {wanted}")
+
+
 def load_user_templates(input_values: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     from app.agent import workflow_template_store
 
@@ -1396,11 +1408,15 @@ def load_user_templates(input_values: dict[str, Any] | None = None) -> list[dict
 def load_templates(input_values: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     user_templates = load_user_templates(input_values=input_values)
     user_template_ids = {str(item.get("id") or "") for item in user_templates}
+    builtin_templates = load_builtin_templates(input_values=input_values)
+    builtin_template_ids = {str(item.get("id") or "") for item in builtin_templates}
+    for template in user_templates:
+        template["overrides_builtin"] = str(template.get("id") or "") in builtin_template_ids
     templates = [
         *user_templates,
         *(
             item
-            for item in load_builtin_templates(input_values=input_values)
+            for item in builtin_templates
             if str(item.get("id") or "") not in user_template_ids
         ),
     ]
@@ -1822,20 +1838,27 @@ def list_template_summaries() -> list[dict[str, Any]]:
     user_template_ids: set[str] = set()
     from app.agent import workflow_template_store
 
+    builtin_workflows = [
+        (path, _read_template_file(path))
+        for path in sorted(_BUILTIN_TEMPLATE_ROOT.glob("*/templates/*.json"))
+    ]
+    builtin_template_ids = {str(workflow.get("id") or "") for _, workflow in builtin_workflows}
+
     for record in workflow_template_store.list_user_template_records():
         version = record.get("version") if isinstance(record.get("version"), dict) else {}
         workflow = version.get("workflow") if isinstance(version.get("workflow"), dict) else None
         if not workflow:
             continue
         user_template_ids.add(str(workflow.get("id") or ""))
-        templates.append(_template_summary_from_raw(
+        summary = _template_summary_from_raw(
             workflow,
             scope="user",
             source="user_template",
             extra_summary=record.get("summary") if isinstance(record.get("summary"), dict) else {},
-        ))
-    for path in sorted(_BUILTIN_TEMPLATE_ROOT.glob("*/templates/*.json")):
-        workflow = _read_template_file(path)
+        )
+        summary["overrides_builtin"] = str(workflow.get("id") or "") in builtin_template_ids
+        templates.append(summary)
+    for path, workflow in builtin_workflows:
         if str(workflow.get("id") or "") in user_template_ids:
             continue
         templates.append(_template_summary_from_raw(

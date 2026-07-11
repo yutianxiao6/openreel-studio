@@ -53,6 +53,48 @@ def test_project_active_workflow_template_state_round_trips():
     }
 
 
+@pytest.mark.asyncio
+async def test_restore_builtin_workflow_template_removes_user_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProjectService:
+        def __init__(self, db: object) -> None:
+            self.db = db
+
+        async def get_project_state(self, project_id: str) -> dict[str, Any]:
+            return {}
+
+    monkeypatch.setattr(routes_projects, "ProjectService", FakeProjectService)
+    monkeypatch.setattr(
+        routes_projects.canvas_workflow_templates,
+        "get_builtin_template",
+        lambda template_id: {"id": template_id, "name": "内置流程"},
+    )
+    monkeypatch.setattr(routes_projects.workflow_template_store, "user_template_exists", lambda template_id: True)
+    monkeypatch.setattr(
+        routes_projects.workflow_template_store,
+        "delete_user_template",
+        lambda template_id: {"ok": True, "template_id": template_id, "deleted_paths": ["user.json"]},
+    )
+    monkeypatch.setattr(
+        routes_projects.canvas_workflow_templates,
+        "list_template_summaries",
+        lambda: [{"id": "demo_builtin", "name": "内置流程", "scope": "builtin", "steps": []}],
+    )
+
+    result = await routes_projects.restore_project_builtin_workflow_template(
+        project_id="project-1",
+        template_id="demo_builtin",
+        db=object(),
+    )
+
+    assert result["ok"] is True
+    assert result["template_id"] == "demo_builtin"
+    assert result["restored_scope"] == "builtin"
+    assert result["summary"]["scope"] == "builtin"
+    assert result["deleted_user_template"]["deleted_paths"] == ["user.json"]
+
+
 def test_project_active_workflow_imported_state_restores_preview():
     workflow = {
         "id": "grid_storyboard_workflow",

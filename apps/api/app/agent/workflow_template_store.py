@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import time
 import uuid
 from copy import deepcopy
@@ -125,6 +126,30 @@ def _template_exists(template_id: str) -> bool:
         if (root / normalized / "manifest.json").exists():
             return True
     return False
+
+
+def user_template_exists(template_id: str) -> bool:
+    return _template_exists(template_id)
+
+
+def delete_user_template(template_id: str) -> dict[str, Any]:
+    normalized = normalize_template_id(template_id)
+    deleted_paths: list[str] = []
+    template_file = _template_file_path(normalized)
+    if template_file.exists():
+        template_file.unlink()
+        deleted_paths.append(str(template_file))
+    legacy_root = _template_root(normalized)
+    if legacy_root.exists():
+        shutil.rmtree(legacy_root)
+        deleted_paths.append(str(legacy_root))
+    if not deleted_paths:
+        raise WorkflowTemplateStoreError(f"user workflow template not found: {normalized}")
+    return {
+        "ok": True,
+        "template_id": normalized,
+        "deleted_paths": deleted_paths,
+    }
 
 
 def unique_template_id(preferred_id: Any = "", *, name: Any = "") -> str:

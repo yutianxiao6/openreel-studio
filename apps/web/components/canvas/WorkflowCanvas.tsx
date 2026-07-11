@@ -61,6 +61,7 @@ import {
   resolveMediaUrl,
   restoreProjectMediaHistoryItem,
   restoreProjectCanvasSnapshot,
+  restoreBuiltinWorkflowTemplate,
   runProjectMediaOperation,
   updateProjectNodeDetails,
   uploadProjectNodeMedia,
@@ -8346,6 +8347,7 @@ function WorkflowTemplatePanel({
   onSaveWorkflowSpec,
   onSaveWorkflowTemplate,
   onDownloadWorkflowTemplate,
+  onRestoreBuiltinTemplate,
 }: {
   templates: WorkflowTemplateSummary[]
   selectedId: string
@@ -8376,6 +8378,7 @@ function WorkflowTemplatePanel({
     options: { templateId?: string; replaceExisting?: boolean },
   ) => Promise<string | void>
   onDownloadWorkflowTemplate: (template: WorkflowTemplateSummary) => Promise<void>
+  onRestoreBuiltinTemplate: (template: WorkflowTemplateSummary) => Promise<void>
 }) {
   const [detailStepId, setDetailStepId] = useState<string | null>(null)
   const [draftSteps, setDraftSteps] = useState<WorkflowTemplateStepSummary[]>([])
@@ -8383,6 +8386,8 @@ function WorkflowTemplatePanel({
   const [savingDraft, setSavingDraft] = useState(false)
   const [savingTemplate, setSavingTemplate] = useState(false)
   const [downloadingTemplate, setDownloadingTemplate] = useState(false)
+  const [restoringBuiltinTemplate, setRestoringBuiltinTemplate] = useState(false)
+  const [restoreBuiltinConfirmOpen, setRestoreBuiltinConfirmOpen] = useState(false)
   const [draftError, setDraftError] = useState<string | null>(null)
   const [workflowName, setWorkflowName] = useState("")
   const [workflowDescription, setWorkflowDescription] = useState("")
@@ -9122,6 +9127,24 @@ function WorkflowTemplatePanel({
     }
   }, [downloadingTemplate, onDownloadWorkflowTemplate, selected])
 
+  const restoreSelectedBuiltinTemplate = useCallback(async () => {
+    if (!selected?.overrides_builtin || restoringBuiltinTemplate) return
+    setRestoreBuiltinConfirmOpen(false)
+    setRestoringBuiltinTemplate(true)
+    setDraftError(null)
+    try {
+      await onRestoreBuiltinTemplate(selected)
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRestoringBuiltinTemplate(false)
+    }
+  }, [onRestoreBuiltinTemplate, restoringBuiltinTemplate, selected])
+
+  useEffect(() => {
+    setRestoreBuiltinConfirmOpen(false)
+  }, [selected?.id])
+
   const pickImportSpecFile = () => {
     if (typeof document === "undefined" || typeof window === "undefined") return
     const input = document.createElement("input")
@@ -9238,6 +9261,43 @@ function WorkflowTemplatePanel({
           >
             {downloadingTemplate ? "下载中" : "下载模板"}
           </button>
+          {selected?.overrides_builtin && (
+            <div className="relative hidden sm:block">
+              <button
+                type="button"
+                onClick={() => setRestoreBuiltinConfirmOpen((current) => !current)}
+                disabled={restoringBuiltinTemplate || savingDraft || savingTemplate}
+                className="inline-flex h-8 items-center rounded-md border border-amber-200/25 bg-amber-300/10 px-2 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-300/16 disabled:cursor-not-allowed disabled:opacity-45"
+                title="删除当前用户覆盖版本并恢复只读的内置原版"
+              >
+                {restoringBuiltinTemplate ? "恢复中" : "恢复内置"}
+              </button>
+              {restoreBuiltinConfirmOpen && (
+                <div className="absolute right-0 top-10 z-[90] w-72 rounded-lg border border-amber-200/20 bg-[#151a22] p-3 shadow-2xl shadow-black/55">
+                  <div className="text-xs font-semibold text-zinc-100">恢复内置原版？</div>
+                  <div className="mt-1.5 text-[11px] leading-5 text-zinc-400">
+                    当前用户修改版会被删除，“{selected.name || selected.id}”将恢复为系统内置内容。
+                  </div>
+                  <div className="mt-3 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setRestoreBuiltinConfirmOpen(false)}
+                      className="h-7 rounded-md border border-white/10 px-2.5 text-[11px] text-zinc-300 transition hover:bg-white/[0.06]"
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void restoreSelectedBuiltinTemplate()}
+                      className="h-7 rounded-md bg-amber-300 px-2.5 text-[11px] font-semibold text-amber-950 transition hover:bg-amber-200"
+                    >
+                      确认恢复
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -11525,6 +11585,19 @@ export default function WorkflowCanvas({
     )
   }, [currentProject?.id])
 
+  const restoreWorkflowEditorBuiltinTemplate = useCallback(async (template: WorkflowTemplateSummary) => {
+    setWorkflowTemplatesError(null)
+    if (!currentProject?.id) throw new Error("项目加载后才能恢复内置模板。")
+    if (!template.overrides_builtin) throw new Error("当前模板没有可恢复的内置版本。")
+    const result = await restoreBuiltinWorkflowTemplate(currentProject.id, template.id)
+    const templateId = String(result.template_id || result.summary?.id || template.id).trim()
+    setWorkflowArtifactPreview(null)
+    setWorkflowImportedSpec(null)
+    setSelectedWorkflowTemplateId(templateId)
+    await saveActiveWorkflowSelection({ kind: "template", template_id: templateId })
+    await refreshWorkflowTemplates()
+  }, [currentProject?.id, refreshWorkflowTemplates, saveActiveWorkflowSelection])
+
   const materializeSelectedWorkflow = useCallback(async () => {
     if (!currentProject?.id || workflowMaterializing) return
     const template = selectedWorkflowTemplate
@@ -13507,6 +13580,7 @@ export default function WorkflowCanvas({
       onSaveWorkflowSpec={saveWorkflowEditorSpec}
       onSaveWorkflowTemplate={saveWorkflowEditorTemplate}
       onDownloadWorkflowTemplate={downloadWorkflowTemplate}
+      onRestoreBuiltinTemplate={restoreWorkflowEditorBuiltinTemplate}
     />
   ) : (
     <div className="flex h-full items-center justify-center bg-[#10151d] text-sm text-zinc-500">

@@ -449,10 +449,26 @@ def test_user_template_shadows_builtin_template_with_same_id(
 
     assert len(summaries) == 1
     assert summaries[0]["scope"] == "user"
+    assert summaries[0]["overrides_builtin"] is True
     assert summaries[0]["name"] == "我的通用视频流程"
     loaded = canvas_workflow_templates.get_template("general_short_drama_workflow")
     assert loaded["scope"] == "user"
+    assert loaded["overrides_builtin"] is True
     assert loaded["name"] == "我的通用视频流程"
+
+    deleted = workflow_template_store.delete_user_template("general_short_drama_workflow")
+
+    assert deleted["ok"] is True
+    assert not (template_root / "general_short_drama_workflow.json").exists()
+    restored = canvas_workflow_templates.get_template("general_short_drama_workflow")
+    assert restored["scope"] == "builtin"
+    restored_summaries = [
+        item
+        for item in canvas_workflow_templates.list_template_summaries()
+        if item["id"] == "general_short_drama_workflow"
+    ]
+    assert len(restored_summaries) == 1
+    assert restored_summaries[0]["scope"] == "builtin"
 
 
 def test_replacing_current_user_template_does_not_create_suffixed_copy(

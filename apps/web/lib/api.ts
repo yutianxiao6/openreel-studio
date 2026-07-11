@@ -313,6 +313,7 @@ export interface WorkflowTemplateSummary {
   applies_to?: string
   version?: string
   scope?: 'builtin' | 'user' | string
+  overrides_builtin?: boolean
   source?: string
   downloadable?: boolean
   active_version_id?: string
@@ -540,6 +541,30 @@ export async function downloadWorkflowTemplatePackage(
     version_id?: string
     filename?: string
     package: Record<string, unknown>
+  }>(res)
+}
+
+export async function restoreBuiltinWorkflowTemplate(
+  projectId: string,
+  templateId: string,
+): Promise<{
+  ok: boolean
+  project_id: string
+  template_id: string
+  restored_scope: 'builtin'
+  summary: WorkflowTemplateSummary
+}> {
+  const base = await getApiBase()
+  const res = await fetch(
+    `${base}/api/projects/${projectId}/workflow/templates/${encodeURIComponent(templateId)}/restore-builtin`,
+    { method: 'POST' },
+  )
+  return asJson<{
+    ok: boolean
+    project_id: string
+    template_id: string
+    restored_scope: 'builtin'
+    summary: WorkflowTemplateSummary
   }>(res)
 }
 

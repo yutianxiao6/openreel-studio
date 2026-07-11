@@ -1375,6 +1375,40 @@ async def download_project_workflow_template(
     }
 
 
+@router.post("/{project_id}/workflow/templates/{template_id}/restore-builtin")
+async def restore_project_builtin_workflow_template(
+    project_id: str,
+    template_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    svc = ProjectService(db)
+    state = await svc.get_project_state(project_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        builtin = canvas_workflow_templates.get_builtin_template(template_id)
+        if not workflow_template_store.user_template_exists(template_id):
+            raise HTTPException(status_code=409, detail="Template is already using the built-in version")
+        deleted = workflow_template_store.delete_user_template(template_id)
+        summary = next(
+            item
+            for item in canvas_workflow_templates.list_template_summaries()
+            if str(item.get("id") or "") == str(builtin.get("id") or "")
+        )
+    except workflow_template_store.WorkflowTemplateStoreError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except canvas_workflow_templates.WorkflowTemplateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "template_id": builtin.get("id"),
+        "restored_scope": "builtin",
+        "summary": summary,
+        "deleted_user_template": deleted,
+    }
+
+
 @router.put("/{project_id}/workflow/active")
 async def set_project_active_workflow(
     project_id: str,
