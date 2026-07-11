@@ -1296,6 +1296,49 @@ def test_media_provider_timeout_default_is_interactive(monkeypatch):
     assert timeout.pool == 300.0
 
 
+def test_openai_image_protocol_uses_versioned_provider_base_without_appending_v1():
+    provider = SimpleNamespace(
+        base_url="https://ark.cn-beijing.volces.com/api/v3",
+        api_key="ark-key",
+        api_format="image_http_v1",
+        model_name="doubao-seedream-5-0-pro-260628",
+        params_json=json.dumps({"image_protocol_id": "openai_images_generations"}),
+    )
+
+    protocol, error = media_provider._image_http_v1_protocol(provider)
+
+    assert error is None
+    assert protocol is not None
+    endpoint = media_provider._image_http_v1_endpoint_for(
+        provider,
+        protocol,
+        media_provider._image_http_v1_request_section(protocol),
+    )
+    assert endpoint == "https://ark.cn-beijing.volces.com/api/v3/images/generations"
+    assert "/api/v3/v1/" not in endpoint
+
+
+def test_openai_image_protocol_preserves_v1_when_it_is_part_of_provider_base():
+    provider = SimpleNamespace(
+        base_url="https://api.openai.com/v1",
+        api_key="openai-key",
+        api_format="image_http_v1",
+        model_name="gpt-image-1",
+        params_json=json.dumps({"image_protocol_id": "openai_images_generations"}),
+    )
+
+    protocol, error = media_provider._image_http_v1_protocol(provider)
+
+    assert error is None
+    assert protocol is not None
+    endpoint = media_provider._image_http_v1_endpoint_for(
+        provider,
+        protocol,
+        media_provider._image_http_v1_request_section(protocol),
+    )
+    assert endpoint == "https://api.openai.com/v1/images/generations"
+
+
 def _png_header(width: int, height: int) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big")
 

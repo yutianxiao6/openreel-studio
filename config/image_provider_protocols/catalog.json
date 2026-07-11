@@ -5,7 +5,7 @@
       "version": "openreel.image_provider.v1",
       "id": "openai_images_generations",
       "display_name": "OpenAI-compatible images.generations",
-      "strip_base_suffixes": ["/images/generations", "/v1"],
+      "strip_base_suffixes": ["/images/generations"],
       "image_transport": "data_url",
       "default_params": {
         "size": "1024x1024"
@@ -18,7 +18,7 @@
       ],
       "request": {
         "method": "POST",
-        "path": "/v1/images/generations",
+        "path": "/images/generations",
         "auth": "bearer",
         "merge_extra": true,
         "body": {
