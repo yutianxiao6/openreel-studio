@@ -5,7 +5,7 @@
       "version": "openreel.audio_provider.v1",
       "id": "openai_audio_speech",
       "display_name": "OpenAI-compatible audio.speech",
-      "strip_base_suffixes": ["/audio/speech", "/v1"],
+      "default_base_url": "https://api.openai.com/v1",
       "default_params": {
         "voice": "alloy",
         "response_format": "mp3"
@@ -17,7 +17,7 @@
       ],
       "request": {
         "method": "POST",
-        "path": "/v1/audio/speech",
+        "path": "/audio/speech",
         "auth": "bearer",
         "merge_extra": true,
         "required_context": ["input"],
@@ -39,7 +39,6 @@
       "version": "openreel.audio_provider.v1",
       "id": "newapi_suno_music",
       "display_name": "New API Suno Music",
-      "strip_base_suffixes": ["/suno/submit/music", "/suno", "/v1"],
       "default_params": {
         "mv": "chirp-v4",
         "make_instrumental": false
@@ -100,7 +99,6 @@
       "version": "openreel.audio_provider.v1",
       "id": "suno_compatible_generate",
       "display_name": "Suno-compatible generate task",
-      "strip_base_suffixes": ["/api/v1/generate", "/api/v1", "/generate", "/v1"],
       "default_params": {
         "customMode": false
       },

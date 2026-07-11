@@ -5,7 +5,7 @@
       "version": "openreel.image_provider.v1",
       "id": "openai_images_generations",
       "display_name": "OpenAI-compatible images.generations",
-      "strip_base_suffixes": ["/images/generations"],
+      "default_base_url": "https://api.openai.com/v1",
       "image_transport": "data_url",
       "default_params": {
         "size": "1024x1024"

@@ -1871,18 +1871,13 @@ def _video_http_v1_base_for(
     protocol: dict[str, Any],
     section: dict[str, Any],
 ) -> str:
-    base = str(getattr(provider, "base_url", "") or protocol.get("base_url") or protocol.get("default_base_url") or "").strip()
-    suffixes = section.get("strip_base_suffixes") or protocol.get("strip_base_suffixes") or []
-    if isinstance(suffixes, str):
-        suffixes = [suffixes]
-    if isinstance(suffixes, list):
-        base = base.rstrip("/")
-        for suffix in suffixes:
-            clean = str(suffix or "").strip().rstrip("/")
-            if clean and base.endswith(clean):
-                base = base[: -len(clean)].rstrip("/")
-                break
-    return base
+    del section
+    return str(
+        getattr(provider, "base_url", "")
+        or protocol.get("base_url")
+        or protocol.get("default_base_url")
+        or ""
+    ).strip()
 
 
 def _video_http_v1_headers(

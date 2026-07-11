@@ -509,13 +509,7 @@ function Row({
       <div className="grid gap-3 px-4 py-4 md:grid-cols-2">
         <F label="名称" required value={draft.name} onChange={(v) => setField("name", v)} />
         <F label="Base URL" required value={draft.base_url} onChange={(v) => setField("base_url", v)}
-          hint={entry.kind === "image"
-            ? "填写当前图片服务商或中转站的 Base URL；请求结构由图片协议决定。"
-            : entry.kind === "video"
-            ? "填写当前服务商的 Base URL；请求结构由协议/API Format 决定。"
-            : entry.kind === "audio"
-              ? "填写当前音频服务商或中转站的 Base URL；请求结构由音频协议决定。"
-            : undefined} />
+          hint="填写协议路径的共同根地址。后端会原样保留，不删除或补写版本后缀；通常包含 /v1 或 /api/v3，协议同时使用多个版本路径时填写主机根地址。" />
         {entry.kind === "image" ? (
           <>
             <F

@@ -244,7 +244,6 @@
       "version": "openreel.video_provider.v1",
       "id": "t8_grok_video_3_json_task",
       "display_name": "T8 Grok Video 3 JSON task",
-      "strip_base_suffixes": ["/v2/videos/generations", "/v2/videos", "/v1/files", "/v1", "/v2"],
       "image_transport": "upload_url",
       "supported_ratios": ["2:3", "3:2", "16:9", "9:16", "1:1"],
       "supported_resolutions": ["480p", "720p", "1080p"],
@@ -342,8 +341,7 @@
       "version": "openreel.video_provider.v1",
       "id": "xai_grok_imagine_video",
       "display_name": "xAI Grok Imagine Video",
-      "default_base_url": "https://api.x.ai",
-      "strip_base_suffixes": ["/videos/generations", "/videos", "/v1"],
+      "default_base_url": "https://api.x.ai/v1",
       "image_transport": "data_url",
       "supported_ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
       "supported_resolutions": ["480p", "720p", "1080p"],
@@ -393,7 +391,7 @@
       },
       "request": {
         "method": "POST",
-        "path": "/v1/videos/generations",
+        "path": "/videos/generations",
         "auth": "bearer",
         "task_id_paths": ["request_id", "id", "task_id", "job_id"],
         "body": {
@@ -411,7 +409,7 @@
       },
       "poll": {
         "method": "GET",
-        "path": "/v1/videos/{task_id}",
+        "path": "/videos/{task_id}",
         "status_path": "status",
         "succeeded": ["done", "completed", "succeeded"],
         "failed": ["failed", "expired", "cancelled", "canceled"],
@@ -439,8 +437,7 @@
       "version": "openreel.video_provider.v1",
       "id": "xai_grok_imagine_video_1_5",
       "display_name": "xAI Grok Imagine Video 1.5",
-      "default_base_url": "https://api.x.ai",
-      "strip_base_suffixes": ["/videos/generations", "/videos", "/v1"],
+      "default_base_url": "https://api.x.ai/v1",
       "image_transport": "data_url",
       "supported_ratios": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
       "supported_resolutions": ["480p", "720p", "1080p"],
@@ -469,7 +466,7 @@
       },
       "request": {
         "method": "POST",
-        "path": "/v1/videos/generations",
+        "path": "/videos/generations",
         "auth": "bearer",
         "task_id_paths": ["request_id", "id", "task_id", "job_id"],
         "body": {
@@ -486,7 +483,7 @@
       },
       "poll": {
         "method": "GET",
-        "path": "/v1/videos/{task_id}",
+        "path": "/videos/{task_id}",
         "status_path": "status",
         "succeeded": ["done", "completed", "succeeded"],
         "failed": ["failed", "expired", "cancelled", "canceled"],
@@ -514,7 +511,6 @@
       "version": "openreel.video_provider.v1",
       "id": "grok_1_5_multipart",
       "display_name": "Grok 1.5 Multipart",
-      "strip_base_suffixes": ["/videos", "/v1"],
       "image_transport": "multipart_file",
       "supported_ratios": ["16:9", "9:16"],
       "supported_resolutions": ["480p", "720p"],
@@ -543,7 +539,7 @@
       },
       "request": {
         "method": "POST",
-        "path": "/v1/videos",
+        "path": "/videos",
         "auth": "bearer",
         "encoding": "multipart",
         "task_id_paths": ["request_id", "id", "task_id", "job_id"],
@@ -558,7 +554,7 @@
       },
       "poll": {
         "method": "GET",
-        "path": "/v1/videos/{task_id}",
+        "path": "/videos/{task_id}",
         "status_path": "status",
         "succeeded": ["done", "completed", "succeeded"],
         "failed": ["failed", "expired", "cancelled", "canceled"],
