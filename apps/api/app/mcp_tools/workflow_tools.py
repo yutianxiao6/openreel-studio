@@ -27,6 +27,23 @@ from app.agent.workflow_review import build_workflow_semantic_review_evidence
 from app.db.session import session_scope
 from app.mcp_tools import canvas_tools
 from app.mcp_tools.registry import register
+from app.mcp_tools.workflow_conditions import (
+    condition_value_from_inputs as _condition_value_from_inputs,
+    coerce_condition_number as _coerce_condition_number,
+    workflow_auto_skip_condition_met as _workflow_auto_skip_condition_met,
+    workflow_step_auto_skipped as _workflow_step_auto_skipped,
+)
+from app.mcp_tools.workflow_reference_matching import (
+    REFERENCE_SELECTOR_TOKEN_FIELDS as _REFERENCE_SELECTOR_TOKEN_FIELDS,
+    flatten_workflow_values as _flatten_workflow_values,
+    selector_key as _selector_key,
+    workflow_alias_equal as _workflow_alias_equal,
+    workflow_context_get as _workflow_context_get,
+    workflow_token_variants as _workflow_token_variants,
+    workflow_tokens_from_value as _workflow_tokens_from_value,
+    workflow_tokens_match as _workflow_tokens_match,
+    workflow_values_at_path as _workflow_values_at_path,
+)
 from app.services import media_history
 from app.services.project_service import ProjectService
 from app.services.node_public_ids import internal_to_public_id_map, model_visible_node_payload
@@ -3333,82 +3350,6 @@ def _workflow_input_step_spec(step: dict[str, Any], inputs: dict[str, Any] | Non
     return step_id in {"input", "inputs", "workflow_input"} and bool(inputs)
 
 
-def _condition_value_from_inputs(inputs: dict[str, Any] | None, key: str) -> Any:
-    if not isinstance(inputs, dict):
-        return None
-    if key in inputs:
-        return inputs[key]
-    normalized = key.strip().lower()
-    for candidate, value in inputs.items():
-        if str(candidate).strip().lower() == normalized:
-            return value
-    return None
-
-
-def _coerce_condition_number(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _workflow_auto_skip_condition_met(condition: str, inputs: dict[str, Any] | None) -> bool:
-    text = str(condition or "").strip()
-    if not text:
-        return False
-    match = re.fullmatch(
-        r"\{\{\s*inputs\.([A-Za-z0-9_]+)\s*\}\}\s*(<=|>=|==|!=|<|>)\s*([+-]?\d+(?:\.\d+)?|true|false|\"[^\"]*\"|'[^']*')",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if match:
-        left = _condition_value_from_inputs(inputs, match.group(1))
-        operator = match.group(2)
-        raw_right = match.group(3)
-        if raw_right.lower() in {"true", "false"}:
-            right: Any = raw_right.lower() == "true"
-        elif raw_right.startswith(("'", '"')) and raw_right.endswith(("'", '"')):
-            right = raw_right[1:-1]
-        else:
-            right = _coerce_condition_number(raw_right)
-        left_number = _coerce_condition_number(left)
-        right_number = _coerce_condition_number(right)
-        if left_number is not None and right_number is not None:
-            left_value: Any = left_number
-            right_value: Any = right_number
-        else:
-            left_value = left
-            right_value = right
-        try:
-            if operator == "<=":
-                return left_value <= right_value
-            if operator == ">=":
-                return left_value >= right_value
-            if operator == "<":
-                return left_value < right_value
-            if operator == ">":
-                return left_value > right_value
-            if operator == "==":
-                return left_value == right_value
-            if operator == "!=":
-                return left_value != right_value
-        except TypeError:
-            return False
-    empty_match = re.fullmatch(
-        r"\{\{\s*inputs\.([A-Za-z0-9_]+)\s*\}\}\s+is\s+empty",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if empty_match:
-        return _condition_value_from_inputs(inputs, empty_match.group(1)) in (None, "", [], {})
-    return False
-
-
-def _workflow_step_auto_skipped(step: dict[str, Any], inputs: dict[str, Any] | None) -> bool:
-    condition = str(step.get("auto_skip_when") or "").strip()
-    return bool(condition and _workflow_auto_skip_condition_met(condition, inputs))
-
-
 def _virtual_workflow_step_ids(steps: list[dict[str, Any]], inputs: dict[str, Any] | None) -> set[str]:
     return {
         str(step.get("id") or "").strip()
@@ -4075,29 +4016,7 @@ def _workflow_dependency_refs_for_step(
     return _dedupe_workflow_references(dep_refs)
 
 
-_REFERENCE_SELECTOR_TOKEN_FIELDS = (
-    "name",
-    "reuse_key",
-    "character",
-    "character_id",
-    "id",
-    "key",
-    "title",
-    "label",
-    "item",
-)
 _WORKFLOW_LLM_VISION_ROLE = "vision_context"
-
-
-def _selector_key(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text)
-
-
-def _workflow_alias_equal(left: Any, right: Any) -> bool:
-    left_text = str(left or "").strip()
-    right_text = str(right or "").strip()
-    return bool(left_text and right_text and (left_text == right_text or _selector_key(left_text) == _selector_key(right_text)))
 
 
 def _workflow_reference_selectors(step: dict[str, Any], workflow: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -4193,91 +4112,6 @@ def _workflow_vision_context_nodes(
     return selected, _unique_nonempty_strings(missing)
 
 
-def _workflow_context_get(context: dict[str, Any], key: Any) -> Any:
-    key_text = str(key or "").strip()
-    if not key_text:
-        return None
-    if key_text in context:
-        return context[key_text]
-    key_slug = _selector_key(key_text)
-    for candidate, value in context.items():
-        if _selector_key(candidate) == key_slug:
-            return value
-    return None
-
-
-def _flatten_workflow_values(values: list[Any]) -> list[Any]:
-    flattened: list[Any] = []
-    for value in values:
-        if isinstance(value, list):
-            flattened.extend(_flatten_workflow_values(value))
-        else:
-            flattened.append(value)
-    return flattened
-
-
-def _workflow_values_at_path(root: Any, path: str) -> list[Any]:
-    segments = [segment.strip() for segment in str(path or "").split(".") if segment.strip()]
-    values = [root]
-    for segment in segments:
-        wants_list = segment.endswith("[]")
-        key = segment[:-2] if wants_list else segment
-        index: int | None = None
-        if key.isdigit():
-            index = int(key)
-        next_values: list[Any] = []
-        for value in values:
-            candidates = value if isinstance(value, list) else [value]
-            for candidate in candidates:
-                if index is not None and isinstance(candidate, list):
-                    if 0 <= index < len(candidate):
-                        next_values.append(candidate[index])
-                elif index is not None:
-                    continue
-                elif isinstance(candidate, dict) and key in candidate:
-                    child = candidate.get(key)
-                    if wants_list and isinstance(child, list):
-                        next_values.extend(child)
-                    else:
-                        next_values.append(child)
-                elif isinstance(candidate, list):
-                    next_values.extend(candidate)
-        values = next_values
-        if not values:
-            break
-    return _flatten_workflow_values(values)
-
-
-def _workflow_token_variants(value: Any) -> set[str]:
-    text = str(value or "").strip().lower()
-    if not text:
-        return set()
-    compact = _selector_key(text)
-    tokens = {text}
-    if compact:
-        tokens.add(compact)
-    return tokens
-
-
-def _workflow_tokens_from_value(value: Any, fields: list[str] | tuple[str, ...] | None = None) -> set[str]:
-    fields = tuple(fields or _REFERENCE_SELECTOR_TOKEN_FIELDS)
-    tokens: set[str] = set()
-    if isinstance(value, dict):
-        for key in fields:
-            if key in value:
-                tokens.update(_workflow_tokens_from_value(value.get(key), fields))
-        if not tokens:
-            for key in _REFERENCE_SELECTOR_TOKEN_FIELDS:
-                if key in value:
-                    tokens.update(_workflow_tokens_from_value(value.get(key), fields))
-        return tokens
-    if isinstance(value, list):
-        for item in value:
-            tokens.update(_workflow_tokens_from_value(item, fields))
-        return tokens
-    return _workflow_token_variants(value)
-
-
 def _workflow_node_selector_tokens(node: dict[str, Any], selector: dict[str, Any]) -> set[str]:
     fields = selector.get("match_fields") if isinstance(selector.get("match_fields"), list) else None
     workflow = _workflow_metadata_from_node(node)
@@ -4290,10 +4124,6 @@ def _workflow_node_selector_tokens(node: dict[str, Any], selector: dict[str, Any
     if isinstance(node.get("input"), dict):
         tokens.update(_workflow_tokens_from_value(node["input"].get("workflow", {}).get("instance_scope"), fields))
     return tokens
-
-
-def _workflow_tokens_match(selected_tokens: set[str], candidate_tokens: set[str]) -> bool:
-    return bool(selected_tokens & candidate_tokens)
 
 
 def _workflow_reference_selector_nodes(
