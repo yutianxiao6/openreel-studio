@@ -5178,6 +5178,59 @@ async def test_workflow_text_llm_builds_multimodal_user_message(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
+async def test_workflow_text_llm_rejects_oversized_request_before_provider_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_called = False
+
+    class FakeSessionScope:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    class FakeLLMService:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+        async def generate(self, **kwargs: Any) -> dict[str, Any]:
+            nonlocal provider_called
+            provider_called = True
+            return {"content": "不应调用"}
+
+    monkeypatch.setattr(node_universal, "WORKFLOW_LLM_MAX_TEXT_CHARS", 4_000)
+    monkeypatch.setattr(node_universal, "session_scope", lambda: FakeSessionScope())
+    monkeypatch.setattr(node_universal, "LLMService", FakeLLMService)
+
+    with pytest.raises(ValueError, match="exceeds text budget: 5006 > 4000"):
+        await node_universal._call_workflow_text_llm(
+            task_type="text_generation",
+            system="system",
+            message="中" * 5_000,
+            project_id="project-1",
+        )
+
+    assert provider_called is False
+
+
+@pytest.mark.asyncio
+async def test_workflow_text_llm_rejects_too_many_images_before_provider_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(node_universal, "WORKFLOW_LLM_MAX_IMAGE_COUNT", 2)
+
+    with pytest.raises(ValueError, match="exceeds image budget: 3 > 2"):
+        await node_universal._call_workflow_text_llm(
+            task_type="text_generation",
+            system="system",
+            message="描述图片",
+            project_id="project-1",
+            image_urls=["data:image/png;base64,AA"] * 3,
+        )
+
+
+@pytest.mark.asyncio
 async def test_llm_image_reference_falls_back_to_remote_pixels_when_local_copy_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

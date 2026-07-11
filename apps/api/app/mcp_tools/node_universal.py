@@ -69,6 +69,16 @@ STALE_RUNNING_SECONDS = max(
 ) + 60
 NODE_LIST_DEFAULT_LIMIT = 20
 NODE_LIST_MAX_LIMIT = 800
+WORKFLOW_LLM_MAX_TEXT_CHARS = _env_int(
+    "DRAMA_WORKFLOW_LLM_MAX_TEXT_CHARS",
+    50_000,
+    minimum=4_000,
+)
+WORKFLOW_LLM_MAX_IMAGE_COUNT = _env_int(
+    "DRAMA_WORKFLOW_LLM_MAX_IMAGE_COUNT",
+    8,
+    minimum=1,
+)
 
 NODE_SURFACE_PROJECT_PANEL = "project_panel"
 NODE_SURFACE_DRAFT_CANVAS = "draft_canvas"
@@ -4526,13 +4536,30 @@ async def _call_workflow_text_llm(
     project_id: str,
     image_urls: list[str] | None = None,
 ) -> dict[str, Any]:
+    text_chars = len(system or "") + len(message or "")
+    if text_chars > WORKFLOW_LLM_MAX_TEXT_CHARS:
+        raise ValueError(
+            "workflow LLM request exceeds text budget: "
+            f"{text_chars} > {WORKFLOW_LLM_MAX_TEXT_CHARS} chars; "
+            "reduce rendered prompt variables or upstream structured output"
+        )
+    clean_image_urls = [
+        str(image_url).strip()
+        for image_url in (image_urls or [])
+        if str(image_url or "").strip()
+    ]
+    if len(clean_image_urls) > WORKFLOW_LLM_MAX_IMAGE_COUNT:
+        raise ValueError(
+            "workflow LLM request exceeds image budget: "
+            f"{len(clean_image_urls)} > {WORKFLOW_LLM_MAX_IMAGE_COUNT} images"
+        )
     user_content: str | list[dict[str, Any]] = message
-    if image_urls:
+    if clean_image_urls:
         user_content = [{"type": "text", "text": message}]
         user_content.extend({
             "type": "image_url",
             "image_url": {"url": image_url},
-        } for image_url in image_urls if str(image_url or "").strip())
+        } for image_url in clean_image_urls)
     async with session_scope() as session:
         return await LLMService(session).generate(
             task_type=task_type,
