@@ -87,8 +87,47 @@ AUTHORING_SPEC_EXAMPLE = {
     ],
 }
 
+AUTHORING_SPEC_PROMPT_EXAMPLE = {
+    "schema": "openreel.workflow.authoring.v1",
+    "id": "storyboard_video",
+    "name": "分镜视频",
+    "required_capabilities": ["core.vision_context"],
+    "inputs": [{"id": "plot", "type": "long_text", "required": True}],
+    "dimensions": {"segments": {"source": "steps.segments.output.items", "scope_key": "segment"}},
+    "steps": [
+        {"id": "full_script", "kind": "text", "visible": True, "prompt_template": "根据 {{inputs.plot}} 写剧本。"},
+        {
+            "id": "segments",
+            "kind": "collection",
+            "needs": ["full_script"],
+            "prompt_template": "拆分 {{full_script.output}}。",
+            "output_schema": {"type": "collection", "items_key": "items", "fields": [{"id": "segment_text", "required": True}]},
+        },
+        {
+            "id": "segment_loop",
+            "kind": "repeat",
+            "foreach": {"dimension": "segments"},
+            "item_name": "segment",
+            "steps": [
+                {"id": "storyboard", "kind": "image", "prompt_template": "为 {{segment.segment_text}} 生成分镜图。"},
+                {
+                    "id": "video",
+                    "kind": "video",
+                    "needs": ["storyboard"],
+                    "context_refs": [
+                        {"ref": "storyboard", "role": "vision_context"},
+                        {"ref": "storyboard", "role": "visual_reference"},
+                    ],
+                    "fields": {"duration_seconds": 5},
+                    "prompt_template": "看分镜图，为 {{segment.segment_text}} 写视频提示词。",
+                },
+            ],
+        },
+    ],
+}
+
 AUTHORING_SPEC_EXAMPLE_JSON = json.dumps(
-    AUTHORING_SPEC_EXAMPLE,
+    AUTHORING_SPEC_PROMPT_EXAMPLE,
     ensure_ascii=False,
     separators=(",", ":"),
 )
@@ -97,19 +136,24 @@ AUTHORING_SPEC_EXAMPLE_JSON = json.dumps(
 AUTHORING_SPEC_GUIDE = """\
 ## Authoring Spec
 
-- Root: schema='openreel.workflow.authoring.v1', id/name/description/inputs/defaults/dimensions/steps.
+- Root schema='openreel.workflow.authoring.v1'; fields: id/name/inputs/defaults/dimensions/steps.
 - inputs are UI fields; use {{inputs.id}} in prompts, not one run's values.
-- Step ids are stable. Dependencies use needs/depends_on; prompt refs use {{step_id.output}}.
-- If a prompt relies on another generated product, include its step or repeat group in needs.
-- Processing kinds: text/plan/collection/plugin. Generated visible text is kind text with visible:true or output.canvas:true.
-- canvas_text copies existing text only.
-- Media kinds image/video/audio are visible products. Put the prompt on the media step; the compiler creates the hidden prompt step.
-- Lists use kind collection with output_schema.items_key and fields; runtime injects JSON format.
-- Loops use dimensions from collection output, then foreach.dimension. Example: dimensions.segments.source='steps.segments.output.items', foreach.dimension='segments', item_name='segment'.
-- Inspect collection-driven loops with sample context, e.g. context.segments.output.items; normal inputs only fill UI fields.
-- To use products from another loop, put the repeat group id in needs and describe the reference in the prompt. If fields.references is needed, use character_loop.character_image, not bare character_image.
-- Media settings go in fields/settings, e.g. width/height/duration_seconds. Use literal numbers or real input refs; dimensions are repeat axes, not resolution.
+- Stable step ids; needs/depends_on list upstream products; prompt refs use {{step_id.output}}.
+- Processing kinds: text/plan/collection/plugin. Visible generated text uses text plus visible:true or output.canvas:true; canvas_text only copies text.
+- Media kinds image/video/audio are visible. Put the prompt there; the compiler creates its hidden prompt step.
+- Collections define output_schema.items_key/fields. Loops use a dimension sourced from `steps.collection.output.items`, then foreach.dimension/item_name.
+- Inspect dynamic loops with sample `context.collection.output.items`; UI values belong in inputs.
+- Cross-loop use requires the repeat group in needs. Qualified fixed refs use group.child, not bare child.
+- Core media settings go in `fields:{"width":1920,"height":1080,"duration_seconds":5}` (not top-level and not duration). Use numbers or input refs; dimensions are repeat axes.
 - Prompts use role/task/output/check, or one prompt_template.
+
+Image-use roles:
+- `vision_context` means a text/LLM prompt must inspect image pixels; root `required_capabilities` must contain `core.vision_context`.
+- Fixed image refs use only `context_refs:[{"ref":"storyboard","role":"vision_context"}]` plus needs.
+- Dynamic selectors always go in `references`, never `context_refs`: `from_group` is the candidate image repeat group; `source_step` is the current repeat's upstream selector/planner; `source_path` is normally `output.selected_ids`; `match_fields` is a string list such as `["product_id","reuse_key"]`. Put both in needs.
+- The candidate media child is not `source_step`. If selected ids exist only on the loop item, add a current-loop plan/text step that outputs them, then select from that step.
+- `visual_reference` is only for image/video generation and does not send pixels to the prompt-writing LLM.
+- If one media step must first look at an image and then generate from it, author both roles on that media step. The compiler routes `vision_context` to its hidden prompt step and keeps `visual_reference` on the visible media product.
 
 Canonical example:
 ```json
@@ -120,5 +164,6 @@ Self-check before writing:
 - Every dependency id exists and points upstream or to a sibling in the same repeat group.
 - Collection schemas contain every field later read by loop children.
 - Media steps carry their own prompt; no hand-written media_prompt sibling for the same product.
+- Every vision source and selector candidate is upstream; root capabilities include `core.vision_context`.
 - workflow.canvas.inspect should show expected repeat groups, canvas nodes, edges, and final image/video/audio outputs.
 """

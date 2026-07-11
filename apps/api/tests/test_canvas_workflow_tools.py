@@ -854,6 +854,14 @@ async def test_workflow_protocol_info_lists_core_capabilities() -> None:
     assert "core.depends_on_previous" in result["available_capabilities"]
     assert "core.surface.workflow_runtime" in result["available_capabilities"]
     assert "core.vision_context" in result["available_capabilities"]
+    vision_details = result["capability_details"]["core.vision_context"]
+    assert vision_details["fixed_image"]["field"] == "context_refs"
+    assert vision_details["fixed_image"]["example"]["role"] == "vision_context"
+    assert "dynamic selectors belong in references" in vision_details["fixed_image"]["restriction"]
+    assert vision_details["dynamic_images"]["field"] == "references"
+    assert "never the candidate media child" in vision_details["dynamic_images"]["semantics"]["source_step"]
+    assert "string list" in vision_details["dynamic_images"]["semantics"]["match_fields"]
+    assert vision_details["media_reference_role"] == "visual_reference"
     assert "openreel.core" in result["available_extensions"]
 
 

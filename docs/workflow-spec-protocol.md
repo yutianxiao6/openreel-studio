@@ -17,6 +17,7 @@ OpenReel workflow spec 描述可复用创作流程。推荐作者格式是
 - 用 `needs` 表示真实执行依赖。
 - 用 `collection` 和 `loop` 表示动态集合和遍历。
 - 用 `references` 表示按字段动态选择视觉参考。
+- 用 `vision_context` 明确表示文本步骤必须读取图片像素后再输出。
 - 用 `output.canvas=true` 表示用户能在画布上看到的产物。
 
 普通用户不需要手写 JSON；前端编辑器和工作流搭建模式会生成这些字段。
@@ -59,9 +60,17 @@ OpenReel workflow spec 描述可复用创作流程。推荐作者格式是
 - `for_each`: repeated execution source, such as `production_plan.output.segments`.
 - `item_name`: local name for the current repeated item.
 - `references`: dynamic visual reference selectors.
+- `context_refs`: fixed upstream reads with an explicit role when needed.
 - `prompt`: structured single-call LLM prompt skeleton.
 - `output`: output contract. `canvas: true` creates a visible canvas product;
   `canvas: false` keeps the result in workflow runtime only.
+
+Core image/video/audio generation settings belong in `fields`; use
+`duration_seconds` rather than `duration`. The authoring compiler normalizes
+legacy media `settings` into `fields`, but new specs should write the canonical
+field directly.
+Common top-level media keys are also normalized for compatibility; they are not
+the canonical authoring form.
 - `phase` / `group`: optional UI grouping labels.
 - `ui`: optional user-facing display hints.
 - `fields`: optional node fields for generated canvas nodes.
@@ -128,6 +137,54 @@ compilation, while runtime instances get concrete step ids.
 
 Visual references are selected from upstream outputs without drawing every
 dependency line on the canvas.
+
+Image roles have separate execution semantics:
+
+- `vision_context`: a text/LLM prompt must receive the referenced image pixels.
+  The workflow root must include `core.vision_context` in
+  `required_capabilities`. A fixed image that cannot be hydrated fails the
+  step instead of silently falling back to text metadata.
+- `visual_reference`: an image/video generator should visually follow the
+  referenced image. It does not send pixels to the prompt-writing LLM.
+
+Fixed look-at-image input:
+
+```json
+{
+  "needs": ["storyboard"],
+  "context_refs": [{"ref": "storyboard", "role": "vision_context"}]
+}
+```
+
+Dynamic look-at-image selection:
+
+```json
+{
+  "needs": ["frame_plan", "character_images"],
+  "references": [{
+    "from_group": "character_images",
+    "source_step": "frame_plan",
+    "source_path": "output.appearing_characters",
+    "match_fields": ["name", "reuse_key"],
+    "role": "vision_context"
+  }]
+}
+```
+
+`context_refs` is only for fixed references containing `ref`. Dynamic selectors
+always belong in `references`. `from_group` identifies the candidate image repeat group. `source_step` is an
+upstream planning/selection step in the current repeat instance, and
+`source_path` locates that step's selected-identifier array (normally
+`output.selected_ids`). `match_fields` is
+a non-empty string list of identity fields on candidate repeat scopes. Do not
+set `source_step` to the candidate image child. When selected identifiers exist
+only on the current loop item, add a local plan/text selection step that emits
+them before the media step.
+
+For a media step that both writes a prompt by looking at images and then uses
+those images for generation, author both roles on the same media step. The
+authoring compiler moves `vision_context` entries to the hidden prompt step and
+keeps `visual_reference` entries on the visible media product.
 
 ```json
 {

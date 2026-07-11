@@ -263,6 +263,16 @@ def _reference_selector_from_mapping(name: str, value: Any) -> dict[str, Any] | 
                 selector["source_path"] = path
         selector.setdefault("role", "visual_reference")
         selector.setdefault("name", name)
+        match_fields = selector.get("match_fields")
+        if match_fields is not None:
+            if not isinstance(match_fields, list) or not match_fields or any(
+                not isinstance(item, str) or not item.strip()
+                for item in match_fields
+            ):
+                raise WorkflowAuthoringSpecError(
+                    f"Reference selector {name!r} match_fields must be a non-empty list of field names"
+                )
+            selector["match_fields"] = [item.strip() for item in match_fields]
         return selector
     text = str(value or "").strip()
     if not text:
@@ -299,6 +309,21 @@ def _compile_references(value: Any) -> list[dict[str, Any]]:
     return result
 
 
+def _compile_context_refs(value: Any) -> Any:
+    result = _copy_non_empty(value)
+    if result is None:
+        return None
+    items = result if isinstance(result, list) else [result]
+    for item in items:
+        if isinstance(item, dict) and any(
+            key in item for key in ("from_group", "source_step", "source_path", "match_fields")
+        ):
+            raise WorkflowAuthoringSpecError(
+                "Dynamic image selectors belong in references, not context_refs"
+            )
+    return result
+
+
 def _output_canvas(step: dict[str, Any], *, kind: str) -> bool:
     if kind == "text":
         return False
@@ -330,6 +355,21 @@ def _step_output_spec(step: dict[str, Any]) -> dict[str, Any]:
     if _truthy_flag(step.get("visible")) or _truthy_flag(step.get("show_on_canvas")):
         result.setdefault("canvas", True)
     return result
+
+
+def _authoring_step_fields(step: dict[str, Any], *, node_type: str) -> dict[str, Any]:
+    fields = deepcopy(step.get("fields")) if isinstance(step.get("fields"), dict) else {}
+    if node_type not in {"image", "video", "audio"}:
+        return fields
+    top_level = {
+        key: deepcopy(step[key])
+        for key in ("width", "height", "duration_seconds", "aspect_ratio", "resolution", "quality")
+        if step.get(key) not in (None, "", [], {})
+    }
+    settings = deepcopy(step.get("settings")) if isinstance(step.get("settings"), dict) else {}
+    if "duration" in settings and "duration_seconds" not in settings:
+        settings["duration_seconds"] = settings.pop("duration")
+    return {**top_level, **settings, **fields}
 
 
 def _step_output_schema(step: dict[str, Any]) -> dict[str, Any]:
@@ -488,10 +528,10 @@ def _compiled_step_base(step: dict[str, Any], *, index: int) -> dict[str, Any]:
     references = _compile_references(step.get("references"))
     if references:
         compiled["reference_selectors"] = references
-    context_refs = _copy_non_empty(step.get("reads_from") or step.get("context") or step.get("context_refs"))
+    context_refs = _compile_context_refs(step.get("reads_from") or step.get("context") or step.get("context_refs"))
     if context_refs is not None:
         compiled["context_refs"] = context_refs
-    fields = step.get("fields") if isinstance(step.get("fields"), dict) else {}
+    fields = _authoring_step_fields(step, node_type=node_type)
     if fields:
         compiled["fields"] = {**deepcopy(fields), **compiled.get("fields", {})}
     step_inputs = _copy_non_empty(step.get("inputs"))
@@ -641,6 +681,42 @@ def _split_canvas_media_prompt_step(step: dict[str, Any], *, used_ids: set[str])
     if source_node_id:
         prompt_step["source_node_id"] = f"{source_node_id}Prompt"
 
+    raw_context_refs = product.get("context_refs") if isinstance(product.get("context_refs"), list) else []
+    prompt_context_refs = [
+        deepcopy(item)
+        for item in raw_context_refs
+        if isinstance(item, dict) and str(item.get("role") or "").strip() == "vision_context"
+    ]
+    product_context_refs = [
+        deepcopy(item)
+        for item in raw_context_refs
+        if not (isinstance(item, dict) and str(item.get("role") or "").strip() == "vision_context")
+    ]
+    if prompt_context_refs:
+        prompt_step["context_refs"] = prompt_context_refs
+    if product_context_refs:
+        product["context_refs"] = product_context_refs
+    else:
+        product.pop("context_refs", None)
+
+    raw_selectors = product.get("reference_selectors") if isinstance(product.get("reference_selectors"), list) else []
+    prompt_selectors = [
+        deepcopy(item)
+        for item in raw_selectors
+        if isinstance(item, dict) and str(item.get("role") or "").strip() == "vision_context"
+    ]
+    product_selectors = [
+        deepcopy(item)
+        for item in raw_selectors
+        if not (isinstance(item, dict) and str(item.get("role") or "").strip() == "vision_context")
+    ]
+    if prompt_selectors:
+        prompt_step["reference_selectors"] = prompt_selectors
+    if product_selectors:
+        product["reference_selectors"] = product_selectors
+    else:
+        product.pop("reference_selectors", None)
+
     for key in (
         "prompt_template",
         "primary_skill",
@@ -755,7 +831,7 @@ def _compile_explicit_group(raw_step: dict[str, Any], *, index: int) -> dict[str
         value = _copy_non_empty(raw_step.get(key))
         if value is not None:
             group[key] = value
-    context_refs = _copy_non_empty(raw_step.get("reads_from") or raw_step.get("context") or raw_step.get("context_refs"))
+    context_refs = _compile_context_refs(raw_step.get("reads_from") or raw_step.get("context") or raw_step.get("context_refs"))
     if context_refs is not None:
         group["context_refs"] = context_refs
     fields = raw_step.get("fields") if isinstance(raw_step.get("fields"), dict) else {}

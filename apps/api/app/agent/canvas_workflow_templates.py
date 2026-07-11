@@ -52,6 +52,30 @@ _BUILTIN_WORKFLOW_CAPABILITIES = {
     "core.surface.workflow_runtime",
     "core.vision_context",
 }
+_BUILTIN_WORKFLOW_CAPABILITY_DETAILS = {
+    "core.vision_context": {
+        "summary": "Hydrate explicitly referenced image pixels into a text/LLM workflow step.",
+        "required_declaration": "Add core.vision_context to root required_capabilities.",
+        "fixed_image": {
+            "field": "context_refs",
+            "example": {"ref": "storyboard", "role": "vision_context"},
+            "restriction": "Fixed refs only; dynamic selectors belong in references.",
+        },
+        "dynamic_images": {
+            "field": "references",
+            "required_role": "vision_context",
+            "selector_fields": ["from_group", "source_step", "source_path", "match_fields"],
+            "semantics": {
+                "from_group": "Candidate image repeat group.",
+                "source_step": "Upstream step that outputs selected identifiers for the current repeat instance; never the candidate media child.",
+                "source_path": "Path from source_step payload to the selected-identifier array, normally output.selected_ids.",
+                "match_fields": "Non-empty string list of identity fields present on candidate repeat scopes.",
+            },
+        },
+        "media_reference_role": "visual_reference",
+        "failure_behavior": "A declared fixed vision image that cannot be hydrated fails the step.",
+    },
+}
 _STEP_SUMMARY_METADATA_KEYS = (
     "source_node_id",
     "source_label",
@@ -200,6 +224,7 @@ def workflow_protocol_info() -> dict[str, Any]:
     return {
         "protocol_version": WORKFLOW_SPEC_PROTOCOL_VERSION,
         "available_capabilities": sorted(_BUILTIN_WORKFLOW_CAPABILITIES),
+        "capability_details": deepcopy(_BUILTIN_WORKFLOW_CAPABILITY_DETAILS),
         "available_extensions": extension_ids,
         "available_plugin_nodes": _workflow_plugin_protocol_nodes(plugin_nodes),
         "plugin_errors": workflow_plugins.plugin_errors(),

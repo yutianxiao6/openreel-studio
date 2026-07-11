@@ -7579,6 +7579,7 @@ async def _emit_canvas_action(project_id: str, action: str, payload: dict[str, A
     ),
     usage_hints=[
         "编译可复用 workflow spec 前可读取一次，按 available_capabilities 声明 required_capabilities。",
+        "需要看图写文本时读取 capability_details.core.vision_context，按其中作者层字段和角色示例写 spec。",
         "完整作者层协议说明见 docs/workflow-spec-protocol.md。",
         "第三方能力写进 required_capabilities 或 required_extensions；当前引擎缺失时导入会返回明确缺项。",
         "扩展私有配置放 extensions、extension_config、x 或 x-openreel；未知扩展字段会保留。",

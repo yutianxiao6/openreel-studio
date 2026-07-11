@@ -95,10 +95,16 @@ def test_workflow_build_prompt_uses_dedicated_cached_prefix() -> None:
     assert "schema='openreel.workflow.authoring.v1'" in result.system
     assert "Canonical example" in result.system
     assert "Collection schemas contain every field later read by loop children" in result.system
-    assert "Generated visible text is kind text with visible:true" in result.system
-    assert "Put the prompt on the media step" in result.system
-    assert "If a prompt relies on another generated product" in result.system
-    assert "put the repeat group id in needs" in result.system
+    assert "Visible generated text uses text plus visible:true" in result.system
+    assert "Put the prompt there" in result.system
+    assert "needs/depends_on list upstream products" in result.system
+    assert "Cross-loop use requires the repeat group in needs" in result.system
+    assert "core.vision_context" in result.system
+    assert "Fixed image refs" in result.system
+    assert "Dynamic selector" in result.system
+    assert "never `context_refs`" in result.system
+    assert "candidate media child is not `source_step`" in result.system
+    assert "visual_reference" in result.system
     assert "{{full_script.output}}" in result.system
     assert "{{segment.segment_text}}" in result.system
     assert "After a repairable failure, continue from the returned `repair_ref`" in result.system
