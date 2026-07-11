@@ -211,6 +211,14 @@ def _find_step_container(steps: list[Any], step_id: str) -> tuple[list[Any], int
     return None
 
 
+def find_workflow_step_container(
+    steps: list[Any],
+    step_id: str,
+) -> tuple[list[Any], int, dict[str, Any]] | None:
+    """Locate a workflow step in a nested authoring spec."""
+    return _find_step_container(steps, step_id)
+
+
 def _insert_step_after(
     steps: list[Any],
     step: dict[str, Any],

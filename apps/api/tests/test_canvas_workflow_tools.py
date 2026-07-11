@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from app.agent import canvas_workflow_templates, workflow_spec_artifacts, workflow_template_store
+from app.agent import canvas_workflow_templates, workflow_spec_artifacts, workflow_spec_patch, workflow_template_store
 from app.mcp_tools import agent_tools, node_universal, skill_tools, tool_meta_tools, workflow_spec_tools, workflow_tools
 
 
@@ -26,6 +26,15 @@ def install_fake_workflow_runtime_state(monkeypatch: pytest.MonkeyPatch) -> dict
     monkeypatch.setattr(workflow_tools, "_read_project_state", fake_read_project_state)
     monkeypatch.setattr(workflow_tools, "_write_project_state_patch", fake_write_project_state_patch)
     return state
+
+
+def test_workflow_spec_patch_finds_nested_step() -> None:
+    children = [{"id": "nested", "title": "嵌套步骤"}]
+    steps = [{"id": "group", "steps": children}]
+
+    found = workflow_spec_patch.find_workflow_step_container(steps, "nested")
+
+    assert found == (children, 0, children[0])
 
 
 async def fake_noop_sync_dependency_edges(project_id: str, node_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
