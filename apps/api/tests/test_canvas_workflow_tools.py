@@ -409,6 +409,54 @@ def test_builtin_workflow_templates_use_protocol_spec() -> None:
         assert "core.prompt_template" in template["required_capabilities"]
 
 
+def test_template_step_summaries_preserve_fields_for_editor_roundtrip() -> None:
+    steps = [
+        {
+            "id": "character_images",
+            "title": "人物图循环",
+            "node_type": "text",
+            "steps": [
+                {
+                    "id": "character_prompt",
+                    "title": "人物提示词",
+                    "node_type": "text",
+                },
+                {
+                    "id": "character_image",
+                    "title": "人物图片",
+                    "node_type": "image",
+                    "depends_on": ["character_prompt"],
+                    "fields": {
+                        "workflow_source_step": "character_prompt",
+                        "workflow_source_path": "output",
+                        "workflow_generate": True,
+                        "aspect_ratio": "16:9",
+                        "resolution": "2560x1440",
+                    },
+                },
+            ],
+        },
+        {
+            "id": "final_video",
+            "title": "成片",
+            "node_type": "video",
+            "fields": {
+                "workflow_source_step": "video_prompt",
+                "duration_seconds": 15,
+                "resolution": "1080p",
+            },
+        },
+    ]
+
+    summaries = canvas_workflow_templates.template_step_summaries(steps)
+    by_id = {step["id"]: step for step in summaries}
+
+    assert by_id["character_image"]["fields"] == steps[0]["steps"][1]["fields"]
+    assert by_id["final_video"]["fields"] == steps[1]["fields"]
+    by_id["character_image"]["fields"]["workflow_source_step"] = "changed"
+    assert steps[0]["steps"][1]["fields"]["workflow_source_step"] == "character_prompt"
+
+
 @pytest.mark.asyncio
 async def test_user_workflow_template_promote_clone_and_export(
     monkeypatch: pytest.MonkeyPatch,

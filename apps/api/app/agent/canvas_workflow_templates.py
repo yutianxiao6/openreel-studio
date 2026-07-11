@@ -111,6 +111,7 @@ _STEP_SUMMARY_METADATA_KEYS = (
     "group",
     "kind",
     "ui",
+    "fields",
     "authoring",
     "output",
 )
