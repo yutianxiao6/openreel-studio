@@ -31,7 +31,6 @@ Rules:
 10. When a video prompt depends on an image result, create and run the image node first, then create or update the video node with a prompt grounded in that image output.
 11. Simple atomic requests can return {"mode":"execute","plan":[]} so the main Agent loop executes directly.
 12. Visual-preproduction requests produce text and image nodes.
-13. Leave fields.model empty unless the user names a provider.
 """
 
 def _normalize_planner_output(raw: dict[str, Any]) -> dict[str, Any]:

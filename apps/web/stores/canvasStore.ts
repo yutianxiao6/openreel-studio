@@ -272,7 +272,7 @@ function mediaStageForNode(preview: Record<string, unknown> | undefined, nodeTyp
   for (const stage of preview.stages) {
     if (!stage || typeof stage !== "object" || Array.isArray(stage)) continue
     const item = stage as Record<string, unknown>
-    if (!hasMediaUrl(item.local_url, item.url, item.remote_url)) continue
+    if (!hasMediaUrl(item.local_url, item.url, item.remote_url, item.composite_url)) continue
     if (nodeType === "image" && isImageStageName(item.name)) return item
     if (nodeType === "video" && /视频|video|clip/i.test(String(item.name ?? ""))) return item
   }
@@ -292,6 +292,31 @@ function hasOutputPreview(preview: Record<string, unknown> | undefined, nodeType
     return preview.type === "video" && hasMediaUrl(preview.local_url, preview.url, preview.remote_url)
   }
   return false
+}
+
+function hasImageCandidate(preview: unknown): boolean {
+  const item = parseObjectJson(preview)
+  if (!item) return false
+  const stage = mediaStageForNode(item, "image")
+  return hasMediaUrl(
+    item.local_url,
+    item.url,
+    item.remote_url,
+    item.composite_url,
+    item.poster,
+    item.thumbnail_url,
+    item.last_frame_url,
+  ) || (
+    stage ? hasMediaUrl(
+      stage.local_url,
+      stage.url,
+      stage.remote_url,
+      stage.composite_url,
+      stage.poster,
+      stage.thumbnail_url,
+      stage.last_frame_url,
+    ) : false
+  )
 }
 
 function outputPreviewRatio(preview: Record<string, unknown> | undefined, nodeType: unknown): number | null {
@@ -1735,6 +1760,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           const nextType = (payload as Record<string, unknown>).type ?? n.data.type
           const outputPreview = parseOutputPreview((payload as Record<string, unknown>).output, nextType)
           let mergedPreview: unknown = nextPreview ?? outputPreview
+          if (
+            nextType === "image" &&
+            !hasImageCandidate(nextPreview) &&
+            !hasImageCandidate(outputPreview) &&
+            hasImageCandidate(prevPreview)
+          ) {
+            mergedPreview = prevPreview
+          }
           if (
             prevPreview?.type === "fusion" &&
             nextPreview?.type === "image" &&

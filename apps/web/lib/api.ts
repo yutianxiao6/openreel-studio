@@ -427,6 +427,7 @@ export interface MaterializeProjectWorkflowInput {
   title?: string
   inputs?: Record<string, unknown>
   context?: Record<string, unknown>
+  ui_overrides?: Record<string, unknown>
   origin_x?: number
   origin_y?: number
   spacing_x?: number

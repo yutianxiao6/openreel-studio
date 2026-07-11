@@ -566,7 +566,10 @@ def _compiled_step_base(step: dict[str, Any], *, index: int) -> dict[str, Any]:
         compiled["context_refs"] = context_refs
     fields = _authoring_step_fields(step, node_type=node_type)
     if fields:
-        compiled["fields"] = {**deepcopy(fields), **compiled.get("fields", {})}
+        next_fields = deepcopy(fields)
+        if node_type in {"image", "video", "audio"}:
+            next_fields.pop("model", None)
+        compiled["fields"] = {**next_fields, **compiled.get("fields", {})}
     step_inputs = _copy_non_empty(step.get("inputs"))
     if step_inputs is not None:
         compiled.setdefault("bindings", deepcopy(step_inputs))

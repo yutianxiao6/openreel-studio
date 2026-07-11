@@ -4079,6 +4079,54 @@ def _response_json(resp: httpx.Response, endpoint: str) -> tuple[dict[str, Any] 
     return data, None
 
 
+def _extract_image_candidate_from_raw_response(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if _is_remote_url(text) or text.startswith("/"):
+            return {"url": text, "b64": None}
+        if text.startswith("data:image/") and "," in text:
+            b64 = _image_http_v1_b64_value(text)
+            if b64:
+                return {"url": None, "b64": b64}
+        return None
+
+    if isinstance(value, list):
+        for item in value:
+            candidate = _extract_image_candidate_from_raw_response(item)
+            if candidate:
+                return candidate
+        return None
+
+    if isinstance(value, dict):
+        priority = (
+            "url",
+            "remote_url",
+            "local_url",
+            "url_path",
+            "path",
+            "local_path",
+            "image",
+            "result",
+            "output",
+            "data",
+            "images",
+        )
+        for key in priority:
+            if key not in value:
+                continue
+            candidate = _extract_image_candidate_from_raw_response(value.get(key))
+            if candidate:
+                return candidate
+        for item in value.values():
+            candidate = _extract_image_candidate_from_raw_response(item)
+            if candidate:
+                return candidate
+
+    return None
+
+
 def _audio_http_v1_request_section(protocol: dict[str, Any]) -> dict[str, Any]:
     section = protocol.get("request")
     return section if isinstance(section, dict) else {}
@@ -6579,23 +6627,70 @@ async def _call_raw_http(
     if resp.status_code != 200:
         return _make_http_error(resp.status_code, resp.text, endpoint)
 
-    data = resp.json()
-    val: Any = data
+    raw_data: Any
     try:
-        for key in response_path:
-            if isinstance(val, list):
-                val = val[int(key)]
-            else:
-                val = val[key]
-    except (KeyError, IndexError, TypeError):
+        raw_data = resp.json()
+    except ValueError:
         return {
-            "error": f"无法按路径 {response_path} 解析响应",
+            "error": f"响应不是 JSON: {resp.text[:400]}",
             "error_kind": "bad_response",
-            "raw": data,
             "endpoint": endpoint,
         }
 
-    return {"images": [{"url": val, "b64": None}]}
+    data_dict: dict[str, Any] | None = raw_data if isinstance(raw_data, dict) else None
+    if data_dict is None:
+        fallback = _extract_image_candidate_from_raw_response(raw_data)
+        if fallback is not None:
+            return {"images": [fallback]}
+        return {
+            "error": "响应 JSON 不是对象且未解析到图片",
+            "error_kind": "bad_response",
+            "raw": raw_data,
+            "endpoint": endpoint,
+        }
+
+    if not isinstance(response_path, list):
+        response_path = [response_path]
+
+    val: Any = data_dict
+    try:
+        for key in response_path:
+            if isinstance(val, list):
+                idx = int(key) if not isinstance(key, int) else key
+                val = val[idx]
+            else:
+                val = val[key]
+    except (KeyError, IndexError, TypeError, ValueError):
+        fallback = _extract_image_candidate_from_raw_response(data_dict)
+        if fallback is not None:
+            return {"images": [fallback]}
+        return {
+            "error": f"无法按路径 {response_path} 解析响应",
+            "error_kind": "bad_response",
+            "raw": data_dict,
+            "endpoint": endpoint,
+        }
+    if isinstance(val, str):
+        candidate = _extract_image_candidate_from_raw_response(val)
+        if candidate is not None:
+            return {"images": [candidate]}
+        if _is_remote_url(val):
+            return {"images": [{"url": val, "b64": None}]}
+    elif isinstance(val, list):
+        candidate = _extract_image_candidate_from_raw_response(val)
+        if candidate is not None:
+            return {"images": [candidate]}
+    elif isinstance(val, dict):
+        candidate = _extract_image_candidate_from_raw_response(val)
+        if candidate is not None:
+            return {"images": [candidate]}
+
+    return {
+        "error": "响应里未取到图片 URL",
+        "error_kind": "bad_response",
+        "raw": data_dict,
+        "endpoint": endpoint,
+    }
 
 
 # Image provider calls are single-shot. The model must repair the original node

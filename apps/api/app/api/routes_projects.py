@@ -163,6 +163,7 @@ class ProjectWorkflowMaterializeRequest(BaseModel):
     title: Optional[str] = None
     inputs: dict[str, Any] = Field(default_factory=dict)
     context: dict[str, Any] = Field(default_factory=dict)
+    ui_overrides: dict[str, Any] = Field(default_factory=dict)
     origin_x: float = 120.0
     origin_y: float = 120.0
     spacing_x: float = 360.0
@@ -1570,6 +1571,7 @@ async def run_project_workflow_step(
         title=req.title or "",
         inputs=req.inputs,
         context=req.context,
+        ui_overrides=req.ui_overrides,
         instance_id=req.instance_id or "",
         origin_x=req.origin_x,
         origin_y=req.origin_y,
@@ -1594,6 +1596,7 @@ async def run_project_workflow_next_step(
         title=req.title or "",
         inputs=req.inputs,
         context=req.context,
+        ui_overrides=req.ui_overrides,
         instance_id=req.instance_id or "",
         origin_x=req.origin_x,
         origin_y=req.origin_y,
@@ -1618,6 +1621,7 @@ async def run_project_workflow_all_steps(
         title=req.title or "",
         inputs=req.inputs,
         context=req.context,
+        ui_overrides=req.ui_overrides,
         instance_id=req.instance_id or "",
         origin_x=req.origin_x,
         origin_y=req.origin_y,

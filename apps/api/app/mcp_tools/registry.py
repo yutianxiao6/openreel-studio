@@ -395,7 +395,7 @@ def _node_media_field_properties() -> dict[str, Any]:
         },
         "resolution": {
             "type": "string",
-            "description": "图片精确像素尺寸，格式 <width>x<height>，如 2560x1440。",
+            "description": "图片精确像素尺寸，格式 <width>x<height>，如 1080x1920。",
         },
         "quality": {
             "type": "string",
@@ -1702,7 +1702,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
           "局部修改一个或少量节点。patch.title/status/prompt 写节点列；patch.input_json 写节点 fields 并与旧 input 局部合并。"
           "多个节点不同改动用 updates；多个节点同一 patch 可传 node_ids。"
           "复杂或高风险更新要分批。"
-          "修 image 分辨率必须写精确像素，例如 2560x1440。"
+          "修 image 分辨率必须写精确像素，例如 1080x1920。"
           "降规格、修 prompt/依赖后在同一节点 node.run(action='force')。"
           "output_json 是生成结果，不用于写 prompt。"
       ),

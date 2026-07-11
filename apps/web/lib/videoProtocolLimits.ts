@@ -8,6 +8,13 @@ export interface MediaProviderSummary {
   enabled?: boolean
 }
 
+export interface VideoDurationSummary {
+  min?: number | string | null
+  max?: number | string | null
+  allowed_values?: Array<number | string> | null
+  step?: number | string | null
+}
+
 export interface VideoProtocolModeSummary {
   min_images?: number | string | null
   max_images?: number | string | null
@@ -15,6 +22,11 @@ export interface VideoProtocolModeSummary {
   max_total_media?: number | string | null
   min_media?: number | string | null
   max_media?: number | string | null
+  supported_ratios?: string[]
+  supported_resolutions?: string[]
+  default_ratio?: string
+  default_resolution?: string
+  duration?: VideoDurationSummary
 }
 
 export interface VideoProtocolProfileSummary {
@@ -22,6 +34,10 @@ export interface VideoProtocolProfileSummary {
   model?: string
   modes?: Record<string, VideoProtocolModeSummary> | string[]
   supported_modes?: string[]
+  supported_ratios?: string[]
+  supported_resolutions?: string[]
+  default_ratio?: string
+  default_resolution?: string
 }
 
 export interface VideoProtocolSummary {
@@ -29,12 +45,30 @@ export interface VideoProtocolSummary {
   model_names?: string[]
   model_profiles?: VideoProtocolProfileSummary[]
   modes?: Record<string, VideoProtocolModeSummary>
+  supported_ratios?: string[]
+  supported_resolutions?: string[]
+  default_ratio?: string
+  default_resolution?: string
 }
 
 export function finiteProtocolNumber(value: unknown): number | undefined {
   if (value == null || value === "") return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => String(item || "").trim()).filter(Boolean)
+}
+
+function providerParamList(provider: MediaProviderSummary | undefined, ...keys: string[]): string[] {
+  const params = provider?.params || {}
+  for (const key of keys) {
+    const values = stringArray(params[key])
+    if (values.length > 0) return values
+  }
+  return []
 }
 
 export function canonicalVideoMode(value: string): string {
@@ -142,4 +176,59 @@ export function videoReferenceImageLimitForProvider(
   const protocol = videoProtocolForProvider(provider, protocols)
   const profile = videoProfileForModel(protocol, String(provider?.model_name || ""))
   return videoReferenceImageLimit(videoModeConfig(protocol, mode, profile))
+}
+
+export function videoSupportedRatiosForProvider(
+  provider: MediaProviderSummary | undefined,
+  protocols: VideoProtocolSummary[],
+  mode: string,
+  fallback: string[] = [],
+): string[] {
+  const protocol = videoProtocolForProvider(provider, protocols)
+  const profile = videoProfileForModel(protocol, String(provider?.model_name || ""))
+  const modeConfig = videoModeConfig(protocol, mode, profile)
+  const values = stringArray(modeConfig?.supported_ratios).length ? stringArray(modeConfig?.supported_ratios)
+    : stringArray(profile?.supported_ratios).length ? stringArray(profile?.supported_ratios)
+    : providerParamList(provider, "supported_ratios", "ratios", "supported_aspect_ratios").length ? providerParamList(provider, "supported_ratios", "ratios", "supported_aspect_ratios")
+    : stringArray(protocol?.supported_ratios).length ? stringArray(protocol?.supported_ratios)
+    : fallback
+  return Array.from(new Set(values)).filter((item) => item !== "adaptive")
+}
+
+export function videoSupportedResolutionsForProvider(
+  provider: MediaProviderSummary | undefined,
+  protocols: VideoProtocolSummary[],
+  mode: string,
+  fallback: string[] = [],
+): string[] {
+  const protocol = videoProtocolForProvider(provider, protocols)
+  const profile = videoProfileForModel(protocol, String(provider?.model_name || ""))
+  const modeConfig = videoModeConfig(protocol, mode, profile)
+  const values = stringArray(modeConfig?.supported_resolutions).length ? stringArray(modeConfig?.supported_resolutions)
+    : stringArray(profile?.supported_resolutions).length ? stringArray(profile?.supported_resolutions)
+    : providerParamList(provider, "supported_resolutions", "resolutions").length ? providerParamList(provider, "supported_resolutions", "resolutions")
+    : stringArray(protocol?.supported_resolutions).length ? stringArray(protocol?.supported_resolutions)
+    : fallback
+  return Array.from(new Set(values.map((item) => /^\d+p$/i.test(item) ? item.toLowerCase() : item.toLowerCase())))
+}
+
+export function defaultVideoResolutionForProvider(
+  provider: MediaProviderSummary | undefined,
+  protocols: VideoProtocolSummary[],
+  mode: string,
+  fallback = "",
+): string {
+  const protocol = videoProtocolForProvider(provider, protocols)
+  const profile = videoProfileForModel(protocol, String(provider?.model_name || ""))
+  const modeConfig = videoModeConfig(protocol, mode, profile)
+  const direct = String(
+    modeConfig?.default_resolution
+    || profile?.default_resolution
+    || provider?.params?.default_resolution
+    || protocol?.default_resolution
+    || "",
+  ).trim().toLowerCase()
+  const supported = videoSupportedResolutionsForProvider(provider, protocols, mode)
+  if (direct && supported.includes(direct)) return direct
+  return supported.includes(fallback) ? fallback : supported[0] || fallback
 }
