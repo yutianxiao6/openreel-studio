@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.db.models import WorkflowNode
-from app.services import media_operations, timeline_media_index
+from app.services import media_operations, subprocess_utils, timeline_media_index
 from app.services.video_edit_sequences import SequenceClip, SequenceSpec, SequenceTransition
 
 
@@ -75,6 +75,7 @@ async def _run_ffmpeg_with_progress(
         *progress_args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **subprocess_utils.hidden_window_kwargs(),
     )
     assert process.stdout is not None
     assert process.stderr is not None

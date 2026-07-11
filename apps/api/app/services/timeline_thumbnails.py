@@ -9,6 +9,7 @@ from pathlib import Path
 import imageio_ffmpeg
 
 from app.config import settings
+from app.services import subprocess_utils
 
 
 SPRITE_TIMEOUT_SECONDS = 120
@@ -83,6 +84,7 @@ async def _render_sprite(
         str(target),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **subprocess_utils.hidden_window_kwargs(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=SPRITE_TIMEOUT_SECONDS)

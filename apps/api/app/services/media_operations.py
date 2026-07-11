@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 
 from app.db.models import WorkflowNode
-from app.services import media_history, project_media_history
+from app.services import media_history, project_media_history, subprocess_utils
 
 
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".m4v"}
@@ -97,6 +97,7 @@ async def _run_ffmpeg(args: list[str], *, timeout: int = FFMPEG_TIMEOUT_SECONDS)
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **subprocess_utils.hidden_window_kwargs(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)

@@ -13,6 +13,7 @@ import imageio_ffmpeg
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.services import subprocess_utils
 
 
 INDEX_TIMEOUT_SECONDS = 600
@@ -141,6 +142,7 @@ async def _probe_source(source: Path, cache_key: str) -> MediaIndexManifest:
         "-",
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
+        **subprocess_utils.hidden_window_kwargs(),
     )
     frames: list[IndexedFrame] = []
     frame_rate: RationalValue | None = None
@@ -314,6 +316,7 @@ async def ensure_frame_tile(
             str(temporary),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **subprocess_utils.hidden_window_kwargs(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=TILE_TIMEOUT_SECONDS)

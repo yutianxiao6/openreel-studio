@@ -85,6 +85,7 @@ def _run_packaging_smoke() -> None:
     from app.agent.prompt_assembler import PromptContext, assemble_split_result
     from app.agent.workflow_spec_prompt_contract import AUTHORING_SPEC_GUIDE
     from app.config_store.schema import MediaProviderEntry
+    from app.services import media_operations, subprocess_utils
 
     if not AUTHORING_SPEC_GUIDE.strip():
         raise RuntimeError("workflow spec prompt contract is empty")
@@ -98,6 +99,11 @@ def _run_packaging_smoke() -> None:
     )
     if "Workflow Build Mode" not in workflow_prompt.system:
         raise RuntimeError("workflow build prompt was not assembled")
+    process_kwargs = subprocess_utils.hidden_window_kwargs()
+    if os.name == "nt" and not process_kwargs.get("creationflags"):
+        raise RuntimeError("Windows media subprocesses are not configured to hide command windows")
+    if not callable(media_operations.split_video_tracks):
+        raise RuntimeError("video split operation was not bundled")
 
     samples = (
         ("image", "image_http_v1", "image_protocol_id", "openai_images_generations"),

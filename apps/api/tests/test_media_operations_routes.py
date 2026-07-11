@@ -11,7 +11,41 @@ from app.api import routes_projects, routes_video_editor
 from app.config import settings
 from app.db import session as db_session
 from app.db.models import Project, VideoSequenceRenderJob, WorkflowEdge, WorkflowNode
-from app.services import media_operations, video_edit_sequences, video_sequence_render_jobs
+from app.services import media_operations, subprocess_utils, video_edit_sequences, video_sequence_render_jobs
+
+
+def test_hidden_window_subprocess_kwargs_are_windows_only(monkeypatch) -> None:
+    monkeypatch.setattr(subprocess_utils, "_is_windows", lambda: False)
+    assert subprocess_utils.hidden_window_kwargs() == {}
+
+    monkeypatch.setattr(subprocess_utils, "_is_windows", lambda: True)
+    monkeypatch.setattr(subprocess_utils.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    assert subprocess_utils.hidden_window_kwargs() == {"creationflags": 0x08000000}
+
+
+@pytest.mark.asyncio
+async def test_media_ffmpeg_uses_hidden_window_subprocess_options(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(media_operations, "_ffmpeg_exe", lambda: "ffmpeg-test")
+    monkeypatch.setattr(media_operations.subprocess_utils, "hidden_window_kwargs", lambda: {"creationflags": 123})
+    monkeypatch.setattr(media_operations.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    await media_operations._run_ffmpeg(["-version"])  # noqa: SLF001
+
+    assert captured["args"] == ("ffmpeg-test", "-hide_banner", "-nostdin", "-version")
+    assert captured["kwargs"]["creationflags"] == 123
 
 
 async def _setup_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -11,7 +11,7 @@ import imageio_ffmpeg
 import numpy as np
 from pydantic import BaseModel, Field
 
-from app.services import timeline_media_index
+from app.services import subprocess_utils, timeline_media_index
 
 
 WAVEFORM_TIMEOUT_SECONDS = 600
@@ -95,6 +95,7 @@ async def _decode_waveform(
         "-",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **subprocess_utils.hidden_window_kwargs(),
     )
     minimum_parts: list[np.ndarray] = []
     maximum_parts: list[np.ndarray] = []
