@@ -1513,7 +1513,7 @@ async def test_workflow_run_next_step_respects_dependencies_when_order_is_not_to
 
 
 @pytest.mark.asyncio
-async def test_workflow_run_next_waits_for_manual_only_step(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_workflow_run_next_prepares_manual_media_step(monkeypatch: pytest.MonkeyPatch) -> None:
     state = install_fake_workflow_runtime_state(monkeypatch)
     state["workflow_runtime"] = {
         "instances": {
@@ -1532,10 +1532,18 @@ async def test_workflow_run_next_waits_for_manual_only_step(monkeypatch: pytest.
         },
     }
 
-    async def fail_run_step(**kwargs: Any) -> dict[str, Any]:
-        raise AssertionError(f"manual step must not be auto-run: {kwargs}")
+    captured: dict[str, Any] = {}
 
-    monkeypatch.setattr(workflow_tools, "workflow_run_step", fail_run_step)
+    async def fake_run_step(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "step_id": kwargs["step_id"],
+            "instance_id": kwargs["instance_id"],
+            "awaiting_manual_generation": True,
+        }
+
+    monkeypatch.setattr(workflow_tools, "workflow_run_step", fake_run_step)
 
     result = await workflow_tools.workflow_run_next_step(
         project_id="proj-1",
@@ -1557,9 +1565,10 @@ async def test_workflow_run_next_waits_for_manual_only_step(monkeypatch: pytest.
     )
 
     assert result["ok"] is True
-    assert result["done"] is False
-    assert result["awaiting_manual"] is True
-    assert result["manual_step_ids"] == ["video"]
+    assert result["selected_step_id"] == "video"
+    assert result["awaiting_manual_generation"] is True
+    assert captured["step_id"] == "video"
+    assert captured["instance_id"] == "wf_manual"
 
 
 @pytest.mark.asyncio
@@ -1588,7 +1597,7 @@ async def test_workflow_run_next_rejects_instance_from_another_template(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_workflow_ready_batch_excludes_manual_only_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_workflow_ready_batch_includes_manual_media_preparation(monkeypatch: pytest.MonkeyPatch) -> None:
     state = install_fake_workflow_runtime_state(monkeypatch)
     state["workflow_runtime"] = {
         "instances": {
@@ -1611,8 +1620,8 @@ async def test_workflow_ready_batch_excludes_manual_only_steps(monkeypatch: pyte
         instance_id="wf_manual",
     )
 
-    assert result["ready_step_ids"] == []
-    assert result["manual_step_ids"] == ["video"]
+    assert result["ready_step_ids"] == ["video"]
+    assert result["manual_step_ids"] == []
     assert result["done"] is False
 
 
@@ -4378,7 +4387,10 @@ async def test_workflow_run_step_materializes_and_runs_incrementally(monkeypatch
     ]
     assert nodes[1]["input"]["references"] == [{"ref": "node:1", "role": "context"}]
     assert nodes[1]["input"]["prompt"] == "待生成"
-    assert run_calls == [("node-2", "render")]
+    assert run_calls == []
+    assert second["awaiting_manual_generation"] is True
+    assert second["run_result"]["status"] == "awaiting_manual_generation"
+    assert nodes[1]["status"] == "idle"
     assert nodes[0]["input"]["workflow"]["step_status"] == "completed"
     assert nodes[1]["input"]["workflow"]["step_status"] == "completed"
     assert nodes[1]["input"]["workflow"]["last_step_run"]["status"] == "completed"

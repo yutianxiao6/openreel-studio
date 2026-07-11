@@ -27,6 +27,7 @@ from app.agent.workflow_review import build_workflow_semantic_review_evidence
 from app.db.session import session_scope
 from app.mcp_tools import canvas_tools
 from app.mcp_tools.registry import register
+from app.services import media_history
 from app.services.project_service import ProjectService
 from app.services.node_public_ids import internal_to_public_id_map, model_visible_node_payload
 
@@ -3650,6 +3651,7 @@ async def _set_workflow_step_runtime(
     status: str,
     result: dict[str, Any] | None = None,
     template: dict[str, Any] | None = None,
+    node_status: str | None = None,
 ) -> dict[str, Any]:
     hydrated = await _hydrate_workflow_node_with_inputs(node_id, inputs)
     fields = dict(hydrated.get("input") if isinstance(hydrated.get("input"), dict) else {})
@@ -3676,21 +3678,22 @@ async def _set_workflow_step_runtime(
     workflow["last_step_run"] = {k: v for k, v in run_record.items() if v not in (None, "", [], {})}
     workflow["step_run_history"] = [*history, workflow["last_step_run"]][-12:]
     fields["workflow"] = workflow
+    effective_node_status = str(node_status or status).strip()
     patch: dict[str, Any] = {"input_data": fields}
-    if status in {"running", "completed", "failed"}:
-        patch["status"] = status
+    if effective_node_status in {"idle", "running", "completed", "failed"}:
+        patch["status"] = effective_node_status
     if status == "running":
         patch["error_message"] = None
     elif status == "failed":
         patch["error_message"] = workflow["last_error"]
     await canvas_tools.update_node(node_id, patch)
-    payload = {"id": node_id, "status": status, "input": fields}
+    payload = {"id": node_id, "status": effective_node_status, "input": fields}
     if status == "failed":
         payload["error_message"] = workflow["last_error"]
     await _emit_canvas_action(project_id, "update_node", payload)
     hydrated["input"] = fields
     hydrated["workflow"] = workflow
-    hydrated["status"] = status
+    hydrated["status"] = effective_node_status
     template_id = str(workflow.get("template_id") or "").strip()
     step_id = str(workflow.get("step_id") or workflow.get("template_step_id") or "").strip()
     instance_id = str(workflow.get("instance_id") or "").strip()
@@ -6133,6 +6136,39 @@ async def workflow_run_step(
                 node["input"] = node_fields
                 node["input_json"] = node_fields
         action = "render" if node_type == "image" else "force"
+        manual_media_generation = (
+            target_step.get("manual_only") is True
+            and node_type in {"image", "video", "audio"}
+        )
+        if manual_media_generation:
+            prepared_status = "completed" if media_history.has_media_output(node.get("output")) else "idle"
+            run_result = {
+                "ok": True,
+                "type": node_type,
+                "status": "awaiting_manual_generation",
+                "manual_generation_pending": True,
+                "prompt": str(node.get("prompt") or ""),
+                "node_id": node_id,
+            }
+            await canvas_tools.update_node(node_id, {"status": prepared_status, "error_message": None})
+            await _set_workflow_step_runtime(
+                project_id=project_id,
+                node_id=node_id,
+                inputs=inputs,
+                status="completed",
+                result=run_result,
+                template=template,
+                node_status=prepared_status,
+            )
+            step_results.append({
+                **materialized,
+                "ok": True,
+                "run_result": run_result,
+                "awaiting_manual_generation": True,
+                "error": None,
+                "error_kind": None,
+            })
+            continue
         if not should_generate:
             fields = node.get("input") if isinstance(node.get("input"), dict) else {}
             canvas_output = _workflow_canvas_output_value(fields, node, node_type)
@@ -6482,7 +6518,7 @@ async def workflow_run_next_step(
         if waiting_on:
             blocked_steps.append({"step_id": candidate_id, "waiting_on": waiting_on})
             continue
-        if step.get("manual_only") is True:
+        if step.get("manual_only") is True and str(step.get("node_type") or "") not in {"image", "video", "audio"}:
             manual_step_ids.append(candidate_id)
             continue
         next_step_id = candidate_id
@@ -6883,7 +6919,7 @@ async def _workflow_ready_step_batch(
         if waiting_on:
             blocked_steps.append({"step_id": candidate_id, "waiting_on": waiting_on})
             continue
-        if step.get("manual_only") is True:
+        if step.get("manual_only") is True and str(step.get("node_type") or "") not in {"image", "video", "audio"}:
             manual_step_ids.append(candidate_id)
             continue
         ready_step_ids.append(candidate_id)

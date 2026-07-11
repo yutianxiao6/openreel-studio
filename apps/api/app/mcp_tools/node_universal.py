@@ -685,7 +685,7 @@ async def _merge_stage_into_fusion(
         fusion["input"] = media_history.strip_media_history(existing["input"])
     history = media_history.media_history_from_output(existing)
     if history:
-        fusion = media_history.attach_media_history(fusion, history)
+        fusion = media_history.attach_media_history(fusion, history, skip_current=False)
     await canvas_tools.update_node(node_id, {"output_data": fusion})
     return fusion
 

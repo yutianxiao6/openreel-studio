@@ -4720,7 +4720,7 @@ function workflowExecutionDetailRows(
     { label: "跳过条件", value: skipLabel },
   ]
   if (step.optional) rows.push({ label: "可选步骤", value: "是" })
-  if (step.manual_only) rows.push({ label: "手动步骤", value: "是" })
+  if (step.manual_only) rows.push({ label: "生成方式", value: "创建节点后手动生成" })
   return rows.filter((item) => item.value.trim())
 }
 
@@ -7329,7 +7329,7 @@ function WorkflowStepInspector({
                       disabled={readOnly}
                       onChange={(event) => onUpdateStep(step.id, { manual_only: event.target.checked })}
                     />
-                    只手动运行
+                    创建后手动生成
                   </label>
                 </div>
                 <div className="grid gap-2 rounded-md border border-amber-200/12 bg-amber-300/[0.035] p-2">

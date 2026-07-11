@@ -1,5 +1,6 @@
 import json
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -1499,6 +1500,81 @@ def test_media_history_switch_returns_selected_output_and_state_snapshot():
     assert selected["input"]["resolution"] == "720p"
     assert next_output["history"][0]["prompt"] == "current prompt"
     assert next_output["history"][0]["input"]["resolution"] == "1080p"
+
+
+@pytest.mark.asyncio
+async def test_image_fusion_keeps_every_completed_generation_in_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = {
+        "id": "node-image",
+        "project_id": "project-1",
+        "type": "image",
+        "status": "completed",
+        "prompt": "first prompt",
+        "input": {"prompt": "first prompt"},
+        "output": {
+            "type": "fusion",
+            "subject": "image",
+            "stages": [
+                {
+                    "name": "图片",
+                    "status": "completed",
+                    "local_url": "/api/media/project-1/generated_images/first.png",
+                }
+            ],
+        },
+    }
+
+    async def fake_get_node(node_id: str) -> dict[str, Any]:
+        return deepcopy(node)
+
+    async def fake_update_node(node_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        if "output_data" in patch:
+            node["output"] = deepcopy(patch["output_data"])
+        if "status" in patch:
+            node["status"] = patch["status"]
+        return deepcopy(node)
+
+    monkeypatch.setattr(node_universal.canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
+
+    for index, filename in enumerate(("second.png", "third.png"), start=2):
+        prompt = f"prompt {index}"
+        node["prompt"] = prompt
+        node["input"] = {"prompt": prompt}
+        await node_universal._archive_current_media_output_for_rerun(
+            "node-image",
+            node,
+            "image",
+            node["input"],
+        )
+        await node_universal._merge_stage_into_fusion(
+            "node-image",
+            "image",
+            status="running",
+            prompt=prompt,
+            input_data=node["input"],
+        )
+        await node_universal._merge_stage_into_fusion(
+            "node-image",
+            "image",
+            status="completed",
+            url=f"/api/media/project-1/generated_images/{filename}",
+            local_url=f"/api/media/project-1/generated_images/{filename}",
+            prompt=prompt,
+            input_data=node["input"],
+        )
+
+    current_refs = media_history.collect_media_refs(node["output"])
+    history = media_history.media_history_from_output(node["output"])
+    history_refs = [media_history.collect_media_refs(item["output"]) for item in history]
+
+    assert "/api/media/project-1/generated_images/third.png" in current_refs
+    assert history_refs == [
+        ["/api/media/project-1/generated_images/second.png"],
+        ["/api/media/project-1/generated_images/first.png"],
+    ]
 
 
 def test_node_media_upload_classifier_matches_node_kind():

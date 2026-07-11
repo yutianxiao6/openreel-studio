@@ -5471,9 +5471,16 @@ function MediaHistorySection({
 
 function NodePanelMediaHistoryStrip({
   node,
+  busy,
+  switchingId,
+  onSwitch,
 }: {
   node: NodeFull
+  busy: boolean
+  switchingId?: string | null
+  onSwitch: (entry: MediaHistoryEntry) => void | Promise<void>
 }) {
+  const [draggingHistoryId, setDraggingHistoryId] = useState<string | null>(null)
   const kind = node.type === "image" || node.type === "video" || node.type === "audio" ? node.type : null
   if (!kind) return null
   const entries = mediaHistoryEntriesFromOutput(node.output, kind)
@@ -5504,12 +5511,41 @@ function NodePanelMediaHistoryStrip({
           const title = entry.current
             ? "当前结果"
             : formatHistoryTime(entry.created_at) || `历史 ${entry.index + 1}`
+          const canDrag = kind === "image" && !entry.current && !busy && switchingId !== entry.id
+          const canReceiveDrop = kind === "image" && entry.current && Boolean(draggingHistoryId) && !busy
           return (
             <button
               key={`${entry.id}-${entry.index}`}
               type="button"
-              title={title}
+              title={entry.current ? title : `${title} · 拖到第一张可设为当前图片`}
               aria-label={title}
+              draggable={canDrag}
+              onDragStart={(event) => {
+                if (!canDrag) {
+                  event.preventDefault()
+                  return
+                }
+                event.stopPropagation()
+                event.dataTransfer.effectAllowed = "move"
+                event.dataTransfer.setData("application/x-openreel-media-history", entry.id)
+                setDraggingHistoryId(entry.id)
+              }}
+              onDragEnd={() => setDraggingHistoryId(null)}
+              onDragOver={(event) => {
+                if (!canReceiveDrop) return
+                event.preventDefault()
+                event.stopPropagation()
+                event.dataTransfer.dropEffect = "move"
+              }}
+              onDrop={(event) => {
+                if (!canReceiveDrop) return
+                event.preventDefault()
+                event.stopPropagation()
+                const historyId = event.dataTransfer.getData("application/x-openreel-media-history") || draggingHistoryId
+                const selected = entries.find((candidate) => candidate.id === historyId && !candidate.current)
+                setDraggingHistoryId(null)
+                if (selected) void onSwitch(selected)
+              }}
               onClick={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
@@ -5517,7 +5553,13 @@ function NodePanelMediaHistoryStrip({
               }}
               onPointerDown={(event) => event.stopPropagation()}
               className={`group relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-white/[0.045] text-zinc-300 shadow-[0_6px_16px_rgba(0,0,0,0.16)] transition hover:-translate-y-0.5 hover:border-white/[0.22] hover:bg-white/[0.08] hover:text-zinc-50 ${
-                entry.current ? "border-emerald-300/25" : "border-white/[0.1]"
+                canReceiveDrop
+                  ? "border-cyan-200/70 ring-2 ring-cyan-300/30"
+                  : entry.current
+                    ? "border-emerald-300/25"
+                    : draggingHistoryId === entry.id
+                      ? "border-cyan-200/45 opacity-55"
+                      : "border-white/[0.1]"
               }`}
             >
               {primary.kind === "image" ? (
@@ -5955,6 +5997,8 @@ function NodeCanvasContextPanel({
   onUploadRefs,
   onUploadOutput,
   onRerun,
+  switchingHistoryId,
+  onSwitchHistory,
 }: {
   node: NodeFull
   draft: EditableNodeDraft
@@ -5978,6 +6022,8 @@ function NodeCanvasContextPanel({
   onUploadRefs: (files: FileList | File[] | null) => void | Promise<void>
   onUploadOutput: (files: FileList | null) => void | Promise<void>
   onRerun?: (nodeId: string) => void | Promise<void>
+  switchingHistoryId?: string | null
+  onSwitchHistory: (entry: MediaHistoryEntry) => void | Promise<void>
   onRequestStoryRevision?: (nodeId: string) => void | Promise<void>
 }) {
   const isText = node.type === "text"
@@ -6321,7 +6367,12 @@ function NodeCanvasContextPanel({
           nodePrompt={node.prompt || ""}
         />
       ) : (
-        <NodePanelMediaHistoryStrip node={node} />
+        <NodePanelMediaHistoryStrip
+          node={node}
+          busy={actionBusy}
+          switchingId={switchingHistoryId}
+          onSwitch={onSwitchHistory}
+        />
       )}
       </div>
       {hasMediaParameterToggle && (
@@ -7729,6 +7780,8 @@ export default function NodeDetailPanel({
                 onUploadRefs={uploadReferenceFiles}
                 onUploadOutput={uploadNodeMediaOutput}
                 onRerun={runNodeFromContext}
+                switchingHistoryId={switchingHistoryId}
+                onSwitchHistory={switchHistoryVersion}
                 onRequestStoryRevision={(targetNodeId) => {
                   void persistDraft(false)
                   onRequestStoryRevision?.(targetNodeId)

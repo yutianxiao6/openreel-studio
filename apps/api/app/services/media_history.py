@@ -301,9 +301,10 @@ def archive_current_media_output(
 
 
 def preserve_media_history(output: Any, source_output: Any, *, limit: int = MEDIA_HISTORY_LIMIT) -> Any:
-    history = media_history_from_output(output, limit=limit)
-    if not history:
-        history = media_history_from_output(source_output, limit=limit)
+    history = [
+        *media_history_from_output(output, limit=limit),
+        *media_history_from_output(source_output, limit=limit),
+    ]
     return attach_media_history(output, history, limit=limit)
 
 
