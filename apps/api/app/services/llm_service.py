@@ -336,6 +336,24 @@ def _completion_kwargs(cfg: dict, *, with_tools: list | None = None,
 _TEXT_ONLY_IMAGE_UNSUPPORTED_MODEL_MARKERS = (
     "deepseek",
 )
+_IMAGE_SUPPORTED_MODEL_MARKERS = (
+    "gpt-4o",
+    "gpt-4.1",
+    "gpt-5",
+    "gemini",
+    "claude-3",
+    "claude-sonnet",
+    "claude-opus",
+    "qwen-vl",
+    "qwen2-vl",
+    "qwen3-vl",
+    "doubao-vision",
+    "kimi-vl",
+)
+
+
+class LLMImageInputUnsupportedError(ValueError):
+    """Raised when image input is required but the selected model is text-only."""
 
 
 def model_supports_image_input(
@@ -349,7 +367,35 @@ def model_supports_image_input(
     name = (model or "").lower()
     if any(marker in name for marker in _TEXT_ONLY_IMAGE_UNSUPPORTED_MODEL_MARKERS):
         return False
-    return True
+    return any(marker in name for marker in _IMAGE_SUPPORTED_MODEL_MARKERS)
+
+
+def _messages_have_image_input(messages: list[dict]) -> bool:
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        if any(isinstance(part, dict) and part.get("type") == "image_url" for part in content):
+            return True
+    return False
+
+
+def _build_messages_for_config(
+    messages: list[dict],
+    system_prompt: str | None,
+    cfg: dict[str, Any],
+) -> list[dict]:
+    supports_images = model_supports_image_input(
+        cfg.get("model"),
+        cfg.get("api_base"),
+        (cfg.get("model_metadata") or {}).get("supports_vision"),
+    )
+    if _messages_have_image_input(messages) and not supports_images:
+        raise LLMImageInputUnsupportedError(
+            "selected model does not support required image input: "
+            f"{cfg.get('model') or '<unknown>'}; choose a vision-capable model or set supports_vision=true"
+        )
+    return _build_messages(messages, system_prompt, allow_image_input=supports_images)
 
 
 _MESSAGE_API_KEYS = {
@@ -561,15 +607,7 @@ class LLMService:
     ) -> dict[str, Any]:
         cfg = await _resolve_config(task_type, self.db, node_override)
         kwargs = _completion_kwargs(cfg)
-        kwargs["messages"] = _build_messages(
-            messages,
-            system,
-            allow_image_input=model_supports_image_input(
-                cfg.get("model"),
-                cfg.get("api_base"),
-                (cfg.get("model_metadata") or {}).get("supports_vision"),
-            ),
-        )
+        kwargs["messages"] = _build_messages_for_config(messages, system, cfg)
         response = await _acompletion_with_retries(
             kwargs,
             fallback_model=cfg.get("fallback_model"),
@@ -609,14 +647,7 @@ class LLMService:
         env_key = _resolve_env_key_for_default(kwargs["model"])
         if env_key:
             kwargs["api_key"] = env_key
-        kwargs["messages"] = _build_messages(
-            messages,
-            system_prompt,
-            allow_image_input=model_supports_image_input(
-                kwargs.get("model"),
-                kwargs.get("api_base"),
-            ),
-        )
+        kwargs["messages"] = _build_messages_for_config(messages, system_prompt, kwargs)
         response = await _acompletion_with_retries(kwargs)
         response = await _continue_text_if_truncated(kwargs, response)
         return response.choices[0].message.content or ""
@@ -631,15 +662,7 @@ class LLMService:
     ) -> AsyncIterator[str]:
         cfg = await _resolve_config(task_type, self.db, node_override)
         kwargs = _completion_kwargs(cfg, stream=True)
-        kwargs["messages"] = _build_messages(
-            messages,
-            system,
-            allow_image_input=model_supports_image_input(
-                cfg.get("model"),
-                cfg.get("api_base"),
-                (cfg.get("model_metadata") or {}).get("supports_vision"),
-            ),
-        )
+        kwargs["messages"] = _build_messages_for_config(messages, system, cfg)
         response = await _acompletion_with_retries(
             kwargs,
             fallback_model=cfg.get("fallback_model"),
@@ -667,15 +690,7 @@ class LLMService:
         kwargs = _completion_kwargs(cfg, with_tools=tools)
         if max_tokens is not None:
             kwargs["max_tokens"] = max(1, int(max_tokens))
-        kwargs["messages"] = _build_messages(
-            messages,
-            system,
-            allow_image_input=model_supports_image_input(
-                cfg.get("model"),
-                cfg.get("api_base"),
-                (cfg.get("model_metadata") or {}).get("supports_vision"),
-            ),
-        )
+        kwargs["messages"] = _build_messages_for_config(messages, system, cfg)
         response = await _acompletion_with_retries(
             kwargs,
             fallback_model=cfg.get("fallback_model"),

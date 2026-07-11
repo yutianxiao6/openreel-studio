@@ -225,7 +225,7 @@ async def test_llm_generate_continues_truncated_text(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_deepseek_generate_with_tools_downgrades_image_parts_to_text(monkeypatch) -> None:
+async def test_deepseek_generate_with_tools_rejects_required_image_input(monkeypatch) -> None:
     captured = {}
 
     async def fake_config(*args, **kwargs):
@@ -244,28 +244,33 @@ async def test_deepseek_generate_with_tools_downgrades_image_parts_to_text(monke
     monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
     monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
 
-    await LLMService().generate_with_tools(
-        "agent_loop",
-        [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Visual context retained."},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-                ],
-                "_persisted_vision_context": True,
-            }
-        ],
-        tools=[],
-        system="system",
-    )
+    with pytest.raises(llm_service.LLMImageInputUnsupportedError, match="does not support required image input"):
+        await LLMService().generate_with_tools(
+            "agent_loop",
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Visual context retained."},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                    ],
+                    "_persisted_vision_context": True,
+                }
+            ],
+            tools=[],
+            system="system",
+        )
 
-    user_message = captured["messages"][1]
-    assert user_message["role"] == "user"
-    assert isinstance(user_message["content"], str)
-    assert "Visual context retained." in user_message["content"]
-    assert "image_url part(s) omitted" in user_message["content"]
-    assert "data:image/" not in user_message["content"]
+    assert captured == {}
+
+
+def test_model_image_capability_is_fail_closed_without_metadata() -> None:
+    assert llm_service.model_supports_image_input("openai/gpt-5.5") is True
+    assert llm_service.model_supports_image_input("openai/custom-vision-model") is False
+    assert llm_service.model_supports_image_input(
+        "openai/custom-vision-model",
+        supports_vision=True,
+    ) is True
 
 
 @pytest.mark.asyncio
