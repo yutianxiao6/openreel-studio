@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import asyncio
+import base64
+import io
 from copy import deepcopy
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from app.agent import canvas_workflow_templates, workflow_spec_artifacts, workflow_template_store
 from app.mcp_tools import agent_tools, node_universal, skill_tools, tool_meta_tools, workflow_spec_tools, workflow_tools
@@ -4989,6 +4992,30 @@ async def test_workflow_text_llm_builds_multimodal_user_message(monkeypatch: pyt
             {"type": "image_url", "image_url": {"url": "https://example.com/scene.png"}},
         ],
     }]
+
+
+@pytest.mark.asyncio
+async def test_llm_image_reference_falls_back_to_remote_pixels_when_local_copy_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    buffer = io.BytesIO()
+    Image.new("RGB", (32, 18), (24, 96, 160)).save(buffer, format="PNG")
+    remote_data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    async def fake_image_output(project_id: str, ref: str) -> tuple[dict[str, Any] | None, str | None]:
+        return {
+            "url": f"/api/media/{project_id}/missing-local.png",
+            "remote_url": remote_data_url,
+        }, None
+
+    monkeypatch.setattr(node_universal, "_image_output_from_node_reference", fake_image_output)
+
+    image_url, warning = await node_universal._llm_image_url_from_reference("project-1", "node:4")
+
+    assert warning is None
+    assert image_url is not None
+    assert image_url.startswith("data:image/jpeg;base64,")
+    assert "/api/media/" not in image_url
 
 
 @pytest.mark.asyncio

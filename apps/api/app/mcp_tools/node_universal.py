@@ -1693,6 +1693,18 @@ def _llm_image_url_from_source_value(project_id: str, value: str) -> tuple[str |
 
 
 async def _llm_image_url_from_reference(project_id: str, ref: str) -> tuple[str | None, str | None]:
+    from app.agent.vision_context import source_to_image_url
+
+    async def prepare(source: Any) -> tuple[str | None, str | None]:
+        text_source = str(source or "").strip()
+        if not text_source:
+            return None, None
+        try:
+            image_url, _metadata = await source_to_image_url(project_id, text_source)
+            return image_url, None
+        except Exception as exc:
+            return None, f"参考图无法读取 {text_source}: {exc}"
+
     text = str(ref or "").strip()
     if not text:
         return None, None
@@ -1700,6 +1712,7 @@ async def _llm_image_url_from_reference(project_id: str, ref: str) -> tuple[str 
         output, error = await _image_output_from_node_reference(project_id, text)
         if not output:
             return None, error
+        warnings: list[str] = []
         for candidate in (
             output.get("local_path"),
             output.get("url"),
@@ -1707,16 +1720,17 @@ async def _llm_image_url_from_reference(project_id: str, ref: str) -> tuple[str 
             output.get("remote_url"),
             output.get("path"),
         ):
-            url, warning = _llm_image_url_from_source_value(project_id, str(candidate or ""))
+            url, warning = await prepare(candidate)
             if url:
                 return url, None
             if warning:
-                return None, warning
-        return None, f"参考图片节点没有可发送图片: {text}"
+                warnings.append(warning)
+        return None, "; ".join(dict.fromkeys(warnings)) or f"参考图片节点没有可发送图片: {text}"
     if text.startswith("asset:"):
         output, error = await _image_output_from_asset_reference(project_id, text)
         if not output:
             return None, error
+        warnings = []
         for candidate in (
             output.get("local_path"),
             output.get("url"),
@@ -1724,13 +1738,13 @@ async def _llm_image_url_from_reference(project_id: str, ref: str) -> tuple[str 
             output.get("remote_url"),
             output.get("path"),
         ):
-            url, warning = _llm_image_url_from_source_value(project_id, str(candidate or ""))
+            url, warning = await prepare(candidate)
             if url:
                 return url, None
             if warning:
-                return None, warning
-        return None, f"参考资产没有可发送图片: {text}"
-    return _llm_image_url_from_source_value(project_id, text)
+                warnings.append(warning)
+        return None, "; ".join(dict.fromkeys(warnings)) or f"参考资产没有可发送图片: {text}"
+    return await prepare(text)
 
 
 async def _reference_image_urls_for_text_run(
