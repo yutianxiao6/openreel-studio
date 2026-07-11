@@ -6,7 +6,12 @@ import pytest
 
 from app.config import settings
 from app.db.models import WorkflowNode
-from app.services import media_operations, timeline_media_index, video_sequence_renderer
+from app.services import (
+    media_operations,
+    timeline_media_index,
+    timeline_waveforms,
+    video_sequence_renderer,
+)
 from app.services.video_edit_sequences import SequenceSpec
 
 
@@ -98,6 +103,43 @@ def _resolved_sources(source: Path) -> dict[str, video_sequence_renderer.Resolve
         )
         for clip_id in ("video-out", "video-in", "audio-out", "audio-in")
     }
+
+
+def _single_clip_spec(*, gain_db: float = 0.0, muted: bool = False) -> SequenceSpec:
+    return SequenceSpec.model_validate({
+        "schema_version": "openreel.video_sequence.v1",
+        "settings": {
+            "frame_rate": {"numerator": 24, "denominator": 1},
+            "width": 320,
+            "height": 180,
+            "audio_sample_rate": 48_000,
+            "audio_channels": 2,
+        },
+        "tracks": [
+            {"id": "v1", "kind": "video", "name": "Video 1", "order": 0},
+            {"id": "a1", "kind": "audio", "name": "Audio 1", "order": 0, "gain_db": gain_db, "muted": muted},
+        ],
+        "clips": [
+            {
+                "id": "video",
+                "track_id": "v1",
+                "media_id": "video-source",
+                "timeline_start_frame": 0,
+                "duration_frames": 48,
+                "source_in_frame": 0,
+                "source_frame_count": 48,
+            },
+            {
+                "id": "audio",
+                "track_id": "a1",
+                "media_id": "embedded-audio:video-source",
+                "timeline_start_frame": 0,
+                "duration_frames": 48,
+                "source_in_frame": 0,
+                "source_frame_count": 48,
+            },
+        ],
+    })
 
 
 def test_compile_sequence_render_plan_includes_frame_transforms_and_audio_mix(tmp_path: Path) -> None:
@@ -220,3 +262,61 @@ async def test_real_ffmpeg_progress_process_can_be_cancelled(tmp_path: Path) -> 
     with pytest.raises(asyncio.CancelledError):
         await task
     target.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_exported_silence_and_minus_six_db_have_expected_real_amplitude(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(settings, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setattr(settings, "STORAGE_DIR", str(tmp_path / "storage"))
+    project_id = "audio-level-project"
+    source = tmp_path / "storage" / project_id / "generated_videos" / "source.mp4"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    await media_operations._run_ffmpeg([  # noqa: SLF001
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=navy:size=320x180:rate=24:duration=2",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=997:sample_rate=48000:duration=2",
+        "-shortest",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        str(source),
+    ])
+    node = WorkflowNode(
+        id="video-source",
+        project_id=project_id,
+        type="video",
+        title="Tone",
+        status="completed",
+        output_json=json.dumps({
+            "type": "video",
+            "local_url": f"/api/media/{project_id}/generated_videos/source.mp4",
+        }),
+    )
+
+    async def render(gain_db: float = 0.0, muted: bool = False):
+        result = await video_sequence_renderer.render_sequence(
+            project_id,
+            _single_clip_spec(gain_db=gain_db, muted=muted),
+            revision=1,
+            nodes_by_id={node.id: node},
+        )
+        manifest, _ = await timeline_waveforms.ensure_waveform(project_id, result.path)
+        return manifest
+
+    unity = await render()
+    minus_six = await render(gain_db=-6.0)
+    silence = await render(muted=True)
+
+    assert unity.peak > 0.05
+    assert minus_six.peak / unity.peak == pytest.approx(10 ** (-6 / 20), rel=0.04)
+    assert silence.peak == pytest.approx(0.0, abs=1e-6)

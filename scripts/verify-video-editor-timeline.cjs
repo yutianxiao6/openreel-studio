@@ -667,6 +667,7 @@ async function main() {
     )
     await page.getByLabel("回放分辨率", { exact: true }).selectOption("full")
     await page.waitForFunction(() => document.querySelectorAll('[data-openreel-program-canvas="true"]').length === 0)
+    const visualSpecBeforeReset = JSON.stringify(latestSequenceSpec)
     await page.getByRole("button", { name: "重置画面属性", exact: true }).click()
     await page.waitForFunction(() => document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-visual-scale") === "1")
     const visualResetState = await page.locator('[data-openreel-program-gap]').evaluate((monitor) => ({
@@ -674,12 +675,18 @@ async function main() {
       scale: monitor.getAttribute("data-visual-scale"),
       crop: monitor.getAttribute("data-visual-crop"),
     }))
+    await page.waitForTimeout(900)
+    const visualResetSpec = JSON.stringify(latestSequenceSpec)
     await page.keyboard.press("Control+z")
     await page.waitForFunction(() => document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-visual-scale") === "1.15")
+    await page.waitForTimeout(900)
     const visualUndoRestored = true
+    const visualUndoByteEquivalent = JSON.stringify(latestSequenceSpec) === visualSpecBeforeReset
     await page.keyboard.press("Control+Shift+z")
     await page.waitForFunction(() => document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-visual-scale") === "1")
+    await page.waitForTimeout(900)
     const visualRedoReset = true
+    const visualRedoByteEquivalent = JSON.stringify(latestSequenceSpec) === visualResetSpec
     await page.keyboard.press("Control+z")
     await page.waitForFunction(() => document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-visual-scale") === "1.15")
     await page.waitForTimeout(900)
@@ -688,7 +695,9 @@ async function main() {
       visualResetState.scale === "1" &&
       visualResetState.crop === "0,0,0,0" &&
       visualUndoRestored &&
-      visualRedoReset
+      visualRedoReset &&
+      visualUndoByteEquivalent &&
+      visualRedoByteEquivalent
     )
     const basicVisualControls = visualPreviewApplied && visualTransformPersisted && transformedReducedCanvas && visualResetAndHistory
 
@@ -1573,6 +1582,7 @@ async function main() {
     const pauseButton = panel.getByRole("button", { name: "暂停", exact: true })
     if (await pauseButton.isVisible().catch(() => false)) await pauseButton.click()
 
+    const sequenceSpecBeforeReopen = JSON.stringify(latestSequenceSpec)
     await panel.getByRole("button", { name: "关闭编辑器", exact: true }).click()
     await panel.waitFor({ state: "hidden" })
     await page.evaluate(({ nodeId, videoUrl }) => {
@@ -1608,6 +1618,7 @@ async function main() {
         names.includes("补充声音")
       )
     }, { expectedTrackHeight: trackHeightAfter, expectedMarkerFrame: markerFrame })
+    const sequenceReopenByteEquivalent = JSON.stringify(latestSequenceSpec) === sequenceSpecBeforeReopen
     await page.locator('[data-clip-kind="video"]').nth(1).click()
     await page.getByLabel("源素材入点帧", { exact: true }).fill("24")
     await page.getByLabel("源素材出点帧", { exact: true }).fill("120")
@@ -1666,7 +1677,7 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: sequenceRenderUi && sequenceRenderCancelUi && basicVisualControls && basicTransitions && programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: sequenceRenderUi && sequenceRenderCancelUi && basicVisualControls && basicTransitions && programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && sequenceReopenByteEquivalent && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
       sequenceRenderUi,
       sequenceRenderCancelUi,
       renderRequestBody,
@@ -1685,6 +1696,8 @@ async function main() {
       transformedReducedCanvas,
       transformedReducedCanvasState,
       visualResetAndHistory,
+      visualUndoByteEquivalent,
+      visualRedoByteEquivalent,
       transformedVisualState,
       persistedVisualTransform,
       visualResetState,
@@ -1777,6 +1790,7 @@ async function main() {
       lockedTrackRejectedMove,
       dynamicTrackHistory,
       sequenceReopenPersisted,
+      sequenceReopenByteEquivalent,
       zoomExpanded,
       zoomAnchorStable,
       zoomBefore,
