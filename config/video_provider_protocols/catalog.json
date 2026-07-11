@@ -302,14 +302,17 @@
       },
       "upload": {
         "method": "POST",
-        "path": "/v1/files",
+        "base_url_param": "upload_base_url",
+        "base_url_label": "上传 API Base URL",
+        "base_url_hint": "填写版本化上传 API Base，例如 https://ai.t8star.org/v1。",
+        "path": "/files",
         "auth": "bearer",
         "file_field": "file",
         "url_paths": ["url", "data.url"]
       },
       "request": {
         "method": "POST",
-        "path": "/v2/videos/generations",
+        "path": "/videos/generations",
         "auth": "bearer",
         "task_id_paths": ["task_id", "id", "job_id"],
         "body": {
@@ -324,7 +327,7 @@
       },
       "poll": {
         "method": "GET",
-        "path": "/v2/videos/generations/{task_id}",
+        "path": "/videos/generations/{task_id}",
         "status_path": "status",
         "progress_path": "progress",
         "succeeded": ["success", "done", "completed", "succeeded"],

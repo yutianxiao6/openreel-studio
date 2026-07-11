@@ -53,6 +53,13 @@ export interface MediaProviderEntry {
 export interface MediaProtocolSummary {
   id: string
   display_name?: string
+  additional_base_urls?: Array<{
+    param: string
+    label?: string
+    hint?: string
+    section?: string
+    required?: boolean
+  }>
   model_names?: string[]
   model_profiles?: Array<{
     match?: string

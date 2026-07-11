@@ -124,6 +124,10 @@ fields, and result parsing belong in the protocol catalog.
 `video_protocol_id`，以及可选的 `public_base_url` 等公网访问设置。请求结构、
 能力限制、先上传、multipart 字段和结果解析都写进协议 catalog。
 
+媒体 `base_url` 是带版本或 API 命名空间的 API Base URL，后端按原值使用；协议
+path 只写 `/videos`、`/files` 等资源路径。同一 provider 跨多个 API Base 时，
+section 用 `base_url_param` 显式引用运行配置里的额外版本化地址。
+
 `video_http_v1` also reads protocol-level `image_transport`. Video and audio
 references are URL-based: use public `http(s)` URLs, or configure
 `public_base_url` so project `/api/media/...` files can be converted to public

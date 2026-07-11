@@ -311,7 +311,10 @@ function ProviderSummary({
         </div>
       </div>
       <div className="grid gap-3 px-4 py-4 sm:grid-cols-2">
-        <SummaryField label="接口地址" value={entry.base_url} mono />
+        <SummaryField label="API Base URL" value={entry.base_url} mono />
+        {entry.kind === "video" && String(entry.params?.upload_base_url || "").trim() && (
+          <SummaryField label="上传 API Base URL" value={String(entry.params?.upload_base_url)} mono />
+        )}
         <SummaryField label="协议引擎" value={entry.api_format} mono />
         <SummaryField label="协议 ID" value={protocolId || "未设置"} mono />
         <SummaryField label="API Key" value={entry.api_key ? "已配置" : "未配置"} />
@@ -358,7 +361,7 @@ function Row({
   videoProtocols: MediaProtocolSummary[]
   audioProtocols: MediaProtocolSummary[]
 }) {
-  const [draft, setDraft] = useState(() => normalizeMediaProvider(entry, imageProtocols, audioProtocols))
+  const [draft, setDraft] = useState(() => normalizeMediaProvider(entry, imageProtocols, videoProtocols, audioProtocols))
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
   if (!editing) {
@@ -473,7 +476,13 @@ function Row({
   const selectedCatalogProtocolId = videoProtocolOptions.some((item) => item.value === videoProtocolId)
     ? videoProtocolId
     : ""
-  const canSaveVideoProtocol = draft.api_format !== "video_http_v1" || Boolean(selectedCatalogProtocolId)
+  const selectedVideoProtocol = videoProtocols.find((item) => item.id === selectedCatalogProtocolId)
+  const additionalVideoBaseUrls = selectedVideoProtocol?.additional_base_urls || []
+  const hasRequiredVideoBaseUrls = additionalVideoBaseUrls.every((item) =>
+    !item.required || Boolean(String(draft.params?.[item.param] || "").trim()),
+  )
+  const canSaveVideoProtocol = draft.api_format !== "video_http_v1"
+    || (Boolean(selectedCatalogProtocolId) && hasRequiredVideoBaseUrls)
   const audioProtocolId = String(draft.params?.audio_protocol_id || "")
   const audioProtocolOptions = audioProtocols.map((item) => ({
     label: item.display_name && item.display_name !== item.id
@@ -508,8 +517,8 @@ function Row({
       </div>
       <div className="grid gap-3 px-4 py-4 md:grid-cols-2">
         <F label="名称" required value={draft.name} onChange={(v) => setField("name", v)} />
-        <F label="Base URL" required value={draft.base_url} onChange={(v) => setField("base_url", v)}
-          hint="填写协议路径的共同根地址。后端会原样保留，不删除或补写版本后缀；通常包含 /v1 或 /api/v3，协议同时使用多个版本路径时填写主机根地址。" />
+        <F label="API Base URL" required value={draft.base_url} onChange={(v) => setField("base_url", v)}
+          hint="填写带版本或 API 命名空间的接口基础地址，例如 /v1、/v2、/api/v3 或 /suno；不要只填裸域名，也不要填到 images、videos、files 等资源路径。后端原样使用，协议只追加资源路径。" />
         {entry.kind === "image" ? (
           <>
             <F
@@ -614,6 +623,16 @@ function Row({
                     当前保存的协议 ID「{videoProtocolId}」不在配置文件中，请先在 catalog 中加入该协议，或改选已有协议。
                   </div>
                 )}
+                {additionalVideoBaseUrls.map((item) => (
+                  <F
+                    key={item.param}
+                    label={item.label || item.param}
+                    required={item.required}
+                    value={String(draft.params?.[item.param] || "")}
+                    onChange={(value) => setParamField(item.param, value)}
+                    hint={item.hint || "该协议的这个操作使用独立的版本化 API Base URL。"}
+                  />
+                ))}
               </>
             )}
             <div className="col-span-2 rounded border border-gray-800 bg-gray-950/35 p-2">
@@ -711,7 +730,7 @@ function Row({
         <button onClick={onCancel}
           className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300">取消</button>
         <button
-          onClick={() => onSave(normalizeMediaProvider(draft, imageProtocols, audioProtocols))}
+          onClick={() => onSave(normalizeMediaProvider(draft, imageProtocols, videoProtocols, audioProtocols))}
           disabled={
             !draft.name.trim()
             || !draft.base_url.trim()

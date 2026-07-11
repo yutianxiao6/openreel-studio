@@ -67,7 +67,7 @@ async def media_add_provider(
 
     kind: 'image', 'video', or 'audio'
     name: short identifier you'll reference in generate calls (e.g. 'flux-pro', 'sdxl')
-    base_url: API base, e.g. 'https://api.siliconflow.cn' (no trailing /v1)
+    base_url: versioned or namespaced API base, e.g. 'https://api.openai.com/v1'; do not include resource paths such as /images or /videos
     api_key: provider API key
     model_name: model identifier sent to the API
     api_format: use image_http_v1, video_http_v1, or audio_http_v1 with the matching protocol id in params.

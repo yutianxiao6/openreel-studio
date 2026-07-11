@@ -26,18 +26,26 @@ def _protocol_catalog_path(env_name: str, relative_path: str) -> Path:
     return _project_root() / relative_path
 
 
-def _protocol_ids_from_catalog(env_name: str, relative_path: str) -> set[str]:
+def _protocols_from_catalog(env_name: str, relative_path: str) -> dict[str, dict[str, Any]]:
     path = _protocol_catalog_path(env_name, relative_path)
     if not path.exists():
-        return set()
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return set()
+        return {}
     protocols = data.get("protocols") if isinstance(data, dict) else None
     if not isinstance(protocols, dict):
-        return set()
-    return {str(protocol_id) for protocol_id in protocols if str(protocol_id).strip()}
+        return {}
+    return {
+        str(protocol_id): protocol
+        for protocol_id, protocol in protocols.items()
+        if str(protocol_id).strip() and isinstance(protocol, dict)
+    }
+
+
+def _protocol_ids_from_catalog(env_name: str, relative_path: str) -> set[str]:
+    return set(_protocols_from_catalog(env_name, relative_path))
 
 
 def _video_protocol_ids_from_catalog() -> set[str]:
@@ -217,6 +225,20 @@ class MediaProviderEntry(BaseModel):
             raise ValueError(
                 f"params.video_protocol_id={protocol_id!r} 不在 config/video_provider_protocols/catalog.json 的 protocols 中"
             )
+        protocols = _protocols_from_catalog(
+            "OPENREEL_VIDEO_PROTOCOLS_FILE",
+            "config/video_provider_protocols/catalog.json",
+        )
+        protocol = protocols.get(protocol_id) or {}
+        required_base_url_params = {
+            str(section.get("base_url_param") or "").strip()
+            for section_name in ("upload", "request", "poll")
+            for section in [protocol.get(section_name)]
+            if isinstance(section, dict) and str(section.get("base_url_param") or "").strip()
+        }
+        missing = sorted(key for key in required_base_url_params if not str(params.get(key) or "").strip())
+        if missing:
+            raise ValueError(f"协议 {protocol_id!r} 缺少独立 API Base URL 参数: {', '.join(missing)}")
         return self
 
     @model_validator(mode="after")

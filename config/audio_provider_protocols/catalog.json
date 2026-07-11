@@ -49,7 +49,7 @@
       ],
       "request": {
         "method": "POST",
-        "path": "/suno/submit/music",
+        "path": "/submit/music",
         "auth": "bearer",
         "merge_extra": true,
         "required_context": ["prompt"],
@@ -68,7 +68,7 @@
       },
       "poll": {
         "method": "GET",
-        "path": "/suno/fetch/{task_id}",
+        "path": "/fetch/{task_id}",
         "auth": "bearer",
         "interval_seconds": 8,
         "timeout_seconds": 1200,
@@ -108,7 +108,7 @@
       ],
       "request": {
         "method": "POST",
-        "path": "/api/v1/generate",
+        "path": "/generate",
         "auth": "bearer",
         "merge_extra": true,
         "required_context": ["prompt"],
@@ -128,7 +128,7 @@
       },
       "poll": {
         "method": "GET",
-        "path": "/api/v1/generate/record-info?taskId={task_id}",
+        "path": "/generate/record-info?taskId={task_id}",
         "auth": "bearer",
         "interval_seconds": 8,
         "timeout_seconds": 1200,

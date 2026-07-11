@@ -3700,9 +3700,12 @@ async def test_t8_grok_video_3_submit_uploads_references_and_returns_job(monkeyp
     provider = SimpleNamespace(
         name="t8-grok-video-3",
         model_name="grok-video-3",
-        base_url="https://relay.example",
+        base_url="https://relay.example/v2",
         api_key="relay-key",
-        params_json=json.dumps({"resolution": "720p"}, ensure_ascii=False),
+        params_json=json.dumps({
+            "resolution": "720p",
+            "upload_base_url": "https://relay.example/v1",
+        }, ensure_ascii=False),
     )
     captured: dict = {"uploads": []}
 
@@ -3771,7 +3774,7 @@ async def test_t8_grok_video_3_poll_success_downloads_data_output(monkeypatch):
     provider = SimpleNamespace(
         name="t8-grok-video-3",
         model_name="grok-video-3",
-        base_url="https://relay.example",
+        base_url="https://relay.example/v2",
         api_key="relay-key",
         params_json=json.dumps({"_poll_interval_seconds": 1, "_poll_timeout_seconds": 2}),
     )

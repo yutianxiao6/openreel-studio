@@ -79,7 +79,7 @@ Accepted `media_providers` fields:
 | --- | --- | --- |
 | `kind` | string | `image`, `video`, or `audio`. / `image`、`video` 或 `audio`。 |
 | `name` | string | User-visible provider name. Unique with `kind`. / 用户可见名称，同一 `kind` 内唯一。 |
-| `base_url` | string | Provider or relay base URL. / 服务商或中转站基础地址。 |
+| `base_url` | string | Versioned or namespaced API Base URL, such as `/v1`, `/v2`, `/api/v3`, or `/suno`. It is not a bare host or complete resource endpoint. / 带版本或 API 命名空间的基础地址；不是裸域名，也不是完整资源接口。 |
 | `api_key` | string or null | API key. `${ENV_VAR}` is resolved from environment without persisting the secret in DB config output. / API Key。`${ENV_VAR}` 会从环境变量解析，避免把真实密钥写死。 |
 | `model_name` | string | Model id sent to the provider request body. / 发给服务商的模型 ID。 |
 | `api_format` | string | Use `image_http_v1`, `video_http_v1`, or `audio_http_v1` for declarative protocols. Legacy values still exist for migration. / 声明式协议使用 `image_http_v1`、`video_http_v1` 或 `audio_http_v1`。旧值仅用于迁移兼容。 |
@@ -132,6 +132,26 @@ Protocol id keys:
 | Video / 视频 | `params.video_protocol_id` |
 | Audio / 音频 | `params.audio_protocol_id` |
 
+`base_url` is always used literally. The backend does not add, remove, or guess
+an API version. Protocol section paths contain resources only. For example,
+`https://api.openai.com/v1` plus `/images/generations` forms the final endpoint.
+
+`base_url` 始终按原值使用，后端不补写、删除或猜测 API 版本。协议 section 的
+path 只写资源路径。例如 `https://api.openai.com/v1` 与
+`/images/generations` 拼成最终接口。
+
+If one provider spans multiple API bases, each base is configured explicitly.
+For example, T8 video generation uses `base_url: https://ai.t8star.org/v2`,
+while its upload section declares `base_url_param: upload_base_url` and runtime
+params supplies `upload_base_url: https://ai.t8star.org/v1`. The upload path is
+then only `/files`. This avoids rewriting `/v1` or `/v2` in backend code.
+
+如果同一 provider 跨多个 API Base，每个地址都显式配置。例如 T8 视频生成的
+`base_url` 是 `https://ai.t8star.org/v2`，上传 section 用
+`base_url_param: upload_base_url` 指向运行配置中的
+`upload_base_url: https://ai.t8star.org/v1`，上传 path 只写 `/files`。后端不再
+改写 `/v1` 或 `/v2`。
+
 ## 4. Common Protocol Fields / 通用协议字段
 
 Catalog protocol objects are intentionally permissive: unknown fields are kept
@@ -147,7 +167,6 @@ are the ones currently used by the backend.
 | `id` | all / 全部 | Must match the key in `protocols`. / 必须与 `protocols` 中的 key 一致。 |
 | `display_name` | all / 全部 | Name shown in settings UI. / 设置页展示名。 |
 | `default_base_url` or `base_url` | all / 全部 | Fallback base URL when runtime provider has no base URL. / 运行 provider 未填地址时的默认地址。 |
-| `strip_base_suffixes` | all / 全部 | Removes suffixes such as `/v1` from `base_url` before joining `request.path`. / 拼接路径前从 `base_url` 去掉指定后缀。 |
 | `headers` | all / 全部 | Static headers merged into request headers. Section headers override protocol headers. / 静态请求头；section 级别覆盖 protocol 级别。 |
 | `auth` | all / 全部 | `bearer` / `authorization_bearer`, `api_key_header` / `header`, or `authorization_raw` / `raw`. / 授权方式。 |
 | `api_key_header` | all / 全部 | Header name when `auth` is `api_key_header`. / `api_key_header` 模式下的 header 名。 |
@@ -165,8 +184,10 @@ Common request fields:
 | Field / 字段 | Meaning / 含义 |
 | --- | --- |
 | `method` | HTTP method. Defaults to `POST`; `GET` sends the rendered body as query params for image/video/audio create calls. / HTTP 方法，默认 `POST`；`GET` 会把渲染后的 body 作为查询参数发送。 |
-| `path` or `endpoint` | Relative path joined with `base_url`, or an absolute URL. `{task_id}` is replaced in poll paths. / 相对路径或绝对 URL；轮询路径里的 `{task_id}` 会被替换。 |
-| `auth`, `headers`, `api_key_header`, `strip_base_suffixes` | Same meaning as protocol-level fields, with section-level override. / 与 protocol 级别同义，section 级别覆盖。 |
+| `path` or `endpoint` | Resource path joined with the selected API Base URL, or an absolute URL. `{task_id}` is replaced in poll paths. Version prefixes belong to the API Base URL. / 与选定 API Base URL 拼接的资源路径或绝对 URL；版本前缀属于 API Base URL。 |
+| `base_url_param` | Optional runtime `params` key containing a separate versioned API Base URL for this section. Required when declared. / 可选；指定本 section 使用的独立版本化 API Base URL 在运行 `params` 中的字段名，声明后必填。 |
+| `base_url_label`, `base_url_hint` | Settings UI label and guidance for a declared `base_url_param`. / `base_url_param` 在设置页中的标签和说明。 |
+| `auth`, `headers`, `api_key_header` | Same meaning as protocol-level fields, with section-level override. / 与 protocol 级别同义，section 级别覆盖。 |
 | `body` | JSON body template. Must render to an object. / JSON 请求体模板，渲染后必须是对象。 |
 | `task_id_paths` or `id_paths` | Dot paths used to read task id from create response. / 从创建响应里读取任务 ID 的点号路径。 |
 | `merge_extra` | When true, non-internal runtime `params` keys are merged into the outgoing payload. / 为 true 时，把非内部运行参数合并进请求体。 |
@@ -514,11 +535,10 @@ as the main user-facing creative result.
       "version": "openreel.image_provider.v1",
       "id": "openai_images_generations",
       "display_name": "OpenAI-compatible images.generations",
-      "strip_base_suffixes": ["/images/generations", "/v1"],
       "image_transport": "data_url",
       "request": {
         "method": "POST",
-        "path": "/v1/images/generations",
+        "path": "/images/generations",
         "auth": "bearer",
         "merge_extra": true,
         "body": {
@@ -612,14 +632,13 @@ as the main user-facing creative result.
       "version": "openreel.audio_provider.v1",
       "id": "openai_audio_speech",
       "display_name": "OpenAI-compatible audio.speech",
-      "strip_base_suffixes": ["/audio/speech", "/v1"],
       "default_params": {
         "voice": "alloy",
         "response_format": "mp3"
       },
       "request": {
         "method": "POST",
-        "path": "/v1/audio/speech",
+        "path": "/audio/speech",
         "auth": "bearer",
         "required_context": ["input"],
         "body": {

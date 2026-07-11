@@ -23,6 +23,10 @@
     }
   ],
   "media_providers": [
+    // Every base_url is a versioned/namespaced API Base URL, not a bare host
+    // or a complete endpoint. Protocol request paths only contain resources.
+    // 每个 base_url 都是带版本或命名空间的 API Base URL，不是裸域名或完整接口；
+    // 协议中的 request path 只保存资源路径。
     // Image HTTP v1 keeps runtime connection data here and reads protocol
     // details from config/image_provider_protocols/catalog.json by id.
     // image_http_v1 只在这里保存运行时连接信息，协议细节按 id 从

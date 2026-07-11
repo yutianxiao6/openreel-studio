@@ -73,7 +73,7 @@ class JsonVideoTaskSpec:
     create_path: str
     query_path_template: str
     upload_path: str | None
-    strip_suffixes: tuple[str, ...]
+    upload_base_url_param: str | None
     payload_fields: dict[str, str]
     field_types: dict[str, str]
     source_images_field: str | None
@@ -609,16 +609,10 @@ _T8_GROK_VIDEO_3_SPEC = JsonVideoTaskSpec(
     display_name="T8 Grok Video 3",
     api_formats=frozenset(_T8_GROK_VIDEO_3_FORMATS),
     model_names=frozenset({"grok-video-3"}),
-    create_path="/v2/videos/generations",
-    query_path_template="/v2/videos/generations/{task_id}",
-    upload_path="/v1/files",
-    strip_suffixes=(
-        "/v2/videos/generations",
-        "/v2/videos",
-        "/v1/files",
-        "/v1",
-        "/v2",
-    ),
+    create_path="/videos/generations",
+    query_path_template="/videos/generations/{task_id}",
+    upload_path="/files",
+    upload_base_url_param="upload_base_url",
     payload_fields={
         "prompt": "prompt",
         "model": "model",
@@ -665,15 +659,10 @@ _LINGKE_MEDIA_GENERATE_SPEC = JsonVideoTaskSpec(
     display_name="Lingke media.generate",
     api_formats=frozenset(_LINGKE_MEDIA_GENERATE_FORMATS),
     model_names=frozenset(),
-    create_path="/v1/media/generate",
-    query_path_template="/v1/skills/task-status?task_id={task_id}",
+    create_path="/media/generate",
+    query_path_template="/skills/task-status?task_id={task_id}",
     upload_path=None,
-    strip_suffixes=(
-        "/v1/media/generate",
-        "/v1/media/status",
-        "/v1/skills/task-status",
-        "/v1",
-    ),
+    upload_base_url_param=None,
     payload_fields={
         "prompt": "params.prompt",
         "model": "model",
@@ -811,12 +800,6 @@ def _ark_video_tasks_endpoint(base_url: str | None) -> str:
     base = str(base_url or _ARK_DEFAULT_BASE_URL).strip().rstrip("/")
     if not base:
         base = _ARK_DEFAULT_BASE_URL
-    if base.endswith("/contents/generations/tasks"):
-        return base
-    if base.endswith("/api/v3"):
-        return base + "/contents/generations/tasks"
-    if "ark.cn-beijing.volces.com" in base:
-        return base + "/api/v3/contents/generations/tasks"
     return base + "/contents/generations/tasks"
 
 
@@ -824,14 +807,6 @@ def _xai_video_api_base(base_url: str | None) -> str:
     base = str(base_url or _XAI_DEFAULT_BASE_URL).strip().rstrip("/")
     if not base:
         base = _XAI_DEFAULT_BASE_URL
-    if base.endswith("/videos/generations"):
-        return base[: -len("/videos/generations")]
-    if base.endswith("/videos"):
-        return base[: -len("/videos")]
-    if base.endswith("/v1"):
-        return base
-    if "api.x.ai" in base:
-        return base + "/v1"
     return base
 
 
@@ -844,12 +819,7 @@ def _xai_video_query_endpoint(base_url: str | None, request_id: str) -> str:
 
 
 def _grok_1_5_video_api_base(base_url: str | None) -> str:
-    base = str(base_url or "").strip().rstrip("/")
-    if base.endswith("/videos"):
-        return base[: -len("/videos")]
-    if base.endswith("/v1"):
-        return base
-    return base + "/v1"
+    return str(base_url or "").strip().rstrip("/")
 
 
 def _grok_1_5_video_endpoint(base_url: str | None) -> str:
@@ -861,11 +831,8 @@ def _grok_1_5_video_query_endpoint(base_url: str | None, request_id: str) -> str
 
 
 def _json_video_task_api_root(base_url: str | None, spec: JsonVideoTaskSpec) -> str:
-    base = str(base_url or "").strip().rstrip("/")
-    for suffix in spec.strip_suffixes:
-        if base.endswith(suffix):
-            return base[: -len(suffix)].rstrip("/")
-    return base
+    del spec
+    return str(base_url or "").strip().rstrip("/")
 
 
 def _json_video_task_endpoint(base_url: str | None, spec: JsonVideoTaskSpec) -> str:
@@ -876,10 +843,19 @@ def _json_video_task_query_endpoint(base_url: str | None, spec: JsonVideoTaskSpe
     return _json_video_task_api_root(base_url, spec) + spec.query_path_template.format(task_id=task_id)
 
 
-def _json_video_task_upload_endpoint(base_url: str | None, spec: JsonVideoTaskSpec) -> str:
+def _json_video_task_upload_endpoint(
+    base_url: str | None,
+    spec: JsonVideoTaskSpec,
+    params: dict[str, Any] | None = None,
+) -> str:
     if not spec.upload_path:
         return ""
-    return _json_video_task_api_root(base_url, spec) + spec.upload_path
+    upload_base = base_url
+    if spec.upload_base_url_param:
+        upload_base = str((params or {}).get(spec.upload_base_url_param) or "").strip()
+    if not upload_base:
+        return ""
+    return _json_video_task_api_root(upload_base, spec) + spec.upload_path
 
 
 def _t8_grok_video_3_endpoint(base_url: str | None) -> str:
@@ -1438,6 +1414,7 @@ def list_video_http_v1_protocol_catalog() -> dict[str, Any]:
         items.append({
             "id": protocol_id,
             "display_name": str(protocol.get("display_name") or protocol_id),
+            "additional_base_urls": _video_http_v1_additional_base_urls(protocol),
             "model_names": model_names,
             "model_profiles": model_profiles,
             "modes": modes,
@@ -1871,7 +1848,10 @@ def _video_http_v1_base_for(
     protocol: dict[str, Any],
     section: dict[str, Any],
 ) -> str:
-    del section
+    base_url_param = str(section.get("base_url_param") or "").strip()
+    if base_url_param:
+        params = _parse_extra(provider)
+        return str(params.get(base_url_param) or "").strip()
     return str(
         getattr(provider, "base_url", "")
         or protocol.get("base_url")
@@ -1914,7 +1894,30 @@ def _video_http_v1_endpoint_for(
     path = str(section.get("path") or section.get("endpoint") or "").strip()
     if task_id is not None:
         path = path.replace("{task_id}", task_id)
+    if not base and not path.startswith(("http://", "https://")):
+        return ""
     return _video_http_v1_join_url(base, path)
+
+
+def _video_http_v1_additional_base_urls(protocol: dict[str, Any]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for section_name in ("upload", "request", "poll"):
+        section = protocol.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        param = str(section.get("base_url_param") or "").strip()
+        if not param or param in seen:
+            continue
+        seen.add(param)
+        result.append({
+            "param": param,
+            "label": str(section.get("base_url_label") or param),
+            "hint": str(section.get("base_url_hint") or ""),
+            "section": section_name,
+            "required": True,
+        })
+    return result
 
 
 def _video_http_v1_model_profile(protocol: dict[str, Any], model_name: str) -> dict[str, Any]:
@@ -3705,9 +3708,11 @@ async def _upload_json_video_task_image(
         return None, image_error or "图片引用无法读取"
 
     filename, content, mime = image_file
-    endpoint = _json_video_task_upload_endpoint(provider.base_url, spec)
+    provider_params = _parse_extra(provider)
+    endpoint = _json_video_task_upload_endpoint(provider.base_url, spec, provider_params)
     if not endpoint:
-        return None, f"{spec.display_name} 未配置参考图上传路径"
+        required = spec.upload_base_url_param or "base_url"
+        return None, f"{spec.display_name} 未配置参考图上传 API Base URL: params.{required}"
     headers = {"Authorization": f"Bearer {provider.api_key}"}
     uploaded = await client.post(
         endpoint,
@@ -5366,7 +5371,11 @@ async def _call_json_video_task(
                         return _with_video_model_doc_hint({
                             "error": upload_error or "参考图上传失败",
                             "error_kind": "bad_request",
-                            "endpoint": _json_video_task_upload_endpoint(provider.base_url, spec),
+                            "endpoint": _json_video_task_upload_endpoint(
+                                provider.base_url,
+                                spec,
+                                _parse_extra(provider),
+                            ),
                         })
                     uploaded_urls.append(uploaded_url)
             elif image_candidates and spec.source_image_transport == "public_url_list":
