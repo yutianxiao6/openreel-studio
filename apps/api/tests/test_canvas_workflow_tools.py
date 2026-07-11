@@ -734,6 +734,7 @@ def test_general_short_drama_workflow_template_is_available() -> None:
     assert "core.prompt_template" in template["required_capabilities"]
     assert "core.surface.canvas" in template["required_capabilities"]
     assert "core.surface.workflow_runtime" in template["required_capabilities"]
+    assert "core.vision_context" in template["required_capabilities"]
     assert "openreel.core" in template["extensions"]
     assert "plot" in template["inputs"]
     assert "durationSeconds" in template["inputs"]
@@ -852,7 +853,36 @@ async def test_workflow_protocol_info_lists_core_capabilities() -> None:
     assert "core.prompt_template" in result["available_capabilities"]
     assert "core.depends_on_previous" in result["available_capabilities"]
     assert "core.surface.workflow_runtime" in result["available_capabilities"]
+    assert "core.vision_context" in result["available_capabilities"]
     assert "openreel.core" in result["available_extensions"]
+
+
+def test_workflow_protocol_rejects_vision_context_when_engine_capability_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        canvas_workflow_templates,
+        "_BUILTIN_WORKFLOW_CAPABILITIES",
+        set(canvas_workflow_templates._BUILTIN_WORKFLOW_CAPABILITIES) - {"core.vision_context"},
+    )
+
+    with pytest.raises(canvas_workflow_templates.WorkflowTemplateError) as excinfo:
+        canvas_workflow_templates.normalize_inline_workflow({
+            "id": "vision_context_workflow",
+            "name": "看图写提示词工作流",
+            "workflow_spec_version": "openreel.workflow.v1",
+            "required_capabilities": ["core.node.text", "core.vision_context"],
+            "steps": [
+                {
+                    "id": "video_prompt",
+                    "title": "视频提示词",
+                    "node_type": "text",
+                    "context_refs": [{"ref": "storyboard", "role": "vision_context"}],
+                }
+            ],
+        })
+
+    assert "core.vision_context" in str(excinfo.value)
 
 
 def test_inline_workflow_protocol_preserves_optional_extension_metadata() -> None:

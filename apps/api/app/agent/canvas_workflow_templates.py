@@ -50,6 +50,7 @@ _BUILTIN_WORKFLOW_CAPABILITIES = {
     "core.runner.workflow_input",
     "core.surface.canvas",
     "core.surface.workflow_runtime",
+    "core.vision_context",
 }
 _STEP_SUMMARY_METADATA_KEYS = (
     "source_node_id",

@@ -15,6 +15,7 @@
     "core.repeat",
     "core.foreach",
     "core.context_refs",
+    "core.vision_context",
     "core.reference_selectors",
     "core.depends_on_previous",
     "core.output_mode.json",
