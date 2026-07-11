@@ -1460,7 +1460,7 @@ function workflowAuthoringStepFromSummary({
 
   if (kind === "loop") {
     workflowCopyAuthoringField(stepRecord, result, "repeat")
-    if (!workflowHasValue(result.repeat)) workflowCopyAuthoringField(stepRecord, result, "foreach")
+    workflowCopyAuthoringField(stepRecord, result, "foreach")
     if (nested && nested.length > 0) result.steps = nested
   } else if (!parentScopeId) {
     workflowCopyAuthoringField(stepRecord, result, "foreach")

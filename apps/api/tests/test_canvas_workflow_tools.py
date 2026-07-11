@@ -5906,6 +5906,57 @@ def test_runtime_workflow_rejects_authoring_only_dependency_fields_without_schem
         )
 
 
+def test_authoring_loop_preserves_foreach_when_repeat_also_has_display_metadata() -> None:
+    template = canvas_workflow_templates.normalize_inline_workflow(
+        {
+            "schema": "openreel.workflow.authoring.v1",
+            "id": "repeat_editor_roundtrip",
+            "title": "编辑器循环往返",
+            "steps": [
+                {
+                    "id": "main_characters",
+                    "title": "主要人物",
+                    "kind": "collection",
+                    "output": {"canvas": False},
+                },
+                {
+                    "id": "main_character_images",
+                    "title": "主要人物参考图",
+                    "kind": "loop",
+                    "needs": ["main_characters"],
+                    "repeat": {
+                        "label": "按主要人物逐个展开",
+                        "mode": "per_main_character",
+                    },
+                    "foreach": {
+                        "from_step": "main_characters",
+                        "path": "output.main_characters",
+                        "kind": "characters",
+                    },
+                    "steps": [
+                        {
+                            "id": "main_character_image",
+                            "title": "主要人物参考图",
+                            "kind": "image",
+                            "output": {"canvas": True},
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    group = template["deferred_groups"][0]
+    assert group["id"] == "main_character_images"
+    assert group["repeat"]["label"] == "按主要人物逐个展开"
+    assert group["repeat"]["mode"] == "per_main_character"
+    assert group["repeat"]["foreach"] == {
+        "from_step": "main_characters",
+        "path": "output.main_characters",
+        "kind": "characters",
+    }
+
+
 def test_authoring_workflow_repeat_suffix_prefers_stable_index_over_scene_text() -> None:
     template = canvas_workflow_templates.normalize_inline_workflow(
         {
