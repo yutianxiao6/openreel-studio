@@ -1748,6 +1748,25 @@ async def _reference_image_urls_for_text_run(
     return reference_images, urls, warnings
 
 
+async def _workflow_text_vision_context_image_urls(
+    project_id: str,
+    fields: dict[str, Any],
+) -> tuple[list[str], list[str], list[str]]:
+    declared_refs = _coerce_reference_values(
+        fields.get("references"),
+        include_roles={"vision_context"},
+    )
+    normalized_refs, warnings = await _normalize_reference_images_for_render(project_id, declared_refs)
+    urls: list[str] = []
+    for ref in normalized_refs:
+        url, warning = await _llm_image_url_from_reference(project_id, ref)
+        if url and url not in urls:
+            urls.append(url)
+        if warning:
+            warnings.append(warning)
+    return declared_refs, urls, warnings
+
+
 async def _direct_image_source_output(
     project_id: str,
     fields: dict[str, Any],
@@ -4386,11 +4405,19 @@ async def _call_workflow_text_llm(
     system: str,
     message: str,
     project_id: str,
+    image_urls: list[str] | None = None,
 ) -> dict[str, Any]:
+    user_content: str | list[dict[str, Any]] = message
+    if image_urls:
+        user_content = [{"type": "text", "text": message}]
+        user_content.extend({
+            "type": "image_url",
+            "image_url": {"url": image_url},
+        } for image_url in image_urls if str(image_url or "").strip())
     async with session_scope() as session:
         return await LLMService(session).generate(
             task_type=task_type,
-            messages=[{"role": "user", "content": message}],
+            messages=[{"role": "user", "content": user_content}],
             system=system,
             project_id=project_id,
         )
@@ -4461,6 +4488,10 @@ async def _generate_workflow_text_node(
         upstream_nodes=upstream_nodes,
     )
     skill_payload = await _workflow_runtime_skill_payload(workflow, prompt_runtime)
+    vision_refs, vision_image_urls, vision_warnings = await _workflow_text_vision_context_image_urls(project_id, fields)
+    if vision_refs and (vision_warnings or not vision_image_urls):
+        detail = "; ".join(dict.fromkeys(vision_warnings)) or "没有可发送的图片"
+        raise ValueError(f"必须查看的参考图不可用: {detail}")
     structured_contract = structured_output_contract(workflow)
     structured_instructions = structured_output_instructions(workflow)
     system = (
@@ -4489,6 +4520,7 @@ async def _generate_workflow_text_node(
             "input_facts": workflow.get("input_facts"),
             "skill": skill_payload,
             "upstream_nodes": upstream_nodes,
+            "vision_context_images": vision_refs,
         },
         ensure_ascii=False,
         default=str,
@@ -4511,6 +4543,7 @@ async def _generate_workflow_text_node(
             system=system,
             message=message,
             project_id=project_id,
+            image_urls=vision_image_urls,
         )
     except Exception as exc:
         await _update_workflow_text_run_log(

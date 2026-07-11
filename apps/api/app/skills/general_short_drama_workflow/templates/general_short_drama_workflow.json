@@ -705,6 +705,12 @@
             "scene"
           ],
           "primary_skill": "shot_grid_prompt",
+          "context_refs": [
+            {
+              "ref": "scene_reference",
+              "role": "vision_context"
+            }
+          ],
           "prompt_template": "SYSTEM:\n你是分镜图提示词编写者，把每格规划组织成一张宫格分镜图 image prompt。\nUSER:\n请基于 segmentScript={{segmentScriptCanvas.output}}、grid_count={{planFrames.output.grid_count}}、grid_prompts={{planFrames.output.grid_prompts}}、appearingCharacters={{planFrames.output.appearing_characters}}、style={{inputs.style}}、mainCharacters={{mainCharacters.outputs}}、minorCharacters={{minorCharacters.outputs}}、scene={{scene.outputs}}、sceneReference={{sceneReference.output}} 生成宫格分镜图所需内容。人物参考图由 appearingCharacters 动态匹配后作为 visual_reference 提供。\nOUTPUT:\n只输出纯文本 image prompt，不输出 JSON。写法采用“宫格分镜图，电影分镜，每格一个镜头，清晰格线分隔，每格内容不同”。说明 grid_count 对应的布局，按左到右、上到下逐格写画面；每格突出镜头景别、角度、人物动作、站位构图和环境氛围；整体附加统一 style_template。\nCHECK:\n不生成普通人物图鉴；没有字幕、标号或多余文字；人物外观由参考图继承；空间、道具和光线参考当前段场景图；每格足以支撑后续 videoPrompt 的时间段描述。",
           "output_schema": {
             "labels": {
@@ -781,13 +787,41 @@
             "storyboard",
             "plan_frames",
             "minor_characters",
-            "scene"
+            "scene",
+            "scene_reference",
+            "main_character_images"
           ],
           "fields": {
             "purpose": "video_prompt",
             "stage": "video_prompt",
             "prompt_source": "skill:video_prompt"
           },
+          "context_refs": [
+            {
+              "ref": "storyboard",
+              "role": "vision_context"
+            },
+            {
+              "ref": "scene_reference",
+              "role": "vision_context"
+            }
+          ],
+          "reference_selectors": [
+            {
+              "from_group": "main_character_images",
+              "match_fields": [
+                "name",
+                "reuse_key",
+                "character",
+                "character_id",
+                "id",
+                "title"
+              ],
+              "role": "vision_context",
+              "source_path": "output.appearing_characters",
+              "source_step": "planFrames"
+            }
+          ],
           "id": "video_prompt",
           "node_type": "text",
           "surface": "workflow_runtime",

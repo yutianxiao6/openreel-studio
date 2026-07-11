@@ -796,12 +796,29 @@ def test_general_short_drama_workflow_template_is_available() -> None:
     assert "普通段落建议 4 格" in by_id["plan_frames"]["prompt_template"]
     assert by_id["storyboard_prompt"]["surface"] == "workflow_runtime"
     assert "storyboardGrid" not in by_id["storyboard_prompt"]["prompt_template"]
+    assert by_id["storyboard_prompt"]["context_refs"] == [
+        {"ref": "scene_reference", "role": "vision_context"},
+    ]
     assert by_id["storyboard"]["kind"] == "image"
     assert by_id["storyboard"]["depends_on"] == ["storyboard_prompt", "main_character_images"]
     assert "depends_on_previous" not in by_id["storyboard"]
     assert by_id["storyboard"]["reference_selectors"][0]["from_group"] == "main_character_images"
     assert by_id["storyboard"]["reference_selectors"][0]["source_path"] == "output.appearing_characters"
     assert by_id["video_prompt"]["surface"] == "workflow_runtime"
+    assert by_id["video_prompt"]["depends_on"] == [
+        "segment_script_canvas",
+        "storyboard",
+        "plan_frames",
+        "minor_characters",
+        "scene",
+        "scene_reference",
+        "main_character_images",
+    ]
+    assert by_id["video_prompt"]["context_refs"] == [
+        {"ref": "storyboard", "role": "vision_context"},
+        {"ref": "scene_reference", "role": "vision_context"},
+    ]
+    assert by_id["video_prompt"]["reference_selectors"][0]["role"] == "vision_context"
     assert by_id["video_prompt"].get("output_mode") != "json"
     assert "只输出纯文本视频提示词" in by_id["video_prompt"]["prompt_template"]
     assert "inputs.aspectRatio" not in by_id["video_prompt"]["prompt_template"]
@@ -2673,6 +2690,11 @@ def test_general_short_drama_workflow_template_expands_with_inputs() -> None:
     ]
     assert by_id["episode_segments_s1_video_prompt"].get("output_mode") != "json"
     assert by_id["episode_segments_s1_video_prompt"]["fields"]["prompt_source"] == "skill:video_prompt"
+    assert by_id["episode_segments_s1_video_prompt"]["context_refs"] == [
+        {"ref": "storyboard", "role": "vision_context"},
+        {"ref": "scene_reference", "role": "vision_context"},
+    ]
+    assert by_id["episode_segments_s1_video_prompt"]["reference_selectors"][0]["role"] == "vision_context"
     assert by_id["episode_segments_s1_final_video"]["kind"] == "video"
     assert by_id["episode_segments_s1_final_video"]["runner"] == "workflow_canvas_output"
     assert by_id["episode_segments_s1_final_video"]["fields"]["workflow_source_step"] == "video_prompt"
@@ -4767,6 +4789,264 @@ async def test_workflow_run_step_selects_only_appearing_character_references(mon
     assert {"ref": "node:3", "role": "visual_reference"} in storyboard_refs
     assert all(ref.get("ref") != "node:4" for ref in storyboard_refs)
     assert {edge["source_node_id"] for edge in edges} == {"node-plan", "node-scene", "node-lin"}
+
+
+@pytest.mark.asyncio
+async def test_workflow_runtime_vision_context_sends_only_explicit_images_to_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    instance_id = "wf-vision"
+    template_id = "vision_prompt_flow"
+    step = {
+        "id": "segments_s1_video_prompt",
+        "template_step_id": "video_prompt",
+        "node_type": "text",
+        "surface": "workflow_runtime",
+        "runner": "node.run",
+        "instance_scope": {"index": 1, "segment": 1},
+        "prompt_template": "请看参考图并编写视频提示词。",
+        "context_refs": [
+            {"ref": "storyboard", "role": "vision_context"},
+            {"ref": "scene_reference", "role": "vision_context"},
+            {"ref": "style_board", "role": "visual_reference"},
+        ],
+        "reference_selectors": [
+            {
+                "from_group": "main_character_images",
+                "source_step": "planFrames",
+                "source_path": "output.appearing_characters",
+                "match_fields": ["name", "reuse_key"],
+                "role": "vision_context",
+            }
+        ],
+    }
+    target_record = {
+        "id": f"workflow-runtime:{instance_id}:segments_s1_video_prompt",
+        "type": "text",
+        "title": "第1段 · 视频提示词",
+        "status": "idle",
+        "surface": "workflow_runtime",
+        "input": {
+            "workflow": {
+                "template_id": template_id,
+                "instance_id": instance_id,
+                "step_id": step["id"],
+                "template_step_id": "video_prompt",
+                "instance_scope": {"index": 1, "segment": 1},
+                "prompt_template": step["prompt_template"],
+            }
+        },
+    }
+    records = [
+        target_record,
+        {
+            "id": "plan-runtime",
+            "type": "text",
+            "title": "宫格分镜规划",
+            "status": "completed",
+            "surface": "workflow_runtime",
+            "workflow": {
+                "template_id": template_id,
+                "instance_id": instance_id,
+                "step_id": "segments_s1_plan_frames",
+                "template_step_id": "plan_frames",
+                "source_node_id": "planFrames",
+                "instance_scope": {"index": 1, "segment": 1},
+            },
+            "output": {"appearing_characters": ["孤胆剑客"]},
+        },
+        {
+            "id": "storyboard-node",
+            "display_id": 4,
+            "type": "image",
+            "title": "宫格分镜图",
+            "status": "completed",
+            "workflow": {
+                "template_id": template_id,
+                "instance_id": instance_id,
+                "step_id": "segments_s1_storyboard",
+                "template_step_id": "storyboard",
+                "instance_scope": {"index": 1, "segment": 1},
+            },
+        },
+        {
+            "id": "scene-node",
+            "display_id": 3,
+            "type": "image",
+            "title": "场景参考图",
+            "status": "completed",
+            "workflow": {
+                "template_id": template_id,
+                "instance_id": instance_id,
+                "step_id": "segments_s1_scene_reference",
+                "template_step_id": "scene_reference",
+                "instance_scope": {"index": 1, "segment": 1},
+            },
+        },
+        {
+            "id": "character-node",
+            "display_id": 1,
+            "type": "image",
+            "title": "孤胆剑客 · 主要人物参考图",
+            "status": "completed",
+            "workflow": {
+                "template_id": template_id,
+                "instance_id": instance_id,
+                "step_id": "main_character_images_i1_main_character_image",
+                "template_step_id": "main_character_image",
+                "repeat_group_id": "main_character_images",
+                "instance_scope": {"name": "孤胆剑客", "reuse_key": "protagonist"},
+            },
+        },
+        {
+            "id": "style-node",
+            "display_id": 2,
+            "type": "image",
+            "title": "仅供媒体生成的风格图",
+            "status": "completed",
+            "workflow": {
+                "template_id": template_id,
+                "instance_id": instance_id,
+                "step_id": "style_board",
+            },
+        },
+    ]
+    llm_calls: list[dict[str, Any]] = []
+
+    async def fake_records_for_instance(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return records
+
+    async def fake_upsert(**kwargs: Any) -> dict[str, Any]:
+        return {"id": target_record["id"], "status": kwargs["status"], "output": kwargs.get("output")}
+
+    async def fake_image_url(project_id: str, ref: str) -> tuple[str | None, str | None]:
+        return f"data:image/png;base64,{ref.replace(':', '_')}", None
+
+    async def fake_call_llm(**kwargs: Any) -> dict[str, Any]:
+        llm_calls.append(kwargs)
+        return {"content": "看图后生成的视频提示词", "model": "vision-test", "usage": {"total_tokens": 12}}
+
+    monkeypatch.setattr(workflow_tools, "_workflow_records_for_instance", fake_records_for_instance)
+    monkeypatch.setattr(workflow_tools, "_upsert_workflow_runtime_step", fake_upsert)
+    monkeypatch.setattr(node_universal, "_llm_image_url_from_reference", fake_image_url)
+    monkeypatch.setattr(node_universal, "_call_workflow_text_llm", fake_call_llm)
+
+    result = await workflow_tools._run_runtime_llm_step(
+        project_id="project-1",
+        template={"id": template_id, "name": "看图写提示词", "steps": [step]},
+        step=step,
+        record=target_record,
+        inputs={"durationSeconds": 15},
+    )
+
+    assert result["ok"] is True
+    assert len(llm_calls) == 1
+    assert llm_calls[0]["image_urls"] == [
+        "data:image/png;base64,node_4",
+        "data:image/png;base64,node_3",
+        "data:image/png;base64,node_1",
+    ]
+    payload = json.loads(llm_calls[0]["message"])
+    assert [item["ref"] for item in payload["vision_context_images"]] == ["node:4", "node:3", "node:1"]
+    assert "node:2" not in json.dumps(payload["vision_context_images"])
+
+
+@pytest.mark.asyncio
+async def test_workflow_text_llm_builds_multimodal_user_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    generated: list[dict[str, Any]] = []
+
+    class FakeSessionScope:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    class FakeLLMService:
+        def __init__(self, session: object) -> None:
+            self.session = session
+
+        async def generate(self, **kwargs: Any) -> dict[str, Any]:
+            generated.append(kwargs)
+            return {"content": "完成"}
+
+    monkeypatch.setattr(node_universal, "session_scope", lambda: FakeSessionScope())
+    monkeypatch.setattr(node_universal, "LLMService", FakeLLMService)
+
+    await node_universal._call_workflow_text_llm(
+        task_type="text_generation",
+        system="看图后回答",
+        message="描述分镜",
+        project_id="project-1",
+        image_urls=["data:image/png;base64,AAA", "https://example.com/scene.png"],
+    )
+
+    assert generated[0]["messages"] == [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "描述分镜"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/scene.png"}},
+        ],
+    }]
+
+
+@pytest.mark.asyncio
+async def test_workflow_runtime_vision_context_fails_when_declared_image_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    step = {
+        "id": "video_prompt",
+        "node_type": "text",
+        "surface": "workflow_runtime",
+        "runner": "node.run",
+        "prompt_template": "必须看分镜图后写提示词。",
+        "context_refs": [{"ref": "storyboard", "role": "vision_context"}],
+    }
+    record = {
+        "id": "workflow-runtime:wf-missing:video_prompt",
+        "type": "text",
+        "title": "视频提示词",
+        "status": "idle",
+        "surface": "workflow_runtime",
+        "input": {
+            "workflow": {
+                "template_id": "missing_vision_flow",
+                "instance_id": "wf-missing",
+                "step_id": "video_prompt",
+                "prompt_template": step["prompt_template"],
+            }
+        },
+    }
+    llm_called = False
+
+    async def fake_records_for_instance(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return [record]
+
+    async def fake_upsert(**kwargs: Any) -> dict[str, Any]:
+        return {"id": record["id"], "status": kwargs["status"], "error": kwargs.get("error")}
+
+    async def fake_call_llm(**kwargs: Any) -> dict[str, Any]:
+        nonlocal llm_called
+        llm_called = True
+        return {"content": "不应生成"}
+
+    monkeypatch.setattr(workflow_tools, "_workflow_records_for_instance", fake_records_for_instance)
+    monkeypatch.setattr(workflow_tools, "_upsert_workflow_runtime_step", fake_upsert)
+    monkeypatch.setattr(node_universal, "_call_workflow_text_llm", fake_call_llm)
+
+    result = await workflow_tools._run_runtime_llm_step(
+        project_id="project-1",
+        template={"id": "missing_vision_flow", "name": "缺图流程", "steps": [step]},
+        step=step,
+        record=record,
+        inputs={},
+    )
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "workflow_vision_context_unavailable"
+    assert "storyboard" in result["error"]
+    assert llm_called is False
 
 
 @pytest.mark.asyncio

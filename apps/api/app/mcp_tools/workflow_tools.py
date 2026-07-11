@@ -281,7 +281,7 @@ def _workflow_step_input_schema() -> dict[str, Any]:
                         {"type": "object", "additionalProperties": True},
                     ]
                 },
-                "description": "Additional workflow step ids to expose as read context for this node.",
+                "description": "Additional workflow step ids to expose as read context. Use role=vision_context only when a text/LLM step must receive the referenced image pixels; visual_reference is reserved for media generation.",
             },
             "output_mode": {"type": "string"},
             "output_schema": {"type": "object", "additionalProperties": True},
@@ -4086,6 +4086,7 @@ _REFERENCE_SELECTOR_TOKEN_FIELDS = (
     "label",
     "item",
 )
+_WORKFLOW_LLM_VISION_ROLE = "vision_context"
 
 
 def _selector_key(value: Any) -> str:
@@ -4129,6 +4130,67 @@ def _workflow_context_ref_specs(step: dict[str, Any]) -> list[dict[str, str]]:
         if text:
             result.append({"ref": text, "role": str(role or "context").strip() or "context"})
     return result
+
+
+def _workflow_vision_context_nodes(
+    step: dict[str, Any],
+    *,
+    records: list[dict[str, Any]],
+    context: dict[str, Any],
+    template_id: str,
+    instance_id: str,
+    steps_by_id: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    created_by_step = _workflow_step_nodes_by_id(records, template_id, instance_id)
+    nodes_by_alias = _workflow_step_nodes_by_alias(records, template_id, instance_id)
+    selected: list[dict[str, Any]] = []
+    missing: list[str] = []
+    seen: set[str] = set()
+
+    def add(node: dict[str, Any]) -> None:
+        if not _workflow_is_canvas_dependency_record(node) or str(node.get("type") or "") != "image":
+            return
+        marker = str(node.get("id") or "").strip() or str(id(node))
+        if marker in seen:
+            return
+        seen.add(marker)
+        selected.append(node)
+
+    for spec in _workflow_context_ref_specs(step):
+        if str(spec.get("role") or "").strip() != _WORKFLOW_LLM_VISION_ROLE:
+            continue
+        matches = _workflow_visible_dependency_nodes(
+            spec["ref"],
+            created_by_step=created_by_step,
+            nodes_by_alias=nodes_by_alias,
+            steps_by_id=steps_by_id,
+            target_step=step,
+        )
+        image_matches = [
+            node for node in matches
+            if _workflow_is_canvas_dependency_record(node) and str(node.get("type") or "") == "image"
+        ]
+        if not image_matches:
+            missing.append(spec["ref"])
+            continue
+        for node in image_matches:
+            add(node)
+
+    vision_selectors = [
+        selector
+        for selector in _workflow_reference_selectors(step)
+        if str(selector.get("role") or "").strip() == _WORKFLOW_LLM_VISION_ROLE
+    ]
+    for node, _role in _workflow_reference_selector_nodes(
+        vision_selectors,
+        nodes=records,
+        context=context,
+        template_id=template_id,
+        instance_id=instance_id,
+        target_step=step,
+    ):
+        add(node)
+    return selected, _unique_nonempty_strings(missing)
 
 
 def _workflow_context_get(context: dict[str, Any], key: Any) -> Any:
@@ -5632,9 +5694,66 @@ async def _run_runtime_llm_step(
             "node_id": updated.get("id"),
         }
     records = await _workflow_records_for_instance(project_id, template_id=str(template.get("id") or ""), instance_id=instance_id)
+    template_id = str(template.get("id") or "")
+    steps_by_id = {
+        str(item.get("id") or "").strip(): item
+        for item in (template.get("steps") or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    runtime_context = _workflow_runtime_context_from_nodes(
+        records,
+        template_id=template_id,
+        instance_id=instance_id,
+    )
+    vision_nodes, missing_vision_refs = _workflow_vision_context_nodes(
+        step,
+        records=records,
+        context=runtime_context,
+        template_id=template_id,
+        instance_id=instance_id,
+        steps_by_id=steps_by_id,
+    )
+    vision_context: list[dict[str, Any]] = []
+    vision_image_urls: list[str] = []
+    vision_errors: list[str] = [f"未找到图片节点: {ref}" for ref in missing_vision_refs]
+    for index, vision_node in enumerate(vision_nodes, start=1):
+        ref = _public_ref(vision_node)
+        image_url, warning = await node_universal._llm_image_url_from_reference(project_id, ref)
+        vision_context.append({
+            "index": index,
+            "ref": ref,
+            "title": vision_node.get("title"),
+            "workflow_step_id": _workflow_metadata_from_node(vision_node).get("step_id"),
+        })
+        if image_url:
+            vision_image_urls.append(image_url)
+        else:
+            vision_errors.append(warning or f"图片无法发送: {ref}")
+    if vision_errors:
+        error_message = "必须查看的参考图不可用: " + "; ".join(_unique_nonempty_strings(vision_errors))
+        failed = await _upsert_workflow_runtime_step(
+            project_id=project_id,
+            template=template,
+            instance_id=instance_id,
+            step_id=step_id,
+            node_type=str(record.get("type") or "text"),
+            title=title,
+            fields=fields,
+            status="failed",
+            output=record.get("output"),
+            error=error_message[:500],
+        )
+        return {
+            "ok": False,
+            "runtime_step": True,
+            "node": failed,
+            "node_id": failed.get("id"),
+            "error": error_message,
+            "error_kind": "workflow_vision_context_unavailable",
+        }
     upstream_nodes = _workflow_records_for_prompt_context(
         records,
-        template_id=str(template.get("id") or ""),
+        template_id=template_id,
         instance_id=instance_id,
         target_step_id=step_id,
         target_record=record,
@@ -5673,6 +5792,7 @@ async def _run_runtime_llm_step(
             "input_facts": workflow.get("input_facts"),
             "skill": skill_payload,
             "upstream_steps": compact_upstream,
+            "vision_context_images": vision_context,
         },
         ensure_ascii=False,
         default=str,
@@ -5684,6 +5804,7 @@ async def _run_runtime_llm_step(
             system=system,
             message=message,
             project_id=project_id,
+            image_urls=vision_image_urls,
         )
     except Exception as exc:
         failed = await _upsert_workflow_runtime_step(
