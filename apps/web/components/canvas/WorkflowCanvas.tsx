@@ -86,6 +86,10 @@ import VideoEditPanel, { type VideoEditPanelMediaNode } from "./VideoEditPanel"
 import CanvasGroupLayer, { type CanvasViewport } from "./CanvasGroupLayer"
 import PanoramaViewer, { type PanoramaCaptureMode } from "./PanoramaViewer"
 import MediaHistoryDrawer, { MEDIA_HISTORY_LABEL, type MediaHistoryFilter } from "./MediaHistoryDrawer"
+import WorkflowRunOutputView, {
+  workflowRuntimeDetailOutputText,
+  type WorkflowRunDetailOutputItem,
+} from "./WorkflowRunOutputView"
 import { cn } from "@/lib/utils"
 import { canvasNodeDisplayText } from "@/lib/nodeDisplay"
 import {
@@ -2913,11 +2917,6 @@ function workflowRuntimeStepNodeIds(
   return ids
 }
 
-type WorkflowRunDetailOutputItem = {
-  title: string
-  value: unknown
-}
-
 function workflowRuntimeOutputTitle(output: Record<string, unknown>, index: number): string {
   return workflowStringValue(output.label)
     || workflowStringValue(output.title)
@@ -4465,194 +4464,6 @@ function workflowExecutionDetailRows(
 
 function workflowLooksTechnical(value: string): boolean {
   return /\b(node\.|runner|prompt_|template_|fields\.|workflow|JSON)\b|[{}\[\]]/.test(value)
-}
-
-const WORKFLOW_OUTPUT_HIDDEN_KEYS = new Set([
-  "id",
-  "key",
-  "type",
-  "kind",
-  "status",
-  "state",
-  "ref",
-  "role",
-  "node_id",
-  "nodeId",
-  "source_node_id",
-  "sourceNodeId",
-  "template_id",
-  "template_step_id",
-  "workflow_runtime_runner",
-  "workflow_text_runner",
-  "llm_task_type",
-  "run_id",
-  "prompt_dump_run_id",
-  "usage",
-  "model",
-])
-
-function workflowOutputKeyLabel(key: string): string {
-  const labels: Record<string, string> = {
-    content: "正文",
-    full_text: "正文",
-    story_text: "剧情正文",
-    text: "文本",
-    script: "剧本",
-    summary: "摘要",
-    description: "说明",
-    prompt: "提示词",
-    image_prompt: "图片提示词",
-    video_prompt: "视频提示词",
-    audio_prompt: "音频提示词",
-    segments: "分段",
-    characters: "人物",
-    scenes: "场景",
-    shots: "镜头",
-  }
-  return labels[key] || key.replace(/[_-]+/g, " ")
-}
-
-function workflowOutputParseJson(value: string): unknown | undefined {
-  const text = value.trim()
-  if (!/^[{[]/.test(text)) return undefined
-  try {
-    return JSON.parse(text) as unknown
-  } catch {
-    return undefined
-  }
-}
-
-function workflowOutputStructuredValue(value: unknown): unknown {
-  const parsed = typeof value === "string" ? workflowOutputParseJson(value) : undefined
-  return parsed === undefined ? value : parsed
-}
-
-function workflowOutputPlainIndent(text: string): string {
-  return text.split("\n").map((line) => line ? `  ${line}` : line).join("\n")
-}
-
-function workflowOutputPlainText(value: unknown): string {
-  const structured = workflowOutputStructuredValue(value)
-  const scalar = workflowOutputScalar(structured)
-  if (scalar) return scalar
-  if (Array.isArray(structured)) {
-    return structured
-      .filter((item) => workflowHasValue(item))
-      .map((item, index) => {
-        const rendered = workflowOutputPlainText(item)
-        if (!rendered) return ""
-        return `第 ${index + 1} 项:\n${workflowOutputPlainIndent(rendered)}`
-      })
-      .filter(Boolean)
-      .join("\n\n")
-  }
-  const obj = asWorkflowObject(structured)
-  if (!obj) return ""
-  const entries = Object.entries(obj)
-    .filter(([key, item]) => (
-      !WORKFLOW_OUTPUT_HIDDEN_KEYS.has(key) &&
-      workflowHasValue(item)
-    ))
-  if (entries.length === 1 && ["content", "full_text", "story_text", "text", "script", "summary", "description", "prompt"].includes(entries[0][0])) {
-    return workflowOutputPlainText(entries[0][1])
-  }
-  return entries
-    .map(([key, item]) => {
-      const rendered = workflowOutputPlainText(item)
-      if (!rendered) return ""
-      const label = workflowOutputKeyLabel(key)
-      return rendered.includes("\n")
-        ? `${label}:\n${workflowOutputPlainIndent(rendered)}`
-        : `${label}: ${rendered}`
-    })
-    .filter(Boolean)
-    .join("\n\n")
-}
-
-function workflowRuntimeDetailOutputText(items: WorkflowRunDetailOutputItem[]): string {
-  return items
-    .map((item, index) => {
-      const rendered = workflowOutputPlainText(item.value)
-      if (!rendered) return ""
-      const title = workflowStringValue(item.title) || `输出 ${index + 1}`
-      if (items.length === 1 && title === "输出") return rendered
-      return `${title}:\n${workflowOutputPlainIndent(rendered)}`
-    })
-    .filter(Boolean)
-    .join("\n\n")
-}
-
-function workflowOutputScalar(value: unknown): string {
-  if (value == null || value === "") return ""
-  if (typeof value === "boolean") return value ? "是" : "否"
-  if (typeof value === "number") return Number.isFinite(value) ? String(value) : ""
-  if (typeof value === "string") return value.trim()
-  return ""
-}
-
-function workflowOutputCollectionRows(value: unknown): Array<Record<string, unknown>> {
-  const structured = workflowOutputStructuredValue(value)
-  const obj = asWorkflowObject(structured)
-  const rows = Array.isArray(obj?.items)
-    ? obj.items
-    : Array.isArray(structured)
-      ? structured
-      : []
-  return rows
-    .map((item) => asWorkflowObject(item))
-    .filter((item): item is Record<string, unknown> => Boolean(item))
-}
-
-function workflowOutputTableColumns(rows: Array<Record<string, unknown>>): string[] {
-  const columns: string[] = []
-  for (const row of rows) {
-    for (const key of Object.keys(row)) {
-      if (WORKFLOW_OUTPUT_HIDDEN_KEYS.has(key) || columns.includes(key)) continue
-      columns.push(key)
-    }
-  }
-  return columns.slice(0, 12)
-}
-
-function WorkflowRunOutputView({ value }: { value: unknown }) {
-  const rows = workflowOutputCollectionRows(value)
-  const columns = workflowOutputTableColumns(rows)
-  if (rows.length > 0 && columns.length > 0) {
-    return (
-      <div className="max-h-80 overflow-auto px-3 py-2.5">
-        <table className="w-full border-collapse text-left text-[11px] text-emerald-50/90">
-          <thead className="sticky top-0 bg-[#10151d] text-emerald-100/70">
-            <tr>
-              {columns.map((column) => (
-                <th key={column} className="border-b border-emerald-200/12 px-2 py-1.5 font-semibold">
-                  {workflowOutputKeyLabel(column)}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, index) => (
-              <tr key={index} className="border-b border-white/[0.04] last:border-b-0">
-                {columns.map((column) => (
-                  <td key={column} className="max-w-[220px] align-top px-2 py-1.5">
-                    <div className="whitespace-pre-wrap break-words leading-4">
-                      {workflowOutputPlainText(row[column])}
-                    </div>
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    )
-  }
-  const text = workflowOutputPlainText(value)
-  return (
-    <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words px-3 py-2.5 font-sans text-[12px] leading-5 text-emerald-50/90">
-      {text}
-    </pre>
-  )
 }
 
 function workflowInputValueForId(
