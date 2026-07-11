@@ -6349,7 +6349,9 @@ async def workflow_run_next_step(
     result = await workflow_run_step(
         project_id=project_id,
         step_id=next_step_id,
-        workflow=template,
+        template_id=template_id,
+        workflow=workflow,
+        artifact_ref=artifact_ref,
         title=title,
         inputs=inputs,
         context=context,
@@ -6920,14 +6922,15 @@ async def workflow_run_all_steps(
         if remaining <= 0:
             break
         ready_step_ids = ready_step_ids[:remaining]
-        active_template = batch.get("template") if isinstance(batch.get("template"), dict) else template
 
         async def run_one(step_id: str) -> dict[str, Any]:
             try:
-                return await workflow_run_step(
+                result = await workflow_run_step(
                     project_id=project_id,
                     step_id=step_id,
-                    workflow=active_template,
+                    template_id=template_id,
+                    workflow=workflow,
+                    artifact_ref=artifact_ref,
                     title=title,
                     inputs=inputs,
                     context=context,
@@ -7037,6 +7040,9 @@ async def workflow_run_all_steps(
                 "run_all": True,
                 "done": False,
                 "project_id": project_id,
+                if not str(result.get("step_id") or "").strip():
+                    result = {**result, "step_id": step_id}
+                return result
                 "template_id": str(final_batch.get("template_id") or template.get("id") or template_id or ""),
                 "instance_id": current_instance_id,
                 "steps_run": len(step_results),
@@ -7045,6 +7051,7 @@ async def workflow_run_all_steps(
                 "blocked_steps": final_batch.get("blocked_steps") or [],
                 "runtime": runtime_payload,
                 "error": "No workflow step is ready; upstream dependencies are not completed.",
+        results_before_batch = len(step_results)
                 "error_kind": "workflow_waiting_for_dependencies",
             }
         if current_instance_id:
@@ -7058,6 +7065,30 @@ async def workflow_run_all_steps(
                 runtime_payload = marked_runtime
         return {
             "ok": not failed_steps,
+        if len(step_results) == results_before_batch:
+            if current_instance_id:
+                marked_runtime = await _workflow_runtime_mark_run_all_status(
+                    project_id=project_id,
+                    template_id=str(batch.get("template_id") or run_template_id),
+                    instance_id=current_instance_id,
+                    status="failed",
+                )
+                if isinstance(marked_runtime, dict):
+                    runtime_payload = marked_runtime
+            return {
+                "ok": False,
+                "run_all": True,
+                "done": False,
+                "project_id": project_id,
+                "template_id": str(batch.get("template_id") or template.get("id") or template_id or ""),
+                "instance_id": current_instance_id,
+                "steps_run": len(step_results),
+                "step_results": step_results,
+                "ready_step_ids": ready_step_ids,
+                "runtime": runtime_payload,
+                "error": "Workflow run-all made no progress while ready steps remained.",
+                "error_kind": "workflow_run_all_no_progress",
+            }
             "run_all": True,
             "done": True,
             "project_id": project_id,

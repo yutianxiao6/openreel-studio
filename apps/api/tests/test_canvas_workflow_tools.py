@@ -1300,16 +1300,17 @@ async def test_workflow_run_next_step_selects_next_in_backend(monkeypatch: pytes
     monkeypatch.setattr(workflow_tools.canvas_tools, "list_nodes", fake_list_nodes)
     monkeypatch.setattr(workflow_tools, "workflow_run_step", fake_run_step)
 
+    source_workflow = {
+        "id": "next_flow",
+        "name": "Next Flow",
+        "steps": [
+            {"id": "script", "title": "剧本", "node_type": "text"},
+            {"id": "storyboard", "title": "分镜", "node_type": "image", "depends_on": ["script"]},
+        ],
+    }
     result = await workflow_tools.workflow_run_next_step(
         project_id="proj-1",
-        workflow={
-            "id": "next_flow",
-            "name": "Next Flow",
-            "steps": [
-                {"id": "script", "title": "剧本", "node_type": "text"},
-                {"id": "storyboard", "title": "分镜", "node_type": "image", "depends_on": ["script"]},
-            ],
-        },
+        workflow=source_workflow,
         instance_id="wf_next",
     )
 
@@ -1318,6 +1319,7 @@ async def test_workflow_run_next_step_selects_next_in_backend(monkeypatch: pytes
     assert result["selected_step_id"] == "storyboard"
     assert captured["step_id"] == "storyboard"
     assert captured["instance_id"] == "wf_next"
+    assert captured["workflow"] is source_workflow
 
 
 @pytest.mark.asyncio
@@ -1875,7 +1877,10 @@ async def test_workflow_run_all_exact_max_steps_checks_final_done(monkeypatch: p
             **batch,
         }
 
+    captured: dict[str, Any] = {}
+
     async def fake_run_step(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
         return {
             "ok": True,
             "step_id": kwargs["step_id"],
@@ -1886,13 +1891,14 @@ async def test_workflow_run_all_exact_max_steps_checks_final_done(monkeypatch: p
     monkeypatch.setattr(workflow_tools, "_workflow_ready_step_batch", fake_ready_step_batch)
     monkeypatch.setattr(workflow_tools, "workflow_run_step", fake_run_step)
 
+    source_workflow = {
+        "id": "exact_limit_flow",
+        "name": "精确上限流程",
+        "steps": [{"id": "script", "title": "剧本", "node_type": "text"}],
+    }
     result = await workflow_tools.workflow_run_all_steps(
         project_id="proj-1",
-        workflow={
-            "id": "exact_limit_flow",
-            "name": "精确上限流程",
-            "steps": [{"id": "script", "title": "剧本", "node_type": "text"}],
-        },
+        workflow=source_workflow,
         max_steps=1,
     )
 
@@ -1900,6 +1906,96 @@ async def test_workflow_run_all_exact_max_steps_checks_final_done(monkeypatch: p
     assert result["done"] is True
     assert result["steps_run"] == 1
     assert not result.get("error")
+    assert captured["workflow"] is source_workflow
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_all_attributes_source_compile_failure_to_ready_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready_calls = 0
+
+    async def fake_ready_step_batch(**kwargs: Any) -> dict[str, Any]:
+        nonlocal ready_calls
+        ready_calls += 1
+        failed_step_ids = kwargs.get("failed_step_ids") or set()
+        return {
+            "ok": True,
+            "project_id": kwargs["project_id"],
+            "template_id": "source_flow",
+            "instance_id": kwargs["instance_id"] or "wf_source",
+            "template": kwargs["template"],
+            "runtime": {"instance_id": kwargs["instance_id"] or "wf_source", "steps": []},
+            "ready_step_ids": [] if "script" in failed_step_ids else ["script"],
+            "blocked_steps": [],
+            "done": "script" in failed_step_ids,
+        }
+
+    async def fake_run_step(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "instance_id": kwargs["instance_id"],
+            "error": "compiled runtime template was passed as source",
+            "error_kind": "workflow_spec_artifact_error",
+        }
+
+    monkeypatch.setattr(workflow_tools, "_workflow_ready_step_batch", fake_ready_step_batch)
+    monkeypatch.setattr(workflow_tools, "workflow_run_step", fake_run_step)
+
+    result = await workflow_tools.workflow_run_all_steps(
+        project_id="proj-1",
+        workflow={
+            "id": "source_flow",
+            "name": "Source Flow",
+            "steps": [{"id": "script", "title": "剧本", "node_type": "text"}],
+        },
+        max_steps=3,
+    )
+
+    assert result.get("error_kind") != "workflow_run_all_step_limit"
+    assert result["done"] is True
+    assert result["steps_run"] == 1
+    assert result["failed_steps"][0]["step_id"] == "script"
+    assert ready_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_all_stops_immediately_when_ready_batch_makes_no_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_ready_step_batch(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "project_id": kwargs["project_id"],
+            "template_id": "no_progress_flow",
+            "instance_id": kwargs["instance_id"] or "wf_no_progress",
+            "template": kwargs["template"],
+            "runtime": {"instance_id": kwargs["instance_id"] or "wf_no_progress", "steps": []},
+            "ready_step_ids": ["script"],
+            "blocked_steps": [],
+            "done": False,
+        }
+
+    async def fake_run_step(**kwargs: Any) -> dict[str, Any]:
+        return {"ok": True, "done": True, "instance_id": kwargs["instance_id"]}
+
+    monkeypatch.setattr(workflow_tools, "_workflow_ready_step_batch", fake_ready_step_batch)
+    monkeypatch.setattr(workflow_tools, "workflow_run_step", fake_run_step)
+
+    result = await workflow_tools.workflow_run_all_steps(
+        project_id="proj-1",
+        workflow={
+            "id": "no_progress_flow",
+            "name": "No Progress Flow",
+            "steps": [{"id": "script", "title": "剧本", "node_type": "text"}],
+        },
+        max_steps=120,
+    )
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "workflow_run_all_no_progress"
+    assert result["ready_step_ids"] == ["script"]
+    assert result["steps_run"] == 0
 
 
 @pytest.mark.asyncio
