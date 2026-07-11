@@ -251,6 +251,7 @@
         "path": "output.main_characters"
       },
       "depends_on": [
+        "script",
         "plan_characters_scenes"
       ],
       "fields": {},

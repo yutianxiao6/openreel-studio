@@ -4153,8 +4153,72 @@ def _workflow_structured_value(value: Any) -> Any:
     return parsed
 
 
-def _compact_workflow_text_node(node: dict[str, Any]) -> dict[str, Any]:
-    fields = dict(node.get("input") or {})
+_WORKFLOW_PROMPT_WORKFLOW_KEYS = (
+    "step_id",
+    "template_step_id",
+    "source_node_id",
+    "repeat_group_id",
+    "repeat_group_index",
+    "instance_scope",
+)
+_WORKFLOW_LLM_CONTRACT_KEYS = (
+    "template_id",
+    "template_name",
+    "instance_id",
+    "step_id",
+    "template_step_id",
+    "repeat_group_id",
+    "repeat_group_index",
+    "instance_scope",
+    "runner",
+    "primary_skill",
+    "skill_category",
+    "output_mode",
+    "output_schema",
+    "completion",
+    "acceptance",
+    "input_facts",
+)
+_WORKFLOW_PROMPT_MEDIA_OUTPUT_KEYS = (
+    "type",
+    "subject",
+    "content",
+    "text",
+    "description",
+    "summary",
+    "caption",
+    "transcript",
+    "prompt",
+    "visual_prompt",
+    "video_prompt",
+)
+
+
+def _compact_workflow_prompt_value(value: Any, *, depth: int = 0) -> Any:
+    """Bound structured workflow values without duplicating runtime history."""
+    if depth >= 6:
+        return str(value)[:1000]
+    if isinstance(value, str):
+        return value[:6000]
+    if isinstance(value, list):
+        return [
+            _compact_workflow_prompt_value(item, depth=depth + 1)
+            for item in value[:80]
+        ]
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in list(value.items())[:80]:
+            if key in {"history", "run_history", "chat_history", "text_chat_history"}:
+                continue
+            result[str(key)] = _compact_workflow_prompt_value(item, depth=depth + 1)
+        return result
+    return value
+
+
+def _compact_workflow_prompt_output(
+    node: dict[str, Any],
+    fields: dict[str, Any],
+) -> dict[str, Any]:
     output = _workflow_structured_value(node.get("output"))
     structured_outputs = node.get("outputs") if isinstance(node.get("outputs"), list) else None
     if output in (None, "", [], {}) and structured_outputs:
@@ -4162,22 +4226,60 @@ def _compact_workflow_text_node(node: dict[str, Any]) -> dict[str, Any]:
         output = _workflow_structured_value(first_output.get("value") if isinstance(first_output, dict) else first_output)
     if not isinstance(output, dict):
         output = {"content": output} if output not in (None, "", [], {}) else {}
+    if output in (None, "", [], {}):
+        content = fields.get("content") or node.get("content")
+        if content not in (None, "", [], {}):
+            output = {"content": content}
+
+    node_type = str(node.get("type") or "").strip()
+    if node_type in {"image", "video", "audio"}:
+        compact = {
+            key: output.get(key)
+            for key in _WORKFLOW_PROMPT_MEDIA_OUTPUT_KEYS
+            if output.get(key) not in (None, "", [], {})
+        }
+        prompt = node.get("prompt") or fields.get("prompt")
+        if prompt not in (None, "", [], {}):
+            compact.setdefault("prompt", prompt)
+        return _compact_workflow_prompt_value(compact)
+    return _compact_workflow_prompt_value(output)
+
+
+def _compact_workflow_llm_contract(workflow: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: _compact_workflow_prompt_value(workflow[key])
+        for key in _WORKFLOW_LLM_CONTRACT_KEYS
+        if key in workflow and workflow[key] not in (None, "", [], {})
+    }
+
+
+def _compact_workflow_text_node(
+    node: dict[str, Any],
+    *,
+    include_output: bool = True,
+) -> dict[str, Any]:
+    fields = dict(node.get("input") or {})
+    workflow = fields.get("workflow") if isinstance(fields.get("workflow"), dict) else _workflow_text_meta(fields)
+    if not workflow and isinstance(node.get("workflow"), dict):
+        workflow = node["workflow"]
+    compact_workflow = {
+        key: workflow.get(key)
+        for key in _WORKFLOW_PROMPT_WORKFLOW_KEYS
+        if workflow.get(key) not in (None, "", [], {})
+    }
     result = {
         "id": public_node_id_from_dict(node),
         "title": node.get("title"),
         "type": node.get("type"),
         "status": node.get("status"),
-        "content": str(fields.get("content") or output.get("content") or "")[:6000],
-        "prompt": str(node.get("prompt") or fields.get("prompt") or "")[:4000],
-        "output": output,
-        "outputs": structured_outputs or output,
-        "workflow": fields.get("workflow") if isinstance(fields.get("workflow"), dict) else None,
+        "workflow": compact_workflow,
     }
-    if node.get("artifacts"):
-        result["artifacts"] = node.get("artifacts")
-    refs = fields.get("references")
-    if refs:
-        result["references"] = refs
+    if include_output:
+        output = _compact_workflow_prompt_output(node, fields)
+        if output:
+            # Keep one canonical value. Template aliases synthesize `.outputs`
+            # from this field without serializing the same payload twice.
+            result["output"] = output
     return {k: v for k, v in result.items() if v not in (None, "", [], {})}
 
 
@@ -4270,10 +4372,13 @@ def _workflow_template_context(
             and upstream_index == current_index - 1
         )
         target_context = previous_segment if is_previous else context
+        alias_payload = upstream
+        if "outputs" not in upstream and upstream.get("output") not in (None, "", [], {}):
+            alias_payload = {**upstream, "outputs": upstream["output"]}
         for alias in _workflow_context_aliases(upstream):
-            _workflow_add_context_alias(target_context, alias, upstream)
+            _workflow_add_context_alias(target_context, alias, alias_payload)
             if target_context is context:
-                _workflow_add_collection_aliases(context, alias, upstream)
+                _workflow_add_collection_aliases(context, alias, alias_payload)
 
     context["previous_segment"] = previous_segment
     context["previous"] = previous_segment
@@ -4494,6 +4599,9 @@ async def _generate_workflow_text_node(
             continue
         upstream_nodes.append(_compact_workflow_text_node(upstream))
 
+    # A visible text node may be regenerated after an upstream change; retain
+    # its bounded previous output so the model can revise instead of starting
+    # blind. Flow-only runtime steps use a separate path that excludes it.
     target = _compact_workflow_text_node(node)
     prompt_runtime = _workflow_render_prompt_template(
         workflow.get("prompt_template"),
@@ -4517,10 +4625,14 @@ async def _generate_workflow_text_node(
     )
     if structured_instructions:
         system = f"{system}\n\n{structured_instructions}"
+    include_upstream_payload = bool(
+        not str(prompt_runtime.get("rendered_prompt_template") or "").strip()
+        or prompt_runtime.get("unresolved_template_paths")
+    )
     message = json.dumps(
         {
             "target_node": target,
-            "workflow": workflow,
+            "workflow": _compact_workflow_llm_contract(workflow),
             "prompt_template": prompt_runtime["prompt_template"],
             "rendered_prompt_template": prompt_runtime["rendered_prompt_template"],
             "unresolved_template_paths": prompt_runtime["unresolved_template_paths"],
@@ -4533,7 +4645,7 @@ async def _generate_workflow_text_node(
             "acceptance": workflow.get("acceptance"),
             "input_facts": workflow.get("input_facts"),
             "skill": skill_payload,
-            "upstream_nodes": upstream_nodes,
+            "upstream_nodes": upstream_nodes if include_upstream_payload else [],
             "vision_context_images": vision_refs,
         },
         ensure_ascii=False,
@@ -4631,11 +4743,16 @@ async def _generate_workflow_text_node(
             "status": "completed",
             "task_type": task_type,
             "model": llm_result.get("model"),
+            "usage": llm_result.get("usage"),
             "usage_total_tokens": _workflow_text_usage_total(llm_result.get("usage")),
             "prompt_dump_run_id": dump_run_id,
             "started_at": started_at,
             "completed_at": _utc_now_iso(),
             "content_chars": len(content),
+            "request_message_chars": len(message),
+            "upstream_record_count": len(upstream_nodes),
+            "serialized_upstream_record_count": len(upstream_nodes) if include_upstream_payload else 0,
+            "vision_image_count": len(vision_image_urls),
         },
     )
     updated_fields["workflow"] = updated_workflow

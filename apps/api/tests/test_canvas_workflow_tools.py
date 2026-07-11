@@ -4952,15 +4952,26 @@ async def test_workflow_runtime_vision_context_sends_only_explicit_images_to_llm
                 "instance_id": instance_id,
                 "step_id": "style_board",
             },
+            "output": {
+                "history": [{"payload": "UNRELATED_RUNTIME_BLOAT" * 1000}],
+                "input": {"duplicated": "UNRELATED_RUNTIME_BLOAT" * 1000},
+            },
         },
     ]
     llm_calls: list[dict[str, Any]] = []
+    runtime_upserts: list[dict[str, Any]] = []
 
     async def fake_records_for_instance(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return records
 
     async def fake_upsert(**kwargs: Any) -> dict[str, Any]:
-        return {"id": target_record["id"], "status": kwargs["status"], "output": kwargs.get("output")}
+        runtime_upserts.append(kwargs)
+        return {
+            "id": target_record["id"],
+            "status": kwargs["status"],
+            "output": kwargs.get("output"),
+            "input": kwargs.get("fields"),
+        }
 
     async def fake_image_url(project_id: str, ref: str) -> tuple[str | None, str | None]:
         return f"data:image/png;base64,{ref.replace(':', '_')}", None
@@ -4992,6 +5003,138 @@ async def test_workflow_runtime_vision_context_sends_only_explicit_images_to_llm
     payload = json.loads(llm_calls[0]["message"])
     assert [item["ref"] for item in payload["vision_context_images"]] == ["node:4", "node:3", "node:1"]
     assert "node:2" not in json.dumps(payload["vision_context_images"])
+    assert payload["upstream_steps"] == []
+    assert "UNRELATED_RUNTIME_BLOAT" not in llm_calls[0]["message"]
+    assert len(llm_calls[0]["message"]) < 5000
+    completed_fields = next(item["fields"] for item in reversed(runtime_upserts) if item["status"] == "completed")
+    last_run = completed_fields["workflow"]["last_run"]
+    assert last_run["model"] == "vision-test"
+    assert last_run["usage"] == {"total_tokens": 12}
+    assert last_run["vision_image_count"] == 3
+    assert last_run["serialized_upstream_record_count"] == 0
+
+
+def test_workflow_prompt_context_uses_only_declared_dependencies_and_deduplicates_shadows() -> None:
+    template_id = "prompt-context-flow"
+    instance_id = "wf-context"
+
+    def record(
+        record_id: str,
+        step_id: str,
+        *,
+        surface: str = "workflow_runtime",
+        display_id: int | None = None,
+        repeat_group_id: str = "",
+    ) -> dict[str, Any]:
+        workflow = {
+            "template_id": template_id,
+            "instance_id": instance_id,
+            "step_id": step_id,
+            "surface": surface,
+        }
+        if repeat_group_id:
+            workflow["repeat_group_id"] = repeat_group_id
+        payload: dict[str, Any] = {
+            "id": record_id,
+            "type": "text",
+            "title": step_id,
+            "status": "completed",
+            "surface": surface,
+            "workflow": workflow,
+            "output": {"content": step_id},
+        }
+        if display_id is not None:
+            payload["display_id"] = display_id
+        return payload
+
+    target = record("workflow-runtime:wf-context:target", "target")
+    dependency_canvas = record("canvas-dependency", "dependency", surface="draft_canvas", display_id=1)
+    dependency_shadow = record("workflow-runtime:wf-context:dependency", "dependency", surface="draft_canvas")
+    contextual = record("workflow-runtime:wf-context:contextual", "contextual")
+    selector_source = record("workflow-runtime:wf-context:selector-source", "selector_source")
+    prompt_source = record("workflow-runtime:wf-context:prompt-source", "prompt_source")
+    prompt_source["workflow"]["source_node_id"] = "promptSource"
+    character = record(
+        "character-node",
+        "characters_i1_image",
+        surface="draft_canvas",
+        display_id=2,
+        repeat_group_id="characters",
+    )
+    unrelated = record("workflow-runtime:wf-context:unrelated", "unrelated")
+    downstream = record("workflow-runtime:wf-context:downstream", "downstream")
+    step = {
+        "id": "target",
+        "depends_on": ["dependency"],
+        "prompt_template": "使用 {{promptSource.output}} 生成结果。",
+        "context_refs": [{"ref": "contextual", "role": "context"}],
+        "reference_selectors": [{"source_step": "selector_source", "from_group": "characters"}],
+    }
+
+    selected = workflow_tools._workflow_records_for_prompt_context(
+        [
+            target,
+            dependency_canvas,
+            dependency_shadow,
+            contextual,
+            selector_source,
+            prompt_source,
+            character,
+            unrelated,
+            downstream,
+        ],
+        template_id=template_id,
+        instance_id=instance_id,
+        target_step_id="target",
+        target_step=step,
+        target_record=target,
+    )
+
+    assert {item["id"] for item in selected} == {
+        "canvas-dependency",
+        "workflow-runtime:wf-context:contextual",
+        "workflow-runtime:wf-context:selector-source",
+        "workflow-runtime:wf-context:prompt-source",
+        "character-node",
+    }
+
+
+def test_compact_workflow_prompt_node_removes_duplicate_and_runtime_heavy_fields() -> None:
+    compact = node_universal._compact_workflow_text_node({
+        "id": "image-node",
+        "display_id": 7,
+        "type": "image",
+        "title": "分镜图",
+        "status": "completed",
+        "surface": "draft_canvas",
+        "workflow": {
+            "template_id": "flow",
+            "instance_id": "wf-1",
+            "step_id": "storyboard",
+            "prompt_template": "不应复制",
+            "run_history": [{"usage": {"total_tokens": 999}}],
+        },
+        "output": {
+            "type": "fusion",
+            "subject": "image",
+            "prompt": "宫格分镜图",
+            "input": {"duplicated": "x" * 20000},
+            "history": [{"duplicated": "y" * 20000}],
+        },
+    })
+
+    assert compact["output"] == {
+        "type": "fusion",
+        "subject": "image",
+        "prompt": "宫格分镜图",
+    }
+    assert "outputs" not in compact
+    assert compact["workflow"] == {"step_id": "storyboard"}
+    assert len(json.dumps(compact, ensure_ascii=False)) < 500
+    assert "output" not in node_universal._compact_workflow_text_node(
+        {**compact, "output": {"content": "旧答案"}},
+        include_output=False,
+    )
 
 
 @pytest.mark.asyncio

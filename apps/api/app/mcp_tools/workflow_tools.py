@@ -5476,9 +5476,10 @@ def _workflow_records_for_prompt_context(
     template_id: str,
     instance_id: str,
     target_step_id: str,
+    target_step: dict[str, Any],
     target_record: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
+    scoped_records: list[dict[str, Any]] = []
     for record in records:
         workflow = _workflow_metadata_from_node(record)
         if template_id and str(workflow.get("template_id") or "").strip() != template_id:
@@ -5487,10 +5488,82 @@ def _workflow_records_for_prompt_context(
             continue
         if str(workflow.get("step_id") or "").strip() == target_step_id:
             continue
-        if target_record is not None and not _workflow_same_or_previous_prompt_scope(target_record, record):
+        scoped_records.append(record)
+
+    created_by_step = _workflow_step_nodes_by_id(scoped_records, template_id, instance_id)
+    nodes_by_alias = _workflow_step_nodes_by_alias(scoped_records, template_id, instance_id)
+    prompt_dependency_keys: list[str] = []
+    prompt_template = str(target_step.get("prompt_template") or "")
+    builtin_context_keys = {
+        "inputs",
+        "input_facts",
+        "instance",
+        "json",
+        "target",
+        "target_node",
+        "previous",
+        "previous_segment",
+        "upstream_nodes",
+        "steps",
+        "nodes",
+        "outputs",
+    }
+    for match in re.finditer(r"\{\{\s*([^{}]+?)\s*\}\}", prompt_template):
+        expression = str(match.group(1) or "").strip()
+        root_key = expression.split(".", 1)[0].split("[", 1)[0].strip()
+        if root_key and root_key not in builtin_context_keys:
+            prompt_dependency_keys.append(root_key)
+    dependency_keys = _unique_nonempty_strings([
+        *(target_step.get("depends_on") or []),
+        *prompt_dependency_keys,
+        *(spec.get("ref") for spec in _workflow_context_ref_specs(target_step)),
+        *(
+            selector.get("source_step")
+            for selector in _workflow_reference_selectors(target_step)
+            if isinstance(selector, dict)
+        ),
+        *(
+            selector.get("from_group")
+            for selector in _workflow_reference_selectors(target_step)
+            if isinstance(selector, dict)
+        ),
+    ])
+
+    candidates: list[dict[str, Any]] = []
+    seen_record_ids: set[str] = set()
+    for dependency_key in dependency_keys:
+        for record in _workflow_dependency_nodes(
+            dependency_key,
+            created_by_step=created_by_step,
+            nodes_by_alias=nodes_by_alias,
+            target_step=target_step,
+        ):
+            record_id = str(record.get("id") or "").strip()
+            marker = record_id or str(id(record))
+            if marker in seen_record_ids:
+                continue
+            seen_record_ids.add(marker)
+            candidates.append(record)
+
+    # A canvas record and its workflow-runtime shadow represent the same step.
+    # Prefer the actual canvas record, then the newest completed candidate.
+    selected_by_step: dict[str, dict[str, Any]] = {}
+
+    def preference(record: dict[str, Any]) -> tuple[int, int, str]:
+        record_id = str(record.get("id") or "")
+        is_canvas = _workflow_is_canvas_dependency_record(record) and not record_id.startswith("workflow-runtime:")
+        is_completed = str(record.get("status") or "") == "completed"
+        return (int(is_canvas), int(is_completed), str(record.get("updated_at") or ""))
+
+    for record in candidates:
+        workflow = _workflow_metadata_from_node(record)
+        identity = str(workflow.get("step_id") or workflow.get("template_step_id") or record.get("id") or "").strip()
+        if not identity:
             continue
-        result.append(record)
-    return result
+        current = selected_by_step.get(identity)
+        if current is None or preference(record) > preference(current):
+            selected_by_step[identity] = record
+    return list(selected_by_step.values())
 
 
 def _workflow_record_matches_prompt_source(record: dict[str, Any], marker: str) -> bool:
@@ -5615,7 +5688,23 @@ async def _run_runtime_llm_step(
     from app.mcp_tools import node_universal
 
     fields = dict(record.get("input") if isinstance(record.get("input"), dict) else {})
-    workflow = dict(fields.get("workflow") if isinstance(fields.get("workflow"), dict) else {})
+    stored_workflow = dict(fields.get("workflow") if isinstance(fields.get("workflow"), dict) else {})
+    workflow = {
+        **stored_workflow,
+        "template_id": str(template.get("id") or stored_workflow.get("template_id") or ""),
+        "template_name": template.get("name") or stored_workflow.get("template_name"),
+        "step_id": str(step.get("id") or stored_workflow.get("step_id") or ""),
+        "depends_on": [str(dep).strip() for dep in (step.get("depends_on") or []) if str(dep).strip()],
+        "surface": _workflow_step_surface(step),
+        "visibility": step.get("visibility") or stored_workflow.get("visibility") or "flow_only",
+        "primary_skill": step.get("primary_skill") or "",
+        "skill_category": step.get("skill_category") or "",
+        "acceptance": step.get("acceptance") or "",
+        "input_facts": _input_summary(inputs or {}),
+        "protocol": _workflow_protocol_payload(template),
+        **_step_workflow_metadata(step),
+    }
+    fields["workflow"] = workflow
     instance_id = str(workflow.get("instance_id") or record.get("instance_id") or "").strip()
     step_id = str(workflow.get("step_id") or record.get("step_id") or step.get("id") or "").strip()
     title = str(record.get("title") or step.get("title") or step_id or "Workflow Runtime Step")
@@ -5756,10 +5845,11 @@ async def _run_runtime_llm_step(
         template_id=template_id,
         instance_id=instance_id,
         target_step_id=step_id,
+        target_step=step,
         target_record=record,
     )
     compact_upstream = [node_universal._compact_workflow_text_node(item) for item in upstream_nodes]
-    target = node_universal._compact_workflow_text_node(record)
+    target = node_universal._compact_workflow_text_node(record, include_output=False)
     prompt_runtime = node_universal._workflow_render_prompt_template(
         workflow.get("prompt_template"),
         workflow=workflow,
@@ -5778,10 +5868,14 @@ async def _run_runtime_llm_step(
     )
     if structured_instructions:
         system = f"{system}\n\n{structured_instructions}"
+    include_upstream_payload = bool(
+        not str(prompt_runtime.get("rendered_prompt_template") or "").strip()
+        or prompt_runtime.get("unresolved_template_paths")
+    )
     message = json.dumps(
         {
             "target_step": target,
-            "workflow": workflow,
+            "workflow": node_universal._compact_workflow_llm_contract(workflow),
             "prompt_template": prompt_runtime["prompt_template"],
             "rendered_prompt_template": prompt_runtime["rendered_prompt_template"],
             "unresolved_template_paths": prompt_runtime["unresolved_template_paths"],
@@ -5791,13 +5885,35 @@ async def _run_runtime_llm_step(
             "acceptance": workflow.get("acceptance"),
             "input_facts": workflow.get("input_facts"),
             "skill": skill_payload,
-            "upstream_steps": compact_upstream,
+            "upstream_steps": compact_upstream if include_upstream_payload else [],
             "vision_context_images": vision_context,
         },
         ensure_ascii=False,
         default=str,
     )
     task_type = node_universal._workflow_text_task_type(workflow, fields)
+    started_at = _utc_now_iso()
+    dump_run_id = f"workflow_runtime_{node_universal.new_run_id()}"
+    node_universal.dump_llm_request(
+        project_id,
+        dump_run_id,
+        0,
+        system,
+        [{"role": "user", "content": message}],
+        [],
+        user_message=f"workflow runtime step {step_id}",
+    )
+    request_diagnostics = {
+        "run_id": dump_run_id,
+        "task_type": task_type,
+        "prompt_dump_run_id": dump_run_id,
+        "started_at": started_at,
+        "request_message_chars": len(message),
+        "upstream_record_count": len(compact_upstream),
+        "serialized_upstream_record_count": len(compact_upstream) if include_upstream_payload else 0,
+        "vision_image_count": len(vision_image_urls),
+        "vision_image_refs": [item.get("ref") for item in vision_context],
+    }
     try:
         llm_result = await node_universal._call_workflow_text_llm(
             task_type=task_type,
@@ -5807,6 +5923,16 @@ async def _run_runtime_llm_step(
             image_urls=vision_image_urls,
         )
     except Exception as exc:
+        failed_fields = dict(fields)
+        failed_fields["workflow"] = node_universal._workflow_text_run_log(
+            workflow,
+            {
+                **request_diagnostics,
+                "status": "failed",
+                "completed_at": _utc_now_iso(),
+                "error": str(exc)[:500],
+            },
+        )
         failed = await _upsert_workflow_runtime_step(
             project_id=project_id,
             template=template,
@@ -5814,7 +5940,7 @@ async def _run_runtime_llm_step(
             step_id=step_id,
             node_type=str(record.get("type") or "text"),
             title=title,
-            fields=fields,
+            fields=failed_fields,
             status="failed",
             output=record.get("output"),
             error=str(exc)[:500],
@@ -5822,6 +5948,19 @@ async def _run_runtime_llm_step(
         return {"ok": False, "runtime_step": True, "node": failed, "node_id": failed.get("id"), "error": str(exc)}
     content = node_universal._strip_llm_fences(str(llm_result.get("content") or ""))
     if not content:
+        failed_fields = dict(fields)
+        failed_fields["workflow"] = node_universal._workflow_text_run_log(
+            workflow,
+            {
+                **request_diagnostics,
+                "status": "failed",
+                "model": llm_result.get("model"),
+                "usage": llm_result.get("usage"),
+                "usage_total_tokens": node_universal._workflow_text_usage_total(llm_result.get("usage")),
+                "completed_at": _utc_now_iso(),
+                "error": "empty_llm_output",
+            },
+        )
         failed = await _upsert_workflow_runtime_step(
             project_id=project_id,
             template=template,
@@ -5829,7 +5968,7 @@ async def _run_runtime_llm_step(
             step_id=step_id,
             node_type=str(record.get("type") or "text"),
             title=title,
-            fields=fields,
+            fields=failed_fields,
             status="failed",
             output=record.get("output"),
             error="empty_llm_output",
@@ -5840,6 +5979,19 @@ async def _run_runtime_llm_step(
         try:
             output_value = parse_structured_output(content, workflow)
         except WorkflowStructuredOutputError as exc:
+            failed_fields = dict(fields)
+            failed_fields["workflow"] = node_universal._workflow_text_run_log(
+                workflow,
+                {
+                    **request_diagnostics,
+                    "status": "failed",
+                    "model": llm_result.get("model"),
+                    "usage": llm_result.get("usage"),
+                    "usage_total_tokens": node_universal._workflow_text_usage_total(llm_result.get("usage")),
+                    "completed_at": _utc_now_iso(),
+                    "error": str(exc)[:500],
+                },
+            )
             failed = await _upsert_workflow_runtime_step(
                 project_id=project_id,
                 template=template,
@@ -5847,7 +5999,7 @@ async def _run_runtime_llm_step(
                 step_id=step_id,
                 node_type=str(record.get("type") or "text"),
                 title=title,
-                fields=fields,
+                fields=failed_fields,
                 status="failed",
                 output=record.get("output"),
                 error=str(exc)[:500],
@@ -5862,6 +6014,18 @@ async def _run_runtime_llm_step(
             }
 
     updated_fields = dict(fields)
+    updated_fields["workflow"] = node_universal._workflow_text_run_log(
+        workflow,
+        {
+            **request_diagnostics,
+            "status": "completed",
+            "model": llm_result.get("model"),
+            "usage": llm_result.get("usage"),
+            "usage_total_tokens": node_universal._workflow_text_usage_total(llm_result.get("usage")),
+            "completed_at": _utc_now_iso(),
+            "content_chars": len(content),
+        },
+    )
     updated_fields["content"] = content
     updated_fields["prompt_status"] = "completed"
     updated = await _upsert_workflow_runtime_step(
