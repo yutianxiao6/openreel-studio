@@ -10,6 +10,7 @@ const NODE_ID = env.NODE_ID || env.DRAMA_NODE_ID
 const VIDEO_URL = env.VIDEO_URL || env.DRAMA_VIDEO_URL
 const TIMEOUT_MS = Number(env.TIMEOUT_MS || env.VIDEO_EDITOR_VERIFY_TIMEOUT_MS || 60_000)
 const SCREENSHOT_PATH = env.SCREENSHOT_PATH || ""
+const PROGRESS_SCREENSHOT_PATH = env.PROGRESS_SCREENSHOT_PATH || ""
 const HEADLESS = env.HEADED === "1" || env.HEADLESS === "0" ? false : true
 const CHROME_PATH = env.CHROME_PATH || ""
 
@@ -19,7 +20,7 @@ function usage() {
     "  WEB_URL=http://127.0.0.1:3000 PROJECT_ID=<id> NODE_ID=<video-node-id> VIDEO_URL=<absolute-or-app-url> node scripts/verify-video-editor-timeline.cjs",
     "",
     "Optional:",
-    "  TIMEOUT_MS=45000 SCREENSHOT_PATH=/tmp/video-editor.png HEADED=1 CHROME_PATH=/path/to/chrome",
+    "  TIMEOUT_MS=45000 SCREENSHOT_PATH=/tmp/video-editor.png PROGRESS_SCREENSHOT_PATH=/tmp/video-editor-progress.png HEADED=1 CHROME_PATH=/path/to/chrome",
     "",
     "This script does not start dev servers. Start web/API separately, then run it.",
   ].join("\n"))
@@ -265,8 +266,73 @@ async function main() {
     let mockedSequenceRevision = 0
     let latestSequenceSpec = null
     let renderRequestBody = null
+    let latestRenderJob = null
+    let renderJobCounter = 0
+    const renderJobPayload = (job) => ({
+      id: job.id,
+      project_id: PROJECT_ID,
+      source_node_id: NODE_ID,
+      sequence_revision: job.request.expected_revision,
+      title: job.request.title,
+      status: job.status,
+      progress: job.progress,
+      phase: job.phase,
+      cancel_requested: job.status === "cancelling" || job.status === "cancelled",
+      output_node_id: job.status === "completed" ? "rendered-sequence-node" : null,
+      error_message: null,
+      result: job.status === "completed" ? job.result : null,
+      created_at: job.createdAt,
+      updated_at: new Date().toISOString(),
+      completed_at: ["completed", "cancelled"].includes(job.status) ? new Date().toISOString() : null,
+      created: true,
+    })
+    await page.route("**/api/video-editor/**/sequence/render/**", async (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (!latestRenderJob || !url.pathname.includes(`/sequence/render/${latestRenderJob.id}`)) {
+        await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ detail: "Render job not found" }) })
+        return
+      }
+      if (url.pathname.endsWith("/cancel") && request.method() === "POST") {
+        latestRenderJob.status = "cancelled"
+        latestRenderJob.phase = "已取消"
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(renderJobPayload(latestRenderJob)) })
+        return
+      }
+      if (request.method() !== "GET") {
+        await route.continue()
+        return
+      }
+      if (["completed", "cancelled", "failed"].includes(latestRenderJob.status)) {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(renderJobPayload(latestRenderJob)) })
+        return
+      }
+      latestRenderJob.polls += 1
+      if (latestRenderJob.id === "mock-render-1") {
+        latestRenderJob.status = "running"
+        latestRenderJob.progress = 24
+        latestRenderJob.phase = "正在编码"
+      } else if (latestRenderJob.polls >= 3) {
+        latestRenderJob.status = "completed"
+        latestRenderJob.progress = 100
+        latestRenderJob.phase = "导出完成"
+      } else {
+        latestRenderJob.status = "running"
+        latestRenderJob.progress = latestRenderJob.polls === 1 ? 36 : 74
+        latestRenderJob.phase = "正在编码"
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(renderJobPayload(latestRenderJob)) })
+    })
     await page.route("**/api/video-editor/**/sequence/render", async (route) => {
       const request = route.request()
+      if (request.method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(latestRenderJob ? renderJobPayload(latestRenderJob) : null),
+        })
+        return
+      }
       if (request.method() !== "POST") {
         await route.continue()
         return
@@ -282,24 +348,34 @@ async function main() {
       const durationFrames = Math.max(0, ...(latestSequenceSpec?.clips || []).map((clip) => (
         Number(clip.timeline_start_frame || 0) + Number(clip.duration_frames || 0)
       )))
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          ok: true,
-          sequence_revision: renderRequestBody.expected_revision,
+      renderJobCounter += 1
+      const render = {
+        duration_frames: durationFrames,
+        frame_rate: settings.frame_rate,
+        width: settings.width,
+        height: settings.height,
+        audio_sample_rate: settings.audio_sample_rate,
+        audio_channels: settings.audio_channels,
+        transition_count: latestSequenceSpec?.transitions?.length || 0,
+      }
+      latestRenderJob = {
+        id: `mock-render-${renderJobCounter}`,
+        request: renderRequestBody,
+        status: "queued",
+        progress: 0,
+        phase: "等待渲染",
+        polls: 0,
+        createdAt: new Date().toISOString(),
+        result: {
           node: { id: "rendered-sequence-node", type: "video", title: renderRequestBody.title },
           edges: [],
-          render: {
-            duration_frames: durationFrames,
-            frame_rate: settings.frame_rate,
-            width: settings.width,
-            height: settings.height,
-            audio_sample_rate: settings.audio_sample_rate,
-            audio_channels: settings.audio_channels,
-            transition_count: latestSequenceSpec?.transitions?.length || 0,
-          },
-        }),
+          render,
+        },
+      }
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify(renderJobPayload(latestRenderJob)),
       })
     })
     await page.route("**/api/video-editor/**/sequence", async (route) => {
@@ -1541,8 +1617,24 @@ async function main() {
     const renderButton = page.locator('[data-openreel-render-sequence="true"]')
     await renderButton.scrollIntoViewIfNeeded()
     await renderButton.click()
+    await page.locator('[data-openreel-render-progress="true"]').waitFor({ state: "visible" })
+    await page.waitForFunction(() => Number(document.querySelector('[data-openreel-render-progress="true"]')?.getAttribute("data-render-progress") || 0) >= 24)
+    if (PROGRESS_SCREENSHOT_PATH) {
+      await page.evaluate(() => {
+        const inspectorScroller = document.querySelector('[data-openreel-inspector-pane="true"] .overflow-y-auto')
+        if (inspectorScroller) inspectorScroller.scrollTop = 0
+      })
+      await page.screenshot({ path: PROGRESS_SCREENSHOT_PATH, fullPage: false })
+    }
+    await page.getByRole("button", { name: "取消时间线导出", exact: true }).click()
+    await page.locator('[data-openreel-render-cancelled="true"]').waitFor({ state: "visible" })
+    const sequenceRenderCancelUi = latestRenderJob?.status === "cancelled"
+    await renderButton.click()
+    await page.locator('[data-openreel-render-progress="true"]').waitFor({ state: "visible" })
+    await page.waitForFunction(() => Number(document.querySelector('[data-openreel-render-progress="true"]')?.getAttribute("data-render-progress") || 0) >= 36)
     await page.locator('[data-openreel-render-success="true"]').waitFor({ state: "visible" })
     const sequenceRenderUi = Boolean(
+      sequenceRenderCancelUi &&
       renderRequestBody &&
       renderRequestBody.expected_revision === mockedSequenceRevision &&
       renderRequestBody.title === "Video editor verification · 时间线成片" &&
@@ -1574,8 +1666,9 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: sequenceRenderUi && basicVisualControls && basicTransitions && programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: sequenceRenderUi && sequenceRenderCancelUi && basicVisualControls && basicTransitions && programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
       sequenceRenderUi,
+      sequenceRenderCancelUi,
       renderRequestBody,
       basicVisualControls,
       basicTransitions,
@@ -1706,6 +1799,7 @@ async function main() {
       audioParts,
       consoleErrors,
       screenshot: SCREENSHOT_PATH || null,
+      progressScreenshot: PROGRESS_SCREENSHOT_PATH || null,
     }
     console.log(JSON.stringify(result, null, 2))
     if (!result.ok) process.exitCode = 1

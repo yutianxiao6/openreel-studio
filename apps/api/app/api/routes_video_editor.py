@@ -1,27 +1,21 @@
 """Frame-native sequence, source-index, waveform, and render endpoints."""
 from __future__ import annotations
 
-import uuid
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.db.models import WorkflowEdge, WorkflowNode
+from app.db.models import VideoSequenceRenderJob, WorkflowNode
 from app.db.session import get_session
 from app.services import (
     media_operations,
-    project_media_history,
     timeline_media_index,
     timeline_thumbnails,
     timeline_waveforms,
     video_edit_sequences,
-    video_sequence_renderer,
+    video_sequence_render_jobs,
 )
-from app.services.node_service import NodeService, workflow_node_payload
 
 
 router = APIRouter()
@@ -148,18 +142,7 @@ async def restore_video_edit_sequence(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-def _render_output_position(source: WorkflowNode, existing: list[WorkflowNode]) -> tuple[float, float]:
-    x = float(source.position_x or 0.0) + 380.0
-    y = float(source.position_y or 0.0)
-    occupied = [(float(node.position_x or 0.0), float(node.position_y or 0.0)) for node in existing]
-    for _ in range(24):
-        if not any(abs(x - other_x) < 320.0 and abs(y - other_y) < 240.0 for other_x, other_y in occupied):
-            return x, y
-        y += 260.0
-    return x, y
-
-
-@router.post("/{project_id}/nodes/{node_id}/sequence/render")
+@router.post("/{project_id}/nodes/{node_id}/sequence/render", status_code=202)
 async def render_video_edit_sequence(
     project_id: str,
     node_id: str,
@@ -178,89 +161,69 @@ async def render_video_edit_sequence(
                 "current_revision": document.revision,
             },
         )
-    media_node_ids: list[str] = []
-    for clip in document.spec.clips:
-        media_node_id = clip.media_id.removeprefix("embedded-audio:")
-        if media_node_id not in media_node_ids:
-            media_node_ids.append(media_node_id)
-    nodes_by_id: dict[str, WorkflowNode] = {}
-    for media_node_id in media_node_ids:
-        node = await db.get(WorkflowNode, media_node_id)
-        if node is None or node.project_id != project_id:
-            raise HTTPException(status_code=400, detail=f"找不到片段媒体节点: {media_node_id}")
-        nodes_by_id[node.id] = node
-    try:
-        result = await video_sequence_renderer.render_sequence(
-            project_id,
-            document.spec,
-            revision=document.revision,
-            nodes_by_id=nodes_by_id,
-            title=req.title or f"{source_node.title or '视频'} · 时间线成片",
-        )
-    except media_operations.MediaOperationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job, created = await video_sequence_render_jobs.create_render_job(
+        db,
+        project_id=project_id,
+        source_node_id=node_id,
+        sequence_revision=document.revision,
+        title=req.title or f"{source_node.title or '视频'} · 时间线成片",
+        spec=document.spec,
+    )
+    video_sequence_render_jobs.render_job_manager.start(job.id)
+    payload = video_sequence_render_jobs.render_job_payload(job)
+    payload["created"] = created
+    return payload
 
-    source_nodes = [nodes_by_id[node_id] for node_id in result.metadata.get("source_node_ids", []) if node_id in nodes_by_id]
-    if source_node.id not in {node.id for node in source_nodes}:
-        source_nodes.insert(0, source_node)
-    existing_nodes = list((await db.exec(
-        select(WorkflowNode).where(WorkflowNode.project_id == project_id)
-    )).all())
-    position_x, position_y = _render_output_position(source_node, existing_nodes)
-    source_refs = [f"node:{node.display_id}" if node.display_id is not None else f"node:{node.id}" for node in source_nodes]
-    output = media_operations.item_output(project_id, result)
-    service = NodeService(db)
-    rendered_node = await service.create_node(project_id, {
-        "type": "video",
-        "title": result.title,
-        "status": "completed",
-        "position_x": position_x,
-        "position_y": position_y,
-        "input_json": {
-            "surface": "video_editor_sequence_render",
-            "title": result.title,
-            "source": {
-                "kind": "video_editor_sequence",
-                "source_node_id": source_node.id,
-                "sequence_revision": document.revision,
-            },
-            "depends_on": source_refs,
-            "fields": {
-                "media_operation": result.metadata,
-                "source_node_refs": source_refs,
-            },
-        },
-        "output_json": output,
-        "model_config_json": {
-            "surface": "video_editor_sequence_render",
-            "_ui_creator": "user",
-            "created_by": "user",
-        },
-        "prompt": None,
-        "error_message": None,
-    })
-    edges: list[WorkflowEdge] = []
-    for source in source_nodes:
-        edge = WorkflowEdge(
-            id=str(uuid.uuid4()),
-            project_id=project_id,
-            source_node_id=source.id,
-            target_node_id=rendered_node.id,
-            label="时间线导出",
-            created_at=datetime.utcnow(),
-        )
-        db.add(edge)
-        edges.append(edge)
-    await db.commit()
-    await db.refresh(rendered_node)
-    project_media_history.register_node_outputs(project_id, rendered_node)
-    return {
-        "ok": True,
-        "sequence_revision": document.revision,
-        "node": workflow_node_payload(rendered_node),
-        "edges": [edge.model_dump(mode="json") for edge in edges],
-        "render": result.metadata,
-    }
+
+async def _load_render_job(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    node_id: str,
+    job_id: str,
+) -> VideoSequenceRenderJob:
+    job = await db.get(VideoSequenceRenderJob, job_id)
+    if job is None or job.project_id != project_id or job.source_node_id != node_id:
+        raise HTTPException(status_code=404, detail="Render job not found")
+    return job
+
+
+@router.get("/{project_id}/nodes/{node_id}/sequence/render")
+async def get_latest_video_sequence_render_job(
+    project_id: str,
+    node_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    await _load_video_node(db, project_id=project_id, node_id=node_id)
+    job = await video_sequence_render_jobs.latest_render_job(
+        db,
+        project_id=project_id,
+        source_node_id=node_id,
+    )
+    return video_sequence_render_jobs.render_job_payload(job) if job else None
+
+
+@router.get("/{project_id}/nodes/{node_id}/sequence/render/{job_id}")
+async def get_video_sequence_render_job(
+    project_id: str,
+    node_id: str,
+    job_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    job = await _load_render_job(db, project_id=project_id, node_id=node_id, job_id=job_id)
+    return video_sequence_render_jobs.render_job_payload(job)
+
+
+@router.post("/{project_id}/nodes/{node_id}/sequence/render/{job_id}/cancel")
+async def cancel_video_sequence_render_job(
+    project_id: str,
+    node_id: str,
+    job_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    job = await _load_render_job(db, project_id=project_id, node_id=node_id, job_id=job_id)
+    job = await video_sequence_render_jobs.request_job_cancel(db, job)
+    return video_sequence_render_jobs.render_job_payload(job)
 
 
 @router.get("/{project_id}/nodes/{node_id}/media-index")

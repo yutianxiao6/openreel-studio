@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -9,8 +10,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.api import routes_projects, routes_video_editor
 from app.config import settings
 from app.db import session as db_session
-from app.db.models import Project, WorkflowEdge, WorkflowNode
-from app.services import media_operations, video_edit_sequences
+from app.db.models import Project, VideoSequenceRenderJob, WorkflowEdge, WorkflowNode
+from app.services import media_operations, video_edit_sequences, video_sequence_render_jobs
 
 
 async def _setup_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -52,6 +53,43 @@ def _write_media_result(tmp_path: Path, project_id: str, kind: str, filename: st
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"media")
     return rel_path, path
+
+
+def _video_sequence_spec() -> video_edit_sequences.SequenceSpec:
+    return video_edit_sequences.SequenceSpec.model_validate({
+        "schema_version": "openreel.video_sequence.v1",
+        "settings": {
+            "frame_rate": {"numerator": 24, "denominator": 1},
+            "width": 1280,
+            "height": 720,
+            "audio_sample_rate": 48_000,
+            "audio_channels": 2,
+        },
+        "tracks": [
+            {"id": "v1", "kind": "video", "name": "Video 1", "order": 0},
+            {"id": "a1", "kind": "audio", "name": "Audio 1", "order": 0},
+        ],
+        "clips": [
+            {
+                "id": "video-clip",
+                "track_id": "v1",
+                "media_id": "video-source",
+                "timeline_start_frame": 0,
+                "duration_frames": 48,
+                "source_in_frame": 0,
+                "source_frame_count": 48,
+            },
+            {
+                "id": "audio-clip",
+                "track_id": "a1",
+                "media_id": "embedded-audio:video-source",
+                "timeline_start_frame": 0,
+                "duration_frames": 48,
+                "source_in_frame": 0,
+                "source_frame_count": 48,
+            },
+        ],
+    })
 
 
 @pytest.mark.asyncio
@@ -147,40 +185,7 @@ async def test_video_split_tracks_creates_video_and_audio_nodes(monkeypatch, tmp
 @pytest.mark.asyncio
 async def test_video_sequence_render_creates_video_node_and_dependency_edge(monkeypatch, tmp_path) -> None:
     await _setup_db(monkeypatch, tmp_path)
-    spec = video_edit_sequences.SequenceSpec.model_validate({
-        "schema_version": "openreel.video_sequence.v1",
-        "settings": {
-            "frame_rate": {"numerator": 24, "denominator": 1},
-            "width": 1280,
-            "height": 720,
-            "audio_sample_rate": 48_000,
-            "audio_channels": 2,
-        },
-        "tracks": [
-            {"id": "v1", "kind": "video", "name": "Video 1", "order": 0},
-            {"id": "a1", "kind": "audio", "name": "Audio 1", "order": 0},
-        ],
-        "clips": [
-            {
-                "id": "video-clip",
-                "track_id": "v1",
-                "media_id": "video-source",
-                "timeline_start_frame": 0,
-                "duration_frames": 48,
-                "source_in_frame": 0,
-                "source_frame_count": 48,
-            },
-            {
-                "id": "audio-clip",
-                "track_id": "a1",
-                "media_id": "embedded-audio:video-source",
-                "timeline_start_frame": 0,
-                "duration_frames": 48,
-                "source_in_frame": 0,
-                "source_frame_count": 48,
-            },
-        ],
-    })
+    spec = _video_sequence_spec()
     async with db_session.session_scope() as session:
         document = await video_edit_sequences.save_sequence(
             session,
@@ -211,10 +216,16 @@ async def test_video_sequence_render_creates_video_node_and_dependency_edge(monk
             },
         )
 
-    monkeypatch.setattr(routes_video_editor.video_sequence_renderer, "render_sequence", fake_render)
+    started_jobs: list[str] = []
+    monkeypatch.setattr(video_sequence_render_jobs.video_sequence_renderer, "render_sequence", fake_render)
+    monkeypatch.setattr(
+        video_sequence_render_jobs.render_job_manager,
+        "start",
+        lambda job_id: started_jobs.append(job_id),
+    )
 
     async with db_session.session_scope() as session:
-        result = await routes_video_editor.render_video_edit_sequence(
+        started = await routes_video_editor.render_video_edit_sequence(
             "project-1",
             "video-source",
             routes_video_editor.RenderSequenceRequest(
@@ -223,19 +234,126 @@ async def test_video_sequence_render_creates_video_node_and_dependency_edge(monk
             ),
             session,
         )
-        assert result["ok"] is True
-        assert result["sequence_revision"] == 1
-        assert result["node"]["type"] == "video"
-        assert result["node"]["title"] == "正式成片"
-        rendered_output = json.loads(result["node"]["output_json"])
+        assert started["status"] == "queued"
+        assert started["created"] is True
+        assert started["sequence_revision"] == 1
+        assert started_jobs == [started["id"]]
+
+    await video_sequence_render_jobs._execute_render_job(started["id"])  # noqa: SLF001
+
+    async with db_session.session_scope() as session:
+        result = await routes_video_editor.get_video_sequence_render_job(
+            "project-1",
+            "video-source",
+            started["id"],
+            session,
+        )
+        assert result["status"] == "completed"
+        assert result["progress"] == 100
+        assert result["output_node_id"]
+        rendered = result["result"]
+        assert rendered["node"]["type"] == "video"
+        assert rendered["node"]["title"] == "正式成片"
+        rendered_output = json.loads(rendered["node"]["output_json"])
         assert rendered_output["video"]["local_url"].endswith(
             "/generated_videos/video_ops/sequence.mp4"
         )
-        assert result["edges"][0]["source_node_id"] == "video-source"
-        assert result["edges"][0]["target_node_id"] == result["node"]["id"]
+        assert rendered["edges"][0]["source_node_id"] == "video-source"
+        assert rendered["edges"][0]["target_node_id"] == rendered["node"]["id"]
 
-        created = await session.get(WorkflowNode, result["node"]["id"])
+        created = await session.get(WorkflowNode, rendered["node"]["id"])
         assert created is not None
         node_input = json.loads(created.input_json or "{}")
         assert node_input["source"]["sequence_revision"] == 1
         assert node_input["depends_on"] == ["node:1"]
+
+
+@pytest.mark.asyncio
+async def test_video_sequence_render_job_can_be_cancelled_without_creating_output(monkeypatch, tmp_path) -> None:
+    await _setup_db(monkeypatch, tmp_path)
+    async with db_session.session_scope() as session:
+        document = await video_edit_sequences.save_sequence(
+            session,
+            project_id="project-1",
+            node_id="video-source",
+            expected_revision=0,
+            spec=_video_sequence_spec(),
+        )
+
+    render_started = asyncio.Event()
+
+    async def blocking_render(project_id: str, sequence, **kwargs):
+        callback = kwargs["progress_callback"]
+        await callback(12, "正在编码")
+        render_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(video_sequence_render_jobs.video_sequence_renderer, "render_sequence", blocking_render)
+
+    async with db_session.session_scope() as session:
+        started = await routes_video_editor.render_video_edit_sequence(
+            "project-1",
+            "video-source",
+            routes_video_editor.RenderSequenceRequest(expected_revision=document.revision),
+            session,
+        )
+    await asyncio.wait_for(render_started.wait(), timeout=3)
+
+    async with db_session.session_scope() as session:
+        cancelling = await routes_video_editor.cancel_video_sequence_render_job(
+            "project-1",
+            "video-source",
+            started["id"],
+            session,
+        )
+        assert cancelling["status"] in {"cancelling", "cancelled"}
+
+    terminal = None
+    for _ in range(30):
+        async with db_session.session_scope() as session:
+            terminal = await routes_video_editor.get_video_sequence_render_job(
+                "project-1",
+                "video-source",
+                started["id"],
+                session,
+            )
+            if terminal["status"] == "cancelled":
+                nodes = list((await session.exec(select(WorkflowNode).where(
+                    WorkflowNode.project_id == "project-1"
+                ))).all())
+                break
+        await asyncio.sleep(0.02)
+
+    assert terminal is not None
+    assert terminal["status"] == "cancelled"
+    assert terminal["output_node_id"] is None
+    assert [node.id for node in nodes] == ["video-source"]
+
+
+@pytest.mark.asyncio
+async def test_api_restart_marks_active_sequence_render_jobs_interrupted(monkeypatch, tmp_path) -> None:
+    await _setup_db(monkeypatch, tmp_path)
+    async with db_session.session_scope() as session:
+        session.add(VideoSequenceRenderJob(
+            id="interrupted-job",
+            project_id="project-1",
+            source_node_id="video-source",
+            sequence_revision=1,
+            title="Interrupted",
+            spec_json=_video_sequence_spec().model_dump_json(),
+            status="running",
+            progress=42,
+            phase="正在编码",
+        ))
+        await session.commit()
+
+    recovered = await video_sequence_render_jobs.recover_interrupted_render_jobs()
+
+    assert recovered == 1
+    async with db_session.session_scope() as session:
+        job = await session.get(VideoSequenceRenderJob, "interrupted-job")
+        assert job is not None
+        assert job.status == "failed"
+        assert job.progress == 42
+        assert job.phase == "服务重启，导出已中断"
+        assert "重新导出" in (job.error_message or "")

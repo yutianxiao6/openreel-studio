@@ -311,6 +311,27 @@ class VideoEditSequenceRevision(SQLModel, table=True):
     created_at: datetime = Field(default_factory=now)
 
 
+class VideoSequenceRenderJob(SQLModel, table=True):
+    __tablename__ = "video_sequence_render_jobs"
+
+    id: str = Field(default_factory=gen_uuid, primary_key=True)
+    project_id: str = Field(foreign_key="projects.id", index=True)
+    source_node_id: str = Field(foreign_key="workflow_nodes.id", index=True)
+    sequence_revision: int = Field(ge=1)
+    title: str
+    spec_json: str
+    status: str = Field(default="queued", index=True)
+    progress: int = 0
+    phase: str = "等待渲染"
+    cancel_requested: bool = False
+    output_node_id: Optional[str] = Field(default=None, foreign_key="workflow_nodes.id")
+    result_json: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime = Field(default_factory=now)
+    updated_at: datetime = Field(default_factory=now)
+    completed_at: Optional[datetime] = None
+
+
 # ---------------------------------------------------------------------------
 # workflow_edges
 # ---------------------------------------------------------------------------

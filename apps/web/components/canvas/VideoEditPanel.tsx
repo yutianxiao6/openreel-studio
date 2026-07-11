@@ -4,14 +4,18 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react"
 import { runProjectMediaOperation } from "@/lib/api"
 import {
+  cancelVideoEditorSequenceRender,
+  getLatestVideoEditorSequenceRender,
   getVideoEditorFrameTileUrl,
   getVideoEditorMediaIndex,
+  getVideoEditorSequenceRender,
   getVideoEditorSequence,
   getVideoEditorWaveformManifest,
   getVideoEditorWaveformPage,
   renderVideoEditorSequence,
   saveVideoEditorSequence,
   type VideoEditorMediaIndex,
+  type VideoEditorSequenceRenderJob,
   type VideoEditorSequenceSpec,
   type VideoEditorWaveformManifest,
   type VideoEditorWaveformPage,
@@ -1441,6 +1445,7 @@ export default function VideoEditPanel({
   const sequenceRevisionRef = useRef(0)
   const lastSavedSequenceRef = useRef("")
   const sequenceSaveChainRef = useRef<Promise<void>>(Promise.resolve())
+  const renderPollTokenRef = useRef(0)
   const undoStackRef = useRef<EditorSnapshot[]>([])
   const redoStackRef = useRef<EditorSnapshot[]>([])
   const videoClipsRef = useRef<TimelineClipState[]>([])
@@ -1482,6 +1487,7 @@ export default function VideoEditPanel({
   const [busy, setBusy] = useState<BusyAction>(null)
   const [error, setError] = useState<string | null>(null)
   const [renderNotice, setRenderNotice] = useState<string | null>(null)
+  const [renderJob, setRenderJob] = useState<VideoEditorSequenceRenderJob | null>(null)
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(() => new Set())
   const [marquee, setMarquee] = useState<MarqueeState | null>(null)
@@ -2134,6 +2140,8 @@ export default function VideoEditPanel({
     setHistoryDepth({ undo: 0, redo: 0 })
     setSequenceRevision(0)
     setSequenceLoaded(false)
+    renderPollTokenRef.current += 1
+    setRenderJob(null)
     setRenderNotice(null)
     setTool("select")
     setTrimMode("normal")
@@ -2364,6 +2372,57 @@ export default function VideoEditPanel({
     }, 650)
     return () => window.clearTimeout(timer)
   }, [nodeId, persistSequenceNow, sequenceLoaded, sequenceSpec])
+
+  const monitorRenderJob = useCallback(async (initialJob: VideoEditorSequenceRenderJob) => {
+    const token = renderPollTokenRef.current + 1
+    renderPollTokenRef.current = token
+    let current = initialJob
+    setRenderJob(current)
+    setBusy("render")
+    try {
+      while (["queued", "running", "cancelling"].includes(current.status)) {
+        await new Promise((resolve) => window.setTimeout(resolve, 650))
+        if (renderPollTokenRef.current !== token) return
+        current = await getVideoEditorSequenceRender(projectId, nodeId, current.id)
+        if (renderPollTokenRef.current !== token) return
+        setRenderJob(current)
+      }
+      if (current.status === "completed") {
+        const render = current.result?.render
+        setRenderNotice(render
+          ? `已导出 r${current.sequence_revision} · ${render.width}×${render.height} · ${render.duration_frames} 帧`
+          : `已导出序列 r${current.sequence_revision}`)
+        await onCommitted()
+      } else if (current.status === "failed") {
+        setError(current.error_message || "时间线导出失败")
+      }
+    } catch (reason) {
+      if (renderPollTokenRef.current === token) {
+        setError(reason instanceof Error ? reason.message : "无法读取导出进度")
+      }
+    } finally {
+      if (renderPollTokenRef.current === token) setBusy(null)
+    }
+  }, [nodeId, onCommitted, projectId])
+
+  useEffect(() => {
+    if (!sequenceLoaded || initializedNodeRef.current !== nodeId) return
+    let cancelled = false
+    void getLatestVideoEditorSequenceRender(projectId, nodeId).then((job) => {
+      if (cancelled || !job) return
+      if (["queued", "running", "cancelling"].includes(job.status)) {
+        void monitorRenderJob(job)
+        return
+      }
+      if (["failed", "cancelled"].includes(job.status)) {
+        setRenderJob(job)
+        if (job.status === "failed") setError(job.error_message || "上一次时间线导出失败")
+      }
+    }).catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [monitorRenderJob, nodeId, projectId, sequenceLoaded])
 
   useEffect(() => {
     const video = videoRef.current
@@ -2957,14 +3016,22 @@ export default function VideoEditPanel({
         revision,
         `${title || "视频"} · 时间线成片`,
       )
-      setRenderNotice(
-        `已导出 r${result.sequence_revision} · ${result.render.width}×${result.render.height} · ${result.render.duration_frames} 帧`,
-      )
-      await onCommitted()
+      await monitorRenderJob(result)
     } catch (err) {
       setError(err instanceof Error ? err.message : "时间线导出失败")
-    } finally {
       setBusy(null)
+    }
+  }
+
+  const cancelSequenceRender = async () => {
+    if (!renderJob || !["queued", "running"].includes(renderJob.status)) return
+    setError(null)
+    setRenderJob((current) => current ? { ...current, status: "cancelling", phase: "正在取消" } : current)
+    try {
+      const cancelled = await cancelVideoEditorSequenceRender(projectId, nodeId, renderJob.id)
+      setRenderJob(cancelled)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "取消导出失败")
     }
   }
 
@@ -4466,7 +4533,7 @@ export default function VideoEditPanel({
                 >
                   <span>
                     <span className="block text-[10px] font-semibold">
-                      {busy === "render" ? "正在渲染时间线…" : "导出时间线成片"}
+                      {busy === "render" ? `正在渲染时间线 ${renderJob?.progress || 0}%` : "导出时间线成片"}
                     </span>
                     <span className="mt-0.5 block font-mono text-[7px] text-[#9fc5df]">
                       H.264 · AAC · {sequenceSpec.settings.width}×{sequenceSpec.settings.height} · {framesPerSecond.toFixed(2)} FPS
@@ -4474,6 +4541,45 @@ export default function VideoEditPanel({
                   </span>
                   <span className="font-mono text-[8px] text-[#9fc5df]">r{sequenceRevision}</span>
                 </button>
+                {renderJob && ["queued", "running", "cancelling"].includes(renderJob.status) && (
+                  <div
+                    className="mb-1.5 border border-[#355a74] bg-[#1e303d] px-2 py-1.5"
+                    data-openreel-render-progress="true"
+                    data-render-status={renderJob.status}
+                    data-render-progress={renderJob.progress}
+                  >
+                    <div className="mb-1 flex items-center justify-between text-[8px] text-[#b9d7eb]">
+                      <span>{renderJob.phase || "正在渲染"}</span>
+                      <span className="font-mono">{renderJob.progress}%</span>
+                    </div>
+                    <div className="h-1 overflow-hidden bg-[#14232d]">
+                      <div
+                        className="h-full bg-[#62a9d8] transition-[width] duration-300"
+                        style={{ width: `${Math.max(0, Math.min(100, renderJob.progress))}%` }}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void cancelSequenceRender()}
+                      disabled={renderJob.status === "cancelling"}
+                      className="mt-1.5 h-5 w-full border border-[#735050] bg-[#3b292b] text-[8px] text-[#e7bfc0] hover:border-[#996264] hover:bg-[#4a3033] disabled:cursor-wait disabled:opacity-50"
+                      aria-label="取消时间线导出"
+                      data-openreel-cancel-render="true"
+                    >
+                      {renderJob.status === "cancelling" ? "正在取消…" : "取消导出"}
+                    </button>
+                  </div>
+                )}
+                {renderJob?.status === "cancelled" && !renderNotice && (
+                  <div className="mb-1.5 border border-[#75613d] bg-[#3d3321] px-2 py-1.5 text-[8px] text-[#e5d09b]" data-openreel-render-cancelled="true">
+                    导出已取消，时间线和已有成片均未改变。
+                  </div>
+                )}
+                {renderJob?.status === "failed" && (
+                  <div className="mb-1.5 border border-[#7d4547] bg-[#3c2426] px-2 py-1.5 text-[8px] leading-3 text-[#f0c1c3]" data-openreel-render-failed="true">
+                    {renderJob.error_message || "时间线导出失败"}
+                  </div>
+                )}
                 {renderNotice && !error && (
                   <div
                     className="mb-1.5 border border-[#386b55] bg-[#203d31] px-2 py-1.5 text-[8px] leading-3 text-[#bde6d0]"

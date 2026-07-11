@@ -1,7 +1,10 @@
 """Compile and render persisted frame-native editor sequences with FFmpeg."""
 from __future__ import annotations
 
+import asyncio
+import inspect
 import math
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +32,93 @@ class SequenceRenderPlan:
     filter_complex: str
     duration_frames: int
     source_node_ids: list[str]
+
+
+RenderProgressCallback = Callable[[int, str], Awaitable[None] | None]
+
+
+async def _emit_progress(
+    callback: RenderProgressCallback | None,
+    progress: int,
+    phase: str,
+) -> None:
+    if callback is None:
+        return
+    result = callback(max(0, min(100, int(progress))), phase)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=3)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+
+
+async def _run_ffmpeg_with_progress(
+    args: list[str],
+    *,
+    duration_frames: int,
+    progress_callback: RenderProgressCallback | None,
+    timeout: int,
+) -> None:
+    progress_args = [*args[:-1], "-progress", "pipe:1", "-nostats", args[-1]]
+    process = await asyncio.create_subprocess_exec(
+        media_operations._ffmpeg_exe(),  # noqa: SLF001
+        "-hide_banner",
+        "-nostdin",
+        *progress_args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stderr_task = asyncio.create_task(process.stderr.read())
+    latest_progress = -1
+    await _emit_progress(progress_callback, 1, "正在编码")
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                raw_line = await process.stdout.readline()
+                if not raw_line:
+                    break
+                key, separator, value = raw_line.decode("utf-8", errors="ignore").strip().partition("=")
+                if not separator:
+                    continue
+                if key == "frame":
+                    try:
+                        encoded_frames = int(value)
+                    except ValueError:
+                        continue
+                    progress = min(99, max(1, round(encoded_frames / max(1, duration_frames) * 100)))
+                    if progress > latest_progress:
+                        latest_progress = progress
+                        await _emit_progress(progress_callback, progress, "正在编码")
+                elif key == "progress" and value == "end":
+                    await _emit_progress(progress_callback, 100, "正在登记成片")
+            return_code = await process.wait()
+            stderr = await stderr_task
+    except TimeoutError as exc:
+        await _stop_process(process)
+        stderr_task.cancel()
+        await asyncio.gather(stderr_task, return_exceptions=True)
+        raise SequenceRenderError("序列渲染超时") from exc
+    except asyncio.CancelledError:
+        await _stop_process(process)
+        stderr_task.cancel()
+        await asyncio.gather(stderr_task, return_exceptions=True)
+        raise
+    if return_code == 0:
+        return
+    detail = stderr.decode("utf-8", errors="ignore").strip()
+    if detail:
+        detail = detail.splitlines()[-1][:240]
+    raise SequenceRenderError(detail or "序列渲染失败")
 
 
 def _seconds(frames: int, fps: float) -> str:
@@ -390,7 +480,9 @@ async def render_sequence(
     revision: int,
     nodes_by_id: dict[str, WorkflowNode],
     title: str | None = None,
+    progress_callback: RenderProgressCallback | None = None,
 ) -> media_operations.MediaOperationFile:
+    await _emit_progress(progress_callback, 0, "正在准备素材")
     sources = await resolve_sequence_sources(project_id, spec, nodes_by_id)
     rel_path, target = media_operations._operation_output_path(  # noqa: SLF001
         project_id,
@@ -400,11 +492,13 @@ async def render_sequence(
     )
     plan = compile_sequence_render_plan(spec, sources, target)
     try:
-        await media_operations._run_ffmpeg(  # noqa: SLF001
+        await _run_ffmpeg_with_progress(
             plan.ffmpeg_args,
+            duration_frames=plan.duration_frames,
+            progress_callback=progress_callback,
             timeout=max(media_operations.FFMPEG_TIMEOUT_SECONDS, 1_200),
         )
-    except media_operations.MediaOperationError:
+    except (media_operations.MediaOperationError, asyncio.CancelledError):
         target.unlink(missing_ok=True)
         raise
     if not target.exists() or target.stat().st_size <= 0:

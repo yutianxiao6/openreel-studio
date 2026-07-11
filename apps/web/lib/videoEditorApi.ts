@@ -138,20 +138,35 @@ export interface VideoEditorSequenceDocument {
   updated_at: string
 }
 
-export interface VideoEditorSequenceRenderResult {
-  ok: boolean
+export interface VideoEditorSequenceRenderJob {
+  id: string
+  project_id: string
+  source_node_id: string
   sequence_revision: number
-  node: Record<string, unknown>
-  edges: Array<Record<string, unknown>>
-  render: {
-    duration_frames: number
-    frame_rate: VideoEditorRational
-    width: number
-    height: number
-    audio_sample_rate: number
-    audio_channels: number
-    transition_count: number
-  }
+  title: string
+  status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled"
+  progress: number
+  phase: string
+  cancel_requested: boolean
+  output_node_id: string | null
+  error_message: string | null
+  result: {
+    node: Record<string, unknown>
+    edges: Array<Record<string, unknown>>
+    render: {
+      duration_frames: number
+      frame_rate: VideoEditorRational
+      width: number
+      height: number
+      audio_sample_rate: number
+      audio_channels: number
+      transition_count: number
+    }
+  } | null
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+  created?: boolean
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -284,7 +299,7 @@ export async function renderVideoEditorSequence(
   expectedRevision: number,
   title?: string,
 ) {
-  return readJson<VideoEditorSequenceRenderResult>(await fetch(editorPath(projectId, nodeId, "/sequence/render"), {
+  return readJson<VideoEditorSequenceRenderJob>(await fetch(editorPath(projectId, nodeId, "/sequence/render"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -292,4 +307,31 @@ export async function renderVideoEditorSequence(
       title: title || undefined,
     }),
   }))
+}
+
+export async function getLatestVideoEditorSequenceRender(projectId: string, nodeId: string) {
+  return readJson<VideoEditorSequenceRenderJob | null>(
+    await fetch(editorPath(projectId, nodeId, "/sequence/render")),
+  )
+}
+
+export async function getVideoEditorSequenceRender(
+  projectId: string,
+  nodeId: string,
+  jobId: string,
+) {
+  return readJson<VideoEditorSequenceRenderJob>(
+    await fetch(editorPath(projectId, nodeId, `/sequence/render/${encodeURIComponent(jobId)}`)),
+  )
+}
+
+export async function cancelVideoEditorSequenceRender(
+  projectId: string,
+  nodeId: string,
+  jobId: string,
+) {
+  return readJson<VideoEditorSequenceRenderJob>(await fetch(
+    editorPath(projectId, nodeId, `/sequence/render/${encodeURIComponent(jobId)}/cancel`),
+    { method: "POST" },
+  ))
 }

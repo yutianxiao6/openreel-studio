@@ -30,6 +30,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         import logging
         logging.getLogger(__name__).exception("Interrupted media node recovery failed")
+    from app.services.video_sequence_render_jobs import recover_interrupted_render_jobs
+    try:
+        await recover_interrupted_render_jobs()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Interrupted video sequence render recovery failed")
     # ConfigStore：bootstrap (首启自动 seed .env keys 到 runtime.jsonc) + 启动 watcher
     from app.config_store import get_store
     store = get_store()

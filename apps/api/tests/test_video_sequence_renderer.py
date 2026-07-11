@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -158,12 +159,14 @@ async def test_render_sequence_creates_frame_exact_h264_aac_output(monkeypatch, 
         }),
     )
 
+    progress_updates: list[tuple[int, str]] = []
     result = await video_sequence_renderer.render_sequence(
         project_id,
         _sequence_spec(),
         revision=7,
         nodes_by_id={node.id: node},
         title="Rendered sequence",
+        progress_callback=lambda progress, phase: progress_updates.append((progress, phase)),
     )
     manifest = await timeline_media_index.ensure_media_index(project_id, result.path)
 
@@ -178,3 +181,42 @@ async def test_render_sequence_creates_frame_exact_h264_aac_output(monkeypatch, 
     assert manifest.audio.present is True
     assert manifest.audio.sample_rate == 48_000
     assert manifest.audio.channels == 2
+    assert progress_updates[0] == (0, "正在准备素材")
+    assert progress_updates[-1] == (100, "正在登记成片")
+    assert [progress for progress, _ in progress_updates] == sorted(
+        progress for progress, _ in progress_updates
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_ffmpeg_progress_process_can_be_cancelled(tmp_path: Path) -> None:
+    target = tmp_path / "cancelled.mp4"
+    encoding_started = asyncio.Event()
+
+    async def on_progress(progress: int, phase: str) -> None:
+        if progress >= 1 and phase == "正在编码":
+            encoding_started.set()
+
+    task = asyncio.create_task(video_sequence_renderer._run_ffmpeg_with_progress(  # noqa: SLF001
+        [
+            "-y",
+            "-re",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=24:duration=20",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            str(target),
+        ],
+        duration_frames=480,
+        progress_callback=on_progress,
+        timeout=60,
+    ))
+    await asyncio.wait_for(encoding_started.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    target.unlink(missing_ok=True)
