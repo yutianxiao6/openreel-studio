@@ -2311,7 +2311,65 @@ async def test_visible_final_video_uses_upstream_video_prompt_without_rewriting(
                     },
                     ensure_ascii=False,
                 ),
-            }
+            },
+            {
+                "id": "plan-node",
+                "type": "text",
+                "title": "第1段 · 宫格分镜规划",
+                "status": "completed",
+                "workflow": {
+                    "template_id": "general_short_drama_workflow",
+                    "instance_id": "wf_demo",
+                    "step_id": "segments_s1_plan_frames",
+                    "template_step_id": "plan_frames",
+                    "source_node_id": "planFrames",
+                    "instance_scope": {"index": 1, "segment": 1},
+                },
+                "output": {"appearing_characters": ["孤胆剑客"]},
+            },
+            {
+                "id": "character-node",
+                "display_id": 1,
+                "type": "image",
+                "title": "孤胆剑客 · 主要人物参考图",
+                "status": "completed",
+                "workflow": {
+                    "template_id": "general_short_drama_workflow",
+                    "instance_id": "wf_demo",
+                    "step_id": "main_character_images_i1_main_character_image",
+                    "template_step_id": "main_character_image",
+                    "repeat_group_id": "main_character_images",
+                    "instance_scope": {"name": "孤胆剑客", "reuse_key": "protagonist"},
+                },
+            },
+            {
+                "id": "scene-node",
+                "display_id": 2,
+                "type": "image",
+                "title": "第1段 · 场景参考图",
+                "status": "completed",
+                "workflow": {
+                    "template_id": "general_short_drama_workflow",
+                    "instance_id": "wf_demo",
+                    "step_id": "segments_s1_scene_reference",
+                    "template_step_id": "scene_reference",
+                    "instance_scope": {"index": 1, "segment": 1},
+                },
+            },
+            {
+                "id": "storyboard-node",
+                "display_id": 3,
+                "type": "image",
+                "title": "第1段 · 宫格分镜图",
+                "status": "completed",
+                "workflow": {
+                    "template_id": "general_short_drama_workflow",
+                    "instance_id": "wf_demo",
+                    "step_id": "segments_s1_storyboard",
+                    "template_step_id": "storyboard",
+                    "instance_scope": {"index": 1, "segment": 1},
+                },
+            },
         ]
 
     async def fake_update_node(node_id: str, patch: dict[str, Any]) -> dict[str, Any]:
@@ -2362,7 +2420,32 @@ async def test_visible_final_video_uses_upstream_video_prompt_without_rewriting(
     prepared = await workflow_tools._prepare_visible_workflow_node_for_run(
         project_id="proj-1",
         template={"id": "general_short_drama_workflow", "name": "通用视频制作工作流"},
-        step={"id": "segments_s1_final_video", "node_type": "video", "depends_on": ["segments_s1_video_prompt"]},
+        step={
+            "id": "segments_s1_final_video",
+            "template_step_id": "final_video",
+            "node_type": "video",
+            "instance_scope": {"index": 1, "segment": 1},
+            "depends_on": [
+                "segments_s1_video_prompt",
+                "segments_s1_storyboard",
+                "segments_s1_scene_reference",
+                "main_character_images",
+            ],
+            "context_refs": [
+                {"ref": "storyboard", "role": "visual_reference"},
+                {"ref": "scene_reference", "role": "visual_reference"},
+                {"ref": "video_prompt", "role": "context"},
+            ],
+            "reference_selectors": [
+                {
+                    "from_group": "main_character_images",
+                    "source_step": "planFrames",
+                    "source_path": "output.appearing_characters",
+                    "match_fields": ["name", "reuse_key"],
+                    "role": "visual_reference",
+                }
+            ],
+        },
         node=node,
     )
 
@@ -2371,6 +2454,9 @@ async def test_visible_final_video_uses_upstream_video_prompt_without_rewriting(
     assert prepared["input"]["duration_seconds"] == 15
     assert "negative_prompt" not in prepared["input"]
     assert prepared["input"]["prompt_status"] == "completed"
+    assert {"ref": "node:1", "role": "visual_reference"} in prepared["input"]["references"]
+    assert {"ref": "node:2", "role": "visual_reference"} in prepared["input"]["references"]
+    assert {"ref": "node:3", "role": "visual_reference"} in prepared["input"]["references"]
     assert updates[-1][0] == "video-node"
     assert updates[-1][1]["prompt"] == full_prompt
 

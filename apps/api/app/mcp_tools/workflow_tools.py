@@ -5869,21 +5869,30 @@ async def _prepare_visible_workflow_node_for_run(
         fields["workflow_source_step"] = source_step
     fields["workflow_source_path"] = source_path
     fields["workflow_generate"] = bool(generate_media)
-    fields = _merge_workflow_dependency_refs(
-        fields,
-        [
-            *_workflow_dependency_refs_for_step(
-                step,
-                created_by_step=created_by_step,
-                nodes_by_alias=nodes_by_alias,
-                steps_by_id=steps_by_id,
-                virtual_step_ids=virtual_step_ids,
-                target_node_id=str(node.get("id") or ""),
-                extra_dep_keys=[source_step],
-            ),
-            *_workflow_input_reference_refs(input_facts, step, fields),
-        ],
+    dep_refs = [
+        *_workflow_dependency_refs_for_step(
+            step,
+            created_by_step=created_by_step,
+            nodes_by_alias=nodes_by_alias,
+            steps_by_id=steps_by_id,
+            virtual_step_ids=virtual_step_ids,
+            target_node_id=str(node.get("id") or ""),
+            extra_dep_keys=[source_step],
+        ),
+        *_workflow_input_reference_refs(input_facts, step, fields),
+    ]
+    selector_ref_nodes = _workflow_reference_selector_nodes(
+        _workflow_reference_selectors(step, workflow),
+        nodes=records,
+        context=context,
+        template_id=str(template.get("id") or ""),
+        instance_id=instance_id,
+        target_step=step,
     )
+    for dep_node, role in selector_ref_nodes:
+        if _workflow_is_canvas_dependency_record(dep_node):
+            dep_refs.append(_reference_for_dep(dep_node, role))
+    fields = _merge_workflow_dependency_refs(fields, dep_refs)
     if node_type == "text":
         fields["prompt_status"] = "completed"
         await canvas_tools.update_node(str(node["id"]), {"input_data": fields})
