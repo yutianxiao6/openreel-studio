@@ -1,11 +1,13 @@
 """Project service — CRUD and state management."""
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import update as sqlalchemy_update
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -13,6 +15,11 @@ from app.db.models import Project
 
 
 DEFAULT_EPISODE_COUNT = 1
+PROJECT_STATE_UPDATE_MAX_ATTEMPTS = 25
+
+
+class ProjectStateConflictError(RuntimeError):
+    """Raised when optimistic project-state updates cannot converge."""
 
 
 def _initial_state(
@@ -173,29 +180,44 @@ class ProjectService:
     async def update_project_state(
         self, project_id: str, patch: dict[str, Any]
     ) -> Project | None:
-        project = await self.get_project(project_id)
-        if not project:
-            return None
-        # expire stale cache BEFORE reading state_json, otherwise we'll
-        # overwrite state changes committed by tools in separate sessions
-        await self.db.refresh(project, ["state_json"])
-        state = json.loads(project.state_json or "{}")
-        for key, value in patch.items():
-            if "." in key:
-                head, tail = key.split(".", 1)
-                bucket = state.get(head)
-                if not isinstance(bucket, dict):
-                    bucket = {}
-                    state[head] = bucket
-                bucket[tail] = value
-            else:
-                state[key] = value
-        project.state_json = json.dumps(state, ensure_ascii=False)
-        project.updated_at = datetime.utcnow()
-        self.db.add(project)
-        await self.db.commit()
-        await self.db.refresh(project)
-        return project
+        for attempt in range(PROJECT_STATE_UPDATE_MAX_ATTEMPTS):
+            project = await self.db.get(Project, project_id)
+            if not project:
+                return None
+            await self.db.refresh(project, ["state_json"])
+            previous_state_json = project.state_json
+            state = json.loads(previous_state_json or "{}")
+            for key, value in patch.items():
+                if "." in key:
+                    head, tail = key.split(".", 1)
+                    bucket = state.get(head)
+                    if not isinstance(bucket, dict):
+                        bucket = {}
+                        state[head] = bucket
+                    bucket[tail] = value
+                else:
+                    state[key] = value
+            next_state_json = json.dumps(state, ensure_ascii=False)
+            statement = (
+                sqlalchemy_update(Project)
+                .where(Project.id == project_id)
+                .where(Project.state_json == previous_state_json)
+                .values(
+                    state_json=next_state_json,
+                    updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
+                )
+            )
+            result = await self.db.exec(statement)
+            if int(result.rowcount or 0) == 1:
+                await self.db.commit()
+                self.db.expire_all()
+                return await self.db.get(Project, project_id)
+            await self.db.rollback()
+            self.db.expire_all()
+            await asyncio.sleep(min(0.05, 0.001 * (2**attempt)))
+        raise ProjectStateConflictError(
+            f"project state update conflicted after {PROJECT_STATE_UPDATE_MAX_ATTEMPTS} attempts: {project_id}"
+        )
 
     async def delete_project(self, project_id: str) -> bool:
         project = await self.get_project(project_id)
