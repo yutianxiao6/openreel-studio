@@ -47,7 +47,16 @@ def _sequence_spec() -> SequenceSpec:
                 "duration_frames": 36,
                 "source_in_frame": 48,
                 "source_frame_count": 96,
-                "visual_transform": {"fit": "cover", "scale": 1.05},
+                "visual_transform": {
+                    "fit": "cover",
+                    "position_x": 0.1,
+                    "position_y": -0.05,
+                    "scale": 1.05,
+                    "rotation_deg": 5.0,
+                    "opacity": 0.8,
+                    "crop_left": 0.1,
+                    "crop_top": 0.05,
+                },
             },
             {
                 "id": "audio-out",
@@ -157,6 +166,11 @@ def test_compile_sequence_render_plan_includes_frame_transforms_and_audio_mix(tm
     assert "fade=t=in:st=0:d=0.500000000:alpha=1" in plan.filter_complex
     assert "sin(t/0.500000000*PI/2)" in plan.filter_complex
     assert "cos((t-1.250000000)/0.500000000*PI/2)" in plan.filter_complex
+    assert "crop=" in plan.filter_complex
+    assert "rotate=" in plan.filter_complex
+    assert "colorchannelmixer=aa=0.8" in plan.filter_complex
+    assert "+0.1*W" in plan.filter_complex
+    assert "+-0.05*H" in plan.filter_complex
     assert "adelay=60000S:all=1" in plan.filter_complex
     assert "amix=inputs=3:normalize=0" in plan.filter_complex
     assert plan.ffmpeg_args[-1].endswith("render.mp4")
@@ -314,9 +328,11 @@ async def test_exported_silence_and_minus_six_db_have_expected_real_amplitude(mo
         return manifest
 
     unity = await render()
+    plus_six = await render(gain_db=6.0)
     minus_six = await render(gain_db=-6.0)
     silence = await render(muted=True)
 
     assert unity.peak > 0.05
+    assert plus_six.peak / unity.peak == pytest.approx(10 ** (6 / 20), rel=0.04)
     assert minus_six.peak / unity.peak == pytest.approx(10 ** (-6 / 20), rel=0.04)
     assert silence.peak == pytest.approx(0.0, abs=1e-6)

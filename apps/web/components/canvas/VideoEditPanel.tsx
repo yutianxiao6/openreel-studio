@@ -150,7 +150,7 @@ const DEFAULT_TRACK_HEIGHT = 76
 const MIN_TRACK_HEIGHT = 64
 const MAX_TRACK_HEIGHT = 180
 const MIN_CLIP_GAIN_DB = -60
-const MAX_CLIP_GAIN_DB = 0
+const MAX_CLIP_GAIN_DB = 12
 
 const mediaDurationCache = new Map<string, number>()
 const mediaDurationRequests = new Map<string, Promise<number>>()
@@ -707,6 +707,27 @@ function mediaFramesPerSecond(index: VideoEditorMediaIndex | undefined): number 
 
 function gainAmplitude(gainDb: number): number {
   return gainDb <= -120 ? 0 : Math.pow(10, gainDb / 20)
+}
+
+function canRoutePreviewAudio(sourceUrl: string): boolean {
+  if (typeof window === "undefined" || !sourceUrl) return false
+  try {
+    const parsed = new URL(sourceUrl, window.location.href)
+    if (["blob:", "data:"].includes(parsed.protocol) || parsed.origin === window.location.origin) return true
+    const loopbackHosts = new Set(["127.0.0.1", "localhost", "[::1]"])
+    return loopbackHosts.has(parsed.hostname) && loopbackHosts.has(window.location.hostname)
+  } catch {
+    return false
+  }
+}
+
+function previewMediaCrossOrigin(sourceUrl: string): "anonymous" | undefined {
+  if (typeof window === "undefined" || !canRoutePreviewAudio(sourceUrl)) return undefined
+  try {
+    return new URL(sourceUrl, window.location.href).origin === window.location.origin ? undefined : "anonymous"
+  } catch {
+    return undefined
+  }
 }
 
 function timeFromPointer(
@@ -1433,6 +1454,9 @@ export default function VideoEditPanel({
   const transitionProgramCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const transitionOutgoingAudioRef = useRef<HTMLAudioElement | null>(null)
   const transitionIncomingAudioRef = useRef<HTMLAudioElement | null>(null)
+  const previewAudioContextRef = useRef<AudioContext | null>(null)
+  const previewGainNodesRef = useRef(new WeakMap<HTMLMediaElement, GainNode>())
+  const previewGainValuesRef = useRef(new WeakMap<HTMLMediaElement, number>())
   const decodedVideoClockRef = useRef<{ mediaTime: number; observedAt: number } | null>(null)
   const suppressMediaClockUntilRef = useRef(0)
   const sourcePreviewRef = useRef<HTMLVideoElement | null>(null)
@@ -1856,6 +1880,16 @@ export default function VideoEditPanel({
   }, [maxTransitionDuration])
   const updateSelectedVisualTransform = useCallback((patch: Partial<VisualTransformState>) => {
     if (!selectedVideoClip) return
+    if (currentTimeRef.current * framesPerSecond < selectedVideoClip.startFrame ||
+        currentTimeRef.current * framesPerSecond >= clipEndFrame(selectedVideoClip)) {
+      const previewFrame = selectedVideoClip.startFrame + Math.min(
+        Math.max(0, Math.floor(selectedVideoClip.durationFrames / 2)),
+        selectedVideoClip.durationFrames - 1,
+      )
+      const previewTime = previewFrame / framesPerSecond
+      currentTimeRef.current = previewTime
+      setCurrentTime(previewTime)
+    }
     setVideoClips((clips) => clips.map((clip) => (
       clip.clipId === selectedVideoClip.clipId
         ? {
@@ -1864,7 +1898,7 @@ export default function VideoEditPanel({
           }
         : clip
     )))
-  }, [selectedVideoClip])
+  }, [framesPerSecond, selectedVideoClip])
   const resetSelectedVisualTransform = useCallback(() => {
     if (!selectedVideoClip) return
     recordUndoSnapshot()
@@ -2000,6 +2034,58 @@ export default function VideoEditPanel({
     currentVideoClip.syncGroupId &&
     currentVideoClip.syncGroupId === currentAudioClip.syncGroupId,
   )
+  const setPreviewMediaGain = useCallback((element: HTMLMediaElement | null, amplitude: number) => {
+    if (!element) return
+    const safeAmplitude = clamp(amplitude, 0, gainAmplitude(MAX_CLIP_GAIN_DB * 2))
+    previewGainValuesRef.current.set(element, safeAmplitude)
+    const gainNode = previewGainNodesRef.current.get(element)
+    if (gainNode) {
+      gainNode.gain.value = safeAmplitude
+      element.volume = 1
+    } else {
+      element.volume = Math.min(1, safeAmplitude)
+    }
+  }, [])
+  const ensurePreviewAudioGraph = useCallback(async () => {
+    const AudioContextConstructor = window.AudioContext
+    if (!AudioContextConstructor) return
+    let context = previewAudioContextRef.current
+    if (!context || context.state === "closed") {
+      context = new AudioContextConstructor()
+      previewAudioContextRef.current = context
+    }
+    const elements: Array<HTMLMediaElement | null> = [
+      videoRef.current,
+      audioRef.current,
+      transitionOutgoingAudioRef.current,
+      transitionIncomingAudioRef.current,
+    ]
+    for (const element of elements) {
+      if (!element || previewGainNodesRef.current.has(element)) continue
+      const sourceUrl = element.currentSrc || element.src
+      try {
+        if (!canRoutePreviewAudio(sourceUrl)) continue
+        const source = context.createMediaElementSource(element)
+        const gainNode = context.createGain()
+        gainNode.gain.value = previewGainValuesRef.current.get(element) ?? element.volume
+        source.connect(gainNode).connect(context.destination)
+        previewGainNodesRef.current.set(element, gainNode)
+        element.volume = 1
+      } catch {
+        // Cross-origin media without Web Audio permission keeps native volume.
+      }
+    }
+    if (context.state === "suspended") await context.resume()
+  }, [])
+  useEffect(() => () => {
+    const context = previewAudioContextRef.current
+    previewAudioContextRef.current = null
+    if (context && context.state !== "closed") void context.close()
+  }, [])
+  useEffect(() => {
+    if (!playing) return
+    void ensurePreviewAudioGraph()
+  }, [activeAudioTransition?.transition.id, currentAudioItem?.id, currentVideoItem?.id, ensurePreviewAudioGraph, playing])
   const programVideoGap = !currentVideoClip
   const programAudioGap = !currentAudioClip
   const sequenceEndFrame = useMemo(() => (
@@ -2475,10 +2561,10 @@ export default function VideoEditPanel({
     const fadeIn = fadeInFrames > 0 ? Math.min(1, localFrame / fadeInFrames) : 1
     const remainingFrames = Math.max(0, currentAudioClip.durationFrames - localFrame)
     const fadeOut = fadeOutFrames > 0 ? Math.min(1, remainingFrames / fadeOutFrames) : 1
-    const amplitude = Math.min(1, gainAmplitude((currentAudioClip.gainDb || 0) + (currentAudioTrack?.gainDb || 0)) * Math.min(fadeIn, fadeOut))
-    if (videoRef.current && playAudioThroughVideo) videoRef.current.volume = amplitude
-    if (audioRef.current) audioRef.current.volume = amplitude
-  }, [currentAudioClip, currentAudioTrack?.gainDb, currentFrame, playAudioThroughVideo])
+    const amplitude = gainAmplitude((currentAudioClip.gainDb || 0) + (currentAudioTrack?.gainDb || 0)) * Math.min(fadeIn, fadeOut)
+    if (playAudioThroughVideo) setPreviewMediaGain(videoRef.current, amplitude)
+    setPreviewMediaGain(audioRef.current, amplitude)
+  }, [currentAudioClip, currentAudioTrack?.gainDb, currentFrame, playAudioThroughVideo, setPreviewMediaGain])
 
   useEffect(() => {
     const outgoingAudio = transitionOutgoingAudioRef.current
@@ -2497,7 +2583,7 @@ export default function VideoEditPanel({
       const incomingAmplitude = activeAudioTransition.incoming.muted
         ? 0
         : gainAmplitude((activeAudioTransition.incoming.gainDb || 0) + activeAudioTransition.track.gainDb) * activeAudioTransition.incomingPower
-      if (videoRef.current) videoRef.current.volume = Math.min(1, Math.hypot(outgoingAmplitude, incomingAmplitude))
+      setPreviewMediaGain(videoRef.current, Math.hypot(outgoingAmplitude, incomingAmplitude))
       return
     }
     const syncAudio = (
@@ -2521,7 +2607,7 @@ export default function VideoEditPanel({
             ? 0
             : gainAmplitude((activeAudioTransition.incoming.gainDb || 0) + activeAudioTransition.track.gainDb) * activeAudioTransition.incomingPower)
         : 0
-      audio.volume = Math.min(1, audioTransitionSingleSource ? Math.hypot(clipAmplitude, pairedAmplitude) : clipAmplitude)
+      setPreviewMediaGain(audio, audioTransitionSingleSource ? Math.hypot(clipAmplitude, pairedAmplitude) : clipAmplitude)
       if (playing && playbackDirection > 0) {
         if (audio.paused) {
           if (Math.abs((audio.currentTime || 0) - localTime) > 0.15) audio.currentTime = localTime
@@ -2535,7 +2621,7 @@ export default function VideoEditPanel({
     syncAudio(outgoingAudio, activeAudioTransition.outgoing, activeAudioTransition.outgoingPower)
     if (audioTransitionSingleSource) incomingAudio?.pause()
     else syncAudio(incomingAudio, activeAudioTransition.incoming, activeAudioTransition.incomingPower)
-  }, [activeAudioTransition, audioTransitionSingleSource, audioTransitionThroughVideo, currentFrame, framesPerSecond, playbackDirection, playing, sourceFrameCountForClip])
+  }, [activeAudioTransition, audioTransitionSingleSource, audioTransitionThroughVideo, currentFrame, framesPerSecond, playbackDirection, playing, setPreviewMediaGain, sourceFrameCountForClip])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -2613,11 +2699,10 @@ export default function VideoEditPanel({
   useEffect(() => {
     const video = videoRef.current
     const canvas = programCanvasRef.current
-    if (!video || !canvas || currentVideoItem?.type !== "video" || playbackResolution === "full") return
-    const mediaIndex = mediaIndexes[currentVideoItem.id]
-    const factor = playbackResolution === "half" ? 0.5 : 0.25
-    const width = Math.max(16, Math.round((mediaIndex?.width || 1280) * factor))
-    const height = Math.max(16, Math.round((mediaIndex?.height || 720) * factor))
+    if (!video || !canvas || currentVideoItem?.type !== "video") return
+    const factor = playbackResolution === "full" ? 1 : playbackResolution === "half" ? 0.5 : 0.25
+    const width = Math.max(16, Math.round(sequenceSpec.settings.width * factor))
+    const height = Math.max(16, Math.round(sequenceSpec.settings.height * factor))
     canvas.width = width
     canvas.height = height
     const context = canvas.getContext("2d", { alpha: true })
@@ -2662,16 +2747,15 @@ export default function VideoEditPanel({
       if (callbackId) video.cancelVideoFrameCallback(callbackId)
       if (animationFrame) window.cancelAnimationFrame(animationFrame)
     }
-  }, [currentVideoClip?.clipId, currentVideoItem, currentVisualTransform, mediaIndexes, playbackResolution])
+  }, [currentVideoClip?.clipId, currentVideoItem, currentVisualTransform, playbackResolution, sequenceSpec.settings.height, sequenceSpec.settings.width])
 
   useEffect(() => {
     const video = transitionVideoRef.current
     const canvas = transitionProgramCanvasRef.current
-    if (!video || !canvas || transitionVideoItem?.type !== "video" || playbackResolution === "full") return
-    const mediaIndex = mediaIndexes[transitionVideoItem.id]
-    const factor = playbackResolution === "half" ? 0.5 : 0.25
-    const width = Math.max(16, Math.round((mediaIndex?.width || 1280) * factor))
-    const height = Math.max(16, Math.round((mediaIndex?.height || 720) * factor))
+    if (!video || !canvas || transitionVideoItem?.type !== "video") return
+    const factor = playbackResolution === "full" ? 1 : playbackResolution === "half" ? 0.5 : 0.25
+    const width = Math.max(16, Math.round(sequenceSpec.settings.width * factor))
+    const height = Math.max(16, Math.round(sequenceSpec.settings.height * factor))
     canvas.width = width
     canvas.height = height
     const context = canvas.getContext("2d", { alpha: true })
@@ -2704,7 +2788,7 @@ export default function VideoEditPanel({
       if (callbackId) video.cancelVideoFrameCallback(callbackId)
       if (animationFrame) window.cancelAnimationFrame(animationFrame)
     }
-  }, [mediaIndexes, playbackResolution, transitionVideoClip?.clipId, transitionVideoItem, transitionVisualTransform])
+  }, [playbackResolution, sequenceSpec.settings.height, sequenceSpec.settings.width, transitionVideoClip?.clipId, transitionVideoItem, transitionVisualTransform])
 
   const timeToFrame = useCallback((time: number) => (
     Math.max(0, Math.round(time * framesPerSecond))
@@ -2806,6 +2890,7 @@ export default function VideoEditPanel({
     const container = timelineRef.current
     if (!container) return
     event.preventDefault()
+    event.stopPropagation()
     const update = (pointerEvent: PointerEvent | ReactPointerEvent) => {
       seekTo(timeFromPointer(pointerEvent, container, pxPerSecond))
     }
@@ -2830,6 +2915,7 @@ export default function VideoEditPanel({
       setPlaying(false)
       return
     }
+    void ensurePreviewAudioGraph()
     setPlaybackDirection(1)
     const nextStart = playbackEnd > 0 && currentTime >= playbackEnd - 0.02 ? 0 : currentTime
     if (playbackEnd <= 0 || nextStart >= playbackEnd) return
@@ -2838,7 +2924,7 @@ export default function VideoEditPanel({
       setCurrentTime(nextStart)
     }
     setPlaying(true)
-  }, [currentTime, playbackEnd, playing])
+  }, [currentTime, ensurePreviewAudioGraph, playbackEnd, playing])
 
   const shuttlePlayback = useCallback((direction: 1 | -1) => {
     const nextStart = direction > 0 && playbackEnd > 0 && currentTimeRef.current >= playbackEnd - 0.02
@@ -2852,9 +2938,10 @@ export default function VideoEditPanel({
       currentTimeRef.current = nextStart
       setCurrentTime(nextStart)
     }
+    void ensurePreviewAudioGraph()
     setPlaybackDirection(direction)
     setPlaying(true)
-  }, [playbackEnd])
+  }, [ensurePreviewAudioGraph, playbackEnd])
 
   const activeTransitionAudioClockClip = activeAudioTransition?.outgoing
   useEffect(() => {
@@ -3795,6 +3882,7 @@ export default function VideoEditPanel({
     const target = event.target as HTMLElement | null
     const container = timelineRef.current
     if (!container) return
+    if (target?.closest("[data-openreel-playhead]")) return
     const time = timeFromPointer(event, container, pxPerSecond)
     if (target?.closest("[data-openreel-timeline-clip]")) return
     if (target?.closest("[data-openreel-timeline-ruler]")) {
@@ -3874,8 +3962,8 @@ export default function VideoEditPanel({
   const audioConcatIds = audioClips.map((clip) => clip.mediaId).filter((id) => audioItems.some((item) => item.id === id))
   const isBusy = Boolean(busy)
   const previewScaleStyle = previewScale === "fit"
-    ? { height: "min(100%, 280px)", width: "auto", maxWidth: "100%" }
-    : { width: `${previewScale}%`, maxWidth: "640px" }
+    ? { height: "100%", width: "auto", maxWidth: "100%" }
+    : { width: `${previewScale}%`, maxWidth: "960px" }
   const visualTransitionProgress = activeVideoTransition?.progress || 0
   const currentVisualIsIncoming = Boolean(
     activeVideoTransition && currentVideoClip?.clipId === activeVideoTransition.incoming.clipId,
@@ -3979,7 +4067,7 @@ export default function VideoEditPanel({
                 <input
                   type="range"
                   min="-60"
-                  max="0"
+                  max={MAX_CLIP_GAIN_DB}
                   step="0.5"
                   value={track.gainDb}
                   onPointerDown={(event) => {
@@ -4151,7 +4239,7 @@ export default function VideoEditPanel({
         </button>
       </div>
 
-      <div className="grid h-[calc(100%-2rem)] w-full min-w-0 grid-rows-[minmax(220px,36%)_minmax(380px,1fr)] bg-[#111316]">
+      <div className="grid h-[calc(100%-2rem)] w-full min-w-0 grid-rows-[minmax(360px,70%)_minmax(260px,30%)] bg-[#111316]">
         <div className="grid min-h-0 w-full min-w-0 grid-cols-[238px_minmax(420px,1fr)_284px] border-b border-[#34383f] max-xl:grid-cols-[210px_minmax(360px,1fr)_270px] max-lg:grid-cols-1 max-lg:overflow-y-auto">
           <aside data-openreel-media-bin="true" className="flex min-h-0 flex-col border-r border-[#34383f] bg-[#191b1f]">
             <div className="flex h-8 items-end justify-between border-b border-[#34383f] bg-[#202328] px-2.5">
@@ -4247,8 +4335,11 @@ export default function VideoEditPanel({
             </div>
             <div className="flex min-h-0 flex-1 items-center justify-center bg-[#090a0c] p-1.5">
               <div
-                className="relative flex aspect-video max-h-full items-center justify-center overflow-hidden border border-[#292d32] bg-black shadow-[0_0_0_1px_rgba(0,0,0,.8)]"
-                style={previewScaleStyle}
+                className="relative flex max-h-full items-center justify-center overflow-hidden border border-[#292d32] bg-black shadow-[0_0_0_1px_rgba(0,0,0,.8)]"
+                style={{
+                  ...previewScaleStyle,
+                  aspectRatio: `${sequenceSpec.settings.width} / ${sequenceSpec.settings.height}`,
+                }}
                 data-openreel-program-gap={programVideoGap || programAudioGap ? "true" : "false"}
                 data-program-video-gap={programVideoGap ? "true" : "false"}
                 data-program-audio-gap={programAudioGap ? "true" : "false"}
@@ -4290,23 +4381,16 @@ export default function VideoEditPanel({
                       data-openreel-preview-video="true"
                       data-openreel-preview-visual="true"
                       src={currentVideoItem.src || videoUrl}
+                      crossOrigin={previewMediaCrossOrigin(currentVideoItem.src || videoUrl)}
                       muted={audioTransitionThroughVideo
                         ? false
                         : Boolean(activeAudioTransition) || !playAudioThroughVideo || Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)}
                       preload="metadata"
                       className={cn(
                         "object-contain [color-scheme:dark]",
-                        playbackResolution === "full"
-                          ? cn("h-full w-full", activeVideoTransition && "absolute inset-0")
-                          : "pointer-events-none absolute h-px w-px opacity-0",
+                        "pointer-events-none absolute h-px w-px opacity-0",
                       )}
-                      style={playbackResolution === "full"
-                        ? {
-                            ...currentVisualTransformStyle,
-                            zIndex: currentVisualLayerZ,
-                            opacity: currentVisualTransform.opacity * currentVisualLayerOpacity,
-                          }
-                        : { ...currentVisualTransformStyle, opacity: 0 }}
+                      style={{ ...currentVisualTransformStyle, opacity: 0 }}
                       onLoadedMetadata={(event) => {
                         const nextDuration = Number(event.currentTarget.duration || 0)
                         registerSourceDuration(currentVideoItem.src, nextDuration)
@@ -4339,24 +4423,16 @@ export default function VideoEditPanel({
                       preload="metadata"
                       className={cn(
                         "object-contain [color-scheme:dark]",
-                        playbackResolution === "full"
-                          ? "absolute inset-0 h-full w-full"
-                          : "pointer-events-none absolute h-px w-px opacity-0",
+                        "pointer-events-none absolute h-px w-px opacity-0",
                       )}
-                      style={playbackResolution === "full"
-                        ? {
-                            ...visualTransformStyle(transitionVisualTransform),
-                            zIndex: transitionVisualLayerZ,
-                            opacity: transitionVisualTransform.opacity * transitionVisualLayerOpacity,
-                          }
-                        : { opacity: 0 }}
+                      style={{ opacity: 0 }}
                       data-openreel-transition-video="true"
                       data-transition-layer={transitionVisualIsIncoming ? "incoming" : "outgoing"}
                       data-transition-layer-opacity={transitionVisualLayerOpacity.toFixed(4)}
                     />
                   )
                 )}
-                {currentVideoItem?.type === "video" && playbackResolution !== "full" && (
+                {currentVideoItem?.type === "video" && (
                   <canvas
                     ref={programCanvasRef}
                     data-openreel-program-canvas="true"
@@ -4365,7 +4441,7 @@ export default function VideoEditPanel({
                     style={{ zIndex: currentVisualLayerZ, opacity: currentVisualLayerOpacity }}
                   />
                 )}
-                {transitionVideoItem?.type === "video" && playbackResolution !== "full" && (
+                {transitionVideoItem?.type === "video" && (
                   <canvas
                     ref={transitionProgramCanvasRef}
                     data-openreel-transition-program-canvas="true"
@@ -4379,7 +4455,7 @@ export default function VideoEditPanel({
                 )}
               </div>
               {currentAudioItem && !playAudioThroughVideo && !activeAudioTransition && (
-                <audio data-openreel-preview-audio="true" ref={audioRef} src={currentAudioItem.src} preload="metadata" muted={Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)} />
+                <audio data-openreel-preview-audio="true" ref={audioRef} src={currentAudioItem.src} crossOrigin={previewMediaCrossOrigin(currentAudioItem.src)} preload="metadata" muted={Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)} />
               )}
               {activeAudioTransition?.outgoingItem && !audioTransitionThroughVideo && (
                 <audio
@@ -4392,6 +4468,7 @@ export default function VideoEditPanel({
                     : activeAudioTransition.outgoingPower).toFixed(4)}
                   ref={transitionOutgoingAudioRef}
                   src={activeAudioTransition.outgoingItem.src}
+                  crossOrigin={previewMediaCrossOrigin(activeAudioTransition.outgoingItem.src)}
                   preload="metadata"
                 />
               )}
@@ -4401,6 +4478,7 @@ export default function VideoEditPanel({
                   data-transition-gain={activeAudioTransition.incomingPower.toFixed(4)}
                   ref={transitionIncomingAudioRef}
                   src={activeAudioTransition.incomingItem.src}
+                  crossOrigin={previewMediaCrossOrigin(activeAudioTransition.incomingItem.src)}
                   preload="metadata"
                 />
               )}
@@ -5096,7 +5174,7 @@ export default function VideoEditPanel({
                     <input
                       type="range"
                       min="-60"
-                      max="0"
+                      max={MAX_CLIP_GAIN_DB}
                       step="0.5"
                       value={selectedAudioClip.gainDb || 0}
                       onPointerDown={recordUndoSnapshot}
@@ -5341,11 +5419,13 @@ export default function VideoEditPanel({
 
             <div
               ref={playheadRef}
-              className="absolute bottom-0 top-0 z-30 w-px cursor-ew-resize bg-[#ff4d4f] shadow-[0_0_0_1px_rgba(255,77,79,.18)]"
+              data-openreel-playhead="true"
+              className="absolute bottom-0 top-0 z-50 w-3 -translate-x-1/2 touch-none cursor-ew-resize"
               style={{ left: TRACK_LABEL_WIDTH + currentTime * pxPerSecond }}
               onPointerDown={beginPlayheadDrag}
             >
-              <div className="-ml-[4px] h-0 w-0 border-l-[4px] border-r-[4px] border-t-[7px] border-l-transparent border-r-transparent border-t-[#ff4d4f]" />
+              <div className="pointer-events-none absolute bottom-0 left-1/2 top-0 w-px -translate-x-1/2 bg-[#ff4d4f] shadow-[0_0_0_1px_rgba(255,77,79,.18)]" />
+              <div className="pointer-events-none absolute left-1/2 top-0 h-0 w-0 -translate-x-1/2 border-l-[4px] border-r-[4px] border-t-[7px] border-l-transparent border-r-transparent border-t-[#ff4d4f]" />
             </div>
             </div>
           </div>
