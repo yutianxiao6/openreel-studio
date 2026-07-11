@@ -48,6 +48,18 @@
           "main.py",
           "plugin.json"
         ]
+      },
+      {
+        "from": "../../config/image_provider_protocols",
+        "to": "defaults/config/image_provider_protocols"
+      },
+      {
+        "from": "../../config/video_provider_protocols",
+        "to": "defaults/config/video_provider_protocols"
+      },
+      {
+        "from": "../../config/audio_provider_protocols",
+        "to": "defaults/config/audio_provider_protocols"
       }
     ],
     "win": {

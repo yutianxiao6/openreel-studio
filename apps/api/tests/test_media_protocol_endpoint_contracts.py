@@ -27,6 +27,65 @@ CATALOG_PROTOCOLS = [
 ]
 
 
+@pytest.mark.parametrize(
+    ("kind", "api_format", "catalog_dir", "param_name", "protocol_id", "version"),
+    [
+        (
+            "image",
+            "image_http_v1",
+            "image_provider_protocols",
+            "image_protocol_id",
+            "test-image",
+            "openreel.image_provider_catalog.v1",
+        ),
+        (
+            "video",
+            "video_http_v1",
+            "video_provider_protocols",
+            "video_protocol_id",
+            "test-video",
+            "openreel.video_provider_catalog.v1",
+        ),
+        (
+            "audio",
+            "audio_http_v1",
+            "audio_provider_protocols",
+            "audio_protocol_id",
+            "test-audio",
+            "openreel.audio_provider_catalog.v1",
+        ),
+    ],
+)
+def test_media_provider_schema_reads_catalog_from_runtime_project_root(
+    monkeypatch,
+    tmp_path,
+    kind: str,
+    api_format: str,
+    catalog_dir: str,
+    param_name: str,
+    protocol_id: str,
+    version: str,
+) -> None:
+    catalog_path = tmp_path / "config" / catalog_dir / "catalog.json"
+    catalog_path.parent.mkdir(parents=True)
+    catalog_path.write_text(
+        json.dumps({"version": version, "protocols": {protocol_id: {"id": protocol_id}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+
+    entry = MediaProviderEntry(
+        kind=kind,
+        name=f"runtime-root-{kind}",
+        base_url="https://example.test/v1",
+        model_name="test-model",
+        api_format=api_format,
+        params={param_name: protocol_id},
+    )
+
+    assert entry.params[param_name] == protocol_id
+
+
 def _protocol(loader, protocol_id: str) -> dict:
     protocol, error = loader(protocol_id)
     assert error is None

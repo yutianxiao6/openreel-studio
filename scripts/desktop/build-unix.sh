@@ -111,6 +111,25 @@ if [[ ! -f "$api_stage/openreel-api" ]]; then
   exit 1
 fi
 
+step "Smoke-test packaged API resources"
+smoke_root="$(mktemp -d)"
+if ! OPENREEL_USER_DATA_DIR="$smoke_root" \
+  PROJECT_ROOT="$smoke_root" \
+  OPENREEL_PACKAGING_SMOKE=1 \
+  "$api_stage/openreel-api"; then
+  rm -rf "$smoke_root"
+  echo "Packaged API smoke test failed." >&2
+  exit 1
+fi
+for protocol_dir_name in image_provider_protocols video_provider_protocols audio_provider_protocols; do
+  if [[ ! -f "$smoke_root/config/$protocol_dir_name/catalog.json" ]]; then
+    rm -rf "$smoke_root"
+    echo "Packaged protocol catalog was not installed: config/$protocol_dir_name/catalog.json" >&2
+    exit 1
+  fi
+done
+rm -rf "$smoke_root"
+
 step "Build $target desktop package"
 pnpm --filter desktop "package:$target"
 

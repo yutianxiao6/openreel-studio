@@ -16,6 +16,15 @@ datas = [
 ]
 datas += collect_data_files("litellm")
 
+for protocol_dir_name in (
+    "image_provider_protocols",
+    "video_provider_protocols",
+    "audio_provider_protocols",
+):
+    protocol_dir = ROOT / "config" / protocol_dir_name
+    if protocol_dir.exists():
+        datas.append((str(protocol_dir), f"defaults/config/{protocol_dir_name}"))
+
 KEYFRAME_PLUGIN_DIR = ROOT / "plugins" / "keyframe-extractor"
 for plugin_file in ("main.py", "plugin.json"):
     path = KEYFRAME_PLUGIN_DIR / plugin_file
@@ -44,6 +53,10 @@ hiddenimports = [
     "uvicorn.loops.auto",
 ]
 hiddenimports += collect_submodules("tiktoken_ext")
+hiddenimports += collect_submodules("app.agent.prompts")
+hiddenimports += collect_submodules("app.prompts")
+hiddenimports.append("app.agent.workflow_spec_prompt_contract")
+hiddenimports = sorted(set(hiddenimports))
 
 a = Analysis(
     [str(API_DIR / "app" / "desktop_server.py")],

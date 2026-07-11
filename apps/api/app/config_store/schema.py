@@ -16,13 +16,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 def _project_root() -> Path:
+    runtime_root = os.getenv("PROJECT_ROOT", "").strip()
+    if runtime_root:
+        return Path(runtime_root).expanduser().resolve()
     return Path(__file__).resolve().parents[4]
 
 
 def _protocol_catalog_path(env_name: str, relative_path: str) -> Path:
     override = os.getenv(env_name, "").strip()
     if override:
-        return Path(override).expanduser()
+        path = Path(override).expanduser()
+        return path if path.is_absolute() else _project_root() / path
     return _project_root() / relative_path
 
 

@@ -8,6 +8,20 @@ from pathlib import Path
 import uvicorn
 
 
+def _copy_missing_directory_entries(source_root: Path, target_root: Path) -> None:
+    if not source_root.exists() or not source_root.is_dir():
+        return
+    target_root.mkdir(parents=True, exist_ok=True)
+    for item in source_root.iterdir():
+        destination = target_root / item.name
+        if item.is_dir():
+            if destination.exists() and not destination.is_dir():
+                continue
+            _copy_missing_directory_entries(item, destination)
+        elif not destination.exists():
+            shutil.copy2(item, destination)
+
+
 def _default_user_data_dir() -> Path:
     if os.environ.get("OPENREEL_DESKTOP") == "1":
         return Path.cwd()
@@ -48,20 +62,12 @@ def _ensure_desktop_env() -> None:
     bundled_defaults = Path(getattr(sys, "_MEIPASS", "")) / "defaults"
     if bundled_defaults.exists():
         for name, target in (
+            ("config", config_dir),
             ("plugins", plugins_dir),
             ("workflow_templates", workflow_templates_dir),
         ):
             source = bundled_defaults / name
-            if not source.exists():
-                continue
-            for item in source.iterdir():
-                destination = target / item.name
-                if destination.exists():
-                    continue
-                if item.is_dir():
-                    shutil.copytree(item, destination)
-                else:
-                    shutil.copy2(item, destination)
+            _copy_missing_directory_entries(source, target)
 
     os.environ.setdefault("APP_ENV", "desktop")
     os.environ.setdefault("APP_HOST", "127.0.0.1")
@@ -75,8 +81,47 @@ def _ensure_desktop_env() -> None:
     )
 
 
+def _run_packaging_smoke() -> None:
+    from app.agent.prompt_assembler import PromptContext, assemble_split_result
+    from app.agent.workflow_spec_prompt_contract import AUTHORING_SPEC_GUIDE
+    from app.config_store.schema import MediaProviderEntry
+
+    if not AUTHORING_SPEC_GUIDE.strip():
+        raise RuntimeError("workflow spec prompt contract is empty")
+    workflow_prompt = assemble_split_result(
+        PromptContext(
+            project_id="packaging-smoke",
+            user_message="检查工作流构建提示词",
+            state={},
+            collaboration_mode="workflow_build",
+        )
+    )
+    if "Workflow Build Mode" not in workflow_prompt.system:
+        raise RuntimeError("workflow build prompt was not assembled")
+
+    samples = (
+        ("image", "image_http_v1", "image_protocol_id", "openai_images_generations"),
+        ("video", "video_http_v1", "video_protocol_id", "seedance_2_0"),
+        ("audio", "audio_http_v1", "audio_protocol_id", "openai_audio_speech"),
+    )
+    for kind, api_format, param_name, protocol_id in samples:
+        MediaProviderEntry(
+            kind=kind,
+            name=f"packaging-smoke-{kind}",
+            base_url="https://example.test/v1",
+            model_name="packaging-smoke-model",
+            api_format=api_format,
+            params={param_name: protocol_id},
+        )
+
+    print("OpenReel desktop packaging smoke passed", flush=True)
+
+
 def main() -> None:
     _ensure_desktop_env()
+    if os.environ.get("OPENREEL_PACKAGING_SMOKE") == "1":
+        _run_packaging_smoke()
+        return
     from app.main import app
 
     host = os.environ.get("APP_HOST", "127.0.0.1")

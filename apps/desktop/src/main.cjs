@@ -62,10 +62,17 @@ function copyMissingDirectoryEntries(sourceRoot, targetRoot) {
   for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
     const source = path.join(sourceRoot, entry.name);
     const target = path.join(targetRoot, entry.name);
+    if (entry.isDirectory()) {
+      if (fs.existsSync(target) && !fs.statSync(target).isDirectory()) {
+        continue;
+      }
+      copyMissingDirectoryEntries(source, target);
+      continue;
+    }
     if (fs.existsSync(target)) {
       continue;
     }
-    fs.cpSync(source, target, { recursive: true });
+    fs.copyFileSync(source, target);
   }
 }
 
@@ -306,6 +313,7 @@ function desktopDirs() {
     skillReview: path.join(skills, "review"),
   };
   Object.values(dirs).forEach(mkdirp);
+  copyMissingDirectoryEntries(bundledDefaultRoot("config"), dirs.config);
   copyMissingDirectoryEntries(bundledDefaultRoot("plugins"), dirs.plugins);
   copyMissingDirectoryEntries(bundledDefaultRoot("workflow_templates"), dirs.workflowTemplates);
   app.setPath("userData", dirs.userData);

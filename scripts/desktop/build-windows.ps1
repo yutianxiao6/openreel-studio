@@ -86,6 +86,32 @@ try {
     throw "Staged API executable was not found under apps\desktop\dist\resources\api\openreel-api."
   }
 
+  $SmokeRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("openreel-packaging-smoke-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $SmokeRoot | Out-Null
+  $PreviousUserDataDir = $env:OPENREEL_USER_DATA_DIR
+  $PreviousProjectRoot = $env:PROJECT_ROOT
+  $PreviousPackagingSmoke = $env:OPENREEL_PACKAGING_SMOKE
+  try {
+    $env:OPENREEL_USER_DATA_DIR = $SmokeRoot
+    $env:PROJECT_ROOT = $SmokeRoot
+    $env:OPENREEL_PACKAGING_SMOKE = "1"
+    Invoke-Native "Smoke-test packaged API resources" (Join-Path $ApiStage "openreel-api.exe") @()
+    foreach ($ProtocolDirName in @("image_provider_protocols", "video_provider_protocols", "audio_provider_protocols")) {
+      $CatalogPath = Join-Path $SmokeRoot "config\$ProtocolDirName\catalog.json"
+      if (-not (Test-Path $CatalogPath)) {
+        throw "Packaged protocol catalog was not installed: config\$ProtocolDirName\catalog.json"
+      }
+    }
+  }
+  finally {
+    $env:OPENREEL_USER_DATA_DIR = $PreviousUserDataDir
+    $env:PROJECT_ROOT = $PreviousProjectRoot
+    $env:OPENREEL_PACKAGING_SMOKE = $PreviousPackagingSmoke
+    if (Test-Path $SmokeRoot) {
+      Remove-Item $SmokeRoot -Recurse -Force
+    }
+  }
+
   Invoke-Native "Build Windows NSIS installer" "pnpm" @("--filter", "desktop", "package:win")
 
   Write-Step "Installer output"
