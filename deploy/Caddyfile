@@ -1,29 +1,77 @@
-https://:3000 {
-	tls /etc/caddy/certs/server.crt /etc/caddy/certs/server.key
+{
+	auto_https disable_redirects
+}
 
+:3000 {
 	handle /favicon.ico {
 		header Cache-Control "public, max-age=300"
-		rewrite * /studio/favicon.ico
+		reverse_proxy web:3000
+	}
+	handle /studio/favicon.ico {
+		header Cache-Control "public, max-age=300"
+		rewrite * /favicon.ico
 		reverse_proxy web:3000
 	}
 
 	handle /icon.png {
 		header Cache-Control "public, max-age=300"
-		rewrite * /studio/icon.png
+		reverse_proxy web:3000
+	}
+	handle /studio/icon.png {
+		header Cache-Control "public, max-age=300"
+		rewrite * /icon.png
 		reverse_proxy web:3000
 	}
 
 	handle /apple-icon.png {
 		header Cache-Control "public, max-age=300"
-		rewrite * /studio/apple-icon.png
+		reverse_proxy web:3000
+	}
+	handle /studio/apple-icon.png {
+		header Cache-Control "public, max-age=300"
+		rewrite * /apple-icon.png
 		reverse_proxy web:3000
 	}
 
 	@public_media {
 		method GET HEAD
-		path /studio/api/media/* /studio/api/uploads/*
+		path /api/media/* /api/uploads/* /studio/api/media/* /studio/api/uploads/*
 	}
 	handle @public_media {
+		uri strip_prefix /studio
+		reverse_proxy api:8000 {
+			transport http {
+				read_timeout 10m
+			}
+		}
+	}
+
+	handle /api {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
+		reverse_proxy api:8000 {
+			transport http {
+				read_timeout 10m
+			}
+		}
+	}
+
+	handle /api/* {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
+		reverse_proxy api:8000 {
+			transport http {
+				read_timeout 10m
+			}
+		}
+	}
+
+	handle /studio/api {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
 		uri strip_prefix /studio
 		reverse_proxy api:8000 {
 			transport http {
@@ -42,6 +90,138 @@ https://:3000 {
 				read_timeout 10m
 			}
 		}
+	}
+
+	handle /studio {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
+		uri strip_prefix /studio
+		reverse_proxy web:3000
+	}
+
+	handle /studio/* {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
+		uri strip_prefix /studio
+		reverse_proxy web:3000
+	}
+
+	handle {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
+		reverse_proxy web:3000
+	}
+}
+
+https://:3000 {
+	tls /etc/caddy/certs/server.crt /etc/caddy/certs/server.key
+
+	handle /favicon.ico {
+		header Cache-Control "public, max-age=300"
+		reverse_proxy web:3000
+	}
+	handle /studio/favicon.ico {
+		header Cache-Control "public, max-age=300"
+		rewrite * /favicon.ico
+		reverse_proxy web:3000
+	}
+
+	handle /icon.png {
+		header Cache-Control "public, max-age=300"
+		reverse_proxy web:3000
+	}
+	handle /studio/icon.png {
+		header Cache-Control "public, max-age=300"
+		rewrite * /icon.png
+		reverse_proxy web:3000
+	}
+
+	handle /apple-icon.png {
+		header Cache-Control "public, max-age=300"
+		reverse_proxy web:3000
+	}
+	handle /studio/apple-icon.png {
+		header Cache-Control "public, max-age=300"
+		rewrite * /apple-icon.png
+		reverse_proxy web:3000
+	}
+
+	@public_media {
+		method GET HEAD
+		path /api/media/* /api/uploads/* /studio/api/media/* /studio/api/uploads/*
+	}
+	handle @public_media {
+		uri strip_prefix /studio
+		reverse_proxy api:8000 {
+			transport http {
+				read_timeout 10m
+			}
+		}
+	}
+
+	handle /api {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
+		reverse_proxy api:8000 {
+			transport http {
+				read_timeout 10m
+			}
+		}
+	}
+
+	handle /api/* {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
+		reverse_proxy api:8000 {
+			transport http {
+				read_timeout 10m
+			}
+		}
+	}
+
+	handle /studio/api {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
+		uri strip_prefix /studio
+		reverse_proxy api:8000 {
+			transport http {
+				read_timeout 10m
+			}
+		}
+	}
+
+	handle /studio/api/* {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
+		uri strip_prefix /studio
+		reverse_proxy api:8000 {
+			transport http {
+				read_timeout 10m
+			}
+		}
+	}
+
+	handle /studio {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
+		uri strip_prefix /studio
+		reverse_proxy web:3000
+	}
+
+	handle /studio/* {
+		basic_auth {
+			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
+		}
+		uri strip_prefix /studio
+		reverse_proxy web:3000
 	}
 
 	handle {
