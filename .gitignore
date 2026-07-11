@@ -51,6 +51,8 @@ data/transcripts/
 data/agent_traces/
 data/tool_results/
 data/prompt_dumps/
+data/timeline_thumbnails/
+data/video_editor_cache/
 data/projects/
 data/e2e_*/
 data/tasks/

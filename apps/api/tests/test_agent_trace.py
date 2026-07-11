@@ -162,6 +162,37 @@ def test_prompt_dump_full_mode_writes_complete_request_each_iteration(tmp_path, 
     assert record["api_request"]["messages"][1] == {"role": "user", "content": "hi"}
 
 
+def test_prompt_dump_metadata_mode_omits_user_and_prompt_content(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DRAMA_PROMPT_DUMP_ENABLED", "1")
+    monkeypatch.setenv("DRAMA_PROMPT_DUMP_INCLUDE_CONTENT", "0")
+    monkeypatch.setenv("DRAMA_PROMPT_DUMP_FULL", "1")
+    monkeypatch.setattr(prompt_dump, "_DUMP_ROOT", tmp_path)
+
+    prompt_dump.dump_llm_request(
+        project_id="project-1",
+        run_id="run-metadata",
+        iteration=0,
+        system="private system prompt",
+        messages=[{"role": "user", "content": "private user request"}],
+        tools=[{"function": {"name": "node__create", "description": "private schema"}}],
+        user_message="private user request",
+        prompt_assembly={"cache_key": "cache-1", "sections": []},
+    )
+
+    path = tmp_path / "project-1" / "run-metadata.jsonl"
+    record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert record["dump_mode"] == "metadata"
+    assert record["tool_names"] == ["node__create"]
+    assert record["token_estimate"]["total_input_tokens"] > 0
+    assert record["prompt_assembly"]["cache_key"] == "cache-1"
+    assert "user_message" not in record
+    assert "system" not in record
+    assert "messages" not in record
+    assert "tools" not in record
+    assert "api_request" not in record
+    assert "private user request" not in path.read_text(encoding="utf-8")
+
+
 def test_prompt_dump_after_full_reset_contains_only_reset_visible_context(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DRAMA_PROMPT_DUMP_ENABLED", "1")
     monkeypatch.setattr(prompt_dump, "_DUMP_ROOT", tmp_path)

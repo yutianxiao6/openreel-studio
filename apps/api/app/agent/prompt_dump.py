@@ -36,6 +36,11 @@ def _truthy_env(name: str) -> bool:
     return os.getenv(name, "").lower() in {"1", "true", "yes", "on"}
 
 
+def _content_enabled() -> bool:
+    value = os.getenv("DRAMA_PROMPT_DUMP_INCLUDE_CONTENT")
+    return True if value is None else value.lower() in {"1", "true", "yes", "on"}
+
+
 def _redact(value: Any) -> Any:
     value = redact_image_data_urls(value)
     if isinstance(value, dict):
@@ -55,10 +60,10 @@ def _redact(value: Any) -> Any:
     return value
 
 
-def _prune_old_dumps(out_dir: Path) -> None:
+def _prune_old_dumps(root: Path) -> None:
     keep_days = max(1, int(os.getenv("DRAMA_PROMPT_DUMP_RETENTION_DAYS", "7")))
     cutoff = datetime.now() - timedelta(days=keep_days)
-    for path in out_dir.glob("*.jsonl"):
+    for path in root.glob("*/*.jsonl"):
         try:
             if datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
                 path.unlink()
@@ -124,10 +129,12 @@ def dump_llm_request(
     # DRAMA_PROMPT_DUMP_FULL=true 时每轮都写完整 tools 和 API 顺序 messages,
     # 临时用于排查 provider prompt-cache 前缀断点。
     try:
-        full_dump = _truthy_env("DRAMA_PROMPT_DUMP_FULL")
-        out_dir = prompt_dumps_root() / project_id
+        include_content = _content_enabled()
+        full_dump = include_content and _truthy_env("DRAMA_PROMPT_DUMP_FULL")
+        dump_root = prompt_dumps_root()
+        out_dir = dump_root / project_id
         out_dir.mkdir(parents=True, exist_ok=True)
-        _prune_old_dumps(out_dir)
+        _prune_old_dumps(dump_root)
         path = out_dir / f"{run_id}.jsonl"
 
         if full_dump or iteration == 0:
@@ -136,17 +143,13 @@ def dump_llm_request(
             tools_payload = [t.get("function", {}).get("name", "?") for t in tools]
         api_messages = [{"role": "system", "content": system}, *messages] if system else list(messages)
 
-        record = {
+        record: dict[str, Any] = {
             "ts": datetime.now().isoformat(timespec="milliseconds"),
             "iteration": iteration,
-            "dump_mode": "full" if full_dump else "compact",
-            "user_message": _redact(user_message),
+            "dump_mode": "full" if full_dump else "compact" if include_content else "metadata",
             "system_len": len(system or ""),
             "messages_count": len(messages),
             "tools_count": len(tools),
-            "system": _redact(system),
-            "messages": _redact(messages),
-            "tools": _redact(tools_payload),
             "token_estimate": {
                 "system_tokens": _estimate_text_tokens(system or ""),
                 "messages_tokens": _estimate_payload_tokens(messages),
@@ -159,6 +162,19 @@ def dump_llm_request(
                 **_section_token_estimates(prompt_assembly),
             },
         }
+        if include_content:
+            record.update({
+                "user_message": _redact(user_message),
+                "system": _redact(system),
+                "messages": _redact(messages),
+                "tools": _redact(tools_payload),
+            })
+        else:
+            record["tool_names"] = [
+                tool.get("function", {}).get("name", "?")
+                for tool in tools
+                if isinstance(tool, dict)
+            ]
         if full_dump:
             record["api_request"] = _redact({
                 "messages": api_messages,
