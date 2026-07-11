@@ -154,6 +154,25 @@ def _normalize_inputs(value: Any) -> tuple[list[dict[str, Any]], list[str]]:
     return inputs, required
 
 
+def _input_refs(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {
+            match.group(1)
+            for match in re.finditer(r"{{\s*inputs\.([A-Za-z_][A-Za-z0-9_]*)", value)
+        }
+    if isinstance(value, dict):
+        result: set[str] = set()
+        for item in value.values():
+            result.update(_input_refs(item))
+        return result
+    if isinstance(value, list):
+        result = set()
+        for item in value:
+            result.update(_input_refs(item))
+        return result
+    return set()
+
+
 def _prompt_section(value: Any) -> str:
     if value in (None, "", [], {}):
         return ""
@@ -931,6 +950,11 @@ def compile_authoring_workflow(raw: dict[str, Any]) -> dict[str, Any]:
     steps = raw.get("steps")
     if not isinstance(steps, list) or not steps:
         raise WorkflowAuthoringSpecError("authoring workflow requires steps")
+    undeclared_inputs = sorted(_input_refs(steps) - {str(item.get("id") or "") for item in inputs})
+    if undeclared_inputs:
+        raise WorkflowAuthoringSpecError(
+            "Authoring workflow references undeclared inputs: " + ", ".join(undeclared_inputs)
+        )
     compiled: dict[str, Any] = {
         "id": workflow_id,
         "name": str(raw.get("name") or raw.get("title") or workflow_id).strip(),

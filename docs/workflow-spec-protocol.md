@@ -75,6 +75,11 @@ the canonical authoring form.
 - `ui`: optional user-facing display hints.
 - `fields`: optional node fields for generated canvas nodes.
 
+Every `{{inputs.id}}` reference used by a prompt or media field must be declared
+in the workflow root `inputs`. Requested inputs must not be omitted merely
+because their values will be supplied at runtime; authoring compilation rejects
+undeclared input references.
+
 ## Prompt Sections
 
 `prompt` may use these keys:

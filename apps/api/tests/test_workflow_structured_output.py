@@ -207,6 +207,20 @@ def test_authoring_vision_context_requires_root_capability() -> None:
         })
 
 
+def test_authoring_rejects_undeclared_input_references() -> None:
+    with pytest.raises(WorkflowAuthoringSpecError, match="references undeclared inputs: visual_style"):
+        compile_authoring_workflow({
+            "schema": "openreel.workflow.authoring.v1",
+            "id": "missing_input_schema",
+            "inputs": [{"id": "topic", "type": "string"}],
+            "steps": [{
+                "id": "image",
+                "kind": "image",
+                "prompt_template": "为 {{inputs.topic}} 生成 {{inputs.visual_style}} 图片。",
+            }],
+        })
+
+
 def test_authoring_context_refs_reject_dynamic_selector_shape() -> None:
     with pytest.raises(WorkflowAuthoringSpecError, match="Dynamic image selectors belong in references"):
         compile_authoring_workflow({
@@ -251,6 +265,7 @@ def test_authoring_top_level_media_values_normalize_into_runtime_fields() -> Non
     compiled = compile_authoring_workflow({
         "schema": "openreel.workflow.authoring.v1",
         "id": "top_level_media_values",
+        "inputs": [{"id": "duration", "type": "number", "required": True}],
         "steps": [{
             "id": "video",
             "kind": "video",

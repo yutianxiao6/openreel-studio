@@ -96,6 +96,8 @@ def test_workflow_build_prompt_uses_dedicated_cached_prefix() -> None:
     assert "Canonical fixed + dynamic pattern" in result.system
     assert "Collections declare every later-read field" in result.system
     assert "Media carries its own prompt" in result.system
+    assert "Declare every `{{inputs.id}}`" in result.system
+    assert "Invalid: undeclared input" in result.system
     assert "core.vision_context" in result.system
     assert "Dynamic images use `references`, never `context_refs`" in result.system
     assert "never its media child" in result.system

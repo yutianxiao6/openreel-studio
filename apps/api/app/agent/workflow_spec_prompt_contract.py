@@ -192,7 +192,7 @@ AUTHORING_SPEC_EXAMPLE_JSON = json.dumps(
 AUTHORING_SPEC_GUIDE = """\
 ## Authoring Spec: exact rules
 
-- Schema is `openreel.workflow.authoring.v1`; prompts read `{{inputs.id}}` and `{{step.output}}`. `needs` ids are upstream top-level steps/groups or earlier siblings.
+- Schema is `openreel.workflow.authoring.v1`. Declare every `{{inputs.id}}` in root `inputs`; never omit requested/referenced inputs. `needs` ids are upstream steps/groups or earlier siblings.
 - Collections declare every later-read field in `output_schema` (`type:"collection"`, `items_key:"items"`, `fields`). Dimensions source `steps.<collection>.output.items`; repeats set `foreach.dimension`/`item_name`.
 - Media carries its own prompt; never author hidden `*_prompt`. Media options exist only in `fields` and use `duration_seconds`, never `duration`, `settings`, or top-level keys.
 
@@ -203,12 +203,12 @@ AUTHORING_SPEC_GUIDE = """\
 - Dynamic images use `references`, never `context_refs`. All keys are required: `from_group`, `source_step`, `source_path`, `match_fields`, `role`. The group is the candidate image loop; source is an earlier current-loop selector, never its media child; path is normally `output.selected_ids`; match fields are non-empty strings such as `["asset_id"]`. Put selector and group in `needs`.
 - If ids only exist on the loop item, add a plan/text step that copies them to declared `selected_ids`. If LLM and generator both need a source, author both roles; compilation separates them.
 
-Invalid: selector in `context_refs`; path missing `output.`; object `match_fields`; missing dependency/capability; media options outside `fields`; manual media prompt sibling.
+Invalid: undeclared input; selector in `context_refs`; path missing `output.`; object `match_fields`; missing dependency/capability; options outside `fields`; manual prompt sibling.
 
 ## Canonical fixed + dynamic pattern
 ```json
 """ + AUTHORING_SPEC_EXAMPLE_JSON + """
 ```
 
-Before apply_patch verify ids/dependencies, schema fields, dimensions, five selector keys, both roles, and media fields. Ready only when `workflow.canvas.inspect` expands samples with no issues and expected final outputs.
+Before apply_patch verify inputs, ids/dependencies, schema fields, dimensions, selectors, roles, and media fields. Ready only when inspect expands samples without issues.
 """
