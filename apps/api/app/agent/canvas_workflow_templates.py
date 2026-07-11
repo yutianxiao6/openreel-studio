@@ -1022,6 +1022,13 @@ def _expand_repeat_groups(
                     if str(dep).strip()
                 ]
                 rewritten_deps = [local_id_map.get(dep, dep) for dep in child_deps]
+                inherited_control_deps = [
+                    local_id_map.get(dep, dep)
+                    for dep in _dependency_keys(
+                        expanded_child.get("_control_depends_on"),
+                        label=f"{template_child_id}._control_depends_on",
+                    )
+                ]
                 previous_deps = [
                     previous_local_id_map[dep]
                     for dep in _dependency_keys(
@@ -1031,6 +1038,11 @@ def _expand_repeat_groups(
                     if dep in previous_local_id_map
                 ]
                 expanded_child["depends_on"] = _unique_nonempty_strings([*group_deps, *rewritten_deps, *previous_deps])
+                expanded_child["_control_depends_on"] = _unique_nonempty_strings([
+                    *group_deps,
+                    *inherited_control_deps,
+                    *previous_deps,
+                ])
                 expanded_child.setdefault("role", "instance_step")
                 expanded_child.setdefault("repeat", deepcopy(repeat))
                 if group.get("foreach") not in (None, "", [], {}):

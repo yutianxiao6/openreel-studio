@@ -736,6 +736,36 @@ async def _workflow_inputs_with_saved_values(
     return merged
 
 
+async def _workflow_instance_template_mismatch_error(
+    *,
+    project_id: str,
+    instance_id: str,
+    template_id: str,
+) -> dict[str, Any] | None:
+    target_instance_id = str(instance_id or "").strip()
+    target_template_id = str(template_id or "").strip()
+    if not target_instance_id or not target_template_id:
+        return None
+    state = await _read_project_state(project_id)
+    runtime = _workflow_runtime_state(state)
+    instances = runtime.get("instances") if isinstance(runtime.get("instances"), dict) else {}
+    instance = instances.get(target_instance_id)
+    if not isinstance(instance, dict):
+        return None
+    existing_template_id = str(instance.get("template_id") or "").strip()
+    if not existing_template_id or existing_template_id == target_template_id:
+        return None
+    return {
+        "ok": False,
+        "error": "The selected workflow instance belongs to a different template. Refresh the workflow instance selection and run again.",
+        "error_kind": "workflow_instance_template_mismatch",
+        "project_id": project_id,
+        "instance_id": target_instance_id,
+        "template_id": target_template_id,
+        "instance_template_id": existing_template_id,
+    }
+
+
 def _workflow_runtime_instance(runtime: dict[str, Any], instance_id: str) -> dict[str, Any]:
     instances = runtime.setdefault("instances", {})
     instance = instances.get(instance_id)
@@ -2614,6 +2644,27 @@ def _workflow_step_source_config(step: dict[str, Any]) -> tuple[str, str]:
     return source_step, source_path
 
 
+def _workflow_control_dependency_ids(step: dict[str, Any] | None) -> set[str]:
+    if not isinstance(step, dict):
+        return set()
+    return {
+        str(item or "").strip()
+        for item in (step.get("_control_depends_on") or [])
+        if str(item or "").strip()
+    }
+
+
+def _workflow_data_dependency_ids(step: dict[str, Any] | None) -> list[str]:
+    if not isinstance(step, dict):
+        return []
+    control_deps = _workflow_control_dependency_ids(step)
+    return [
+        str(dep or "").strip()
+        for dep in (step.get("depends_on") or [])
+        if str(dep or "").strip() and str(dep or "").strip() not in control_deps
+    ]
+
+
 def _workflow_effective_source_step(fields: dict[str, Any], step: dict[str, Any]) -> str:
     field_source = str(
         fields.get("workflow_source_step")
@@ -2622,7 +2673,7 @@ def _workflow_effective_source_step(fields: dict[str, Any], step: dict[str, Any]
         or ""
     ).strip()
     step_source, _source_path = _workflow_step_source_config(step)
-    first_dep = next((str(dep or "").strip() for dep in step.get("depends_on") or [] if str(dep or "").strip()), "")
+    first_dep = next(iter(_workflow_data_dependency_ids(step)), "")
     if step_source and (not field_source or field_source == first_dep):
         return step_source
     return field_source or step_source or first_dep
@@ -3504,6 +3555,67 @@ def _workflow_result_error(result: Any) -> str:
     return str(result.get("error") or result.get("message") or "").strip()
 
 
+def _workflow_ui_media_model_override(step: dict[str, Any], ui_overrides: dict[str, Any] | None) -> str:
+    if not isinstance(ui_overrides, dict):
+        return ""
+    node_type = str(step.get("node_type") or "").strip()
+    if node_type not in {"image", "video", "audio"}:
+        return ""
+    overrides = ui_overrides.get("media_model_overrides")
+    if not isinstance(overrides, dict):
+        return ""
+    step_id = str(step.get("id") or "").strip()
+    if not step_id:
+        return ""
+    return str(overrides.get(step_id) or "").strip()
+
+
+def _workflow_ui_node_run_extra_fields(step: dict[str, Any], ui_overrides: dict[str, Any] | None) -> dict[str, Any]:
+    model = _workflow_ui_media_model_override(step, ui_overrides)
+    return {"model": model} if model else {}
+
+
+def _workflow_strip_template_media_model(fields: dict[str, Any], node_type: str) -> dict[str, Any]:
+    if node_type in {"image", "video", "audio"}:
+        fields.pop("model", None)
+    return fields
+
+
+_WORKFLOW_CANVAS_SPEC_SYNC_KEYS = {
+    "aspect_ratio",
+    "resolution",
+    "width",
+    "height",
+    "quality",
+    "duration_seconds",
+    "workflow_generate",
+    "workflow_source_step",
+    "workflow_source_path",
+}
+
+
+def _workflow_sync_existing_canvas_fields(
+    existing_fields: dict[str, Any],
+    desired_fields: dict[str, Any],
+    node_type: str,
+) -> dict[str, Any]:
+    if node_type not in {"image", "video", "audio"}:
+        return existing_fields
+    result = dict(existing_fields)
+    for key in _WORKFLOW_CANVAS_SPEC_SYNC_KEYS:
+        if key in desired_fields:
+            value = desired_fields.get(key)
+            if value in (None, "", [], {}):
+                result.pop(key, None)
+            else:
+                result[key] = deepcopy(value)
+    if node_type == "video":
+        for key in ("width", "height", "resolution_width", "resolution_height", "pixel_width", "pixel_height"):
+            if key not in desired_fields:
+                result.pop(key, None)
+    return result
+
+
 def _workflow_runtime_output_from_run_result(result: Any, hydrated: dict[str, Any]) -> Any:
     if isinstance(result, dict):
         for key in ("run_result", "result"):
@@ -3900,7 +4012,13 @@ def _workflow_visible_dependency_nodes(
             )
             if str(item or "").strip()
         ]
+        control_deps = {
+            *_workflow_control_dependency_ids(step),
+            *_workflow_control_dependency_ids(workflow),
+        }
         for upstream_dep in upstream_deps:
+            if upstream_dep in control_deps:
+                continue
             for upstream_node in _workflow_visible_dependency_nodes(
                 upstream_dep,
                 created_by_step=created_by_step,
@@ -3945,7 +4063,7 @@ def _workflow_dependency_refs_for_step(
             dep_refs.append(_reference_for_dep(dep_node, role))
 
     role = str(step.get("dependency_role") or "context").strip() or "context"
-    for dep in step.get("depends_on") or []:
+    for dep in _workflow_data_dependency_ids(step):
         add_dep(dep, role)
     for dep in extra_dep_keys or []:
         add_dep(dep, role)
@@ -4842,6 +4960,9 @@ async def _materialize_workflow_step(
             instance_id=instance_id,
             inputs=inputs,
         )
+    default_fields = template.get("defaults", {}).get("fields")
+    if not isinstance(default_fields, dict):
+        default_fields = {}
     target_surface = _workflow_step_surface(step)
     existing = created_by_step.get(target_id)
     if existing and target_surface != "workflow_runtime":
@@ -4865,6 +4986,25 @@ async def _materialize_workflow_step(
         if target_surface != "workflow_runtime" and not str(existing.get("id") or "").startswith("workflow-runtime:"):
             existing_fields = dict(existing.get("input") if isinstance(existing.get("input"), dict) else {})
             original_existing_fields = deepcopy(existing_fields)
+            existing_node_type = str(existing.get("type") or step.get("node_type") or "text")
+            desired_step_fields = _workflow_strip_template_media_model(
+                _merge_dict(default_fields, step.get("fields") or {}),
+                existing_node_type,
+            )
+            if existing_node_type == "image":
+                desired_step_fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
+                desired_step_fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "1080x1920")
+                desired_step_fields.setdefault("quality", template.get("defaults", {}).get("quality") or "high")
+            if existing_node_type == "video":
+                desired_step_fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
+                desired_step_fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "720p")
+                if template.get("defaults", {}).get("duration_seconds"):
+                    desired_step_fields.setdefault("duration_seconds", template["defaults"]["duration_seconds"])
+            existing_fields = _workflow_sync_existing_canvas_fields(
+                existing_fields,
+                desired_step_fields,
+                existing_node_type,
+            )
             existing_workflow = dict(existing_fields.get("workflow") if isinstance(existing_fields.get("workflow"), dict) else {})
             canonical_workflow = {
                 **existing_workflow,
@@ -4966,7 +5106,7 @@ async def _materialize_workflow_step(
     if not isinstance(default_fields, dict):
         default_fields = {}
     node_type = str(step.get("node_type") or "text")
-    fields = _merge_dict(default_fields, step.get("fields") or {})
+    fields = _workflow_strip_template_media_model(_merge_dict(default_fields, step.get("fields") or {}), node_type)
     step_title = str(step.get("title") or fields.get("title") or step.get("id") or "工作流步骤").strip()
     if title and step_index == 0:
         step_title = str(title).strip()
@@ -4976,17 +5116,18 @@ async def _materialize_workflow_step(
     if node_type in {"image", "video", "audio"}:
         fields.setdefault("prompt_status", "draft")
     if node_type == "image":
-        fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "16:9")
-        fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "2560x1440")
+        fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
+        fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "1080x1920")
         fields.setdefault("quality", template.get("defaults", {}).get("quality") or "high")
     if node_type == "video":
-        fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "16:9")
+        fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
+        fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "720p")
         if template.get("defaults", {}).get("duration_seconds"):
             fields.setdefault("duration_seconds", template["defaults"]["duration_seconds"])
     surface = _workflow_step_surface(step)
     fields["surface"] = surface
     if surface != "workflow_runtime":
-        first_dep = next((str(dep or "").strip() for dep in step.get("depends_on") or [] if str(dep or "").strip()), "")
+        first_dep = next(iter(_workflow_data_dependency_ids(step)), "")
         fields.setdefault("workflow_source_step", str(step.get("source_step") or first_dep).strip())
         fields.setdefault("workflow_source_path", str(step.get("source_path") or "output").strip() or "output")
         fields.setdefault("workflow_generate", node_type in {"image", "video", "audio"})
@@ -5122,7 +5263,7 @@ async def _materialize_workflow_step(
     await _emit_canvas_action(project_id, "create_node", node)
 
     target_node_id = str(node.get("id") or "")
-    for dep in step.get("depends_on") or []:
+    for dep in _workflow_data_dependency_ids(step):
         dep_key = str(dep or "").strip()
         if dep_key in virtual_step_ids:
             continue
@@ -5391,7 +5532,7 @@ def _workflow_direct_video_prompt_from_upstream(
             suggested_fields["duration_seconds"] = duration
         if aspect_ratio:
             suggested_fields["aspect_ratio"] = aspect_ratio
-        for key in ("negative_prompt", "style", "model", "resolution", "quality"):
+        for key in ("negative_prompt", "style", "resolution", "quality"):
             if payload.get(key) not in (None, "", [], {}):
                 suggested_fields[key] = payload[key]
         return suggested_fields
@@ -5808,6 +5949,7 @@ async def workflow_run_step(
     title: str = "",
     inputs: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
+    ui_overrides: dict[str, Any] | None = None,
     instance_id: str = "",
     origin_x: float = 120,
     origin_y: float = 120,
@@ -5836,6 +5978,13 @@ async def workflow_run_step(
     if error:
         return error
     assert template is not None
+    mismatch_error = await _workflow_instance_template_mismatch_error(
+        project_id=project_id,
+        instance_id=instance_id,
+        template_id=str(template.get("id") or template_id or ""),
+    )
+    if mismatch_error:
+        return mismatch_error
     inputs = _workflow_effective_inputs(template, inputs)
     authorization_error = await _authorize_workflow_for_run(
         project_id=project_id,
@@ -5976,6 +6125,13 @@ async def workflow_run_step(
             step_workflow = {}
 
         node_type = str(node.get("type") or "")
+        if node_type in {"image", "video", "audio"} and node_id:
+            node_fields = dict(node.get("input") if isinstance(node.get("input"), dict) else {})
+            if "model" in node_fields:
+                node_fields.pop("model", None)
+                await canvas_tools.update_node(node_id, {"input_data": node_fields})
+                node["input"] = node_fields
+                node["input_json"] = node_fields
         action = "render" if node_type == "image" else "force"
         if not should_generate:
             fields = node.get("input") if isinstance(node.get("input"), dict) else {}
@@ -6052,10 +6208,13 @@ async def workflow_run_step(
             })
             continue
         try:
+            extra_fields = _workflow_ui_node_run_extra_fields(target_step, ui_overrides)
             run_result = await node_universal.node_run(
                 project_id=project_id,
                 node_id=node_id,
                 action=action,
+                extra_fields=extra_fields or None,
+                hidden_extra_field_keys=list(extra_fields.keys()) or None,
             )
         except Exception as exc:
             run_result = {
@@ -6152,6 +6311,7 @@ async def workflow_run_next_step(
     title: str = "",
     inputs: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
+    ui_overrides: dict[str, Any] | None = None,
     instance_id: str = "",
     origin_x: float = 120,
     origin_y: float = 120,
@@ -6179,6 +6339,13 @@ async def workflow_run_next_step(
     if error:
         return error
     assert template is not None
+    mismatch_error = await _workflow_instance_template_mismatch_error(
+        project_id=project_id,
+        instance_id=instance_id,
+        template_id=str(template.get("id") or template_id or ""),
+    )
+    if mismatch_error:
+        return mismatch_error
     inputs = _workflow_effective_inputs(template, inputs)
     authorization_error = await _authorize_workflow_for_run(
         project_id=project_id,
@@ -6288,6 +6455,7 @@ async def workflow_run_next_step(
         }
 
     next_step_id = ""
+    manual_step_ids: list[str] = []
     blocked_steps: list[dict[str, Any]] = []
     for step in steps:
         candidate_id = str(step.get("id") or "").strip()
@@ -6314,6 +6482,9 @@ async def workflow_run_next_step(
         if waiting_on:
             blocked_steps.append({"step_id": candidate_id, "waiting_on": waiting_on})
             continue
+        if step.get("manual_only") is True:
+            manual_step_ids.append(candidate_id)
+            continue
         next_step_id = candidate_id
         break
     if not next_step_id:
@@ -6326,6 +6497,18 @@ async def workflow_run_next_step(
             instance_id=selected_instance_id,
             inputs=inputs,
         )
+        if manual_step_ids:
+            return {
+                "ok": True,
+                "done": False,
+                "awaiting_manual": True,
+                "project_id": project_id,
+                "template_id": resolved_template_id,
+                "instance_id": selected_instance_id,
+                "runtime": runtime_payload,
+                "manual_step_ids": manual_step_ids,
+                "blocked_steps": blocked_steps,
+            }
         if blocked_steps:
             return {
                 "ok": False,
@@ -6355,6 +6538,7 @@ async def workflow_run_next_step(
         title=title,
         inputs=inputs,
         context=context,
+        ui_overrides=ui_overrides,
         instance_id=selected_instance_id,
         origin_x=origin_x,
         origin_y=origin_y,
@@ -6406,6 +6590,40 @@ async def _workflow_run_all_paused_result(
         "steps_run": len(step_results),
         "step_results": step_results,
         "failed_steps": [item for item in step_results if item.get("ok") is False],
+        "runtime": runtime_payload,
+    }
+
+
+async def _workflow_run_all_manual_result(
+    *,
+    project_id: str,
+    template_id: str,
+    instance_id: str,
+    step_results: list[dict[str, Any]],
+    runtime_payload: dict[str, Any] | None,
+    manual_step_ids: list[str],
+    blocked_steps: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if instance_id:
+        runtime_payload = await _workflow_runtime_mark_run_all_status(
+            project_id=project_id,
+            template_id=template_id,
+            instance_id=instance_id,
+            status="paused",
+        ) or runtime_payload
+    return {
+        "ok": True,
+        "run_all": True,
+        "done": False,
+        "awaiting_manual": True,
+        "project_id": project_id,
+        "template_id": template_id,
+        "instance_id": instance_id,
+        "steps_run": len(step_results),
+        "step_results": step_results,
+        "failed_steps": [item for item in step_results if item.get("ok") is False],
+        "manual_step_ids": manual_step_ids,
+        "blocked_steps": blocked_steps,
         "runtime": runtime_payload,
     }
 
@@ -6640,6 +6858,7 @@ async def _workflow_ready_step_batch(
             }
 
     ready_step_ids: list[str] = []
+    manual_step_ids: list[str] = []
     blocked_steps: list[dict[str, Any]] = []
     for step in steps:
         candidate_id = str(step.get("id") or "").strip()
@@ -6664,6 +6883,9 @@ async def _workflow_ready_step_batch(
         if waiting_on:
             blocked_steps.append({"step_id": candidate_id, "waiting_on": waiting_on})
             continue
+        if step.get("manual_only") is True:
+            manual_step_ids.append(candidate_id)
+            continue
         ready_step_ids.append(candidate_id)
 
     return {
@@ -6674,8 +6896,9 @@ async def _workflow_ready_step_batch(
         "template": active_template,
         "runtime": runtime_payload,
         "ready_step_ids": ready_step_ids,
+        "manual_step_ids": manual_step_ids,
         "blocked_steps": blocked_steps,
-        "done": not ready_step_ids and not blocked_steps,
+        "done": not ready_step_ids and not manual_step_ids and not blocked_steps,
     }
 
 
@@ -6719,6 +6942,7 @@ async def workflow_run_all_steps(
     title: str = "",
     inputs: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
+    ui_overrides: dict[str, Any] | None = None,
     instance_id: str = "",
     origin_x: float = 120,
     origin_y: float = 120,
@@ -6747,6 +6971,13 @@ async def workflow_run_all_steps(
     if error:
         return error
     assert template is not None
+    mismatch_error = await _workflow_instance_template_mismatch_error(
+        project_id=project_id,
+        instance_id=instance_id,
+        template_id=str(template.get("id") or template_id or ""),
+    )
+    if mismatch_error:
+        return mismatch_error
     inputs = _workflow_effective_inputs(template, inputs)
     authorization_error = await _authorize_workflow_for_run(
         project_id=project_id,
@@ -6872,6 +7103,23 @@ async def workflow_run_all_steps(
             )
         if batch.get("done") or not ready_step_ids:
             failed_steps = [item for item in step_results if item.get("ok") is False]
+            manual_step_ids = [
+                str(item or "").strip()
+                for item in (batch.get("manual_step_ids") or [])
+                if str(item or "").strip()
+            ]
+            if manual_step_ids:
+                if not current_instance_id:
+                    current_instance_id = f"wf_{uuid.uuid4().hex[:12]}"
+                return await _workflow_run_all_manual_result(
+                    project_id=project_id,
+                    template_id=str(batch.get("template_id") or template.get("id") or template_id or ""),
+                    instance_id=current_instance_id,
+                    step_results=step_results,
+                    runtime_payload=runtime_payload,
+                    manual_step_ids=manual_step_ids,
+                    blocked_steps=batch.get("blocked_steps") or [],
+                )
             if batch.get("blocked_steps"):
                 if current_instance_id:
                     marked_runtime = await _workflow_runtime_mark_run_all_status(
@@ -6934,6 +7182,7 @@ async def workflow_run_all_steps(
                     title=title,
                     inputs=inputs,
                     context=context,
+                    ui_overrides=ui_overrides,
                     instance_id=current_instance_id,
                     origin_x=origin_x,
                     origin_y=origin_y,
@@ -6941,6 +7190,9 @@ async def workflow_run_all_steps(
                     spacing_y=spacing_y,
                     persist_active=False,
                 )
+                if not str(result.get("step_id") or "").strip():
+                    result = {**result, "step_id": step_id}
+                return result
             except Exception as exc:
                 return {
                     "ok": False,
@@ -6949,6 +7201,7 @@ async def workflow_run_all_steps(
                     "error_kind": exc.__class__.__name__,
                 }
 
+        results_before_batch = len(step_results)
         batch_results = await asyncio.gather(*(run_one(step_id) for step_id in ready_step_ids))
         for result in batch_results:
             if result.get("instance_id"):
@@ -6962,6 +7215,30 @@ async def workflow_run_all_steps(
                 failed_id = str(summary.get("step_id") or result.get("step_id") or "").strip()
                 if failed_id:
                     failed_step_ids.add(failed_id)
+        if len(step_results) == results_before_batch:
+            if current_instance_id:
+                marked_runtime = await _workflow_runtime_mark_run_all_status(
+                    project_id=project_id,
+                    template_id=str(batch.get("template_id") or run_template_id),
+                    instance_id=current_instance_id,
+                    status="failed",
+                )
+                if isinstance(marked_runtime, dict):
+                    runtime_payload = marked_runtime
+            return {
+                "ok": False,
+                "run_all": True,
+                "done": False,
+                "project_id": project_id,
+                "template_id": str(batch.get("template_id") or template.get("id") or template_id or ""),
+                "instance_id": current_instance_id,
+                "steps_run": len(step_results),
+                "step_results": step_results,
+                "ready_step_ids": ready_step_ids,
+                "runtime": runtime_payload,
+                "error": "Workflow run-all made no progress while ready steps remained.",
+                "error_kind": "workflow_run_all_no_progress",
+            }
     if current_instance_id and await _workflow_runtime_pause_requested(project_id, current_instance_id):
         return await _workflow_run_all_paused_result(
             project_id=project_id,
@@ -7025,6 +7302,23 @@ async def workflow_run_all_steps(
         if str(item or "").strip()
     ]
     if final_batch.get("done") or not final_ready_step_ids:
+        manual_step_ids = [
+            str(item or "").strip()
+            for item in (final_batch.get("manual_step_ids") or [])
+            if str(item or "").strip()
+        ]
+        if manual_step_ids:
+            if not current_instance_id:
+                current_instance_id = f"wf_{uuid.uuid4().hex[:12]}"
+            return await _workflow_run_all_manual_result(
+                project_id=project_id,
+                template_id=str(final_batch.get("template_id") or template.get("id") or template_id or ""),
+                instance_id=current_instance_id,
+                step_results=step_results,
+                runtime_payload=runtime_payload,
+                manual_step_ids=manual_step_ids,
+                blocked_steps=final_batch.get("blocked_steps") or [],
+            )
         if final_batch.get("blocked_steps"):
             if current_instance_id:
                 marked_runtime = await _workflow_runtime_mark_run_all_status(
@@ -7040,9 +7334,6 @@ async def workflow_run_all_steps(
                 "run_all": True,
                 "done": False,
                 "project_id": project_id,
-                if not str(result.get("step_id") or "").strip():
-                    result = {**result, "step_id": step_id}
-                return result
                 "template_id": str(final_batch.get("template_id") or template.get("id") or template_id or ""),
                 "instance_id": current_instance_id,
                 "steps_run": len(step_results),
@@ -7051,7 +7342,6 @@ async def workflow_run_all_steps(
                 "blocked_steps": final_batch.get("blocked_steps") or [],
                 "runtime": runtime_payload,
                 "error": "No workflow step is ready; upstream dependencies are not completed.",
-        results_before_batch = len(step_results)
                 "error_kind": "workflow_waiting_for_dependencies",
             }
         if current_instance_id:
@@ -7065,30 +7355,6 @@ async def workflow_run_all_steps(
                 runtime_payload = marked_runtime
         return {
             "ok": not failed_steps,
-        if len(step_results) == results_before_batch:
-            if current_instance_id:
-                marked_runtime = await _workflow_runtime_mark_run_all_status(
-                    project_id=project_id,
-                    template_id=str(batch.get("template_id") or run_template_id),
-                    instance_id=current_instance_id,
-                    status="failed",
-                )
-                if isinstance(marked_runtime, dict):
-                    runtime_payload = marked_runtime
-            return {
-                "ok": False,
-                "run_all": True,
-                "done": False,
-                "project_id": project_id,
-                "template_id": str(batch.get("template_id") or template.get("id") or template_id or ""),
-                "instance_id": current_instance_id,
-                "steps_run": len(step_results),
-                "step_results": step_results,
-                "ready_step_ids": ready_step_ids,
-                "runtime": runtime_payload,
-                "error": "Workflow run-all made no progress while ready steps remained.",
-                "error_kind": "workflow_run_all_no_progress",
-            }
             "run_all": True,
             "done": True,
             "project_id": project_id,
@@ -7200,7 +7466,7 @@ async def _materialize_template(
         if step["id"] in virtual_step_ids:
             continue
         node_type = str(step["node_type"])
-        fields = _merge_dict(default_fields, step.get("fields") or {})
+        fields = _workflow_strip_template_media_model(_merge_dict(default_fields, step.get("fields") or {}), node_type)
         step_title = str(step.get("title") or fields.get("title") or step["id"]).strip()
         if title and index == 0:
             step_title = str(title).strip()
@@ -7210,17 +7476,18 @@ async def _materialize_template(
         if node_type in {"image", "video", "audio"}:
             fields.setdefault("prompt_status", "draft")
         if node_type == "image":
-            fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "16:9")
-            fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "2560x1440")
+            fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
+            fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "1080x1920")
             fields.setdefault("quality", template.get("defaults", {}).get("quality") or "high")
         if node_type == "video":
-            fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "16:9")
+            fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
+            fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "720p")
             if template.get("defaults", {}).get("duration_seconds"):
                 fields.setdefault("duration_seconds", template["defaults"]["duration_seconds"])
         surface = _workflow_step_surface(step)
         fields["surface"] = surface
         if surface != "workflow_runtime":
-            first_dep = next((str(dep or "").strip() for dep in step.get("depends_on") or [] if str(dep or "").strip()), "")
+            first_dep = next(iter(_workflow_data_dependency_ids(step)), "")
             fields.setdefault("workflow_source_step", str(step.get("source_step") or first_dep).strip())
             fields.setdefault("workflow_source_path", str(step.get("source_path") or "output").strip() or "output")
             fields.setdefault("workflow_generate", node_type in {"image", "video", "audio"})
@@ -7339,7 +7606,7 @@ async def _materialize_template(
         await _emit_canvas_action(project_id, "create_node", node)
 
         target_node_id = str(node.get("id") or "")
-        for dep in step.get("depends_on") or []:
+        for dep in _workflow_data_dependency_ids(step):
             if dep in virtual_step_ids:
                 continue
             for source in _workflow_visible_dependency_nodes(

@@ -1673,7 +1673,6 @@ function workflowStepMetadataFromSpec(step: Record<string, unknown>): Partial<Wo
     "repeat",
     "foreach",
     "bindings",
-    "inputs_schema",
     "expansion",
     "collection",
     "instance_scope",
@@ -1687,7 +1686,6 @@ function workflowStepMetadataFromSpec(step: Record<string, unknown>): Partial<Wo
     "extension_config",
     "plugin_inputs",
     "plugin_settings",
-    "context_refs",
     "completion",
     "settings",
     "io",
@@ -1698,6 +1696,8 @@ function workflowStepMetadataFromSpec(step: Record<string, unknown>): Partial<Wo
     const value = asWorkflowObject(step[key])
     if (value) result[key] = value
   }
+  if (workflowHasValue(step.inputs_schema)) result.inputs_schema = workflowCloneValue(step.inputs_schema) as Record<string, unknown> | Record<string, unknown>[]
+  if (workflowHasValue(step.context_refs)) result.context_refs = workflowCloneValue(step.context_refs)
   const rawForeach = step.foreach ?? step.for_each
   const foreachObject = asWorkflowObject(rawForeach)
   if (foreachObject) {
@@ -10978,7 +10978,7 @@ export default function WorkflowCanvas({
         : selectedWorkflowTemplate?.id || workflowTemplates[0]?.id || ""
     ))
   }, [selectedWorkflowTemplate?.id, workflowTemplateById, workflowTemplates])
-  const replaceWorkflowRuntimePayloads = useCallback((runtimes: ProjectWorkflowRuntime[] | null | undefined, selected?: ProjectWorkflowRuntime | null) => {
+  const replaceWorkflowRuntimePayloads = useCallback((runtimes: ProjectWorkflowRuntime[] | null | undefined, selected?: ProjectWorkflowRuntime | null, preserveCurrent = true) => {
     const incoming = mergeWorkflowRuntimePayloads([], selected ? mergeWorkflowRuntimePayloads(runtimes || [], selected) : runtimes || [])
     setWorkflowInstanceInputValues((current) => mergeWorkflowInputValuesByInstance(current, incoming))
     const selectedId = workflowRuntimeAutoSelectSuppressedRef.current ? "" : workflowRuntimeId(selected)
@@ -10992,7 +10992,7 @@ export default function WorkflowCanvas({
       const selectedRuntimeBeforeRefresh = workflowRuntimePayloadRef.current
       const selectedRuntime = selectedId
         ? next.find((runtime) => workflowRuntimeId(runtime) === selectedId) || selected || null
-        : selectedRuntimeBeforeRefresh && next.some((runtime) => workflowRuntimeId(runtime) === workflowRuntimeId(selectedRuntimeBeforeRefresh))
+        : preserveCurrent && selectedRuntimeBeforeRefresh && next.some((runtime) => workflowRuntimeId(runtime) === workflowRuntimeId(selectedRuntimeBeforeRefresh))
         ? next.find((runtime) => workflowRuntimeId(runtime) === workflowRuntimeId(selectedRuntimeBeforeRefresh)) || null
         : null
       workflowRuntimePayloadRef.current = selectedRuntime
@@ -11216,7 +11216,13 @@ export default function WorkflowCanvas({
   const saveActiveWorkflowSelection = useCallback(async (input: ProjectActiveWorkflow) => {
     if (!currentProject?.id) return null
     const result = await setProjectActiveWorkflow(currentProject.id, input)
-    replaceWorkflowRuntimePayloads(result.active_workflow_runtimes, result.active_workflow_runtime ?? null)
+    const selectedTemplateId = workflowPreviewFromActiveWorkflow(result.active_workflow)?.id
+      || workflowTemplateIdFromActiveWorkflow(result.active_workflow)
+    const matchingRuntime = selectedTemplateId
+      ? [result.active_workflow_runtime, ...(result.active_workflow_runtimes || [])]
+        .find((runtime): runtime is ProjectWorkflowRuntime => Boolean(runtime && workflowStringValue(runtime.template_id) === selectedTemplateId)) || null
+      : result.active_workflow_runtime ?? null
+    replaceWorkflowRuntimePayloads(result.active_workflow_runtimes, matchingRuntime, false)
     return result.active_workflow ?? null
   }, [currentProject?.id, replaceWorkflowRuntimePayloads])
 
@@ -11247,10 +11253,15 @@ export default function WorkflowCanvas({
           setWorkflowInputValues((current) => ({ ...current, ...serverInputValues }))
         }
       }
-      replaceWorkflowRuntimePayloads(result.active_workflow_runtimes, result.active_workflow_runtime ?? null)
       const activePreview = workflowPreviewFromActiveWorkflow(activeWorkflow)
       const activeTemplateId = workflowTemplateIdFromActiveWorkflow(activeWorkflow)
       const runtimeTemplateId = workflowStringValue(result.active_workflow_runtime?.template_id)
+      const selectedTemplateId = activePreview?.id || activeTemplateId || runtimeTemplateId
+      const matchingRuntime = selectedTemplateId
+        ? [result.active_workflow_runtime, ...(result.active_workflow_runtimes || [])]
+          .find((runtime): runtime is ProjectWorkflowRuntime => Boolean(runtime && workflowStringValue(runtime.template_id) === selectedTemplateId)) || null
+        : result.active_workflow_runtime ?? null
+      replaceWorkflowRuntimePayloads(result.active_workflow_runtimes, matchingRuntime, false)
       setWorkflowTemplates(templates)
       if (activePreview) {
         const canonicalTemplate = templates.find((template) => template.id === activePreview.id)

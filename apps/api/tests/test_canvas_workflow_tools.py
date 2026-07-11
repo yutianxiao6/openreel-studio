@@ -1413,6 +1413,110 @@ async def test_workflow_run_next_step_respects_dependencies_when_order_is_not_to
 
 
 @pytest.mark.asyncio
+async def test_workflow_run_next_waits_for_manual_only_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = install_fake_workflow_runtime_state(monkeypatch)
+    state["workflow_runtime"] = {
+        "instances": {
+            "wf_manual": {
+                "template_id": "manual_flow",
+                "steps": {
+                    "script": {
+                        "status": "completed",
+                        "surface": "draft_canvas",
+                        "node_id": "node-script",
+                        "artifacts": [{"kind": "canvas_node", "node_id": "node-script"}],
+                    },
+                    "video": {"status": "draft"},
+                },
+            },
+        },
+    }
+
+    async def fail_run_step(**kwargs: Any) -> dict[str, Any]:
+        raise AssertionError(f"manual step must not be auto-run: {kwargs}")
+
+    monkeypatch.setattr(workflow_tools, "workflow_run_step", fail_run_step)
+
+    result = await workflow_tools.workflow_run_next_step(
+        project_id="proj-1",
+        workflow={
+            "id": "manual_flow",
+            "name": "Manual Flow",
+            "steps": [
+                {"id": "script", "title": "剧本", "node_type": "text"},
+                {
+                    "id": "video",
+                    "title": "视频",
+                    "node_type": "video",
+                    "depends_on": ["script"],
+                    "manual_only": True,
+                },
+            ],
+        },
+        instance_id="wf_manual",
+    )
+
+    assert result["ok"] is True
+    assert result["done"] is False
+    assert result["awaiting_manual"] is True
+    assert result["manual_step_ids"] == ["video"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_run_next_rejects_instance_from_another_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = install_fake_workflow_runtime_state(monkeypatch)
+    state["workflow_runtime"] = {
+        "instances": {
+            "wf_old": {"template_id": "old_flow", "steps": {}},
+        },
+    }
+
+    result = await workflow_tools.workflow_run_next_step(
+        project_id="proj-1",
+        workflow={
+            "id": "new_flow",
+            "name": "New Flow",
+            "steps": [{"id": "script", "title": "剧本", "node_type": "text"}],
+        },
+        instance_id="wf_old",
+    )
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "workflow_instance_template_mismatch"
+    assert result["template_id"] == "new_flow"
+    assert result["instance_template_id"] == "old_flow"
+
+
+@pytest.mark.asyncio
+async def test_workflow_ready_batch_excludes_manual_only_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = install_fake_workflow_runtime_state(monkeypatch)
+    state["workflow_runtime"] = {
+        "instances": {
+            "wf_manual": {
+                "template_id": "manual_flow",
+                "steps": {},
+            },
+        },
+    }
+
+    result = await workflow_tools._workflow_ready_step_batch(
+        project_id="proj-1",
+        template={
+            "id": "manual_flow",
+            "name": "Manual Flow",
+            "steps": [
+                {"id": "video", "title": "视频", "node_type": "video", "manual_only": True},
+            ],
+        },
+        instance_id="wf_manual",
+    )
+
+    assert result["ready_step_ids"] == []
+    assert result["manual_step_ids"] == ["video"]
+    assert result["done"] is False
+
+
+@pytest.mark.asyncio
 async def test_workflow_run_next_runs_visible_step_when_only_runtime_record_exists(monkeypatch: pytest.MonkeyPatch) -> None:
     state = install_fake_workflow_runtime_state(monkeypatch)
     state["workflow_runtime"] = {
@@ -3451,6 +3555,82 @@ def test_workflow_dependency_refs_filter_same_repeat_scope_alias() -> None:
     assert refs == [{"ref": "node:1", "role": "context"}]
 
 
+def test_repeat_group_control_dependencies_do_not_become_canvas_references() -> None:
+    template = canvas_workflow_templates.normalize_inline_workflow(
+        {
+            "id": "repeat_control_flow",
+            "name": "Repeat Control Flow",
+            "steps": [
+                {"id": "script", "title": "剧本", "node_type": "text"},
+                {"id": "character_image", "title": "人物图", "node_type": "image", "depends_on": ["script"]},
+                {
+                    "id": "segments",
+                    "title": "分段",
+                    "depends_on": ["script", "character_image"],
+                    "repeat": {"count": 1},
+                    "steps": [
+                        {
+                            "id": "scene_prompt",
+                            "title": "场景提示词",
+                            "node_type": "text",
+                            "surface": "workflow_runtime",
+                        },
+                        {
+                            "id": "scene_reference",
+                            "title": "场景参考图",
+                            "node_type": "image",
+                            "depends_on": ["scene_prompt"],
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+    steps_by_id = {step["id"]: step for step in template["steps"]}
+    scene_prompt = next(step for step in template["steps"] if step.get("template_step_id") == "scene_prompt")
+    scene_reference = next(step for step in template["steps"] if step.get("template_step_id") == "scene_reference")
+    assert scene_reference["_control_depends_on"] == ["script", "character_image"]
+
+    records = [
+        {
+            "id": "node-script",
+            "display_id": 1,
+            "surface": "draft_canvas",
+            "workflow": {"template_id": "repeat_control_flow", "instance_id": "wf-test", "step_id": "script"},
+        },
+        {
+            "id": "node-character",
+            "display_id": 2,
+            "surface": "draft_canvas",
+            "workflow": {"template_id": "repeat_control_flow", "instance_id": "wf-test", "step_id": "character_image"},
+        },
+        {
+            "id": f"workflow-runtime:wf-test:{scene_prompt['id']}",
+            "surface": "workflow_runtime",
+            "workflow": {
+                "template_id": "repeat_control_flow",
+                "instance_id": "wf-test",
+                "step_id": scene_prompt["id"],
+                "depends_on": scene_prompt["depends_on"],
+            },
+        },
+    ]
+    created_by_step = workflow_tools._workflow_step_nodes_by_id(records, "repeat_control_flow", "wf-test")
+    nodes_by_alias = workflow_tools._workflow_step_nodes_by_alias(records, "repeat_control_flow", "wf-test")
+
+    refs = workflow_tools._workflow_dependency_refs_for_step(
+        scene_reference,
+        created_by_step=created_by_step,
+        nodes_by_alias=nodes_by_alias,
+        steps_by_id=steps_by_id,
+        virtual_step_ids=set(),
+        include_runtime_upstream=True,
+        extra_dep_keys=[next(iter(workflow_tools._workflow_data_dependency_ids(scene_reference)), "")],
+    )
+
+    assert refs == []
+
+
 def test_general_short_drama_template_has_no_default_previous_segment_visual_deps() -> None:
     template = canvas_workflow_templates.get_template(
         "general_short_drama_workflow",
@@ -3966,7 +4146,7 @@ async def test_workflow_materialize_expands_repeat_group_nodes(monkeypatch: pyte
 
     assert result["ok"] is True
     assert result["created_count"] == 5
-    assert result["edges_count"] == 6
+    assert result["edges_count"] == 2
     assert len(runtime_state["workflow_runtime"]["instances"][result["instance_id"]]["steps"]) == 5
     assert [node["title"] for node in created_nodes] == [
         "剧本",
@@ -3986,7 +4166,7 @@ async def test_workflow_materialize_expands_repeat_group_nodes(monkeypatch: pyte
     assert first_scene_workflow["repeat_group_id"] == "segment_flow"
     assert first_scene_workflow["template_step_id"] == "scene"
     assert first_scene_workflow["instance_scope"] == {"episode": 1, "segment": 1, "index": 1}
-    assert created_nodes[2]["input"]["depends_on"] == ["node:1", "node:2"]
+    assert created_nodes[2]["input"]["depends_on"] == ["node:2"]
     assert created_nodes[2]["input"]["workflow"]["runner"] == "node.run"
 
 
@@ -4047,7 +4227,7 @@ async def test_workflow_run_step_materializes_and_runs_incrementally(monkeypatch
     async def fake_emit(project_id: str, action: str, payload: dict[str, Any]) -> None:
         return None
 
-    async def fake_node_run(project_id: str, node_id: str, action: str | None = None) -> dict[str, Any]:
+    async def fake_node_run(project_id: str, node_id: str, action: str | None = None, **kwargs: Any) -> dict[str, Any]:
         run_calls.append((node_id, action))
         return {"ok": True, "node_id": node_id, "status": "completed"}
 
@@ -4065,7 +4245,7 @@ async def test_workflow_run_step_materializes_and_runs_incrementally(monkeypatch
         "name": "增量流程",
         "steps": [
             {"id": "brief", "title": "需求", "kind": "canvas_text", "node_type": "text", "fields": {"content": "待生成"}},
-            {"id": "cover", "title": "封面图", "kind": "image", "node_type": "image", "depends_on": ["brief"], "fields": {"workflow_source_path": "output.content"}},
+            {"id": "cover", "title": "封面图", "kind": "image", "node_type": "image", "depends_on": ["brief"], "manual_only": True, "fields": {"workflow_source_path": "output.content"}},
         ],
     }
 
