@@ -5,6 +5,7 @@ services:
       dockerfile: apps/api/Dockerfile
     env_file:
       - .env.production
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     environment:
       DRAMA_PROMPT_DUMP_ENABLED: "true"
       DRAMA_PROMPT_DUMP_FULL: "false"
