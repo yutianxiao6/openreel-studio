@@ -104,6 +104,87 @@ WORKFLOW_RUNTIME_MEDIA_OUTPUT_KEYS = (
     "output_path",
     "asset_id",
 )
+WORKFLOW_RUNTIME_OUTPUT_PREVIEW_LIMIT = 6000
+WORKFLOW_RUNTIME_OUTPUT_LABELS = {
+    "title": "标题",
+    "logline": "一句话梗概",
+    "summary": "摘要",
+    "description": "说明",
+    "characters": "人物",
+    "character": "人物",
+    "segments": "分段",
+    "segment": "分段",
+    "scenes": "场景",
+    "scene": "场景",
+    "shots": "镜头",
+    "frames": "画面",
+    "actions": "动作",
+    "dialogue": "对白",
+    "location": "地点",
+    "mood": "情绪",
+    "duration_seconds": "时长",
+    "duration": "时长",
+    "prompt": "提示词",
+    "visual_prompt": "视觉提示词",
+    "video_prompt": "视频提示词",
+    "image_prompt": "图片提示词",
+    "style": "视觉风格",
+    "references": "参考",
+    "notes": "备注",
+    "name": "名称",
+    "role": "角色",
+    "goal": "目标",
+    "output": "输出",
+}
+WORKFLOW_RUNTIME_PREVIEW_HIDDEN_KEYS = {
+    "id",
+    "key",
+    "type",
+    "ok",
+    "status",
+    "provider",
+    "model",
+    "requested_model",
+    "fallback_used",
+    "model_tier",
+    "url",
+    "local_url",
+    "remote_url",
+    "local_path",
+    "output_path",
+    "asset_id",
+    "asset_ids",
+    "images",
+    "media",
+    "attempts",
+    "n_index",
+    "n_requested",
+    "n_succeeded",
+    "width",
+    "height",
+    "size_requested",
+    "size_final",
+    "quality_requested",
+    "actual_aspect_ratio",
+    "reference_warnings",
+    "partial_error",
+    "error",
+    "error_message",
+    "workflow_text_runner",
+    "workflow_runtime_runner",
+    "llm_task_type",
+    "usage",
+    "run_id",
+    "prompt_dump_run_id",
+    "raw_usage_keys",
+    "node_id",
+    "source_node_id",
+    "template_id",
+    "template_step_id",
+    "instance_id",
+    "step_id",
+    "segment_index",
+}
 
 
 def json_object_candidates(text: str) -> list[str]:
@@ -326,3 +407,242 @@ def workflow_runtime_primary_output_value(record: dict[str, Any]) -> Any:
         if value not in (None, "", [], {}):
             return value
     return workflow_runtime_clean_output_value(record.get("output"), drop_internal_keys=True)
+
+
+def _output_label(key: str, labels: dict[str, str] | None = None) -> str:
+    text = str(key or "").strip()
+    if not text:
+        return "内容"
+    if labels and labels.get(text):
+        return labels[text]
+    return WORKFLOW_RUNTIME_OUTPUT_LABELS.get(text, text.replace("_", " "))
+
+
+def _labels_from_mapping(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        field = str(key or "").strip()
+        if not field:
+            continue
+        if isinstance(item, str) and item.strip():
+            result[field] = item.strip()
+        elif isinstance(item, dict):
+            label = str(item.get("label") or item.get("title") or item.get("name") or "").strip()
+            if label:
+                result[field] = label
+    return result
+
+
+def _output_label_map(
+    record: dict[str, Any],
+    *,
+    workflow_override: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    fields = record.get("input") if isinstance(record.get("input"), dict) else {}
+    workflow = workflow_override if isinstance(workflow_override, dict) else (
+        record.get("workflow") if isinstance(record.get("workflow"), dict) else {}
+    )
+    if not workflow and isinstance(fields.get("workflow"), dict):
+        workflow = fields["workflow"]
+    output = workflow.get("output") if isinstance(workflow.get("output"), dict) else {}
+    schema = workflow.get("output_schema") if isinstance(workflow.get("output_schema"), dict) else {}
+    labels: dict[str, str] = {}
+    labels.update(_labels_from_mapping(output.get("labels")))
+    labels.update(_labels_from_mapping(schema.get("labels")))
+    labels.update(_labels_from_mapping(schema.get("properties")))
+    fields_list = schema.get("fields")
+    if isinstance(fields_list, list):
+        for item in fields_list:
+            if not isinstance(item, dict):
+                continue
+            field = str(item.get("id") or item.get("key") or item.get("name") or "").strip()
+            label = str(item.get("label") or item.get("title") or "").strip()
+            if field and label:
+                labels[field] = label
+    return labels
+
+
+def _hidden_keys_from_mapping(value: Any) -> set[str]:
+    result: set[str] = set()
+    if isinstance(value, list):
+        result.update(str(item or "").strip() for item in value if str(item or "").strip())
+    elif isinstance(value, dict):
+        for key, enabled in value.items():
+            if enabled is False:
+                continue
+            text = str(key or "").strip()
+            if text:
+                result.add(text)
+    return result
+
+
+def _output_hidden_keys(
+    record: dict[str, Any],
+    *,
+    workflow_override: dict[str, Any] | None = None,
+) -> set[str]:
+    fields = record.get("input") if isinstance(record.get("input"), dict) else {}
+    workflow = workflow_override if isinstance(workflow_override, dict) else (
+        record.get("workflow") if isinstance(record.get("workflow"), dict) else {}
+    )
+    if not workflow and isinstance(fields.get("workflow"), dict):
+        workflow = fields["workflow"]
+    output = workflow.get("output") if isinstance(workflow.get("output"), dict) else {}
+    schema = workflow.get("output_schema") if isinstance(workflow.get("output_schema"), dict) else {}
+    hidden = set(WORKFLOW_RUNTIME_PREVIEW_HIDDEN_KEYS)
+    for source in (output, schema):
+        for key in ("hidden", "hidden_keys", "exclude", "exclude_keys"):
+            hidden.update(_hidden_keys_from_mapping(source.get(key)))
+    return hidden
+
+
+def _preview_scalar(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    return str(value).strip()
+
+
+def _preview_item_title(item: dict[str, Any], index: int, parent_key: str = "") -> str:
+    for key in ("title", "name", "summary"):
+        value = _preview_scalar(item.get(key))
+        if value:
+            return value
+    item_index = _preview_scalar(item.get("index"))
+    if item_index:
+        if parent_key in {"segments", "segment"}:
+            return f"第{item_index}段"
+        if parent_key in {"shots", "frames"}:
+            return f"第{item_index}格"
+        return f"第{item_index}项"
+    return f"第{index}项"
+
+
+def _preview_lines(
+    value: Any,
+    *,
+    depth: int = 0,
+    parent_key: str = "",
+    labels: dict[str, str] | None = None,
+    hidden_keys: set[str] | None = None,
+) -> list[str]:
+    hidden = hidden_keys if hidden_keys is not None else WORKFLOW_RUNTIME_PREVIEW_HIDDEN_KEYS
+    if value in (None, "", [], {}):
+        return []
+    structured = structured_workflow_output(value)
+    if isinstance(structured, str):
+        parsed = structured_workflow_output(structured)
+        if parsed is not structured:
+            return _preview_lines(parsed, depth=depth, parent_key=parent_key, labels=labels, hidden_keys=hidden)
+        return [structured.strip()] if structured.strip() else []
+    if isinstance(structured, (int, float, bool)):
+        scalar = _preview_scalar(structured)
+        return [scalar] if scalar else []
+    if isinstance(structured, list):
+        lines: list[str] = []
+        for index, item in enumerate(structured, start=1):
+            if item in (None, "", [], {}):
+                continue
+            if isinstance(item, dict):
+                title = _preview_item_title(item, index, parent_key)
+                child_obj = {
+                    key: child_value
+                    for key, child_value in item.items()
+                    if key not in {"title", "name", "index"}
+                    and key not in hidden
+                    and child_value not in (None, "", [], {})
+                }
+                child_lines = _preview_lines(
+                    child_obj,
+                    depth=depth + 1,
+                    parent_key=parent_key,
+                    labels=labels,
+                    hidden_keys=hidden,
+                )
+                lines.append(f"- {title}")
+                lines.extend([f"  {line}" for line in child_lines])
+            elif isinstance(item, list):
+                child_lines = _preview_lines(
+                    item,
+                    depth=depth + 1,
+                    parent_key=parent_key,
+                    labels=labels,
+                    hidden_keys=hidden,
+                )
+                if child_lines:
+                    lines.append(f"- 第{index}项")
+                    lines.extend([f"  {line}" for line in child_lines])
+            else:
+                child_lines = _preview_lines(
+                    item,
+                    depth=depth + 1,
+                    parent_key=parent_key,
+                    labels=labels,
+                    hidden_keys=hidden,
+                )
+                lines.extend([f"- {line}" for line in child_lines])
+        return lines
+    if not isinstance(structured, dict):
+        return []
+
+    obj = dict(structured)
+    content = obj.get("content")
+    if content not in (None, "", [], {}):
+        parsed_content = structured_workflow_output(content)
+        if len(obj) == 1 or parsed_content is not content:
+            content_lines = _preview_lines(
+                parsed_content,
+                depth=depth,
+                parent_key=parent_key,
+                labels=labels,
+                hidden_keys=hidden,
+            )
+            if len(obj) == 1:
+                return content_lines
+        if len(obj) > 1:
+            obj.pop("content", None)
+
+    lines: list[str] = []
+    for key, item in obj.items():
+        if key in hidden or item in (None, "", [], {}):
+            continue
+        label = _output_label(key, labels)
+        if isinstance(item, (dict, list)):
+            child_lines = _preview_lines(
+                item,
+                depth=depth + 1,
+                parent_key=key,
+                labels=labels,
+                hidden_keys=hidden,
+            )
+            if child_lines:
+                lines.append(f"{label}:")
+                lines.extend([f"  {line}" for line in child_lines])
+            continue
+        scalar = _preview_scalar(item)
+        if scalar:
+            lines.append(f"{label}: {scalar}")
+    return lines
+
+
+def workflow_runtime_output_preview(
+    record: dict[str, Any],
+    *,
+    limit: int = WORKFLOW_RUNTIME_OUTPUT_PREVIEW_LIMIT,
+    workflow_override: dict[str, Any] | None = None,
+) -> str:
+    value = workflow_runtime_primary_output_value(record)
+    lines = _preview_lines(
+        value,
+        labels=_output_label_map(record, workflow_override=workflow_override),
+        hidden_keys=_output_hidden_keys(record, workflow_override=workflow_override),
+    )
+    text = "\n".join(line for line in lines if line).strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}\n...（已截断）"

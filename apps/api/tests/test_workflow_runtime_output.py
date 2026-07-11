@@ -2,6 +2,7 @@ from app.mcp_tools.workflow_runtime_output import (
     structured_workflow_output,
     workflow_runtime_clean_output_value,
     workflow_runtime_output_from_runner_payload,
+    workflow_runtime_output_preview,
     workflow_runtime_outputs_from_value,
 )
 
@@ -46,3 +47,31 @@ def test_runtime_outputs_have_stable_name_type_and_clean_value() -> None:
         "type": "json",
         "value": {"title": "第一集", "segments": [{"title": "开场"}]},
     }]
+
+
+def test_runtime_output_preview_applies_schema_labels_and_hides_diagnostics() -> None:
+    preview = workflow_runtime_output_preview(
+        {
+            "output": {
+                "segments": [{"index": 1, "script": "雨夜开场", "usage": {"total_tokens": 99}}],
+                "approved": False,
+            },
+        },
+        workflow_override={
+            "output_schema": {
+                "properties": {
+                    "script": {"title": "剧情"},
+                    "approved": {"title": "已通过"},
+                },
+            },
+        },
+    )
+
+    assert preview == "分段:\n  - 雨夜开场\n已通过: 否"
+    assert "tokens" not in preview
+
+
+def test_runtime_output_preview_respects_character_limit() -> None:
+    preview = workflow_runtime_output_preview({"output": {"content": "长" * 20}}, limit=8)
+
+    assert preview == f"{'长' * 8}\n...（已截断）"
