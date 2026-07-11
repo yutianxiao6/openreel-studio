@@ -4,6 +4,12 @@
 .env.production
 node_modules
 **/node_modules
+.pnpm-store
+**/.pnpm-store
+.pytest_cache
+**/.pytest_cache
+.turbo
+**/.turbo
 apps/web/.next
 **/.next
 apps/api/.venv
