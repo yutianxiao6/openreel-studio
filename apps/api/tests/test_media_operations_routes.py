@@ -6,11 +6,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api import routes_projects
+from app.api import routes_projects, routes_video_editor
 from app.config import settings
 from app.db import session as db_session
 from app.db.models import Project, WorkflowEdge, WorkflowNode
-from app.services import media_operations
+from app.services import media_operations, video_edit_sequences
 
 
 async def _setup_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -142,3 +142,100 @@ async def test_video_split_tracks_creates_video_and_audio_nodes(monkeypatch, tmp
             WorkflowEdge.source_node_id == "video-source",
         ))).all()
         assert sorted(edge.target_node_id for edge in persisted_edges) == sorted(created_ids)
+
+
+@pytest.mark.asyncio
+async def test_video_sequence_render_creates_video_node_and_dependency_edge(monkeypatch, tmp_path) -> None:
+    await _setup_db(monkeypatch, tmp_path)
+    spec = video_edit_sequences.SequenceSpec.model_validate({
+        "schema_version": "openreel.video_sequence.v1",
+        "settings": {
+            "frame_rate": {"numerator": 24, "denominator": 1},
+            "width": 1280,
+            "height": 720,
+            "audio_sample_rate": 48_000,
+            "audio_channels": 2,
+        },
+        "tracks": [
+            {"id": "v1", "kind": "video", "name": "Video 1", "order": 0},
+            {"id": "a1", "kind": "audio", "name": "Audio 1", "order": 0},
+        ],
+        "clips": [
+            {
+                "id": "video-clip",
+                "track_id": "v1",
+                "media_id": "video-source",
+                "timeline_start_frame": 0,
+                "duration_frames": 48,
+                "source_in_frame": 0,
+                "source_frame_count": 48,
+            },
+            {
+                "id": "audio-clip",
+                "track_id": "a1",
+                "media_id": "embedded-audio:video-source",
+                "timeline_start_frame": 0,
+                "duration_frames": 48,
+                "source_in_frame": 0,
+                "source_frame_count": 48,
+            },
+        ],
+    })
+    async with db_session.session_scope() as session:
+        document = await video_edit_sequences.save_sequence(
+            session,
+            project_id="project-1",
+            node_id="video-source",
+            expected_revision=0,
+            spec=spec,
+        )
+
+    async def fake_render(project_id: str, sequence, **kwargs):
+        rel_path, path = _write_media_result(tmp_path, project_id, "video", "sequence.mp4")
+        return media_operations.MediaOperationFile(
+            kind="video",
+            rel_path=rel_path,
+            path=path,
+            title=kwargs.get("title") or "时间线成片",
+            metadata={
+                "type": "video.render_sequence",
+                "sequence_revision": kwargs["revision"],
+                "duration_frames": 48,
+                "frame_rate": {"numerator": 24, "denominator": 1},
+                "width": 1280,
+                "height": 720,
+                "audio_sample_rate": 48_000,
+                "audio_channels": 2,
+                "source_node_ids": ["video-source"],
+                "transition_count": 0,
+            },
+        )
+
+    monkeypatch.setattr(routes_video_editor.video_sequence_renderer, "render_sequence", fake_render)
+
+    async with db_session.session_scope() as session:
+        result = await routes_video_editor.render_video_edit_sequence(
+            "project-1",
+            "video-source",
+            routes_video_editor.RenderSequenceRequest(
+                expected_revision=document.revision,
+                title="正式成片",
+            ),
+            session,
+        )
+        assert result["ok"] is True
+        assert result["sequence_revision"] == 1
+        assert result["node"]["type"] == "video"
+        assert result["node"]["title"] == "正式成片"
+        rendered_output = json.loads(result["node"]["output_json"])
+        assert rendered_output["video"]["local_url"].endswith(
+            "/generated_videos/video_ops/sequence.mp4"
+        )
+        assert result["edges"][0]["source_node_id"] == "video-source"
+        assert result["edges"][0]["target_node_id"] == result["node"]["id"]
+
+        created = await session.get(WorkflowNode, result["node"]["id"])
+        assert created is not None
+        node_input = json.loads(created.input_json or "{}")
+        assert node_input["source"]["sequence_revision"] == 1
+        assert node_input["depends_on"] == ["node:1"]

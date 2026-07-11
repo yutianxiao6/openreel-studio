@@ -138,6 +138,22 @@ export interface VideoEditorSequenceDocument {
   updated_at: string
 }
 
+export interface VideoEditorSequenceRenderResult {
+  ok: boolean
+  sequence_revision: number
+  node: Record<string, unknown>
+  edges: Array<Record<string, unknown>>
+  render: {
+    duration_frames: number
+    frame_rate: VideoEditorRational
+    width: number
+    height: number
+    audio_sample_rate: number
+    audio_channels: number
+    transition_count: number
+  }
+}
+
 async function readJson<T>(response: Response): Promise<T> {
   const text = await response.text()
   let payload: unknown = null
@@ -259,5 +275,21 @@ export async function saveVideoEditorSequence(
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ expected_revision: expectedRevision, spec }),
+  }))
+}
+
+export async function renderVideoEditorSequence(
+  projectId: string,
+  nodeId: string,
+  expectedRevision: number,
+  title?: string,
+) {
+  return readJson<VideoEditorSequenceRenderResult>(await fetch(editorPath(projectId, nodeId, "/sequence/render"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      expected_revision: expectedRevision,
+      title: title || undefined,
+    }),
   }))
 }

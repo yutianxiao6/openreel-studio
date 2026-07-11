@@ -9,6 +9,7 @@ import {
   getVideoEditorSequence,
   getVideoEditorWaveformManifest,
   getVideoEditorWaveformPage,
+  renderVideoEditorSequence,
   saveVideoEditorSequence,
   type VideoEditorMediaIndex,
   type VideoEditorSequenceSpec,
@@ -37,7 +38,7 @@ interface VideoEditPanelProps {
   onCommitted: () => Promise<void> | void
 }
 
-type BusyAction = "frame" | "tail" | "split" | "trim" | "concat-video" | "concat-audio" | null
+type BusyAction = "frame" | "tail" | "split" | "trim" | "concat-video" | "concat-audio" | "render" | null
 type TimelineTool = "select" | "blade"
 type TrimMode = "normal" | "ripple" | "rolling"
 type PreviewScale = "fit" | "50" | "75" | "100"
@@ -1480,6 +1481,7 @@ export default function VideoEditPanel({
   })
   const [busy, setBusy] = useState<BusyAction>(null)
   const [error, setError] = useState<string | null>(null)
+  const [renderNotice, setRenderNotice] = useState<string | null>(null)
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(() => new Set())
   const [marquee, setMarquee] = useState<MarqueeState | null>(null)
@@ -2132,6 +2134,7 @@ export default function VideoEditPanel({
     setHistoryDepth({ undo: 0, redo: 0 })
     setSequenceRevision(0)
     setSequenceLoaded(false)
+    setRenderNotice(null)
     setTool("select")
     setTrimMode("normal")
     setSnappingEnabled(true)
@@ -2325,30 +2328,42 @@ export default function VideoEditPanel({
     })
   }, [audioClips, maxTransitionDuration, sequenceLoaded, videoClips])
 
+  const persistSequenceNow = useCallback(async (): Promise<number> => {
+    if (!sequenceLoaded || initializedNodeRef.current !== nodeId) {
+      throw new Error("剪辑序列尚未加载完成")
+    }
+    const payloadKey = JSON.stringify(sequenceSpec)
+    if (payloadKey === lastSavedSequenceRef.current) return sequenceRevisionRef.current
+    const savePromise = sequenceSaveChainRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (payloadKey === lastSavedSequenceRef.current) return sequenceRevisionRef.current
+        const document = await saveVideoEditorSequence(
+          projectId,
+          nodeId,
+          sequenceRevisionRef.current,
+          sequenceSpec,
+        )
+        sequenceRevisionRef.current = document.revision
+        lastSavedSequenceRef.current = JSON.stringify(document.spec)
+        setSequenceRevision(document.revision)
+        return document.revision
+      })
+    sequenceSaveChainRef.current = savePromise.then(() => undefined)
+    return savePromise
+  }, [nodeId, projectId, sequenceLoaded, sequenceSpec])
+
   useEffect(() => {
     if (!sequenceLoaded || initializedNodeRef.current !== nodeId) return
     const payloadKey = JSON.stringify(sequenceSpec)
     if (payloadKey === lastSavedSequenceRef.current) return
     const timer = window.setTimeout(() => {
-      sequenceSaveChainRef.current = sequenceSaveChainRef.current
-        .catch(() => undefined)
-        .then(async () => {
-          const document = await saveVideoEditorSequence(
-            projectId,
-            nodeId,
-            sequenceRevisionRef.current,
-            sequenceSpec,
-          )
-          sequenceRevisionRef.current = document.revision
-          lastSavedSequenceRef.current = JSON.stringify(document.spec)
-          setSequenceRevision(document.revision)
-        })
-        .catch((reason) => {
-          setError(reason instanceof Error ? reason.message : "剪辑序列自动保存失败")
-        })
+      void persistSequenceNow().catch((reason) => {
+        setError(reason instanceof Error ? reason.message : "剪辑序列自动保存失败")
+      })
     }, 650)
     return () => window.clearTimeout(timer)
-  }, [nodeId, projectId, sequenceLoaded, sequenceSpec])
+  }, [nodeId, persistSequenceNow, sequenceLoaded, sequenceSpec])
 
   useEffect(() => {
     const video = videoRef.current
@@ -2924,6 +2939,30 @@ export default function VideoEditPanel({
       await onCommitted()
     } catch (err) {
       setError(err instanceof Error ? err.message : "操作失败")
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const renderSequence = async () => {
+    if (busy || !sequenceLoaded || sequenceEndFrame <= 0) return
+    setBusy("render")
+    setError(null)
+    setRenderNotice(null)
+    try {
+      const revision = await persistSequenceNow()
+      const result = await renderVideoEditorSequence(
+        projectId,
+        nodeId,
+        revision,
+        `${title || "视频"} · 时间线成片`,
+      )
+      setRenderNotice(
+        `已导出 r${result.sequence_revision} · ${result.render.width}×${result.render.height} · ${result.render.duration_frames} 帧`,
+      )
+      await onCommitted()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "时间线导出失败")
     } finally {
       setBusy(null)
     }
@@ -4411,6 +4450,38 @@ export default function VideoEditPanel({
                   <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">输出与媒体操作</div>
                   <span className={cn("h-1.5 w-1.5 rounded-full", isBusy ? "bg-[#67a9d8]" : "bg-[#6b727b]")} />
                 </div>
+                <button
+                  type="button"
+                  onClick={() => void renderSequence()}
+                  disabled={isBusy || !sequenceLoaded || sequenceEndFrame <= 0}
+                  aria-label="导出时间线成片"
+                  data-openreel-render-sequence="true"
+                  className={cn(
+                    "mb-1.5 flex h-9 w-full items-center justify-between rounded-[3px] border px-2.5 text-left transition",
+                    busy === "render"
+                      ? "border-[#5e9dca] bg-[#315f83] text-white"
+                      : "border-[#477da4] bg-[#26465e] text-[#e3f1fb] hover:border-[#6aa8d4] hover:bg-[#315772]",
+                    (isBusy || !sequenceLoaded || sequenceEndFrame <= 0) && "cursor-not-allowed opacity-40",
+                  )}
+                >
+                  <span>
+                    <span className="block text-[10px] font-semibold">
+                      {busy === "render" ? "正在渲染时间线…" : "导出时间线成片"}
+                    </span>
+                    <span className="mt-0.5 block font-mono text-[7px] text-[#9fc5df]">
+                      H.264 · AAC · {sequenceSpec.settings.width}×{sequenceSpec.settings.height} · {framesPerSecond.toFixed(2)} FPS
+                    </span>
+                  </span>
+                  <span className="font-mono text-[8px] text-[#9fc5df]">r{sequenceRevision}</span>
+                </button>
+                {renderNotice && !error && (
+                  <div
+                    className="mb-1.5 border border-[#386b55] bg-[#203d31] px-2 py-1.5 text-[8px] leading-3 text-[#bde6d0]"
+                    data-openreel-render-success="true"
+                  >
+                    {renderNotice}
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-1.5">
                   <ActionButton
                     active={busy === "tail"}
@@ -5002,7 +5073,7 @@ export default function VideoEditPanel({
               {busy && (
                 <div className="m-3 flex items-center gap-2 border border-[#355a74] bg-[#213746] p-2.5 text-[10px] text-[#c0ddf2]">
                   <span className="h-3 w-3 animate-spin rounded-full border-2 border-[#9dc9e8] border-t-transparent" />
-                  处理中...
+                  {busy === "render" ? "正在按时间线渲染，请保持编辑器打开…" : "处理中..."}
                 </div>
               )}
             </div>

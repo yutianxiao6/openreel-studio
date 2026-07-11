@@ -264,6 +264,44 @@ async function main() {
 
     let mockedSequenceRevision = 0
     let latestSequenceSpec = null
+    let renderRequestBody = null
+    await page.route("**/api/video-editor/**/sequence/render", async (route) => {
+      const request = route.request()
+      if (request.method() !== "POST") {
+        await route.continue()
+        return
+      }
+      renderRequestBody = request.postDataJSON()
+      const settings = latestSequenceSpec?.settings || {
+        frame_rate: { numerator: 24, denominator: 1 },
+        width: 1280,
+        height: 720,
+        audio_sample_rate: 48_000,
+        audio_channels: 2,
+      }
+      const durationFrames = Math.max(0, ...(latestSequenceSpec?.clips || []).map((clip) => (
+        Number(clip.timeline_start_frame || 0) + Number(clip.duration_frames || 0)
+      )))
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          sequence_revision: renderRequestBody.expected_revision,
+          node: { id: "rendered-sequence-node", type: "video", title: renderRequestBody.title },
+          edges: [],
+          render: {
+            duration_frames: durationFrames,
+            frame_rate: settings.frame_rate,
+            width: settings.width,
+            height: settings.height,
+            audio_sample_rate: settings.audio_sample_rate,
+            audio_channels: settings.audio_channels,
+            transition_count: latestSequenceSpec?.transitions?.length || 0,
+          },
+        }),
+      })
+    })
     await page.route("**/api/video-editor/**/sequence", async (route) => {
       const request = route.request()
       const url = new URL(request.url())
@@ -1500,6 +1538,17 @@ async function main() {
     await seekTimelineSeconds(page, transitionCutFrame / 24)
     await page.waitForFunction(() => Boolean(document.querySelector('[data-openreel-program-gap]')?.getAttribute("data-active-video-transition")))
 
+    const renderButton = page.locator('[data-openreel-render-sequence="true"]')
+    await renderButton.scrollIntoViewIfNeeded()
+    await renderButton.click()
+    await page.locator('[data-openreel-render-success="true"]').waitFor({ state: "visible" })
+    const sequenceRenderUi = Boolean(
+      renderRequestBody &&
+      renderRequestBody.expected_revision === mockedSequenceRevision &&
+      renderRequestBody.title === "Video editor verification · 时间线成片" &&
+      await page.locator('[data-openreel-render-success="true"]').textContent()
+    )
+
     if (SCREENSHOT_PATH) {
       await page.evaluate(() => {
         document.activeElement?.blur()
@@ -1508,30 +1557,8 @@ async function main() {
         document.documentElement.scrollTop = 0
         document.body.scrollLeft = 0
         document.body.scrollTop = 0
-      })
-      await page.keyboard.press("n")
-      await page.evaluate(() => {
-        const secondVideoClip = document.querySelectorAll('[data-clip-kind="video"]')[1]
-        if (secondVideoClip) {
-          const rect = secondVideoClip.getBoundingClientRect()
-          secondVideoClip.dispatchEvent(new PointerEvent("pointerdown", {
-            bubbles: true,
-            button: 0,
-            pointerId: 1,
-            clientX: rect.left + rect.width / 2,
-            clientY: rect.top + rect.height / 2,
-          }))
-          window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerId: 1 }))
-        }
-        window.scrollTo(0, 0)
-      })
-      await page.waitForFunction(() => Boolean(document.querySelector('[data-openreel-transition-inspector="true"]')))
-      await page.evaluate(() => {
         const inspectorScroller = document.querySelector('[data-openreel-inspector-pane="true"] .overflow-y-auto')
-        const transitionInspector = document.querySelector('[data-openreel-transition-inspector="true"]')
-        if (inspectorScroller && transitionInspector) {
-          inspectorScroller.scrollTop = Math.max(0, transitionInspector.offsetTop - 62)
-        }
+        if (inspectorScroller) inspectorScroller.scrollTop = 0
         window.scrollTo(0, 0)
       })
       await page.waitForTimeout(120)
@@ -1547,7 +1574,9 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: basicVisualControls && basicTransitions && programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: sequenceRenderUi && basicVisualControls && basicTransitions && programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      sequenceRenderUi,
+      renderRequestBody,
       basicVisualControls,
       basicTransitions,
       transitionsPersisted,
