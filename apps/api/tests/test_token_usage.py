@@ -18,6 +18,10 @@ def test_extract_usage_from_openai_style_response() -> None:
             "completion_tokens": 120,
             "total_tokens": 1120,
             "prompt_tokens_details": {"cached_tokens": 250},
+            "completion_tokens_details": {
+                "reasoning_tokens": 80,
+                "accepted_prediction_tokens": 4,
+            },
         },
     )
 
@@ -26,6 +30,13 @@ def test_extract_usage_from_openai_style_response() -> None:
     assert usage["prompt_tokens"] == 1000
     assert usage["completion_tokens"] == 120
     assert usage["total_tokens"] == 1120
+    assert usage["reasoning_tokens"] == 80
+    assert usage["completion_tokens_excluding_reasoning"] == 40
+    assert usage["prompt_tokens_details"] == {"cached_tokens": 250}
+    assert usage["completion_tokens_details"] == {
+        "reasoning_tokens": 80,
+        "accepted_prediction_tokens": 4,
+    }
     assert usage["cached_prompt_tokens"] == 250
     assert usage["cache_hit_rate"] == 0.25
     assert usage["cache_supported"] is True
@@ -53,6 +64,8 @@ def test_build_usage_snapshot_estimates_remaining_context() -> None:
     assert snapshot["latest_call_tokens"]["total_tokens"] == 1280
     assert snapshot["latest_call_context"]["context_remaining_tokens"] == 50000 - 1024
     assert snapshot["latest_call_context"]["scope"] == "latest_llm_call"
+    assert snapshot["reasoning_tokens"] is None
+    assert "reasoning_tokens" not in snapshot["latest_call_tokens"]
 
 
 def test_build_usage_snapshot_uses_runtime_configured_context_window() -> None:
@@ -128,6 +141,34 @@ def test_accumulate_usage_updates_cache_hit_rate() -> None:
     assert total["cumulative_tokens"]["cache_hit_rate"] == 0.25
     assert total["latest_call_tokens"]["total_tokens"] == 330
     assert total["latest_call_tokens"]["prompt_tokens"] == 300
+
+
+def test_accumulate_usage_preserves_reasoning_token_totals() -> None:
+    total = normalize_usage_totals(None)
+    total = accumulate_usage(
+        total,
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 30,
+            "reasoning_tokens": 20,
+            "total_tokens": 130,
+        },
+    )
+    total = accumulate_usage(
+        total,
+        {
+            "prompt_tokens": 200,
+            "completion_tokens": 50,
+            "reasoning_tokens": 10,
+            "total_tokens": 250,
+        },
+    )
+
+    assert total["reasoning_tokens"] == 30
+    assert total["latest_call_tokens"]["reasoning_tokens"] == 10
+    assert total["latest_call_tokens"]["completion_tokens_excluding_reasoning"] == 40
+    assert total["cumulative_tokens"]["reasoning_tokens"] == 30
+    assert total["cumulative_tokens"]["completion_tokens_excluding_reasoning"] == 50
 
 
 def test_accumulate_usage_keeps_lowest_observed_context_remaining_rate() -> None:

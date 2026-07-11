@@ -11,6 +11,8 @@ _TOTAL_KEYS = ("total_tokens", "total_token_count", "tokens")
 _PROMPT_KEYS = ("prompt_tokens", "input_tokens", "input_token_count")
 _COMPLETION_KEYS = ("completion_tokens", "output_tokens", "output_token_count")
 _DETAIL_KEYS = ("prompt_tokens_details", "input_tokens_details")
+_COMPLETION_DETAIL_KEYS = ("completion_tokens_details", "output_tokens_details")
+_REASONING_KEYS = ("reasoning_tokens", "reasoning_token_count")
 _CACHED_KEYS = (
     "cached_tokens",
     "cache_read_tokens",
@@ -89,6 +91,8 @@ def _as_mapping(value: Any) -> dict[str, Any]:
         *_PROMPT_KEYS,
         *_COMPLETION_KEYS,
         *_DETAIL_KEYS,
+        *_COMPLETION_DETAIL_KEYS,
+        *_REASONING_KEYS,
         *_CACHED_KEYS,
         *_CACHE_READ_KEYS,
         *_CACHE_CREATE_KEYS,
@@ -206,6 +210,7 @@ def latest_call_tokens_from_usage(usage: dict[str, Any] | None) -> dict[str, Any
         return {}
     prompt_tokens = _as_non_negative_int(usage.get("prompt_tokens"))
     completion_tokens = _as_non_negative_int(usage.get("completion_tokens"))
+    reasoning_tokens = _as_non_negative_int(usage.get("reasoning_tokens"))
     total_tokens = _as_non_negative_int(usage.get("total_tokens"))
     if total_tokens is None:
         parts = [value for value in (prompt_tokens, completion_tokens) if value is not None]
@@ -221,6 +226,12 @@ def latest_call_tokens_from_usage(usage: dict[str, Any] | None) -> dict[str, Any
         "scope": str(usage.get("usage_scope") or "latest_llm_call"),
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "completion_tokens_excluding_reasoning": (
+            max(0, completion_tokens - reasoning_tokens)
+            if completion_tokens is not None and reasoning_tokens is not None
+            else None
+        ),
         "total_tokens": total_tokens,
         "cached_prompt_tokens": cached_prompt_tokens,
         "cache_read_tokens": cache_read_tokens,
@@ -299,11 +310,15 @@ def cumulative_tokens_from_totals(total: dict[str, Any] | None) -> dict[str, Any
     cache_hit_rate = _as_rate(total.get("cache_hit_rate"))
     if cache_hit_rate is None:
         cache_hit_rate = _cache_hit_rate(cached_prompt_tokens, prompt_tokens)
+    completion_tokens = _as_non_negative_int(total.get("completion_tokens")) or 0
+    reasoning_tokens = _as_non_negative_int(total.get("reasoning_tokens")) or 0
     return {
         "scope": "cumulative_total",
         "llm_calls": _as_non_negative_int(total.get("llm_calls")) or 0,
         "prompt_tokens": prompt_tokens,
-        "completion_tokens": _as_non_negative_int(total.get("completion_tokens")) or 0,
+        "completion_tokens": completion_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "completion_tokens_excluding_reasoning": max(0, completion_tokens - reasoning_tokens),
         "total_tokens": _as_non_negative_int(total.get("total_tokens")) or 0,
         "cached_prompt_tokens": cached_prompt_tokens,
         "cache_read_tokens": _as_non_negative_int(total.get("cache_read_tokens")) or 0,
@@ -410,6 +425,9 @@ def extract_usage_from_response(response: Any) -> dict[str, Any]:
     details: dict[str, Any] = {}
     for key in _DETAIL_KEYS:
         details.update(_as_mapping(usage.get(key)))
+    completion_details: dict[str, Any] = {}
+    for key in _COMPLETION_DETAIL_KEYS:
+        completion_details.update(_as_mapping(usage.get(key)))
 
     prompt_tokens = _first_int(usage, _PROMPT_KEYS)
     completion_tokens = _first_int(usage, _COMPLETION_KEYS)
@@ -424,11 +442,25 @@ def extract_usage_from_response(response: Any) -> dict[str, Any]:
     )
     cache_creation_tokens = _first_int(usage, _CACHE_CREATE_KEYS) or 0
     cached_prompt_tokens = cache_read_tokens
+    reasoning_candidates = (
+        _first_int(completion_details, _REASONING_KEYS),
+        _first_int(usage, _REASONING_KEYS),
+    )
+    reasoning_tokens = max(
+        (value for value in reasoning_candidates if value is not None),
+        default=None,
+    )
 
-    return {
+    result = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "completion_tokens_excluding_reasoning": (
+            max(0, completion_tokens - reasoning_tokens)
+            if completion_tokens is not None and reasoning_tokens is not None
+            else None
+        ),
         "cached_prompt_tokens": cached_prompt_tokens,
         "cache_read_tokens": cache_read_tokens,
         "cache_creation_tokens": cache_creation_tokens,
@@ -436,6 +468,11 @@ def extract_usage_from_response(response: Any) -> dict[str, Any]:
         "cache_supported": cached_prompt_tokens > 0 or cache_creation_tokens > 0,
         "raw_usage_keys": sorted(str(key) for key in usage.keys()),
     }
+    if details:
+        result["prompt_tokens_details"] = details
+    if completion_details:
+        result["completion_tokens_details"] = completion_details
+    return result
 
 
 def build_usage_snapshot(
@@ -505,6 +542,7 @@ def empty_usage_totals() -> dict[str, Any]:
         "llm_calls": 0,
         "prompt_tokens": 0,
         "completion_tokens": 0,
+        "reasoning_tokens": 0,
         "total_tokens": 0,
         "cached_prompt_tokens": 0,
         "cache_read_tokens": 0,
@@ -596,6 +634,7 @@ def accumulate_usage(
     for key in (
         "prompt_tokens",
         "completion_tokens",
+        "reasoning_tokens",
         "total_tokens",
         "cached_prompt_tokens",
         "cache_read_tokens",
