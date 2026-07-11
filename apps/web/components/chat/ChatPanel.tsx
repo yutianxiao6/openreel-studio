@@ -2219,7 +2219,6 @@ export function ChatPanel() {
     loadHistory,
     loadNodes,
     resetBlueprintForProject,
-    setActiveChecklist,
     setCurrentProject,
   ])
 
@@ -2861,14 +2860,14 @@ export function ChatPanel() {
     })
   }
 
-  const respondSystem = (text: string) => {
+  const respondSystem = useCallback((text: string) => {
     appendMessage({
       role: "system",
       content: text,
       id: `${Date.now()}-sys-${Math.random().toString(36).slice(2, 6)}`,
       createdAt: new Date().toISOString(),
     })
-  }
+  }, [appendMessage])
 
   const formatStatus = (r: Record<string, unknown>): string => {
     const models = (r.models ?? {}) as Record<string, string>
@@ -3326,7 +3325,7 @@ export function ChatPanel() {
       })
       respondSystem(`删除失败：${errMsg}`)
     }
-  }, [currentProject, markQueuedUserMessage, refreshQueuedUserMessagePositions, removeQueuedUserMessage])
+  }, [currentProject, markQueuedUserMessage, refreshQueuedUserMessagePositions, removeQueuedUserMessage, respondSystem])
 
   const handleProposedPlanExecute = useCallback(async () => {
     if (!currentProject || isStreamActive()) return
