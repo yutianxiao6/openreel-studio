@@ -1394,7 +1394,16 @@ def load_user_templates(input_values: dict[str, Any] | None = None) -> list[dict
 
 
 def load_templates(input_values: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    templates = [*load_user_templates(input_values=input_values), *load_builtin_templates(input_values=input_values)]
+    user_templates = load_user_templates(input_values=input_values)
+    user_template_ids = {str(item.get("id") or "") for item in user_templates}
+    templates = [
+        *user_templates,
+        *(
+            item
+            for item in load_builtin_templates(input_values=input_values)
+            if str(item.get("id") or "") not in user_template_ids
+        ),
+    ]
     templates.sort(key=lambda item: (
         0 if str(item.get("scope") or "") == "user" else 1,
         0 if str(item.get("id") or "") == DEFAULT_WORKFLOW_TEMPLATE_ID else 1,
@@ -1810,6 +1819,7 @@ def _template_summary_from_raw(
 
 def list_template_summaries() -> list[dict[str, Any]]:
     templates: list[dict[str, Any]] = []
+    user_template_ids: set[str] = set()
     from app.agent import workflow_template_store
 
     for record in workflow_template_store.list_user_template_records():
@@ -1817,6 +1827,7 @@ def list_template_summaries() -> list[dict[str, Any]]:
         workflow = version.get("workflow") if isinstance(version.get("workflow"), dict) else None
         if not workflow:
             continue
+        user_template_ids.add(str(workflow.get("id") or ""))
         templates.append(_template_summary_from_raw(
             workflow,
             scope="user",
@@ -1824,8 +1835,11 @@ def list_template_summaries() -> list[dict[str, Any]]:
             extra_summary=record.get("summary") if isinstance(record.get("summary"), dict) else {},
         ))
     for path in sorted(_BUILTIN_TEMPLATE_ROOT.glob("*/templates/*.json")):
+        workflow = _read_template_file(path)
+        if str(workflow.get("id") or "") in user_template_ids:
+            continue
         templates.append(_template_summary_from_raw(
-            _read_template_file(path),
+            workflow,
             path=str(path),
             scope="builtin",
             source="builtin_template",

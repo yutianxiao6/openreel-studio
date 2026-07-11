@@ -395,7 +395,15 @@ async def test_workflow_runtime_step_upsert_emits_refresh_event(monkeypatch: pyt
     assert runtime_steps["script"]["status"] == "running"
 
 
-def test_builtin_workflow_templates_use_protocol_spec() -> None:
+def test_builtin_workflow_templates_use_protocol_spec(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        workflow_template_store,
+        "workflow_template_library_root",
+        lambda: tmp_path / "workflow_templates",
+    )
     summaries = canvas_workflow_templates.list_template_summaries()
     ids = {item["id"] for item in summaries if item["scope"] == "builtin"}
 
@@ -407,6 +415,82 @@ def test_builtin_workflow_templates_use_protocol_spec() -> None:
             continue
         assert template["workflow_spec_version"] == "openreel.workflow.v1"
         assert "core.prompt_template" in template["required_capabilities"]
+
+
+def test_user_template_shadows_builtin_template_with_same_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    template_root = tmp_path / "workflow_templates"
+    monkeypatch.setattr(workflow_template_store, "workflow_template_library_root", lambda: template_root)
+    workflow_template_store.save_user_template(
+        workflow={
+            "id": "general_short_drama_workflow",
+            "name": "我的通用视频流程",
+            "steps": [
+                {
+                    "id": "script",
+                    "title": "剧本",
+                    "node_type": "text",
+                    "runner": "node.run",
+                    "prompt_template": "根据输入生成剧本。",
+                }
+            ],
+        },
+        template_id="general_short_drama_workflow",
+        replace_existing=False,
+    )
+
+    summaries = [
+        item
+        for item in canvas_workflow_templates.list_template_summaries()
+        if item["id"] == "general_short_drama_workflow"
+    ]
+
+    assert len(summaries) == 1
+    assert summaries[0]["scope"] == "user"
+    assert summaries[0]["name"] == "我的通用视频流程"
+    loaded = canvas_workflow_templates.get_template("general_short_drama_workflow")
+    assert loaded["scope"] == "user"
+    assert loaded["name"] == "我的通用视频流程"
+
+
+def test_replacing_current_user_template_does_not_create_suffixed_copy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    template_root = tmp_path / "workflow_templates"
+    monkeypatch.setattr(workflow_template_store, "workflow_template_library_root", lambda: template_root)
+    workflow = {
+        "id": "editable_story_flow",
+        "name": "可编辑剧情流程",
+        "steps": [
+            {
+                "id": "script",
+                "title": "剧本",
+                "node_type": "text",
+                "runner": "node.run",
+                "prompt_template": "生成第一版剧本。",
+            }
+        ],
+    }
+    workflow_template_store.save_user_template(
+        workflow=workflow,
+        template_id="editable_story_flow",
+    )
+    updated = deepcopy(workflow)
+    updated["steps"][0]["prompt_template"] = "生成修改后的剧本。"
+
+    saved = workflow_template_store.save_user_template(
+        workflow=updated,
+        template_id="editable_story_flow",
+        replace_existing=True,
+    )
+
+    assert saved["template_id"] == "editable_story_flow"
+    assert sorted(path.name for path in template_root.glob("*.json")) == ["editable_story_flow.json"]
+    loaded = workflow_template_store.load_user_template("editable_story_flow")
+    assert loaded["workflow"]["steps"][0]["prompt_template"] == "生成修改后的剧本。"
 
 
 def test_template_step_summaries_preserve_fields_for_editor_roundtrip() -> None:

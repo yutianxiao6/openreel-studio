@@ -8394,7 +8394,6 @@ function WorkflowTemplatePanel({
   const [paletteSearch, setPaletteSearch] = useState("")
   const [collapsedTemplateScopeIds, setCollapsedTemplateScopeIds] = useState<Set<string>>(() => new Set())
   const selected = templates.find((item) => item.id === selectedId) || templates[0]
-  const selectedIsUserTemplate = selected?.scope === "user"
   const artifactMode = Boolean(artifactPreview)
   const inputs = useMemo(
     () => workflowInputsForTemplateSource(artifactPreview, selected, templates),
@@ -9024,7 +9023,15 @@ function WorkflowTemplatePanel({
         inputSpecs: draftInputSpecs,
         workflowAdvanced,
       })
-      await onSaveWorkflowSpec(workflow)
+      const currentTemplateId = !artifactMode && !draftWorkflowId ? workflowStringValue(selected?.id) : ""
+      if (currentTemplateId) {
+        await onSaveWorkflowTemplate(workflow, {
+          templateId: currentTemplateId,
+          replaceExisting: true,
+        })
+      } else {
+        await onSaveWorkflowSpec(workflow)
+      }
       setDraftBaselineSignature(draftSignature)
     } catch (saveError) {
       setDraftError(saveError instanceof Error ? saveError.message : String(saveError))
@@ -9033,6 +9040,7 @@ function WorkflowTemplatePanel({
     }
   }, [
     artifactPreview?.id,
+    artifactMode,
     draftWorkflowId,
     draftInputIds,
     draftInputSpecs,
@@ -9040,6 +9048,7 @@ function WorkflowTemplatePanel({
     draftSteps,
     workflowAdvanced,
     onSaveWorkflowSpec,
+    onSaveWorkflowTemplate,
     savingDraft,
     artifactPreview?.workflow,
     selected?.id,
@@ -9082,10 +9091,9 @@ function WorkflowTemplatePanel({
     setDraftError(null)
     try {
       const workflow = buildDraftWorkflowForSave()
-      const replacingCurrent = Boolean(selectedIsUserTemplate && !artifactMode && !draftWorkflowId)
       await onSaveWorkflowTemplate(workflow, {
-        templateId: replacingCurrent ? selected?.id : String(workflow.id || ""),
-        replaceExisting: replacingCurrent,
+        templateId: String(workflow.id || ""),
+        replaceExisting: false,
       })
       setDraftBaselineSignature(draftSignature)
     } catch (saveError) {
@@ -9094,15 +9102,11 @@ function WorkflowTemplatePanel({
       setSavingTemplate(false)
     }
   }, [
-    artifactMode,
     buildDraftWorkflowForSave,
     draftSignature,
     draftSteps.length,
-    draftWorkflowId,
     onSaveWorkflowTemplate,
     savingTemplate,
-    selected?.id,
-    selectedIsUserTemplate,
   ])
 
   const downloadSelectedTemplate = useCallback(async () => {
@@ -9223,7 +9227,7 @@ function WorkflowTemplatePanel({
             disabled={savingTemplate || draftSteps.length === 0}
             className="h-8 rounded-md border border-sky-200/25 bg-sky-300/10 px-3 text-xs font-semibold text-sky-100 transition hover:bg-sky-300/16 disabled:cursor-not-allowed disabled:opacity-45"
           >
-            {savingTemplate ? "保存中" : selectedIsUserTemplate && !artifactMode && !draftWorkflowId ? "更新模板" : "保存为模板"}
+            {savingTemplate ? "保存中" : !artifactMode && !draftWorkflowId ? "另存副本" : "保存为模板"}
           </button>
           <button
             type="button"
