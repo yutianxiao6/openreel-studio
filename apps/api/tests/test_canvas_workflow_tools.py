@@ -808,7 +808,19 @@ def test_general_short_drama_workflow_template_is_available() -> None:
     assert by_id["final_video"]["kind"] == "video"
     assert by_id["final_video"]["node_type"] == "video"
     assert by_id["final_video"]["runner"] == "workflow_canvas_output"
-    assert by_id["final_video"]["depends_on"] == ["video_prompt", "storyboard"]
+    assert by_id["final_video"]["depends_on"] == [
+        "video_prompt",
+        "storyboard",
+        "scene_reference",
+        "main_character_images",
+    ]
+    assert by_id["final_video"]["context_refs"] == [
+        {"ref": "storyboard", "role": "visual_reference"},
+        {"ref": "scene_reference", "role": "visual_reference"},
+        {"ref": "video_prompt", "role": "context"},
+    ]
+    assert by_id["final_video"]["reference_selectors"][0]["from_group"] == "main_character_images"
+    assert by_id["final_video"]["reference_selectors"][0]["source_path"] == "output.appearing_characters"
 
 
 @pytest.mark.asyncio
@@ -2583,7 +2595,15 @@ def test_general_short_drama_workflow_template_expands_with_inputs() -> None:
         "script",
         "episode_segments_s1_video_prompt",
         "episode_segments_s1_storyboard",
+        "episode_segments_s1_scene_reference",
+        "main_character_images",
     ]
+    assert by_id["episode_segments_s1_final_video"]["context_refs"] == [
+        {"ref": "storyboard", "role": "visual_reference"},
+        {"ref": "scene_reference", "role": "visual_reference"},
+        {"ref": "video_prompt", "role": "context"},
+    ]
+    assert by_id["episode_segments_s1_final_video"]["reference_selectors"][0]["from_group"] == "main_character_images"
     assert by_id["episode_segments_s2_final_video"]["instance_scope"]["start_second"] == 15
     assert by_id["episode_segments_s2_final_video"]["instance_scope"]["end_second"] == 30
     assert template["deferred_groups"][0]["id"] == "main_character_images"
@@ -4605,7 +4625,12 @@ async def test_workflow_run_step_selects_only_appearing_character_references(mon
         agent_calls.append(kwargs)
         return {"ok": True, "status": "completed", "result": {"node_ids": [kwargs["inputs"]["node_id"]]}}
 
-    async def fake_node_run(project_id: str, node_id: str, action: str | None = None) -> dict[str, Any]:
+    async def fake_node_run(
+        project_id: str,
+        node_id: str,
+        action: str | None = None,
+        **_: Any,
+    ) -> dict[str, Any]:
         run_calls.append((node_id, action))
         return {"ok": True, "node_id": node_id, "status": "completed"}
 

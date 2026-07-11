@@ -4245,6 +4245,22 @@ function MentionCandidateThumbnail({ src }: { src?: string }) {
   return <ImageIcon className="h-3.5 w-3.5" />
 }
 
+function promptCharacterCount(value: string): number {
+  return Array.from(value).length
+}
+
+function PromptCharacterCount({ value }: { value: string }) {
+  const count = promptCharacterCount(value)
+  return (
+    <span
+      className="pointer-events-none absolute bottom-1.5 right-2 rounded bg-[#151515]/90 px-1.5 py-0.5 text-[10px] tabular-nums text-zinc-500 shadow-sm ring-1 ring-white/[0.05]"
+      aria-label={`提示词字数 ${count}`}
+    >
+      {count} 字
+    </span>
+  )
+}
+
 function PromptMentionEditor({
   value,
   candidates,
@@ -4354,12 +4370,13 @@ function PromptMentionEditor({
             setQuery(null)
           }
         }}
-        className={`openreel-mention-editor w-full overflow-y-auto whitespace-pre-wrap break-words border-0 bg-transparent px-3 py-2 text-[13px] leading-5 text-zinc-100 outline-none [color-scheme:dark] ${className}`}
+        className={`openreel-mention-editor w-full overflow-y-auto whitespace-pre-wrap break-words border-0 bg-transparent px-3 pb-7 pt-2 text-[13px] leading-5 text-zinc-100 outline-none [color-scheme:dark] ${className}`}
         style={{
           minHeight: `${Math.max(2, rows) * 26}px`,
           maxHeight: maxRows ? `${Math.max(rows, maxRows) * 26}px` : undefined,
         }}
       />
+      <PromptCharacterCount value={value} />
       {query && visibleCandidates.length > 0 && (
         <div className="absolute bottom-full left-2 z-[120] mb-1 w-[min(320px,calc(100vw-48px))] overflow-hidden rounded-lg border border-white/[0.12] bg-[#111111]/98 p-1 shadow-[0_18px_44px_rgba(0,0,0,0.48)] backdrop-blur-xl">
           {visibleCandidates.map((candidate) => (
@@ -4818,12 +4835,15 @@ function NodeEditView({
             label={mainLabel}
             action={<CopyTextButton text={mainText} label={mainCopyLabel} />}
           >
-            <textarea
-              value={mainText}
-              onChange={(event) => onChange(isText ? { content: event.target.value } : { prompt: event.target.value })}
-              rows={isText ? 9 : 11}
-              className={`${inputClass} min-h-[220px] resize-y font-mono text-[13px] leading-6`}
-            />
+            <div className="relative">
+              <textarea
+                value={mainText}
+                onChange={(event) => onChange(isText ? { content: event.target.value } : { prompt: event.target.value })}
+                rows={isText ? 9 : 11}
+                className={`${inputClass} min-h-[220px] resize-y pb-8 font-mono text-[13px] leading-6`}
+              />
+              {!isText && <PromptCharacterCount value={mainText} />}
+            </div>
           </DraftField>
           <DraftField label="标题">
             <input
@@ -6233,13 +6253,16 @@ function NodeCanvasContextPanel({
           </div>
         ) : (
           isAudio ? (
-            <textarea
-              value={mainText}
-              onChange={(event) => onChange({ prompt: event.target.value })}
-              rows={4}
-              className={`${textareaHeightClass} w-full resize-y border-0 bg-transparent px-3 py-2 text-[13px] leading-5 text-zinc-100 outline-none [color-scheme:dark] placeholder:text-zinc-500`}
-              placeholder="描述音乐、旁白或声音素材"
-            />
+            <div className="relative">
+              <textarea
+                value={mainText}
+                onChange={(event) => onChange({ prompt: event.target.value })}
+                rows={4}
+                className={`${textareaHeightClass} w-full resize-y border-0 bg-transparent px-3 pb-7 pt-2 text-[13px] leading-5 text-zinc-100 outline-none [color-scheme:dark] placeholder:text-zinc-500`}
+                placeholder="描述音乐、旁白或声音素材"
+              />
+              <PromptCharacterCount value={mainText} />
+            </div>
           ) : (
             <PromptMentionEditor
               value={mainText}

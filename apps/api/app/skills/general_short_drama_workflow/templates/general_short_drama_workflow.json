@@ -802,11 +802,29 @@
           "id": "final_video",
           "title": "最终视频",
           "node_type": "video",
+          "reference_selectors": [
+            {
+              "from_group": "main_character_images",
+              "match_fields": [
+                "name",
+                "reuse_key",
+                "character",
+                "character_id",
+                "id",
+                "title"
+              ],
+              "role": "visual_reference",
+              "source_path": "output.appearing_characters",
+              "source_step": "planFrames"
+            }
+          ],
           "kind": "video",
           "runner": "workflow_canvas_output",
           "depends_on": [
             "video_prompt",
-            "storyboard"
+            "storyboard",
+            "scene_reference",
+            "main_character_images"
           ],
           "fields": {
             "purpose": "final_video",
@@ -822,11 +840,15 @@
               "role": "visual_reference"
             },
             {
+              "ref": "scene_reference",
+              "role": "visual_reference"
+            },
+            {
               "ref": "video_prompt",
               "role": "context"
             }
           ],
-          "acceptance": "画布显示当前段最终视频节点，使用上游完整视频提示词，并参考宫格分镜图生成。",
+          "acceptance": "画布显示当前段最终视频节点，使用上游完整视频提示词，并同时参考宫格分镜图、当前段场景参考图和本段实际出镜的主要人物参考图生成。",
           "source_node_id": "finalVideo"
         }
       ],
