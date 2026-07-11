@@ -5,31 +5,31 @@
 :3000 {
 	handle /favicon.ico {
 		header Cache-Control "public, max-age=300"
+		rewrite * /studio/favicon.ico
 		reverse_proxy web:3000
 	}
 	handle /studio/favicon.ico {
 		header Cache-Control "public, max-age=300"
-		rewrite * /favicon.ico
 		reverse_proxy web:3000
 	}
 
 	handle /icon.png {
 		header Cache-Control "public, max-age=300"
+		rewrite * /studio/icon.png
 		reverse_proxy web:3000
 	}
 	handle /studio/icon.png {
 		header Cache-Control "public, max-age=300"
-		rewrite * /icon.png
 		reverse_proxy web:3000
 	}
 
 	handle /apple-icon.png {
 		header Cache-Control "public, max-age=300"
+		rewrite * /studio/apple-icon.png
 		reverse_proxy web:3000
 	}
 	handle /studio/apple-icon.png {
 		header Cache-Control "public, max-age=300"
-		rewrite * /apple-icon.png
 		reverse_proxy web:3000
 	}
 
@@ -96,7 +96,6 @@
 		basic_auth {
 			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
 		}
-		uri strip_prefix /studio
 		reverse_proxy web:3000
 	}
 
@@ -104,7 +103,6 @@
 		basic_auth {
 			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
 		}
-		uri strip_prefix /studio
 		reverse_proxy web:3000
 	}
 
@@ -121,31 +119,31 @@ https://:3000 {
 
 	handle /favicon.ico {
 		header Cache-Control "public, max-age=300"
+		rewrite * /studio/favicon.ico
 		reverse_proxy web:3000
 	}
 	handle /studio/favicon.ico {
 		header Cache-Control "public, max-age=300"
-		rewrite * /favicon.ico
 		reverse_proxy web:3000
 	}
 
 	handle /icon.png {
 		header Cache-Control "public, max-age=300"
+		rewrite * /studio/icon.png
 		reverse_proxy web:3000
 	}
 	handle /studio/icon.png {
 		header Cache-Control "public, max-age=300"
-		rewrite * /icon.png
 		reverse_proxy web:3000
 	}
 
 	handle /apple-icon.png {
 		header Cache-Control "public, max-age=300"
+		rewrite * /studio/apple-icon.png
 		reverse_proxy web:3000
 	}
 	handle /studio/apple-icon.png {
 		header Cache-Control "public, max-age=300"
-		rewrite * /apple-icon.png
 		reverse_proxy web:3000
 	}
 
@@ -212,7 +210,6 @@ https://:3000 {
 		basic_auth {
 			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
 		}
-		uri strip_prefix /studio
 		reverse_proxy web:3000
 	}
 
@@ -220,7 +217,6 @@ https://:3000 {
 		basic_auth {
 			{$AUTH_USER} {$AUTH_PASSWORD_HASH}
 		}
-		uri strip_prefix /studio
 		reverse_proxy web:3000
 	}
 
