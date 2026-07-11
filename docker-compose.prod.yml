@@ -34,6 +34,7 @@ services:
         NEXT_PUBLIC_API_BASE_URL: /studio
     environment:
       INTERNAL_API_BASE_URL: http://api:8000
+      HOSTNAME: 0.0.0.0
     depends_on:
       - api
     restart: unless-stopped
