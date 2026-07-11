@@ -170,7 +170,7 @@ def test_project_active_workflow_imported_authoring_spec_returns_compiled_previe
     assert payload["preview"]["input_ids"] == ["plot"]
     assert payload["preview"]["required_inputs"] == ["plot"]
     assert payload["preview"]["first_steps"][0]["node_type"] == "text"
-    assert payload["preview"]["first_steps"][0]["surface"] == "workflow_runtime"
+    assert payload["preview"]["first_steps"][0]["surface"] == "draft_canvas"
     assert payload["preview"]["first_steps"][1]["id"] == "storyboard_prompt"
     assert payload["preview"]["first_steps"][1]["surface"] == "workflow_runtime"
     assert payload["preview"]["first_steps"][2]["node_type"] == "image"

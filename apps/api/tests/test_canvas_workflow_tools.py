@@ -6978,7 +6978,7 @@ def test_authoring_workflow_spec_compiles_to_runtime_contract() -> None:
     video_prompt = by_id["segments_s1_video_prompt"]
     assert script["node_type"] == "text"
     assert script["runner"] == "node.run"
-    assert script["surface"] == "workflow_runtime"
+    assert script["surface"] == "draft_canvas"
     assert "SYSTEM:" in script["prompt_template"]
     assert plan["surface"] == "workflow_runtime"
     assert plan["output_mode"] == "json"
@@ -7181,7 +7181,7 @@ async def test_workflow_spec_commit_accepts_authoring_steps_without_runtime_fiel
     assert loaded["workflow"]["schema"] == "openreel.workflow.authoring.v1"
     assert "runner" not in json.dumps(loaded["workflow"], ensure_ascii=False)
     assert loaded["preview"]["first_steps"][0]["node_type"] == "text"
-    assert loaded["preview"]["first_steps"][0]["surface"] == "workflow_runtime"
+    assert loaded["preview"]["first_steps"][0]["surface"] == "draft_canvas"
     assert "SYSTEM:" in loaded["preview"]["first_steps"][0]["prompt_template"]
     assert loaded["preview"]["first_steps"][1]["id"] == "storyboard_prompt"
     assert loaded["preview"]["first_steps"][2]["node_type"] == "image"
