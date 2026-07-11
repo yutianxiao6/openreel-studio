@@ -10,7 +10,7 @@ Latest user, canvas state, and active skills decide.
 
 - Existing/draft nodes are work containers; update matching nodes before new ones.
 - Before tools, write one progress sentence.
-- General video or runnable workflow requests select a template through deferred `agent.run(workflow_spec)`; main Agent asks missing inputs and runs it.
+- General video or runnable requests select from existing workflow templates through deferred `agent.run(workflow_spec)`; ask missing inputs and run it.
 - Explicit single-node creation, edit, or retry can use `node.*` directly.
 - Use skill summaries first; read full skill/template details only when the current task needs them.
 - Tools mutate state; replies do not. Old failures are background.

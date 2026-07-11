@@ -358,13 +358,13 @@ def _compile_context_refs(value: Any) -> Any:
 
 
 def _output_canvas(step: dict[str, Any], *, kind: str) -> bool:
-    if kind == "text":
-        return False
     output = _step_output_spec(step)
     if _truthy_flag(output.get("canvas")) or _truthy_flag(output.get("show_on_canvas")):
         return True
     if _truthy_flag(step.get("visible")) or _truthy_flag(step.get("show_on_canvas")):
         return True
+    if kind == "text":
+        return False
     return kind in _CANVAS_PRODUCT_KINDS
 
 

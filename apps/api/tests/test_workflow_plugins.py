@@ -162,6 +162,10 @@ def test_authoring_spec_preserves_advanced_workflow_and_step_fields() -> None:
             "schema": "openreel.workflow.authoring.v1",
             "id": "advanced_flow",
             "title": "高级流程",
+            "inputs": [
+                {"id": "topic", "type": "string"},
+                {"id": "episodes", "type": "array"},
+            ],
             "defaults": {"aspect_ratio": "9:16"},
             "dimensions": {"episode": {"from": "inputs.episodes"}},
             "extensions": {"example.extension": {"enabled": True}},

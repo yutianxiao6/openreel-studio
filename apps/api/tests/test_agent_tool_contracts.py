@@ -354,7 +354,7 @@ def test_node_create_schema_uses_single_references_entrypoint() -> None:
     assert "visual_reference" in role_enum
     assert "16:9" in fields["aspect_ratio"]["description"]
     assert "精确像素" in fields["resolution"]["description"]
-    assert "2560x1440" in fields["resolution"]["description"]
+    assert "1080x1920" in fields["resolution"]["description"]
     assert "high" in fields["quality"]["description"]
 
 

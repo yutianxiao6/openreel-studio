@@ -4614,7 +4614,12 @@ async def test_workflow_run_step_marks_visible_step_failed_when_node_run_raises(
         status_updates.append((kwargs["status"], kwargs.get("result")))
         return {"id": kwargs["node_id"], "status": kwargs["status"]}
 
-    async def fake_node_run(project_id: str, node_id: str, action: str | None = None) -> dict[str, Any]:
+    async def fake_node_run(
+        project_id: str,
+        node_id: str,
+        action: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         raise RuntimeError("node runner crashed")
 
     monkeypatch.setattr(workflow_tools, "_materialize_workflow_step", fake_materialize_workflow_step)
@@ -5378,7 +5383,12 @@ async def test_workflow_run_step_expands_template_step_from_context(monkeypatch:
     async def fake_emit(project_id: str, action: str, payload: dict[str, Any]) -> None:
         return None
 
-    async def fake_node_run(project_id: str, node_id: str, action: str | None = None) -> dict[str, Any]:
+    async def fake_node_run(
+        project_id: str,
+        node_id: str,
+        action: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         run_calls.append((node_id, action))
         return {"ok": True, "node_id": node_id, "status": "completed"}
 
@@ -5526,7 +5536,12 @@ async def test_workflow_run_step_restores_deferred_context_from_existing_nodes(m
     async def fake_emit(project_id: str, action: str, payload: dict[str, Any]) -> None:
         return None
 
-    async def fake_node_run(project_id: str, node_id: str, action: str | None = None) -> dict[str, Any]:
+    async def fake_node_run(
+        project_id: str,
+        node_id: str,
+        action: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         run_calls.append((node_id, action))
         return {"ok": True, "node_id": node_id, "status": "completed"}
 
@@ -5851,9 +5866,9 @@ async def test_workflow_materialize_expands_dimension_from_planner_output(monkey
     assert len(runtime_state["workflow_runtime"]["instances"][result["instance_id"]]["steps"]) == 2
     assert result["created_count"] == 2
     assert result["deferred_group_count"] == 0
-    assert created_edges == [
-        {"id": "edge-1", "source_node_id": "node-1", "target_node_id": "node-2", "label": ""}
-    ]
+    # The planner only controls repeat expansion. It is not a production media
+    # reference, so the projected canvas must not show a misleading edge.
+    assert created_edges == []
     scene_node = created_nodes[1]
     assert scene_node["title"] == "雨夜巷口 · 场景图"
     assert scene_node["input"]["prompt"] == "雨夜巷口，青石地面反光。"
@@ -6040,7 +6055,12 @@ async def test_workflow_prompt_template_local_patch_and_reusable_template_e2e(
     async def fake_emit(project_id: str, action: str, payload: dict[str, Any]) -> None:
         return None
 
-    async def fake_node_run(project_id: str, node_id: str, action: str | None = None) -> dict[str, Any]:
+    async def fake_node_run(
+        project_id: str,
+        node_id: str,
+        action: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         node = next(item for item in nodes if item["id"] == node_id)
         workflow = node["input"]["workflow"]
         template = str(workflow.get("prompt_template") or "")

@@ -1926,7 +1926,7 @@ async def test_node_create_rejects_image_tier_resolution_before_side_effects(mon
     assert result["ok"] is False
     assert result["error_kind"] == "invalid_resolution"
     assert "精确像素" in result["error"]
-    assert "2560x1440" in result["hint"]
+    assert "1080x1920" in result["hint"]
 
 
 @pytest.mark.asyncio
@@ -4568,7 +4568,7 @@ async def test_image_creation_guide_exposes_skill_prompt_workflow(monkeypatch):
     assert result["ok"] is True
     assert "resolution" in result["required_fields"]
     assert "aspect_ratio" in result["required_fields"]
-    assert result["call_example"]["args"]["fields"]["resolution"] == "2560x1440"
+    assert result["call_example"]["args"]["fields"]["resolution"] == "1080x1920"
     assert "prompt_source" in result["optional_fields"]
     assert "prompt_template" not in result["optional_fields"]
     assert "template_selection_reason" not in result["optional_fields"]
@@ -4576,7 +4576,7 @@ async def test_image_creation_guide_exposes_skill_prompt_workflow(monkeypatch):
     assert "当前 skill" in guidance_text
     assert "最终图片 prompt" in guidance_text
     assert "精确像素" in guidance_text
-    assert "2560x1440" in guidance_text
+    assert "1080x1920" in guidance_text
     assert "skill_or_model_written" in guidance_text
     assert "template.list" not in guidance_text
     assert patches[-1] == {"guide_loaded": {"image": True}}
