@@ -39,9 +39,8 @@ services:
 
   gateway:
     image: caddy:2-alpine
-    environment:
-      AUTH_USER: ${AUTH_USER}
-      AUTH_PASSWORD_HASH: ${AUTH_PASSWORD_HASH}
+    env_file:
+      - .env.production
     ports:
       - "${APP_PUBLIC_PORT:-3100}:3000"
     volumes:
