@@ -1,47 +1,29 @@
-# Workflow Spec Protocol
+# Workflow Spec protocol
 
-OpenReel workflow spec describes a reusable creation workflow. The preferred
-authoring format is `openreel.workflow.authoring.v1`; the backend compiles it to
-the runtime workflow format used by canvas execution.
+English · [简体中文](./zh-CN/workflow-spec-protocol.md) · [Documentation home](./README.en.md)
 
-## 中文摘要
+OpenReel workflow specs describe reusable creation processes. The preferred authoring schema is `openreel.workflow.authoring.v1`; the backend compiles it to the `openreel.workflow.v1` runtime format used by canvas execution.
 
-OpenReel workflow spec 描述可复用创作流程。推荐作者格式是
-`openreel.workflow.authoring.v1`，后端会把它编译成画布运行时使用的
-`openreel.workflow.v1`。
-
-这份协议的重点是：
-
-- 用 `inputs` 定义运行前输入。
-- 用 `steps` 定义处理步骤和画布产物。
-- 用 `needs` 表示真实执行依赖。
-- 用 `collection` 和 `loop` 表示动态集合和遍历。
-- 用 `references` 表示按字段动态选择视觉参考。
-- 用 `output.canvas=true` 表示用户能在画布上看到的产物。
-
-普通用户不需要手写 JSON；前端编辑器和工作流搭建模式会生成这些字段。
-
-## Authoring Schema
+## Minimal authoring spec
 
 ```json
 {
   "schema": "openreel.workflow.authoring.v1",
-  "id": "grid_storyboard_workflow",
-  "title": "宫格分镜流程",
+  "id": "storyboard_workflow",
+  "title": "Storyboard workflow",
   "inputs": {
-    "plot": { "type": "long_text", "label": "剧情", "required": true },
-    "segmentCount": { "type": "number", "label": "段数", "default": 1 }
+    "plot": { "type": "long_text", "label": "Plot", "required": true }
   },
   "steps": [
     {
       "id": "script",
-      "title": "剧本",
+      "title": "Script",
       "kind": "text",
       "prompt": {
-        "role": "短剧编剧",
-        "task": "根据用户输入剧情写分段剧本。",
-        "output": "输出可继续拆分人物、场景和分镜的剧本正文。",
-        "check": "每段包含人物、场景、动作和情绪变化。"
+        "role": "Screenwriter",
+        "task": "Turn the input plot into a segment script.",
+        "output": "A readable script with characters, scenes, and actions.",
+        "check": "Every segment has a clear visual change."
       },
       "output": { "canvas": true, "key": "script" }
     }
@@ -49,85 +31,76 @@ OpenReel workflow spec 描述可复用创作流程。推荐作者格式是
 }
 ```
 
-## Step Fields
+Users normally build this structure through Workflow Build Mode rather than writing JSON by hand.
 
-- `id`: stable step id. Use ASCII identifiers for reusable specs.
-- `title`: user-facing step title.
-- `kind`: `input`, `text`, `plan`, `collection`, `plugin`, `loop`,
-  `canvas_text`, `image`, `video`, or `audio`.
-- `needs`: upstream step ids.
-- `for_each`: repeated execution source, such as `production_plan.output.segments`.
+## Top-level fields
+
+| Field | Purpose |
+| --- | --- |
+| `schema` | Protocol version. |
+| `id` | Stable ASCII workflow ID. |
+| `title` | User-facing title. |
+| `inputs` | Values required before execution. |
+| `steps` | Reusable process steps. |
+| `required_capabilities` | Engine capabilities required by the workflow. |
+| `required_extensions` | Extensions that must be installed before import or execution. |
+| `extensions` | Optional namespaced extension metadata. |
+
+## Step fields
+
+- `id`: stable step ID.
+- `title`: user-facing label.
+- `kind`: input, text, collection, loop, plugin, image, video, audio, or another supported authoring kind.
+- `needs`: true execution dependencies.
+- `for_each`: a repeated execution source.
 - `item_name`: local name for the current repeated item.
-- `references`: dynamic visual reference selectors.
-- `prompt`: structured single-call LLM prompt skeleton.
-- `output`: output contract. `canvas: true` creates a visible canvas product;
-  `canvas: false` keeps the result in workflow runtime only.
-- `phase` / `group`: optional UI grouping labels.
-- `ui`: optional user-facing display hints.
-- `fields`: optional node fields for generated canvas nodes.
+- `references`: dynamic selectors for visual or contextual references.
+- `prompt`: structured single-step prompt.
+- `output`: output key and whether it creates a visible canvas node.
+- `fields`: node fields written to a canvas deliverable.
+- `phase`, `group`, and `ui`: optional presentation metadata.
+- `extension_config`: namespaced step extension configuration.
 
-## Prompt Sections
+## Prompt sections
 
-`prompt` may use these keys:
+`prompt` accepts role/system, task/instruction, output, and check sections. The compiler produces stable prompt sections while each runtime instance receives only the inputs and upstream output needed by that step.
 
-- `role` or `system`: what this step acts as.
-- `task` or `instruction`: how to transform inputs into output.
-- `output`: expected output shape or content.
-- `check`: self-check criteria for this step.
+## Canvas and runtime output
 
-The compiler turns these into stable `SYSTEM`, `USER`, `OUTPUT`, and `CHECK`
-sections. The model writes workflow-level structure once; node execution reuses
-the prompt template for each step.
-
-## Canvas And Runtime Outputs
-
-Visible canvas products use:
+Visible deliverable:
 
 ```json
 { "output": { "canvas": true, "key": "storyboards" } }
 ```
 
-Workflow-only intermediate steps use:
+Runtime-only intermediate:
 
 ```json
 { "output": { "canvas": false, "key": "scene_plan" } }
 ```
 
-Runtime API payloads expose this as:
+The runtime exposes equivalent `canvas_output` and `runtime_only` metadata. Explicit output metadata takes precedence over legacy surface or visibility fields.
 
-- `canvas_output: true`: the step has a visible canvas product.
-- `runtime_only: true`: the step is kept in the top workflow runtime.
+## Dynamic expansion
 
-Frontend canvas filtering uses these explicit fields first, then falls back to
-legacy `surface` and `visibility`.
+Repeated structure is declared once and expanded from inputs or upstream output:
 
-## Dynamic Expansion
+```json
+{
+  "id": "scene_image",
+  "kind": "image",
+  "for_each": "scene_plan.output.scenes",
+  "item_name": "scene"
+}
+```
 
-Reusable specs describe repeated structure once. The backend expands concrete
-steps from inputs or upstream runtime output.
+Accepted compatibility aliases include collection/list forms, repeat groups, and string `prompt_template`. Compiled runtime instances retain a stable `template_step_id` and receive concrete instance IDs.
 
-Examples:
-
-- User-provided count: `for_each: inputs.segmentCount`.
-- Planned list: `for_each: production_plan.output.segments`.
-- Per-character assets: `for_each: character_plan.output.main_characters`.
-
-Common authoring aliases are accepted before compilation:
-
-- `type: list` means `kind: collection`.
-- `type: repeat` means `kind: loop`.
-- `repeat: { "items": "{{steps.segments.output}}", "item_name": "segment" }`
-  means a repeated group over `steps.segments.output`, and child prompts may use
-  `{{segment.field_name}}`.
-- `prompt_template` is accepted as a shortcut for a string `prompt`.
-
-Repeated steps should keep the same template id through `template_step_id` after
-compilation, while runtime instances get concrete step ids.
+Every repeat group must define a source through `for_each`, `repeat.count`, or another supported cardinality expression. Missing cardinality fails validation before execution.
 
 ## References
 
-Visual references are selected from upstream outputs without drawing every
-dependency line on the canvas.
+Selectors choose references from upstream collections without hard-coding every runtime edge:
 
 ```json
 {
@@ -140,15 +113,10 @@ dependency line on the canvas.
 }
 ```
 
-The backend resolves matching candidates at execution time and writes concrete
-node references to the visible product node.
+The runner resolves concrete candidates and writes them to the visible node's `fields.references`.
 
-## Compatibility
+## Extensions and compatibility
 
-Older runtime specs with `node_type`, `depends_on`, `prompt_template`,
-`surface`, and `visibility` remain accepted. New specs should prefer the
-authoring schema and let the compiler derive runtime fields.
+The core protocol remains stable. Namespaced capabilities and extensions declare optional behavior. Unknown optional extension metadata is preserved; an unknown required capability or extension blocks import or execution.
 
-Extensions can be stored in `extensions`, `extension_config`, `x`, or
-`x-openreel`. Unknown extension fields are preserved by normalization and
-ignored by the core runner unless a capability declares support.
+Legacy runtime specs using `node_type`, `depends_on`, `prompt_template`, `surface`, or `visibility` remain accepted. New reusable workflows should use the authoring schema and let the compiler derive runtime fields.

@@ -25,6 +25,9 @@ _PROFILE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _REFERENCES = {
     "overview": [
         "README.md",
+        "README.en.md",
+        "docs/README.md",
+        "docs/README.en.md",
         "apps/api/README.md",
         "apps/api/app/skills/video_production/SKILL.md",
     ],
@@ -104,8 +107,8 @@ _GUIDANCE = {
     "overview": (
         "OpenReel Studio is a monorepo with a Next.js web app, FastAPI API, "
         "SQLite state, SSE chat streams, and a single visible canvas of workflow "
-        "nodes. Start from README.md, SETUP.md, and the skill files for public "
-        "setup and production rules."
+        "nodes. Start from README.md or README.en.md, then use the matching "
+        "docs/README language index and skill files for setup and production rules."
     ),
     "agent_loop": (
         "Keep the Agent loop small. Core production tools are project.get_state, "

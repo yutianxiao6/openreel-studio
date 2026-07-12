@@ -77,7 +77,9 @@ meta tools for discovering and running low-frequency deferred capabilities.
 
 ## References
 
-- `README.md` and `SETUP.md`: public setup, usage, and packaging entry points.
+- `README.md` / `README.en.md`: Chinese and English product entry points.
+- `docs/README.md` / `docs/README.en.md`: language-specific documentation maps.
+- `SETUP.md` / `SETUP.en.md`: compatibility links to the current quick starts.
 - `apps/api/app/agent/prompts/`: short always-loaded prompt sections.
 - `apps/api/app/mcp_tools/registry.py`: tool exposure and core/deferred surface.
 - `apps/api/app/agent/orchestrator.py`: Agent loop and confirmation handling.

@@ -65,6 +65,8 @@ apps/api/storage/
 workflow_templates/*.json
 !workflow_templates/.gitkeep
 assets/
+!docs/assets/
+!docs/assets/**
 storage/
 storage/assets/*
 storage/exports/*
