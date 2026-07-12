@@ -18,14 +18,10 @@
       "default": "电影感写实风格"
     },
     "video_type": {
-      "type": "enum",
+      "type": "text",
       "label": "视频类型",
-      "default": "short_drama",
-      "options": [
-        {"value": "short_drama", "label": "短剧"},
-        {"value": "short_film", "label": "电影短片"},
-        {"value": "trailer", "label": "预告片"}
-      ]
+      "description": "自由填写短剧、广告、预告片、MV、知识视频或其他类型。",
+      "default": "短剧"
     },
     "episode_count": {
       "type": "integer",
@@ -57,16 +53,6 @@
         {"value": "16:9", "label": "横屏 16:9"},
         {"value": "9:16", "label": "竖屏 9:16"},
         {"value": "1:1", "label": "方形 1:1"}
-      ]
-    },
-    "resolution": {
-      "type": "enum",
-      "label": "图片分辨率",
-      "default": "2560x1440",
-      "options": [
-        {"value": "2560x1440", "label": "2K 横屏"},
-        {"value": "1440x2560", "label": "2K 竖屏"},
-        {"value": "2048x2048", "label": "2K 方形"}
       ]
     }
   },
@@ -200,7 +186,6 @@
             "stage": "character_reference",
             "character_id": "{{ character.character_id }}",
             "aspect_ratio": "{{ inputs.aspect_ratio }}",
-            "resolution": "{{ inputs.resolution }}",
             "quality": "high"
           }
         }
@@ -288,7 +273,6 @@
             "purpose": "scene_reference",
             "stage": "scene_reference",
             "aspect_ratio": "{{ inputs.aspect_ratio }}",
-            "resolution": "{{ inputs.resolution }}",
             "quality": "high"
           }
         },
@@ -359,7 +343,6 @@
             "purpose": "storyboard",
             "stage": "storyboard",
             "aspect_ratio": "{{ inputs.aspect_ratio }}",
-            "resolution": "{{ inputs.resolution }}",
             "quality": "high"
           }
         },

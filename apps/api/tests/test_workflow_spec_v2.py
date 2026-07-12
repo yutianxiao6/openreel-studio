@@ -348,6 +348,28 @@ def test_builtin_template_is_native_v2_and_has_logical_media_steps() -> None:
     assert [step["id"] for step in segment_loop["steps"]][-2:] == ["storyboard", "final_video"]
     assert not any(step["id"].endswith("_prompt") for step in segment_loop["steps"])
 
+    public = canvas_workflow_templates.get_builtin_template(
+        "general_short_drama_workflow"
+    )["public_spec"]
+    assert public["inputs"]["video_type"]["type"] == "text"
+    assert public["inputs"]["video_type"]["options"] == []
+    assert "resolution" not in public["inputs"]
+
+
+@pytest.mark.parametrize(
+    ("aspect_ratio", "resolution"),
+    [
+        ("16:9", "2560x1440"),
+        ("9:16", "1440x2560"),
+        ("1:1", "2048x2048"),
+    ],
+)
+def test_workflow_image_resolution_follows_aspect_ratio(
+    aspect_ratio: str,
+    resolution: str,
+) -> None:
+    assert workflow_tools._workflow_default_image_resolution(aspect_ratio) == resolution
+
 
 def test_builtin_template_preserves_artifact_prompt_writing_methods() -> None:
     public = canvas_workflow_templates.get_builtin_template(

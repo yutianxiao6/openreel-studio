@@ -2737,6 +2737,17 @@ def _workflow_strip_template_media_model(fields: dict[str, Any], node_type: str)
     return fields
 
 
+def _workflow_default_image_resolution(aspect_ratio: Any) -> str:
+    aspect = str(aspect_ratio or "").strip().lower().replace("：", ":")
+    if aspect in {"1:1", "square"}:
+        return "2048x2048"
+    if aspect in {"16:9", "landscape"}:
+        return "2560x1440"
+    if aspect in {"9:16", "portrait"}:
+        return "1440x2560"
+    return "2560x1440"
+
+
 _WORKFLOW_CANVAS_SPEC_SYNC_KEYS = {
     "aspect_ratio",
     "resolution",
@@ -4102,7 +4113,11 @@ async def _materialize_workflow_step(
             )
             if existing_node_type == "image":
                 desired_step_fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
-                desired_step_fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "1080x1920")
+                desired_step_fields.setdefault(
+                    "resolution",
+                    template.get("defaults", {}).get("resolution")
+                    or _workflow_default_image_resolution(desired_step_fields.get("aspect_ratio")),
+                )
                 desired_step_fields.setdefault("quality", template.get("defaults", {}).get("quality") or "high")
             if existing_node_type == "video":
                 desired_step_fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
@@ -4226,7 +4241,11 @@ async def _materialize_workflow_step(
         fields.setdefault("prompt_status", "draft")
     if node_type == "image":
         fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
-        fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "1080x1920")
+        fields.setdefault(
+            "resolution",
+            template.get("defaults", {}).get("resolution")
+            or _workflow_default_image_resolution(fields.get("aspect_ratio")),
+        )
         fields.setdefault("quality", template.get("defaults", {}).get("quality") or "high")
     if node_type == "video":
         fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
@@ -6855,7 +6874,11 @@ async def _materialize_template(
             fields.setdefault("prompt_status", "draft")
         if node_type == "image":
             fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
-            fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "1080x1920")
+            fields.setdefault(
+                "resolution",
+                template.get("defaults", {}).get("resolution")
+                or _workflow_default_image_resolution(fields.get("aspect_ratio")),
+            )
             fields.setdefault("quality", template.get("defaults", {}).get("quality") or "high")
         if node_type == "video":
             fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")

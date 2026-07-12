@@ -576,6 +576,10 @@ function workflowInputOptionsFromRaw(raw: Record<string, unknown>): Array<{ valu
   return result.length > 0 ? result : undefined
 }
 
+function workflowInputTypeUsesOptions(inputType: unknown): boolean {
+  return String(inputType || "").trim().toLowerCase() === "enum"
+}
+
 function workflowConditionOperatorOptionsForInputType(inputType?: string): typeof WORKFLOW_CONDITION_OPERATOR_OPTIONS {
   const kind = workflowInputTypeCategory(inputType)
   const allowed = new Set(
@@ -787,7 +791,9 @@ function workflowInputDraftSpecsFromWorkflow(
       description: String(raw.description || raw.help || current.description || "").trim(),
       default: raw.default == null ? current.default || "" : String(raw.default),
     }
-    if (options || current.options) nextSpec.options = options || current.options
+    if (workflowInputTypeUsesOptions(type) && (options || current.options)) {
+      nextSpec.options = options || current.options
+    }
     result[id] = nextSpec
   }
   const inputMap = asWorkflowObject(sourceWorkflow?.inputs)
@@ -992,8 +998,13 @@ function workflowAuthoringInputSpecs(
       else delete spec.description
       if (draft.default != null && draft.default !== "") spec.default = draft.default
       else delete spec.default
-      if (draft.options && draft.options.length > 0) spec.options = draft.options.map((option) => ({ ...option }))
-      else if (draft.options) delete spec.options
+      if (workflowInputTypeUsesOptions(draft.type) && draft.options && draft.options.length > 0) {
+        spec.options = draft.options.map((option) => ({ ...option }))
+      } else {
+        delete spec.options
+        delete spec.choices
+        delete spec.enum
+      }
     }
     spec.label = workflowStringValue(spec.label) || workflowInputLabel(id)
     spec.type = workflowStringValue(spec.type) || "text"
@@ -3001,7 +3012,7 @@ function WorkflowRunInputFields({
               {label}
               {required && <span className="text-amber-200/85">必填</span>}
             </span>
-            {options.length > 0 ? (
+            {workflowInputTypeUsesOptions(type) && options.length > 0 ? (
               <select
                 value={value}
                 onChange={(event) => onInputValueChange(input, event.target.value)}
@@ -5822,6 +5833,65 @@ function WorkflowStepInspector({
                   必填
                 </label>
               </div>
+              {workflowInputTypeUsesOptions(spec.type) && (
+                <div className="rounded-md border border-white/[0.06] bg-black/16 p-2">
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-medium text-zinc-500">单选项</span>
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const currentOptions = spec.options || []
+                          const optionId = `option_${currentOptions.length + 1}`
+                          onUpdateWorkflowInputSpec(input, {
+                            options: [...currentOptions, { value: optionId, label: `选项 ${currentOptions.length + 1}` }],
+                          })
+                        }}
+                        className="h-6 rounded border border-cyan-200/18 bg-cyan-300/[0.06] px-2 text-[10px] text-cyan-100"
+                      >
+                        添加选项
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid gap-1.5">
+                    {(spec.options || []).map((option, optionIndex) => (
+                      <div key={`${optionIndex}:${option.value}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-1.5">
+                        <input
+                          value={option.label}
+                          disabled={readOnly}
+                          aria-label={`选项 ${optionIndex + 1} 显示名称`}
+                          onChange={(event) => onUpdateWorkflowInputSpec(input, {
+                            options: (spec.options || []).map((item, index) => index === optionIndex ? { ...item, label: event.target.value } : item),
+                          })}
+                          placeholder="显示名称"
+                          className={cn(textFieldClass, "h-7")}
+                        />
+                        <input
+                          value={option.value}
+                          disabled={readOnly}
+                          aria-label={`选项 ${optionIndex + 1} 提交值`}
+                          onChange={(event) => onUpdateWorkflowInputSpec(input, {
+                            options: (spec.options || []).map((item, index) => index === optionIndex ? { ...item, value: event.target.value } : item),
+                          })}
+                          placeholder="提交值"
+                          className={cn(textFieldClass, "h-7")}
+                        />
+                        {!readOnly && (
+                          <button
+                            type="button"
+                            onClick={() => onUpdateWorkflowInputSpec(input, {
+                              options: (spec.options || []).filter((_, index) => index !== optionIndex),
+                            })}
+                            className="h-7 rounded border border-red-300/16 px-2 text-[10px] text-red-100"
+                          >
+                            删除
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <label className="block text-[10px] font-medium text-zinc-500">
                 提示用户怎么输入
                 <input
@@ -7848,14 +7918,22 @@ function WorkflowTemplatePanel({
   }, [draftInputIds])
 
   const updateDraftInputSpec = useCallback((inputId: string, patch: Partial<WorkflowInputDraftSpec>) => {
-    setDraftInputSpecs((current) => ({
-      ...current,
-      [inputId]: {
+    setDraftInputSpecs((current) => {
+      const nextSpec: WorkflowInputDraftSpec = {
         type: "text",
         ...(current[inputId] || {}),
         ...patch,
-      },
-    }))
+      }
+      if (!workflowInputTypeUsesOptions(nextSpec.type)) {
+        delete nextSpec.options
+      } else if (!nextSpec.options || nextSpec.options.length === 0) {
+        nextSpec.options = [{ value: "option_1", label: "选项 1" }]
+      }
+      return {
+        ...current,
+        [inputId]: nextSpec,
+      }
+    })
     setDraftError(null)
   }, [])
 

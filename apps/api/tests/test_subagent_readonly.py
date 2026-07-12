@@ -1456,7 +1456,6 @@ async def test_agent_run_workflow_spec_defaults_plain_video_to_general_template(
         "duration_seconds",
         "segment_seconds",
         "aspect_ratio",
-        "resolution",
     ]
     assert all("missing" not in field for field in payload["input_fields"])
     assert all("question" not in field for field in payload["input_fields"])
@@ -1509,7 +1508,6 @@ async def test_agent_run_workflow_spec_accepts_explicit_reusable_template_id(mon
         "duration_seconds",
         "segment_seconds",
         "aspect_ratio",
-        "resolution",
     ]
     assert all("missing" not in field for field in payload["input_fields"])
     assert "workflow" not in payload
@@ -1569,7 +1567,6 @@ async def test_agent_run_workflow_spec_ask_user_with_template_returns_schema(mon
         "duration_seconds",
         "segment_seconds",
         "aspect_ratio",
-        "resolution",
     ]
     assert all("missing" not in field for field in payload["input_fields"])
     assert all("question" not in field for field in payload["input_fields"])
