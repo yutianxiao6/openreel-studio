@@ -170,8 +170,12 @@ def _compile_private_step(
     parent_loop_id = parent_by_id.get(step.id)
     dependencies: list[str] = []
     for dependency in compiled.get("depends_on") or []:
-        dependency_parent = parent_by_id.get(str(dependency))
-        resolved = dependency_parent if dependency_parent and dependency_parent != parent_loop_id else str(dependency)
+        dependency = str(dependency)
+        dependency_parent = parent_by_id.get(dependency)
+        if dependency == parent_loop_id:
+            resolved = dependency
+        else:
+            resolved = dependency_parent if dependency_parent and dependency_parent != parent_loop_id else dependency
         if resolved not in dependencies:
             dependencies.append(resolved)
 

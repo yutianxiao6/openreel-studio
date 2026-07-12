@@ -90,9 +90,14 @@ def _leaf_visible_output_ids(steps: list[dict[str, Any]]) -> list[str]:
     def ancestors(step_id: str) -> set[str]:
         found: set[str] = set()
         pending = list(dependencies.get(step_id) or [])
+        containing_loops: set[str] = set()
+        parent = child_parent.get(step_id)
+        while parent:
+            containing_loops.add(parent)
+            parent = child_parent.get(parent)
         while pending:
             dependency = pending.pop()
-            expanded = loop_outputs.get(dependency) if child_parent.get(step_id) != dependency else None
+            expanded = loop_outputs.get(dependency) if dependency not in containing_loops else None
             if expanded:
                 for child_id in expanded:
                     if child_id not in found:

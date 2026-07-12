@@ -73,16 +73,33 @@ WORKFLOW_SPEC_V2_EXAMPLE = {
             "foreach": {"items": "steps.plan.output.shots[]", "as": "shot", "key": "shot_id"},
             "steps": [
                 {
+                    "id": "shot_context",
+                    "title": "镜头人物选择",
+                    "kind": "object",
+                    "prompt": {
+                        "task": "根据当前镜头 {{ shot }} 输出本镜头实际使用的 selected_character_ids。",
+                        "output": "只输出 selected_character_ids。",
+                    },
+                    "output": {
+                        "schema": {
+                            "fields": [
+                                {"id": "selected_character_ids", "type": "array", "required": True},
+                            ]
+                        }
+                    },
+                },
+                {
                     "id": "storyboard",
                     "title": "分镜图",
                     "kind": "image",
+                    "needs": ["shot_context"],
                     "prompt": {"task": "{{ shot.prompt }}"},
                     "uses": [
                         {
                             "from": "character_image",
                             "as": ["vision", "reference"],
                             "select": {
-                                "values": "steps.plan.output.shots.character_ids",
+                                "values": "steps.shot_context.output.selected_character_ids",
                                 "by": ["character_id"],
                             },
                         }
@@ -103,7 +120,7 @@ WORKFLOW_SPEC_V2_EXAMPLE = {
                             "from": "character_image",
                             "as": ["vision", "reference"],
                             "select": {
-                                "values": "steps.plan.output.shots.character_ids",
+                                "values": "steps.shot_context.output.selected_character_ids",
                                 "by": ["character_id"],
                             },
                         },
@@ -120,25 +137,25 @@ _EXAMPLE_JSON = json.dumps(WORKFLOW_SPEC_V2_EXAMPLE, ensure_ascii=False, separat
 WORKFLOW_SPEC_V2_GUIDE = """\
 ## Workflow Spec v2
 
-- Root uses exactly `schema`, `id`, `title`, optional description/tags, `inputs`, `steps`, optional `ui/extensions`. Schema is `openreel.workflow.v2`.
-- Inputs are keyed objects. Every input has `type` and `label`; referenced inputs must be declared. Use snake_case ids.
-- Step kinds are `text`, `object`, `collection`, `image`, `video`, `audio`, `loop`, `plugin`. Steps use globally unique ids.
-- `text/object/collection` carry `prompt`; object and collection also carry `output.schema`. A visible text uses `output.canvas:true`.
-- Media is one logical step and carries its own `prompt`. Do not create prompt sibling steps. Media settings belong in `fields`.
-- Dependencies are explicit `needs` plus paths found in prompts, conditions, loop sources, plugin inputs, and `uses`. Paths use `inputs.<id>` or `steps.<id>.output...`.
-- A loop uses exactly one `foreach.items` or `foreach.count`, plus `as`; nested author steps live in `steps`. Item paths normally end in `[]`.
-- `uses` is the only reference contract. `vision` sends image pixels to the prompt LLM; `reference` sends the asset to media generation; `source` adopts one existing media output and cannot combine with other roles.
-- Dynamic references add `select.values` and non-empty `select.by`. `from` names the candidate media step; values identify the current selection; by names stable identity fields.
-- `when` is structured `{path,op,value}`. `execution` is `auto|manual`; `on_error` is `stop|continue`.
-- Reusable specs never contain provider, model, tier, runner, node_type, surface, visibility, runtime ids/status, generated story text, or hidden prompt phases.
-- Plugin ids are namespaced. The engine rejects unavailable required plugins before save or run.
+- Root: `schema,id,title,inputs,steps`; optional `description,tags,ui,extensions`; schema `openreel.workflow.v2`.
+- Input types are exactly `text|long_text|number|integer|boolean|enum|image|video|audio|json`; each input has `type,label`. Use `text`, never `string`, for short text. Enum options are `{value,label}`. Declare every referenced input.
+- Step kinds are `text|object|collection|image|video|audio|loop|plugin`; ids are globally unique.
+- `text|object|collection` require `prompt`; object/collection require `output.schema.fields`. A collection schema describes one item. Field types are `string|number|integer|boolean|object|array`; nested fields belong only to object/array. Declare every field later read. Visible text sets `output.canvas:true`.
+- Media is one logical step with its own `prompt`; Do not create prompt sibling steps. Put media settings in `fields`.
+- Dependencies come from `needs` and referenced `inputs.<id>`/`steps.<id>.output...` paths, loop sources, plugin inputs, and `uses`.
+- Loop: exactly one `foreach.items|count`, plus `as` and nested `steps`; item paths end `[]`. Nested loops may use `episode.segments[]`. Use stable `key` for object items.
+- `uses` is the only reference contract: `vision` gives pixels to the prompt LLM; `reference` gives assets to media generation; `source` adopts media alone.
+- Dynamic references add `select.values` and `select.by` to `{from,as}`. Values use a scoped path such as `steps.frame_plan.output.selected_character_ids`; `by` is a stable candidate field such as `character_id`. For `shot.character_ids`, first emit it from an object/collection step inside that loop, then select through that step output; never bind by array order.
+- `when` is `{path,op,value}` and path is one root input. `empty|not_empty` omit value; other ops require it. Fields: `execution=auto|manual`, `on_error=stop|continue`.
+- Direct media adoption has exactly one `source` use, no prompt, and no other use.
+- Reusable specs contain no provider/model/tier, runner/node_type/surface/visibility, runtime state, generated content, or hidden prompt phases. Plugin ids are namespaced.
 
-Frequent errors: undeclared input/path; duplicate or unknown step id; output field read but absent from schema; loop without one source; media prompt split into another step; confusing `vision` with `reference`; dynamic selection without stable ids; provider/model routing inside a reusable spec.
+Frequent errors: input `string`; undeclared fields; duplicate ids; invalid loops; prompt siblings; wrong media roles; unscoped selection; provider/model routing.
 
 Canonical example:
 ```json
 """ + _EXAMPLE_JSON + """
 ```
 
-Before saving, verify schema, input paths, ids, dependencies, output fields, loops, media roles, dynamic identity fields, conditions, and visible outputs. Then inspect the canvas projection.
+Before save, check paths, ids, dependencies, schemas, loops, roles, conditions, and visible outputs; then inspect canvas projection.
 """

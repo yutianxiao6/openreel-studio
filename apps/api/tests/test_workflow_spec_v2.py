@@ -16,7 +16,7 @@ from app.agent.workflow_spec import (
 from app.agent import canvas_workflow_templates
 from app.agent.workflow_execution_plan import compile_private_execution_template
 from app.agent.workflow_audit import audit_workflow_spec
-from app.agent.workflow_spec_prompt_contract import WORKFLOW_SPEC_V2_GUIDE
+from app.agent.workflow_spec_prompt_contract import WORKFLOW_SPEC_V2_EXAMPLE, WORKFLOW_SPEC_V2_GUIDE
 from app.agent import workflow_template_store
 from app.agent import workflow_canvas_projection
 from app.config import settings
@@ -612,6 +612,98 @@ def test_v2_audit_reports_logical_outputs_and_private_deferred_loops() -> None:
     assert report["dry_run"]["deferred_group_ids"] == ["character_images", "segment_production"]
 
 
+def test_v2_audit_keeps_leaf_outputs_inside_nested_loops() -> None:
+    payload = _base_spec()
+    payload["steps"] = [
+        {
+            "id": "plan",
+            "title": "课程规划",
+            "kind": "object",
+            "prompt": {"task": "输出模块和课时。"},
+            "output": {
+                "schema": {
+                    "fields": [
+                        {
+                            "id": "modules",
+                            "type": "array",
+                            "fields": [
+                                {"id": "module_id", "type": "string"},
+                                {
+                                    "id": "lessons",
+                                    "type": "array",
+                                    "fields": [{"id": "lesson_id", "type": "string"}],
+                                },
+                            ],
+                        }
+                    ]
+                }
+            },
+        },
+        {
+            "id": "modules",
+            "title": "逐模块",
+            "kind": "loop",
+            "foreach": {"items": "steps.plan.output.modules[]", "as": "module", "key": "module_id"},
+            "steps": [
+                {
+                    "id": "lessons",
+                    "title": "逐课时",
+                    "kind": "loop",
+                    "foreach": {"items": "module.lessons[]", "as": "lesson", "key": "lesson_id"},
+                    "steps": [
+                        {
+                            "id": "lesson_image",
+                            "title": "知识图",
+                            "kind": "image",
+                            "prompt": {"task": "生成 {{ lesson.lesson_id }} 的知识图。"},
+                        },
+                        {
+                            "id": "lesson_video",
+                            "title": "课时视频",
+                            "kind": "video",
+                            "needs": ["lesson_image"],
+                            "prompt": {"task": "根据知识图生成视频。"},
+                            "uses": [{"from": "lesson_image", "as": ["vision", "reference"]}],
+                        },
+                    ],
+                }
+            ],
+        },
+    ]
+
+    report = audit_workflow_spec(payload)
+
+    assert report["status"] == "pass"
+    assert report["dry_run"]["visible_output_ids"] == ["lesson_image", "lesson_video"]
+    assert report["dry_run"]["leaf_visible_output_ids"] == ["lesson_video"]
+
+    projection = workflow_canvas_projection.project_workflow_canvas(
+        project_id="nested-loop-projection",
+        workflow=payload,
+        context={
+            "plan": {
+                "output": {
+                    "modules": [
+                        {
+                            "module_id": "m1",
+                            "lessons": [
+                                {"lesson_id": "l1"},
+                                {"lesson_id": "l2"},
+                            ],
+                        }
+                    ]
+                }
+            }
+        },
+    )
+
+    assert projection["dynamic_inputs"]["status"] == "ready"
+    assert [item["id"] for item in projection["canvas"]["final_outputs"]] == [
+        "modules_m1_lessons_l1_lesson_video",
+        "modules_m1_lessons_l2_lesson_video",
+    ]
+
+
 def test_builtin_v2_canvas_projection_hides_private_phases_and_expands_final_videos() -> None:
     public = canvas_workflow_templates.get_builtin_template(
         "general_short_drama_workflow"
@@ -644,12 +736,31 @@ def test_builtin_v2_canvas_projection_hides_private_phases_and_expands_final_vid
 
 def test_workflow_build_guide_documents_v2_high_frequency_errors() -> None:
     assert "openreel.workflow.v2" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Use `text`, never `string`" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Input types are exactly" in WORKFLOW_SPEC_V2_GUIDE
     assert "vision" in WORKFLOW_SPEC_V2_GUIDE
     assert "reference" in WORKFLOW_SPEC_V2_GUIDE
     assert "select.values" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Values use a scoped path" in WORKFLOW_SPEC_V2_GUIDE
+    assert "first emit it from an object/collection step inside that loop" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Direct media adoption" in WORKFLOW_SPEC_V2_GUIDE
     assert "Do not create prompt sibling steps" in WORKFLOW_SPEC_V2_GUIDE
     assert "provider/model routing" in WORKFLOW_SPEC_V2_GUIDE
     assert "openreel.workflow.authoring.v1" not in WORKFLOW_SPEC_V2_GUIDE
+
+
+def test_workflow_build_guide_example_compiles_with_scoped_dynamic_selection() -> None:
+    plan = compile_workflow_spec(WORKFLOW_SPEC_V2_EXAMPLE)
+    by_id = {
+        step["id"]: step
+        for root in plan["steps"]
+        for step in ([root] if root.get("kind") != "loop" else [root, *(root.get("steps") or [])])
+    }
+
+    assert by_id["storyboard"]["uses"][0]["select"] == {
+        "values": "steps.shot_context.output.selected_character_ids",
+        "by": ["character_id"],
+    }
 
 
 def test_user_template_file_stays_a_plain_portable_v2_document(

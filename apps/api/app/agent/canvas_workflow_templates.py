@@ -209,6 +209,11 @@ def _loop_instances(group: dict[str, Any], values: dict[str, Any]) -> list[dict[
 
     source_step = str(foreach.get("from_step") or "").strip()
     path = str(foreach.get("path") or "").strip()
+    alias_source = str(foreach.get("from") or "").strip()
+    if not source_step and alias_source:
+        alias_parts = [part for part in alias_source.split(".") if part]
+        source_step = alias_parts[0] if alias_parts else ""
+        path = ".".join(alias_parts[1:])
     if not source_step:
         raise WorkflowTemplateError(f"{group.get('id')}.foreach requires from_step or count")
     source = _context_value(values, source_step)
@@ -302,6 +307,7 @@ def _expand_private_loops(
         for instance_index, instance in enumerate(instances, start=1):
             suffix = _instance_suffix(instance, instance_index, key)
             local_ids = {child_id: f"{group_id}_{suffix}_{child_id}" for child_id in child_ids}
+            parent_scope = group.get("instance_scope") if isinstance(group.get("instance_scope"), dict) else {}
             for child in children:
                 if not isinstance(child, dict):
                     continue
@@ -320,12 +326,23 @@ def _expand_private_loops(
                 rendered["repeat_group_label"] = group.get("title") or group_id
                 rendered["repeat_group_index"] = instance_index
                 rendered["instance_scope"] = {
-                    key: deepcopy(value)
-                    for key, value in instance.items()
-                    if key not in {"label", "title"}
+                    **deepcopy(parent_scope),
+                    **{
+                        key: deepcopy(value)
+                        for key, value in instance.items()
+                        if key not in {"label", "title"}
+                    },
                 }
                 rendered["item_name"] = item_name
-                expanded.append(rendered)
+                if isinstance(rendered.get("steps"), list):
+                    nested_values = {**values, item_name: deepcopy(instance)}
+                    expanded.extend(_expand_private_loops(
+                        [rendered],
+                        values=nested_values,
+                        deferred=deferred,
+                    ))
+                else:
+                    expanded.append(rendered)
     return expanded
 
 
