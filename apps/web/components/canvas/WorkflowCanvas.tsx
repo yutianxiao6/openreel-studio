@@ -10954,13 +10954,14 @@ export default function WorkflowCanvas({
       setWorkflowTemplatesError(message)
       throw new Error(message)
     }
+    const workflowDisplayName = workflowStringValue(workflow.title) || workflowStringValue(workflow.name) || "编辑的工作流"
     const active = await saveActiveWorkflowSelection({
       kind: "imported",
       workflow,
-      name: String(workflow.name || "编辑的工作流"),
+      name: workflowDisplayName,
       description: String(workflow.description || ""),
     })
-    const restored = workflowPreviewFromActiveWorkflow(active) || workflowPreviewFromImportedSpec({ workflow }, String(workflow.name || "编辑的工作流"))
+    const restored = workflowPreviewFromActiveWorkflow(active) || workflowPreviewFromImportedSpec({ workflow }, workflowDisplayName)
     if (restored) {
       setWorkflowImportedSpec(restored.workflow || workflow)
       setWorkflowArtifactPreview(restored)
@@ -10992,7 +10993,7 @@ export default function WorkflowCanvas({
     const result = await saveWorkflowTemplate(currentProject.id, {
       workflow,
       template_id: options.templateId || String(workflow.id || ""),
-      name: String(workflow.name || "未命名流程"),
+      name: workflowStringValue(workflow.title) || workflowStringValue(workflow.name) || "未命名流程",
       description: String(workflow.description || ""),
       category: "user",
       replace_existing: Boolean(options.replaceExisting),

@@ -676,6 +676,21 @@ def test_user_template_file_stays_a_plain_portable_v2_document(
     assert "runner" not in str(stored)
 
 
+def test_default_unnamed_label_does_not_overwrite_workflow_title(tmp_path) -> None:
+    saved = workflow_template_store.save_user_template(
+        workflow=_base_spec(),
+        template_id="video_flow",
+        name="未命名流程",
+        replace_existing=True,
+    )
+    stored = json.loads(
+        (tmp_path / "workflow_templates" / "user" / "video_flow.json").read_text(encoding="utf-8")
+    )
+
+    assert saved["summary"]["name"] == "视频流程"
+    assert stored["title"] == "视频流程"
+
+
 def test_workflow_llm_routing_does_not_classify_titles_or_skills() -> None:
     for workflow, fields in (
         ({"primary_skill": "character_prompt"}, {"title": "主要人物参考图提示词"}),

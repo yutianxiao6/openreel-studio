@@ -515,7 +515,13 @@ def save_user_template(
     if not isinstance(workflow, dict):
         raise WorkflowTemplateStoreError("workflow must be an object")
     normalized, structural_preview, audit = _preview_workflow(workflow, sample_inputs)
-    template_name = str(name or workflow.get("title") or structural_preview.get("name") or "未命名流程").strip()
+    requested_name = str(name or "").strip()
+    workflow_name = str(workflow.get("title") or workflow.get("name") or "").strip()
+    template_name = (
+        workflow_name
+        if requested_name in {"", "未命名流程"} and workflow_name not in {"", "未命名流程"}
+        else requested_name or workflow_name or str(structural_preview.get("name") or "未命名流程").strip()
+    )
     normalized_id = normalize_template_id(template_id or workflow.get("id") or template_name)
     if _template_exists(normalized_id) and not replace_existing:
         normalized_id = unique_template_id(normalized_id)
