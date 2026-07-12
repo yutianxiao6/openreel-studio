@@ -3139,6 +3139,7 @@ function WorkflowRunDock({
   onUploadVideoInput?: (file: File) => Promise<string>
   onToggleExpanded: (runtimeId: string) => void
 }) {
+  const [inputPanelOverrides, setInputPanelOverrides] = useState<Record<string, boolean>>({})
   const runningCount = runtimes.filter((runtime) => {
     const template = templates.find((item) => item.id === workflowRuntimeTemplateId(runtime))
     const progress = workflowRuntimeProgress(runtime, workflowRuntimeStepSummariesFromPayload(runtime, template?.steps || []))
@@ -3372,7 +3373,7 @@ function WorkflowRunDock({
           </button>
         </div>
       </div>
-        <div className="max-h-[36vh] overflow-y-auto p-2">
+        <div className="max-h-[48vh] overflow-y-auto p-2">
         {runtimes.length === 0 ? (
           <div className="flex min-h-16 items-center justify-center rounded-xl border border-dashed border-white/[0.10] bg-white/[0.025] text-xs text-zinc-500">
             添加一个流程后，可以在这里运行并查看每一步状态。
@@ -3389,6 +3390,7 @@ function WorkflowRunDock({
               const runtimeInputValues = inputValuesByInstance[runtimeId] || workflowRuntimeInputValues(runtime) || {}
               const missingInputIds = workflowMissingInputIds(inputIds, runtimeInputValues, requiredInputIds, inputSpecs)
               const inputBlocked = missingInputIds.length > 0
+              const inputPanelOpen = inputIds.length > 0 && (inputPanelOverrides[runtimeId] ?? inputBlocked)
               const rawStepMap = workflowRuntimeRawStepMap(runtime)
               const mergedSteps = workflowRuntimeStepSummariesFromPayload(runtime, template?.steps || [])
               const nodeStates = workflowRuntimeStepStatesFromPayload(runtime)
@@ -3396,13 +3398,6 @@ function WorkflowRunDock({
                 ? mergedSteps
                 : workflowDynamicVisibleSteps(mergedSteps, nodeStates).slice(0, 9)
               const treeColumns = workflowRuntimeTreeColumns(visibleSteps)
-              const inputStep = inputIds.length > 0
-                ? mergedSteps.find((step) => workflowStepIsInputStep(step, inputIds))
-                : undefined
-              const openInputStep = () => {
-                if (!inputStep) return
-                onInspectStep(runtime, inputStep, rawStepMap.get(inputStep.id), nodeStates[inputStep.id])
-              }
               const progress = workflowRuntimeProgress(runtime, mergedSteps)
               const pauseRequested = Boolean(runtime.pause_requested) || workflowStringValue(runtime.status) === "pause_requested"
               const paused = workflowStringValue(runtime.status) === "paused"
@@ -3448,25 +3443,37 @@ function WorkflowRunDock({
                         <span className="shrink-0 text-[10px] text-zinc-500">{workflowRunStatusLabel(status)}</span>
                       </span>
                     </button>
+                    {inputIds.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setInputPanelOverrides((current) => ({
+                          ...current,
+                          [runtimeId]: !inputPanelOpen,
+                        }))}
+                        className={cn(
+                          "h-7 shrink-0 rounded-full border px-2.5 text-[11px] font-semibold transition",
+                          inputBlocked
+                            ? "border-amber-200/35 bg-amber-300/12 text-amber-100 hover:bg-amber-300/18"
+                            : inputPanelOpen
+                            ? "border-cyan-200/30 bg-cyan-300/12 text-cyan-100"
+                            : "border-white/[0.09] bg-white/[0.035] text-zinc-300 hover:bg-white/[0.07]",
+                        )}
+                        title={inputPanelOpen ? "收起本次运行输入" : "填写本次运行输入"}
+                      >
+                        输入 {workflowInputSummary(inputIds, runtimeInputValues, requiredInputIds, inputSpecs).split(" ")[0]}
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => {
-                        if (inputBlocked) {
-                          openInputStep()
-                          return
-                        }
-                        onRunNext(runtime)
-                      }}
-                      disabled={busy || pausing || deleting || done}
+                      onClick={() => onRunNext(runtime)}
+                      disabled={busy || pausing || deleting || done || inputBlocked}
                       title={inputBlocked ? `先输入：${missingInputIds.map(workflowInputLabel).join("、")}` : "运行下一步"}
                       className={cn(
                         "h-7 shrink-0 rounded-full px-2.5 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-45",
-                        inputBlocked
-                          ? "border border-amber-200/30 bg-amber-300/12 text-amber-100 hover:bg-amber-300/18"
-                          : "bg-cyan-300 text-cyan-950 hover:bg-cyan-200",
+                        "bg-cyan-300 text-cyan-950 hover:bg-cyan-200",
                       )}
                     >
-                      {busy ? "运行中" : pausing ? "暂停中" : inputBlocked ? "先输入" : "运行一步"}
+                      {busy ? "运行中" : pausing ? "暂停中" : "运行一步"}
                     </button>
                     <button
                       type="button"
@@ -3475,24 +3482,18 @@ function WorkflowRunDock({
                           onPauseRun(runtime)
                           return
                         }
-                        if (inputBlocked) {
-                          openInputStep()
-                          return
-                        }
                         onRunAll(runtime)
                       }}
-                      disabled={(busy && !runningAllActive) || pausing || deleting || done}
+                      disabled={(busy && !runningAllActive) || pausing || deleting || done || (inputBlocked && !runningAllActive)}
                       title={inputBlocked && !runningAllActive ? `先输入：${missingInputIds.map(workflowInputLabel).join("、")}` : runningAllActive ? "暂停当前流程" : "一键执行当前流程"}
                       className={cn(
                         "h-7 shrink-0 rounded-full border px-2.5 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-45",
                         runningAllActive
                           ? "border-amber-200/35 bg-amber-300/12 text-amber-100 hover:bg-amber-300/18"
-                          : inputBlocked
-                          ? "border-amber-200/30 bg-amber-300/12 text-amber-100 hover:bg-amber-300/18"
                           : "border-cyan-200/25 bg-cyan-300/10 text-cyan-100 hover:bg-cyan-300/16",
                       )}
                     >
-                      {pausing ? "暂停中" : runningAllActive ? "暂停" : busy ? "运行中" : inputBlocked ? "先输入" : paused ? "继续执行" : "一键执行"}
+                      {pausing ? "暂停中" : runningAllActive ? "暂停" : busy ? "运行中" : paused ? "继续执行" : "一键执行"}
                     </button>
                     <button
                       type="button"
@@ -3503,6 +3504,32 @@ function WorkflowRunDock({
                       {deleting ? "删除中" : "删除"}
                     </button>
                   </div>
+                  {inputPanelOpen && (
+                    <section className="mt-2 rounded-xl border border-amber-200/16 bg-amber-300/[0.045] p-3">
+                      <div className="mb-2 flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-xs font-semibold text-amber-100">本次运行输入</div>
+                          <div className="mt-0.5 text-[10px] leading-4 text-amber-100/55">这些值只属于当前流程实例，填写完成后即可运行。</div>
+                        </div>
+                        <span className="shrink-0 rounded-full border border-amber-200/15 bg-black/16 px-2 py-0.5 text-[10px] text-amber-100/70">
+                          {workflowInputSummary(inputIds, runtimeInputValues, requiredInputIds, inputSpecs)}
+                        </span>
+                      </div>
+                      <WorkflowRunInputFields
+                        inputIds={inputIds}
+                        inputSpecs={inputSpecs}
+                        inputValues={runtimeInputValues}
+                        requiredInputIds={requiredInputIds}
+                        missingInputIds={missingInputIds}
+                        nodes={canvasNodes}
+                        onInputValueChange={(id, value) => {
+                          setInputPanelOverrides((current) => ({ ...current, [runtimeId]: true }))
+                          onInputValueChange(runtimeId, templateId, id, value)
+                        }}
+                        onUploadVideoInput={onUploadVideoInput}
+                      />
+                    </section>
+                  )}
                   <div className="mt-2 overflow-x-auto pb-1">
                     <div className="flex min-w-max items-start gap-3">
                       {treeColumns.map((column, columnIndex) => (
@@ -5653,7 +5680,6 @@ function WorkflowStepInspector({
   inputValues,
   requiredInputIds,
   missingRequiredInputIds,
-  canvasNodes = [],
   onWorkflowNameChange,
   onWorkflowDescriptionChange,
   onWorkflowAdvancedChange,
@@ -5664,7 +5690,6 @@ function WorkflowStepInspector({
   onToggleWorkflowInputRequired,
   onUpdateWorkflowInputSpec,
   onInputValueChange,
-  onUploadVideoInput,
   onMediaModelOverrideChange,
   onRunStep,
   onUpdateStep,
@@ -5691,7 +5716,6 @@ function WorkflowStepInspector({
   inputValues: Record<string, string>
   requiredInputIds: string[]
   missingRequiredInputIds: string[]
-  canvasNodes?: FlowNode[]
   onWorkflowNameChange: (value: string) => void
   onWorkflowDescriptionChange: (value: string) => void
   onWorkflowAdvancedChange: (key: string, value: unknown) => void
@@ -5702,7 +5726,6 @@ function WorkflowStepInspector({
   onToggleWorkflowInputRequired: (inputId: string, required: boolean) => void
   onUpdateWorkflowInputSpec: (inputId: string, patch: Partial<WorkflowInputDraftSpec>) => void
   onInputValueChange: (id: string, value: string) => void
-  onUploadVideoInput?: (file: File) => Promise<string>
   onMediaModelOverrideChange?: (stepId: string, value: string) => void
   onRunStep: (stepId: string) => void
   onUpdateStep: (stepId: string, patch: Partial<WorkflowTemplateStepSummary>) => void
@@ -5717,7 +5740,7 @@ function WorkflowStepInspector({
     <section className="rounded-md border border-amber-200/16 bg-amber-300/[0.045] p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div>
-          <div className="text-[11px] font-semibold text-amber-100">输入内容</div>
+          <div className="text-[11px] font-semibold text-amber-100">输入字段定义</div>
           <div className="mt-0.5 text-[10px] text-amber-100/60">{description}</div>
         </div>
         {!readOnly && (
@@ -5872,49 +5895,15 @@ function WorkflowStepInspector({
     return (
       <aside className="flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
         <div className="border-b border-white/10 px-4 py-3">
-          <div className="text-sm font-semibold text-zinc-100">运行输入与流程设置</div>
+          <div className="text-sm font-semibold text-zinc-100">流程设置</div>
           <div className="mt-1 text-[11px] text-zinc-500">
-            {readOnly ? "填写本次运行需要的内容；选择步骤可查看运行结果。" : "输入属于整个工作流，不是一个会执行的处理步骤。"}
+            {readOnly ? "选择步骤查看运行结果。" : "定义流程信息和运行时需要填写的字段。实际内容在画布流程控制栏填写。"}
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <div className="grid gap-3">
-            <section className="rounded-md border border-amber-200/18 bg-amber-300/[0.055] p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div>
-                  <div className="text-[11px] font-semibold text-amber-100">本次运行输入</div>
-                  <div className="mt-0.5 text-[10px] leading-4 text-amber-100/60">填写后会作为工作流根级 inputs 传给所有需要的步骤。</div>
-                </div>
-                <div className="shrink-0 text-[10px] text-amber-100/65">
-                  {workflowInputSummary(inputIds, inputValues, requiredInputIds, inputSpecs)}
-                </div>
-              </div>
-              {inputIds.length > 0 ? (
-                <WorkflowRunInputFields
-                  inputIds={inputIds}
-                  inputSpecs={inputSpecs}
-                  inputValues={inputValues}
-                  requiredInputIds={requiredInputIds}
-                  missingInputIds={missingRequiredInputIds}
-                  nodes={canvasNodes}
-                  onInputValueChange={onInputValueChange}
-                  onUploadVideoInput={onUploadVideoInput}
-                />
-              ) : (
-                <div className="rounded border border-white/[0.06] bg-black/16 px-2 py-2 text-[11px] text-zinc-500">
-                  当前工作流没有配置运行输入。
-                </div>
-              )}
-            </section>
             {!readOnly && (
-              <details className="rounded-md border border-amber-200/12 bg-black/18">
-                <summary className="cursor-pointer px-3 py-2 text-[11px] font-semibold text-amber-100/75 hover:text-amber-100">
-                  输入字段设置 · {inputIds.length} 项
-                </summary>
-                <div className="border-t border-amber-200/10 p-2">
-                  {renderFormFieldConfig("配置工作流根级输入的名称、类型、提示和默认值。")}
-                </div>
-              </details>
+              renderFormFieldConfig("这里只定义运行时需要哪些字段；具体内容在画布流程控制栏填写。")
             )}
             <section className="rounded-md border border-white/[0.08] bg-black/18 p-3">
               <div className="mb-2 text-[11px] font-semibold text-zinc-300">基础信息</div>
@@ -5945,7 +5934,7 @@ function WorkflowStepInspector({
             <section className="rounded-md border border-white/[0.08] bg-black/18 p-3">
               <div className="mb-1 text-[11px] font-semibold text-zinc-300">流程步骤</div>
               <div className="text-[12px] leading-5 text-zinc-500">
-                左侧只添加真正会处理内容的步骤，例如分段、循环、出图、出视频。运行输入在本面板统一配置。
+                左侧只添加真正会处理内容的步骤，例如分段、循环、出图、出视频。
               </div>
             </section>
             <details className="rounded-md border border-white/[0.08] bg-black/18">
@@ -7436,12 +7425,10 @@ function WorkflowTemplatePanel({
   runningAll,
   inputValues,
   requiredInputIds,
-  canvasNodes,
   nodeStates,
   mediaModelOverrides,
   onSelectedIdChange,
   onInputValueChange,
-  onUploadVideoInput,
   onMediaModelOverrideChange,
   onClearArtifactPreview,
   onRefresh,
@@ -7467,12 +7454,10 @@ function WorkflowTemplatePanel({
   runningAll: boolean
   inputValues: Record<string, string>
   requiredInputIds: string[]
-  canvasNodes: FlowNode[]
   nodeStates: Record<string, WorkflowStepNodeState>
   mediaModelOverrides: Record<string, string>
   onSelectedIdChange: (id: string) => void
   onInputValueChange: (id: string, value: string) => void
-  onUploadVideoInput?: (file: File) => Promise<string>
   onMediaModelOverrideChange: (stepId: string, value: string) => void
   onClearArtifactPreview: () => void
   onRefresh: () => void
@@ -8636,12 +8621,10 @@ function WorkflowTemplatePanel({
                   ? "border-amber-200/35 bg-amber-300/12 text-amber-100"
                   : "border-amber-200/16 bg-amber-300/[0.055] text-amber-100/75 hover:border-amber-200/30 hover:bg-amber-300/10",
               )}
-              title="填写和配置工作流根级运行输入"
+              title="打开流程名称、说明和输入字段定义"
             >
-              <span>运行输入</span>
-              <span className="font-normal text-amber-100/55">
-                {workflowInputSummary(draftInputIds, inputValues, draftRequiredInputIds, draftInputSpecs)}
-              </span>
+              <span>流程设置</span>
+              <span className="font-normal text-amber-100/55">输入字段 {draftInputIds.length}</span>
             </button>
             {displayedSteps.length > 1 && (
               <button
@@ -8732,7 +8715,6 @@ function WorkflowTemplatePanel({
             inputValues={inputValues}
             requiredInputIds={draftRequiredInputIds}
             missingRequiredInputIds={missingRequiredInputs}
-            canvasNodes={canvasNodes}
             onWorkflowNameChange={updateWorkflowName}
             onWorkflowDescriptionChange={updateWorkflowDescription}
             onWorkflowAdvancedChange={updateWorkflowAdvanced}
@@ -8743,7 +8725,6 @@ function WorkflowTemplatePanel({
             onToggleWorkflowInputRequired={toggleDraftInputRequired}
             onUpdateWorkflowInputSpec={updateDraftInputSpec}
             onInputValueChange={onInputValueChange}
-            onUploadVideoInput={onUploadVideoInput}
             onMediaModelOverrideChange={onMediaModelOverrideChange}
             onRunStep={onRunStep}
             onUpdateStep={updateDraftStep}
@@ -12875,12 +12856,10 @@ export default function WorkflowCanvas({
       runningAll={workflowRunningAll}
       inputValues={workflowInputValues}
       requiredInputIds={activeWorkflowRequiredInputIds}
-      canvasNodes={nodes}
       nodeStates={workflowStepNodeStates}
       mediaModelOverrides={workflowMediaModelOverrides}
       onSelectedIdChange={handleWorkflowTemplateSelection}
       onInputValueChange={updateWorkflowInputValue}
-      onUploadVideoInput={uploadWorkflowVideoInput}
       onMediaModelOverrideChange={updateWorkflowMediaModelOverride}
       onClearArtifactPreview={() => {
         const nextTemplateId = selectedWorkflowTemplateId || workflowTemplates[0]?.id || ""
