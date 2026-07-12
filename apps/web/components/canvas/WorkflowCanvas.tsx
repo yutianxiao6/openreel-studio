@@ -11341,14 +11341,15 @@ export default function WorkflowCanvas({
         origin_x: origin.x,
         origin_y: origin.y,
       })
-      if (result?.ok === false) throw new Error(String(result.error || "步骤运行失败"))
       if (result?.runtime) upsertWorkflowRuntimePayload(result.runtime)
+      if (result?.ok === false) throw new Error(String(result.error || "步骤运行失败"))
       await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true, fitView: true })
       await refreshWorkflowTemplates()
     } catch (error) {
       setWorkflowInstanceErrors((current) => ({ ...current, [instanceId]: workflowErrorMessage(error) }))
       try {
         await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+        await refreshWorkflowTemplates()
       } catch {
         // Keep the per-flow error if refresh fails.
       }
@@ -11398,14 +11399,15 @@ export default function WorkflowCanvas({
         origin_x: origin.x,
         origin_y: origin.y,
       })
-      if (result?.ok === false) throw new Error(String(result.error || "步骤运行失败"))
       if (result?.runtime) upsertWorkflowRuntimePayload(result.runtime)
+      if (result?.ok === false) throw new Error(String(result.error || "步骤运行失败"))
       await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true, fitView: true })
       await refreshWorkflowTemplates()
     } catch (error) {
       setWorkflowInstanceErrors((current) => ({ ...current, [instanceId]: workflowErrorMessage(error) }))
       try {
         await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+        await refreshWorkflowTemplates()
       } catch {
         // Keep the per-flow error if refresh fails.
       }
@@ -11458,14 +11460,15 @@ export default function WorkflowCanvas({
         origin_y: origin.y,
         max_steps: Math.max((template?.steps?.length || 0) + 20, 120),
       })
-      if (result?.ok === false) throw new Error(String(result.error || "工作流执行失败"))
       if (result?.runtime) upsertWorkflowRuntimePayload(result.runtime)
+      if (result?.ok === false) throw new Error(String(result.error || "工作流执行失败"))
       await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true, fitView: true })
       await refreshWorkflowTemplates()
     } catch (error) {
       setWorkflowInstanceErrors((current) => ({ ...current, [instanceId]: workflowErrorMessage(error) }))
       try {
         await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+        await refreshWorkflowTemplates()
       } catch {
         // Keep the per-flow error if refresh fails.
       }

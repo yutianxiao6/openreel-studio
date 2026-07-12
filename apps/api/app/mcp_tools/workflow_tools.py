@@ -591,6 +591,132 @@ def _workflow_downstream_step_ids(template: dict[str, Any], changed_step_id: str
     return result
 
 
+def _workflow_logical_target_steps(
+    template: dict[str, Any],
+    target_step: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return every private phase represented by one public workflow step."""
+    steps = [step for step in template.get("steps") or [] if isinstance(step, dict)]
+    logical_id = str(
+        target_step.get("logical_step_id")
+        or target_step.get("template_step_id")
+        or target_step.get("id")
+        or ""
+    ).strip()
+    if not logical_id:
+        return [target_step]
+    group_id = str(target_step.get("repeat_group_id") or "").strip()
+    group_index = str(target_step.get("repeat_group_index") or "").strip()
+    scope = target_step.get("instance_scope") if isinstance(target_step.get("instance_scope"), dict) else {}
+
+    def same_scope(step: dict[str, Any]) -> bool:
+        candidate_logical_id = str(
+            step.get("logical_step_id")
+            or step.get("template_step_id")
+            or step.get("id")
+            or ""
+        ).strip()
+        if candidate_logical_id != logical_id:
+            return False
+        if str(step.get("repeat_group_id") or "").strip() != group_id:
+            return False
+        if str(step.get("repeat_group_index") or "").strip() != group_index:
+            return False
+        candidate_scope = step.get("instance_scope") if isinstance(step.get("instance_scope"), dict) else {}
+        return not scope or not candidate_scope or candidate_scope == scope
+
+    phases = [step for step in steps if same_scope(step)]
+    return phases or [target_step]
+
+
+async def _prepare_workflow_runtime_manual_rerun(
+    *,
+    project_id: str,
+    template: dict[str, Any],
+    instance_id: str,
+    target_steps: list[dict[str, Any]],
+    requested_step_id: str,
+) -> dict[str, Any] | None:
+    """Invalidate descendants before an explicit single-step rerun.
+
+    Outputs and artifacts remain available as history, while their active run
+    status is reset so the next run-all resumes from the rerun boundary.
+    """
+    target_instance_id = str(instance_id or "").strip()
+    if not project_id or not target_instance_id or not target_steps:
+        return None
+    state = await _read_project_state(project_id)
+    runtime = _workflow_runtime_state(state)
+    instances = runtime.get("instances") if isinstance(runtime.get("instances"), dict) else {}
+    instance = instances.get(target_instance_id)
+    if not isinstance(instance, dict):
+        return None
+    records = instance.get("steps") if isinstance(instance.get("steps"), dict) else {}
+    target_ids = {
+        str(step.get("id") or "").strip()
+        for step in target_steps
+        if str(step.get("id") or "").strip()
+    }
+    has_previous_run = any(
+        isinstance(records.get(step_id), dict)
+        and (
+            int(records[step_id].get("run_count") or 0) > 0
+            or str(records[step_id].get("status") or "").strip() not in {"", "idle", "draft"}
+        )
+        for step_id in target_ids
+    )
+    if not has_previous_run:
+        return None
+
+    downstream_ids: set[str] = set()
+    for target_id in target_ids:
+        downstream_ids.update(_workflow_downstream_step_ids(template, target_id))
+    downstream_ids.difference_update(target_ids)
+    now = _utc_now_iso()
+    changed = False
+    for downstream_id in downstream_ids:
+        record = records.get(downstream_id)
+        if not isinstance(record, dict):
+            continue
+        record.update({
+            "status": "idle",
+            "stale": True,
+            "invalidated_by": str(requested_step_id or "").strip() or next(iter(target_ids), ""),
+            "invalidated_at": now,
+            "updated_at": now,
+        })
+        for key in ("error", "last_error", "last_started_at", "last_failed_at"):
+            record.pop(key, None)
+        changed = True
+    if not changed:
+        return None
+
+    instance.update({
+        "status": "partial",
+        "last_rerun_step_id": str(requested_step_id or "").strip(),
+        "last_rerun_started_at": now,
+        "updated_at": now,
+    })
+    instance.pop("run_all_active", None)
+    runtime["updated_at"] = now
+    await _write_project_state_patch(project_id, {_WORKFLOW_RUNTIME_STATE_KEY: runtime})
+    state_for_payload = {**state, _WORKFLOW_RUNTIME_STATE_KEY: runtime}
+    runtime_payload = _workflow_runtime_public_payload(
+        state_for_payload,
+        template_id=str(instance.get("template_id") or template.get("id") or ""),
+        instance_id=target_instance_id,
+    )
+    await _emit_workflow_runtime_update(
+        project_id=project_id,
+        template_id=str(instance.get("template_id") or template.get("id") or ""),
+        instance_id=target_instance_id,
+        step_id=str(requested_step_id or "").strip(),
+        status="partial",
+        runtime=runtime_payload,
+    )
+    return runtime_payload
+
+
 def _workflow_runtime_resolved_inputs(fields: dict[str, Any]) -> list[dict[str, Any]]:
     workflow = fields.get("workflow") if isinstance(fields.get("workflow"), dict) else {}
     result: list[dict[str, Any]] = []
@@ -791,6 +917,9 @@ async def _upsert_workflow_runtime_step(
         "created_at": existing.get("created_at") or now,
         "updated_at": now,
     }
+    if status in {"running", "completed"}:
+        record.pop("invalidated_by", None)
+        record.pop("invalidated_at", None)
     if status == "completed" and run_count > 1:
         for downstream_step_id in _workflow_downstream_step_ids(template, step_id):
             downstream = steps.get(downstream_step_id)
@@ -809,6 +938,13 @@ async def _upsert_workflow_runtime_step(
     elif status == "failed":
         record["last_failed_at"] = now
         record["last_error"] = error or "步骤运行失败"
+    if not _workflow_runtime_run_all_active(instance):
+        if status == "running":
+            instance["status"] = "running"
+        elif status == "failed":
+            instance["status"] = "failed"
+        elif status == "completed":
+            instance.pop("status", None)
     steps[step_id] = {key: value for key, value in record.items() if value not in (None, "", [], {})}
     await _write_project_state_patch(project_id, {_WORKFLOW_RUNTIME_STATE_KEY: runtime})
     state_for_payload = {**state, _WORKFLOW_RUNTIME_STATE_KEY: runtime}
@@ -1999,15 +2135,58 @@ def _dedupe_workflow_references(refs: list[dict[str, str]]) -> list[dict[str, st
     return result
 
 
-def _merge_workflow_dependency_refs(fields: dict[str, Any], refs: list[dict[str, str]]) -> dict[str, Any]:
+def _merge_workflow_dependency_refs(
+    fields: dict[str, Any],
+    refs: list[dict[str, str]],
+    *,
+    replace_managed: bool = False,
+) -> dict[str, Any]:
     dep_refs = _dedupe_workflow_references(refs)
-    if not dep_refs:
-        return fields
-    existing_refs = fields.get("references")
-    if isinstance(existing_refs, list):
-        dep_refs = _dedupe_workflow_references([*existing_refs, *dep_refs])
-    fields["references"] = dep_refs
-    fields["depends_on"] = _unique_nonempty_strings([item["ref"] for item in dep_refs if item.get("ref")])
+    existing_refs = _dedupe_workflow_references(
+        fields.get("references") if isinstance(fields.get("references"), list) else []
+    )
+    workflow = dict(fields.get("workflow") if isinstance(fields.get("workflow"), dict) else {})
+    if replace_managed:
+        previous_managed = _dedupe_workflow_references(
+            workflow.get("managed_references")
+            if isinstance(workflow.get("managed_references"), list)
+            else []
+        )
+        previous_keys = {
+            (str(item.get("ref") or "").strip(), str(item.get("role") or "context").strip() or "context")
+            for item in previous_managed
+        }
+        if previous_managed:
+            existing_refs = [
+                item
+                for item in existing_refs
+                if (item["ref"], item["role"]) not in previous_keys
+            ]
+        elif workflow.get("template_id") or workflow.get("instance_id"):
+            # Existing workflow nodes predate managed_references. Their stored
+            # references were executor-generated, so migrate them as one set.
+            existing_refs = []
+        workflow["managed_references"] = dep_refs
+        fields["workflow"] = workflow
+        if workflow.get("template_id") or workflow.get("instance_id"):
+            # Resolved media references are derived from managed references on
+            # every run. Remove legacy persisted copies so deleted dependencies
+            # cannot remain as sticky media inputs.
+            fields.pop("reference_images", None)
+    merged_refs = _dedupe_workflow_references([*existing_refs, *dep_refs])
+    if merged_refs:
+        fields["references"] = merged_refs
+        fields["depends_on"] = _unique_nonempty_strings(
+            [item["ref"] for item in merged_refs if item.get("ref")]
+        )
+    elif replace_managed:
+        # Keep explicit empty dependency keys so edge synchronization removes
+        # previously projected workflow edges.
+        fields["references"] = []
+        fields["depends_on"] = []
+    else:
+        fields.pop("references", None)
+        fields.pop("depends_on", None)
     return fields
 
 
@@ -4166,6 +4345,7 @@ async def _materialize_workflow_step(
                         str(existing_fields.get("source_step") or "").strip(),
                     ],
                 ),
+                replace_managed=True,
             )
             if existing_fields != original_existing_fields:
                 await canvas_tools.update_node(str(existing["id"]), {"input_data": existing_fields})
@@ -4175,7 +4355,7 @@ async def _materialize_workflow_step(
                     fields=existing_fields,
                 )
                 existing["input"] = existing_fields
-                existing["workflow"] = canonical_workflow
+                existing["workflow"] = existing_fields.get("workflow") or canonical_workflow
         if target_surface != "workflow_runtime":
             await _upsert_workflow_runtime_step(
                 project_id=project_id,
@@ -4286,7 +4466,7 @@ async def _materialize_workflow_step(
         if not _workflow_is_canvas_dependency_record(dep_node):
             continue
         dep_refs.append(_reference_for_dep(dep_node, role))
-    fields = _merge_workflow_dependency_refs(fields, dep_refs)
+    fields = _merge_workflow_dependency_refs(fields, dep_refs, replace_managed=True)
 
     workflow_meta = fields.get("workflow") if isinstance(fields.get("workflow"), dict) else {}
     fields["workflow"] = {
@@ -4505,7 +4685,7 @@ def _resolve_workflow_target_steps(template: dict[str, Any], step_id: str) -> li
                 if str(item.get("repeat_group_id") or "").strip() == target
             ]
             return grouped or exact
-        return exact
+        return _workflow_logical_target_steps(template, step)
     return [
         step for step in steps
         if str(step.get("template_step_id") or "").strip() == target
@@ -5240,7 +5420,7 @@ async def _prepare_visible_workflow_node_for_run(
     for dep_node, role in selector_ref_nodes:
         if _workflow_is_canvas_dependency_record(dep_node):
             dep_refs.append(_reference_for_dep(dep_node, role))
-    fields = _merge_workflow_dependency_refs(fields, dep_refs)
+    fields = _merge_workflow_dependency_refs(fields, dep_refs, replace_managed=True)
     if node_type == "text":
         fields["prompt_status"] = "completed"
         await canvas_tools.update_node(str(node["id"]), {"input_data": fields})
@@ -5408,6 +5588,15 @@ async def workflow_run_step(
             "deferred_groups": deepcopy(template.get("deferred_groups") or []),
             "hint": "先运行上游规划步骤；它的结构化输出会作为 context 展开人物、场景或分段集合。",
         }
+
+    if persist_active:
+        await _prepare_workflow_runtime_manual_rerun(
+            project_id=project_id,
+            template=template,
+            instance_id=instance_id,
+            target_steps=target_steps,
+            requested_step_id=step_id,
+        )
 
     from app.mcp_tools import node_universal
 
@@ -6910,6 +7099,7 @@ async def _materialize_template(
                 ),
                 *_workflow_input_reference_refs(inputs or {}, step, fields),
             ],
+            replace_managed=True,
         )
 
         workflow_meta = fields.get("workflow") if isinstance(fields.get("workflow"), dict) else {}

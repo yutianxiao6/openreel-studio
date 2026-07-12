@@ -439,6 +439,108 @@ def test_builtin_v2_compiles_private_phases_without_persisting_them() -> None:
     assert all("runtime_hidden" not in step for step in segment_loop["steps"])
 
 
+def test_builtin_scene_chain_does_not_depend_on_character_images() -> None:
+    public = canvas_workflow_templates.get_builtin_template(
+        "general_short_drama_workflow"
+    )["public_spec"]
+    private = compile_private_execution_template(public)
+    segment_loop = next(step for step in private["steps"] if step["id"] == "segment_production")
+    children = {step["id"]: step for step in segment_loop["steps"]}
+
+    assert segment_loop["depends_on"] == ["production_plan"]
+    for step_id in (
+        "segment_script__generate",
+        "scene_plan",
+        "scene_reference__prompt",
+        "scene_reference",
+        "frame_plan",
+    ):
+        assert "character_images" not in children[step_id].get("depends_on", [])
+    assert "character_images" in children["storyboard__prompt"]["depends_on"]
+    assert "character_images" in children["final_video__prompt"]["depends_on"]
+
+
+def test_builtin_vision_is_only_declared_for_steps_that_must_see_images() -> None:
+    public = canvas_workflow_templates.get_builtin_template(
+        "general_short_drama_workflow"
+    )["public_spec"]
+    private = compile_private_execution_template(public)
+    segment_loop = next(step for step in private["steps"] if step["id"] == "segment_production")
+    children = {step["id"]: step for step in segment_loop["steps"]}
+
+    assert children["scene_reference__prompt"].get("context_refs") in (None, [])
+    assert children["frame_plan"]["context_refs"] == [
+        {"ref": "scene_reference", "role": "vision_context"}
+    ]
+    assert children["storyboard__prompt"]["context_refs"] == [
+        {"ref": "scene_reference", "role": "vision_context"}
+    ]
+    assert children["storyboard__prompt"]["reference_selectors"][0]["role"] == "vision_context"
+    assert children["final_video__prompt"]["context_refs"] == [
+        {"ref": "storyboard", "role": "vision_context"},
+        {"ref": "scene_reference", "role": "vision_context"},
+    ]
+    assert children["final_video__prompt"]["reference_selectors"][0]["role"] == "vision_context"
+    assert children["storyboard"]["context_refs"] == [
+        {"ref": "scene_reference", "role": "visual_reference"}
+    ]
+    assert children["final_video"]["context_refs"] == [
+        {"ref": "storyboard", "role": "visual_reference"},
+        {"ref": "scene_reference", "role": "visual_reference"},
+    ]
+
+
+def test_workflow_managed_references_replace_legacy_edges_without_losing_manual_refs() -> None:
+    fields = {
+        "workflow": {"template_id": "short_drama", "instance_id": "wf-1"},
+        "references": [
+            {"ref": "node:character", "role": "context"},
+            {"ref": "node:script", "role": "context"},
+        ],
+        "depends_on": ["node:character", "node:script"],
+    }
+
+    migrated = workflow_tools._merge_workflow_dependency_refs(
+        fields,
+        [{"ref": "node:script", "role": "context"}],
+        replace_managed=True,
+    )
+
+    assert migrated["references"] == [{"ref": "node:script", "role": "context"}]
+    assert migrated["depends_on"] == ["node:script"]
+    assert migrated["workflow"]["managed_references"] == [
+        {"ref": "node:script", "role": "context"}
+    ]
+
+    migrated["references"].append({"ref": "asset:user-style", "role": "style_reference"})
+    refreshed = workflow_tools._merge_workflow_dependency_refs(
+        migrated,
+        [{"ref": "node:new-script", "role": "context"}],
+        replace_managed=True,
+    )
+
+    assert refreshed["references"] == [
+        {"ref": "asset:user-style", "role": "style_reference"},
+        {"ref": "node:new-script", "role": "context"},
+    ]
+    assert refreshed["depends_on"] == ["asset:user-style", "node:new-script"]
+
+    cleared = workflow_tools._merge_workflow_dependency_refs(
+        {
+            "workflow": {
+                "template_id": "short_drama",
+                "managed_references": [{"ref": "node:new-script", "role": "context"}],
+            },
+            "references": [{"ref": "node:new-script", "role": "context"}],
+            "depends_on": ["node:new-script"],
+        },
+        [],
+        replace_managed=True,
+    )
+    assert cleared["references"] == []
+    assert cleared["depends_on"] == []
+
+
 def test_private_loop_expansion_resolves_item_fields_but_keeps_workflow_paths() -> None:
     public = canvas_workflow_templates.get_builtin_template(
         "general_short_drama_workflow"
@@ -616,6 +718,256 @@ def test_runtime_public_steps_collapse_private_prompt_phases() -> None:
     assert collapsed[0]["depends_on"] == ["scene"]
     assert collapsed[0]["run_count"] == 2
     assert "提示词" not in collapsed[0]["title"]
+
+
+def test_resolving_public_step_for_rerun_includes_all_private_phases() -> None:
+    template = {
+        "steps": [
+            {
+                "id": "storyboard__prompt",
+                "logical_step_id": "storyboard",
+                "repeat_group_id": "segments",
+                "repeat_group_index": 1,
+            },
+            {
+                "id": "storyboard",
+                "logical_step_id": "storyboard",
+                "repeat_group_id": "segments",
+                "repeat_group_index": 1,
+            },
+            {
+                "id": "storyboard__prompt_2",
+                "logical_step_id": "storyboard",
+                "repeat_group_id": "segments",
+                "repeat_group_index": 2,
+            },
+        ]
+    }
+
+    resolved = workflow_tools._resolve_workflow_target_steps(template, "storyboard")
+
+    assert [step["id"] for step in resolved] == ["storyboard__prompt", "storyboard"]
+
+
+@pytest.mark.asyncio
+async def test_manual_rerun_resets_only_descendants_and_marks_capsule_partial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = {
+        "id": "resume_flow",
+        "steps": [
+            {"id": "script__generate", "logical_step_id": "script", "depends_on": []},
+            {"id": "script", "logical_step_id": "script", "depends_on": ["script__generate"]},
+            {"id": "scene", "logical_step_id": "scene", "depends_on": ["script"]},
+            {"id": "video", "logical_step_id": "video", "depends_on": ["scene"]},
+            {"id": "unrelated", "logical_step_id": "unrelated", "depends_on": []},
+        ],
+    }
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_resume": {
+                    "instance_id": "wf_resume",
+                    "template_id": "resume_flow",
+                    "status": "completed",
+                    "steps": {
+                        step_id: {
+                            "id": step_id,
+                            "step_id": step_id,
+                            "status": "completed",
+                            "run_count": 1,
+                            "output": {"content": f"old {step_id}"},
+                            "workflow": {
+                                "step_id": step_id,
+                                "logical_step_id": step_id.removesuffix("__generate"),
+                                "depends_on": next(
+                                    step["depends_on"] for step in template["steps"] if step["id"] == step_id
+                                ),
+                            },
+                        }
+                        for step_id in ("script__generate", "script", "scene", "video", "unrelated")
+                    },
+                }
+            }
+        }
+    }
+
+    async def read_state(_project_id: str) -> dict:
+        return state
+
+    async def write_patch(_project_id: str, patch: dict) -> None:
+        state.update(patch)
+
+    async def emit_update(**_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(workflow_tools, "_read_project_state", read_state)
+    monkeypatch.setattr(workflow_tools, "_write_project_state_patch", write_patch)
+    monkeypatch.setattr(workflow_tools, "_emit_workflow_runtime_update", emit_update)
+    targets = workflow_tools._resolve_workflow_target_steps(template, "script")
+
+    await workflow_tools._prepare_workflow_runtime_manual_rerun(
+        project_id="project-1",
+        template=template,
+        instance_id="wf_resume",
+        target_steps=targets,
+        requested_step_id="script",
+    )
+
+    instance = state["workflow_runtime"]["instances"]["wf_resume"]
+    assert instance["status"] == "partial"
+    assert instance["last_rerun_step_id"] == "script"
+    assert instance["steps"]["script__generate"]["status"] == "completed"
+    assert instance["steps"]["script"]["status"] == "completed"
+    assert instance["steps"]["unrelated"]["status"] == "completed"
+    for step_id in ("scene", "video"):
+        assert instance["steps"][step_id]["status"] == "idle"
+        assert instance["steps"][step_id]["stale"] is True
+        assert instance["steps"][step_id]["invalidated_by"] == "script"
+        assert instance["steps"][step_id]["output"] == {"content": f"old {step_id}"}
+        assert workflow_tools._workflow_step_needs_run_for_batch(
+            next(step for step in template["steps"] if step["id"] == step_id),
+            instance["steps"][step_id],
+            failed_step_ids=set(),
+        ) is True
+
+
+def test_resume_selection_retries_failed_step_without_rerunning_completed_prefix() -> None:
+    completed = {"status": "completed", "stale": False}
+    failed = {"status": "failed", "stale": False}
+
+    assert workflow_tools._workflow_step_needs_run_for_batch(
+        {"id": "script"}, completed, failed_step_ids=set()
+    ) is False
+    assert workflow_tools._workflow_step_needs_run_for_batch(
+        {"id": "image"}, failed, failed_step_ids=set()
+    ) is True
+    assert workflow_tools._workflow_step_needs_run_for_batch(
+        {"id": "image"}, failed, failed_step_ids={"image"}
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_ready_batch_after_failure_resumes_at_failed_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = {
+        "id": "resume_flow",
+        "steps": [
+            {"id": "script", "depends_on": []},
+            {"id": "image", "depends_on": ["script"]},
+            {"id": "video", "depends_on": ["image"]},
+        ],
+    }
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_resume": {
+                    "instance_id": "wf_resume",
+                    "template_id": "resume_flow",
+                    "status": "failed",
+                    "steps": {
+                        "script": {"status": "completed", "workflow": {"depends_on": []}},
+                        "image": {"status": "failed", "workflow": {"depends_on": ["script"]}},
+                        "video": {"status": "idle", "workflow": {"depends_on": ["image"]}},
+                    },
+                }
+            }
+        }
+    }
+
+    async def read_state(_project_id: str) -> dict:
+        return state
+
+    async def no_context(*_args: object, **_kwargs: object) -> dict:
+        return {}
+
+    async def no_settle(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(workflow_tools, "_read_project_state", read_state)
+    monkeypatch.setattr(workflow_tools, "_workflow_runtime_context_from_project", no_context)
+    monkeypatch.setattr(workflow_tools, "_workflow_runtime_settle_terminal_running_steps_for_run", no_settle)
+
+    batch = await workflow_tools._workflow_ready_step_batch(
+        project_id="project-1",
+        template=template,
+        template_id="resume_flow",
+        instance_id="wf_resume",
+        failed_step_ids=set(),
+    )
+
+    assert batch["ready_step_ids"] == ["image"]
+    assert batch["blocked_steps"] == [{"step_id": "video", "waiting_on": ["image"]}]
+
+
+@pytest.mark.asyncio
+async def test_single_step_run_updates_capsule_status_and_clears_invalidation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_resume": {
+                    "instance_id": "wf_resume",
+                    "template_id": "resume_flow",
+                    "status": "partial",
+                    "steps": {
+                        "image": {
+                            "status": "idle",
+                            "stale": True,
+                            "invalidated_by": "script",
+                            "invalidated_at": "old",
+                        }
+                    },
+                }
+            }
+        }
+    }
+
+    async def read_state(_project_id: str) -> dict:
+        return state
+
+    async def write_patch(_project_id: str, patch: dict) -> None:
+        state.update(patch)
+
+    async def emit_update(**_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(workflow_tools, "_read_project_state", read_state)
+    monkeypatch.setattr(workflow_tools, "_write_project_state_patch", write_patch)
+    monkeypatch.setattr(workflow_tools, "_emit_workflow_runtime_update", emit_update)
+    template = {"id": "resume_flow", "name": "续跑", "steps": [{"id": "image", "depends_on": []}]}
+
+    await workflow_tools._upsert_workflow_runtime_step(
+        project_id="project-1",
+        template=template,
+        instance_id="wf_resume",
+        step_id="image",
+        node_type="image",
+        title="图片",
+        fields={"workflow": {"step_id": "image"}},
+        status="running",
+        increment_run=True,
+    )
+    instance = state["workflow_runtime"]["instances"]["wf_resume"]
+    assert instance["status"] == "running"
+    assert "invalidated_by" not in instance["steps"]["image"]
+    assert "invalidated_at" not in instance["steps"]["image"]
+
+    await workflow_tools._upsert_workflow_runtime_step(
+        project_id="project-1",
+        template=template,
+        instance_id="wf_resume",
+        step_id="image",
+        node_type="image",
+        title="图片",
+        fields={"workflow": {"step_id": "image"}},
+        status="failed",
+        error="provider failed",
+    )
+    assert instance["status"] == "failed"
+    assert instance["steps"]["image"]["last_error"] == "provider failed"
 
 
 def test_runtime_public_payload_never_exposes_builtin_prompt_phase() -> None:

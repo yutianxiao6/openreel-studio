@@ -1411,7 +1411,6 @@ async def _reference_images_for_media_run(
     )
     semantic_refs = _coerce_reference_values(
         fields.get("references"),
-        fields.get("depends_on"),
         fields.get("reference_images"),
         include_roles=_MEDIA_REFERENCE_ROLES,
         exclude_roles=_DIRECT_IMAGE_SOURCE_ROLES,
@@ -3745,12 +3744,6 @@ async def _render_image_node(project_id: str, node_id: str, f: dict, node_type: 
         }
 
     reference_images, reference_warnings = await _reference_images_for_media_run(project_id, f)
-    if reference_images != (f.get("reference_images") or []):
-        f = {**f, "reference_images": reference_images}
-        try:
-            await canvas_tools.update_node(node_id, {"input_json": f})
-        except Exception:
-            logger.exception("persist normalized reference_images failed for node %s", node_id)
 
     # model 兜底:模型瞎填不存在的 provider 名 → 静默改走 active,避免直接失败
     resolved_model, warning = await _resolve_image_model(f.get("model"))
@@ -3779,10 +3772,15 @@ async def _render_image_node(project_id: str, node_id: str, f: dict, node_type: 
         size=size,
         quality=quality,
         node_id=node_id, model=resolved_model,
-        reference_images=f.get("reference_images"),
+        reference_images=reference_images,
     )
 
-    merged = _merge_image_output({}, image_result, prompt, f)
+    merged = _merge_image_output(
+        {},
+        image_result,
+        prompt,
+        {**f, "reference_images": reference_images},
+    )
     if warning:
         merged["model_warning"] = warning
     if reference_warnings:
@@ -4860,12 +4858,6 @@ async def _run_video_node(project_id: str, node_id: str, f: dict) -> dict:
     except (TypeError, ValueError):
         duration_seconds = 5
     reference_images, reference_warnings = await _reference_images_for_video_run(project_id, f)
-    if reference_images != (f.get("reference_images") or []):
-        f = {**f, "reference_images": reference_images}
-        try:
-            await canvas_tools.update_node(node_id, {"input_json": f})
-        except Exception:
-            logger.exception("persist video reference_images failed for node %s", node_id)
     video_extra = {
         key: f[key]
         for key in (

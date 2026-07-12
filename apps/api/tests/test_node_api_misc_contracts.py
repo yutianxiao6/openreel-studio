@@ -2127,10 +2127,6 @@ async def test_video_runner_passes_resolved_reference_images(monkeypatch):
         ]
         return ["node:image-1", "node:storyboard-1"], ["跳过未完成参考图"]
 
-    async def fake_update_node(node_id: str, patch: dict):
-        captured["update"] = (node_id, patch)
-        return {"id": node_id, **patch}
-
     async def fake_generate_video(**kwargs):
         captured["generate"] = kwargs
         return {
@@ -2140,7 +2136,6 @@ async def test_video_runner_passes_resolved_reference_images(monkeypatch):
         }
 
     monkeypatch.setattr(node_universal, "_reference_images_for_video_run", fake_reference_images)
-    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
     monkeypatch.setattr(node_universal.media_generation, "generate_video", fake_generate_video)
 
     result = await node_universal._run_video_node(
@@ -2163,8 +2158,6 @@ async def test_video_runner_passes_resolved_reference_images(monkeypatch):
     assert captured["generate"]["aspect_ratio"] == "9:16"
     assert captured["generate"]["resolution"] == "1440x2560"
     assert captured["generate"]["extra"]["generate_audio"] is False
-    assert captured["update"][0] == "video-1"
-    assert captured["update"][1]["input_json"]["reference_images"] == ["node:image-1", "node:storyboard-1"]
     assert result["reference_warnings"] == ["跳过未完成参考图"]
 
 
@@ -4000,8 +3993,10 @@ async def test_media_reference_resolution_excludes_source_image_role(monkeypatch
     resolved, warnings = await node_universal._reference_images_for_media_run(
         "proj-1",
         {
+            "depends_on": ["node:source-image"],
             "references": [
                 {"ref": "node:storyboard-image", "role": "visual_reference"},
+                {"ref": "node:source-image", "role": "context"},
                 {"ref": "node:source-image", "role": "source_image"},
             ],
         },

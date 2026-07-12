@@ -195,7 +195,7 @@
       "id": "segment_production",
       "title": "逐段制作",
       "kind": "loop",
-      "needs": ["production_plan", "character_images"],
+      "needs": ["production_plan"],
       "foreach": {
         "items": "steps.production_plan.output.segments[]",
         "as": "segment",
