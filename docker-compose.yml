@@ -1,3 +1,5 @@
+name: drama-agent-studio-dev
+
 services:
   api:
     build:
