@@ -95,7 +95,17 @@ try {
     $env:OPENREEL_USER_DATA_DIR = $SmokeRoot
     $env:PROJECT_ROOT = $SmokeRoot
     $env:OPENREEL_PACKAGING_SMOKE = "1"
-    Invoke-Native "Smoke-test packaged API resources" (Join-Path $ApiStage "openreel-api.exe") @()
+    Write-Step "Smoke-test packaged API resources"
+    # PyInstaller uses the Windows GUI bootloader so media subprocesses do not
+    # flash a console window. PowerShell does not wait for GUI executables when
+    # they are invoked with `&`, so wait explicitly before inspecting output.
+    $SmokeProcess = Start-Process `
+      -FilePath (Join-Path $ApiStage "openreel-api.exe") `
+      -Wait `
+      -PassThru
+    if ($SmokeProcess.ExitCode -ne 0) {
+      throw "Smoke-test packaged API resources failed with exit code $($SmokeProcess.ExitCode)"
+    }
     foreach ($ProtocolDirName in @("image_provider_protocols", "video_provider_protocols", "audio_provider_protocols")) {
       $CatalogPath = Join-Path $SmokeRoot "config\$ProtocolDirName\catalog.json"
       if (-not (Test-Path $CatalogPath)) {
