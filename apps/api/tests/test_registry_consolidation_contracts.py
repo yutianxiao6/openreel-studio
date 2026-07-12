@@ -379,6 +379,8 @@ async def test_video_production_skill_guides_reference_driven_short_video_nodes(
     assert "shot_grid_prompt" in guide
     assert "video_prompt" in guide
     assert "Prompt Skill 索引" in guide
+    assert "精确 `@参考图标签`" in guide
+    assert "稳定的图片节点 ID" in guide
     assert "默认模板" in guide
     assert "剧情/主题 `plot`" in guide
     assert "durationSeconds" in guide

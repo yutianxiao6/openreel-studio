@@ -13,6 +13,9 @@ from app.config import settings
 from app.db.models import Asset, WorkflowEdge, WorkflowNode
 from app.db.session import session_scope
 from app.services import project_media_history
+from app.services.reference_mentions import (
+    refresh_node_reference_mentions,
+)
 from app.services.node_ids import next_node_display_id, node_display_id_allocation
 from app.services.node_public_ids import public_node_id_from_model, resolve_internal_node_id
 
@@ -271,6 +274,7 @@ async def create_node(
                 updated_at=now,
             )
             session.add(node)
+            await refresh_node_reference_mentions(session, node)
             await session.commit()
             await session.refresh(node)
             return {
@@ -302,6 +306,7 @@ async def update_node(node_id: str, patch: dict | str) -> dict:
         "model_config": "model_config_json",
     }
     patch = {aliases.get(k, k): v for k, v in patch.items()}
+    refresh_reference_mentions = "prompt" in patch or "input_json" in patch
 
     async with session_scope() as session:
         node = await session.get(WorkflowNode, node_id)
@@ -322,6 +327,8 @@ async def update_node(node_id: str, patch: dict | str) -> dict:
                     value = next_model_config
                 value = _as_json_str(value)
             setattr(node, key, value)
+        if refresh_reference_mentions:
+            await refresh_node_reference_mentions(session, node)
         node.updated_at = datetime.utcnow()
         session.add(node)
         await session.commit()

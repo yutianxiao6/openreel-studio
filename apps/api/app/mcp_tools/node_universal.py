@@ -4515,6 +4515,7 @@ async def _call_workflow_text_llm(
     message: str,
     project_id: str,
     image_urls: list[str] | None = None,
+    image_labels: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     text_chars = len(system or "") + len(message or "")
     if text_chars > WORKFLOW_LLM_MAX_TEXT_CHARS:
@@ -4536,10 +4537,20 @@ async def _call_workflow_text_llm(
     user_content: str | list[dict[str, Any]] = message
     if clean_image_urls:
         user_content = [{"type": "text", "text": message}]
-        user_content.extend({
-            "type": "image_url",
-            "image_url": {"url": image_url},
-        } for image_url in clean_image_urls)
+        labels = image_labels if isinstance(image_labels, list) else []
+        for index, image_url in enumerate(clean_image_urls):
+            label = labels[index] if index < len(labels) and isinstance(labels[index], dict) else {}
+            mention = str(label.get("mention") or "").strip()
+            title = str(label.get("label") or "").strip()
+            if mention:
+                user_content.append({
+                    "type": "text",
+                    "text": f"参考图片标签：{mention}" + (f"（{title}）" if title else ""),
+                })
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": image_url},
+            })
     async with session_scope() as session:
         return await LLMService(session).generate(
             task_type=task_type,

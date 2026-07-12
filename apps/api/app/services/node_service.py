@@ -11,6 +11,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.db.models import WorkflowNode, WorkflowEdge
 from app.services.node_ids import next_node_display_id, node_display_id_allocation
+from app.services.reference_mentions import refresh_node_reference_mentions
 
 
 def _as_json_str(value: Any) -> str | None:
@@ -243,6 +244,7 @@ class NodeService:
             updated_at=now,
         )
         self.db.add(node)
+        await refresh_node_reference_mentions(self.db, node)
         await self.db.commit()
         await self.db.refresh(node)
         return node
@@ -266,6 +268,8 @@ class NodeService:
                     value = next_model_config
                 value = _as_json_str(value)
             setattr(node, key, value)
+        if "prompt" in patch or "input_json" in patch:
+            await refresh_node_reference_mentions(self.db, node)
         node.updated_at = datetime.utcnow()
         self.db.add(node)
         await self.db.commit()

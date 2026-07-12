@@ -51,6 +51,11 @@ from app.mcp_tools.workflow_runtime_output import (
     workflow_runtime_primary_output_value as _workflow_runtime_primary_output_value,
 )
 from app.services import media_history
+from app.services.reference_mentions import (
+    build_reference_mention_candidates,
+    parse_reference_mentions,
+    reference_mention_instruction,
+)
 from app.services.project_service import ProjectService
 from app.services.node_public_ids import internal_to_public_id_map, model_visible_node_payload
 
@@ -2106,6 +2111,19 @@ def _public_ref(node: dict[str, Any]) -> str:
     if display_id is not None:
         return f"node:{display_id}"
     return f"node:{node.get('id')}"
+
+
+def _workflow_step_writes_media_prompt(template: dict[str, Any], step: dict[str, Any]) -> bool:
+    step_id = str(step.get("id") or "").strip()
+    if not step_id.endswith("__prompt"):
+        return False
+    target_id = step_id.removesuffix("__prompt")
+    return any(
+        str(candidate.get("id") or "").strip() == target_id
+        and str(candidate.get("node_type") or "").strip() in {"image", "video", "audio"}
+        for candidate in (template.get("steps") or [])
+        if isinstance(candidate, dict)
+    )
 
 
 def _workflow_is_canvas_dependency_record(node: dict[str, Any] | None) -> bool:
@@ -5045,6 +5063,18 @@ async def _run_runtime_llm_step(
         instance_id=instance_id,
         steps_by_id=steps_by_id,
     )
+    mention_candidates = build_reference_mention_candidates([
+        {
+            "ref": _public_ref(node),
+            "label": node.get("title"),
+            "source": "node",
+        }
+        for node in vision_nodes
+    ]) if _workflow_step_writes_media_prompt(template, step) else []
+    mention_by_ref = {
+        str(candidate.get("ref") or "").strip(): candidate
+        for candidate in mention_candidates
+    }
     vision_context: list[dict[str, Any]] = []
     vision_image_urls: list[str] = []
     vision_errors: list[str] = [f"未找到图片节点: {ref}" for ref in missing_vision_refs]
@@ -5055,6 +5085,7 @@ async def _run_runtime_llm_step(
             "index": index,
             "ref": ref,
             "title": vision_node.get("title"),
+            "mention": (mention_by_ref.get(ref) or {}).get("mention"),
             "workflow_step_id": _workflow_metadata_from_node(vision_node).get("step_id"),
         })
         if image_url:
@@ -5111,6 +5142,9 @@ async def _run_runtime_llm_step(
     )
     if structured_instructions:
         system = f"{system}\n\n{structured_instructions}"
+    mention_instruction = reference_mention_instruction(mention_candidates)
+    if mention_instruction:
+        system = f"{system}\n\n{mention_instruction}"
     include_upstream_payload = bool(
         not str(prompt_runtime.get("rendered_prompt_template") or "").strip()
         or prompt_runtime.get("unresolved_template_paths")
@@ -5130,6 +5164,7 @@ async def _run_runtime_llm_step(
             "skill": skill_payload,
             "upstream_steps": compact_upstream if include_upstream_payload else [],
             "vision_context_images": vision_context,
+            "allowed_reference_mentions": mention_candidates,
         },
         ensure_ascii=False,
         default=str,
@@ -5156,6 +5191,7 @@ async def _run_runtime_llm_step(
         "serialized_upstream_record_count": len(compact_upstream) if include_upstream_payload else 0,
         "vision_image_count": len(vision_image_urls),
         "vision_image_refs": [item.get("ref") for item in vision_context],
+        "vision_image_mentions": [item.get("mention") for item in mention_candidates],
     }
     try:
         llm_result = await node_universal._call_workflow_text_llm(
@@ -5164,6 +5200,7 @@ async def _run_runtime_llm_step(
             message=message,
             project_id=project_id,
             image_urls=vision_image_urls,
+            image_labels=mention_candidates,
         )
     except Exception as exc:
         failed_fields = dict(fields)
@@ -5217,6 +5254,51 @@ async def _run_runtime_llm_step(
             error="empty_llm_output",
         )
         return {"ok": False, "runtime_step": True, "node": failed, "node_id": failed.get("id"), "error": "workflow runtime step returned empty content", "error_kind": "empty_llm_output"}
+    if mention_candidates:
+        _matched_mentions, unknown_mentions, missing_mentions = parse_reference_mentions(
+            content,
+            mention_candidates,
+        )
+        if unknown_mentions or missing_mentions:
+            details: list[str] = []
+            if unknown_mentions:
+                details.append("未知标签: " + "、".join(unknown_mentions))
+            if missing_mentions:
+                details.append("缺少标签: " + "、".join(missing_mentions))
+            error_message = "媒体提示词参考图标签校验失败；" + "；".join(details)
+            failed_fields = dict(fields)
+            failed_fields["workflow"] = node_universal._workflow_text_run_log(
+                workflow,
+                {
+                    **request_diagnostics,
+                    "status": "failed",
+                    "model": llm_result.get("model"),
+                    "usage": llm_result.get("usage"),
+                    "usage_total_tokens": node_universal._workflow_text_usage_total(llm_result.get("usage")),
+                    "completed_at": _utc_now_iso(),
+                    "error": error_message[:500],
+                },
+            )
+            failed = await _upsert_workflow_runtime_step(
+                project_id=project_id,
+                template=template,
+                instance_id=instance_id,
+                step_id=step_id,
+                node_type=str(record.get("type") or "text"),
+                title=title,
+                fields=failed_fields,
+                status="failed",
+                output=record.get("output"),
+                error=error_message[:500],
+            )
+            return {
+                "ok": False,
+                "runtime_step": True,
+                "node": failed,
+                "node_id": failed.get("id"),
+                "error": error_message,
+                "error_kind": "workflow_reference_mentions_invalid",
+            }
     output_value: Any = content
     if structured_contract:
         try:

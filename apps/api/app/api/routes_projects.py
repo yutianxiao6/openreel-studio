@@ -28,6 +28,7 @@ from app.services.node_ids import next_node_display_id, node_display_id_allocati
 from app.services.node_public_ids import internal_to_public_id_map, publicize_node_refs, resolve_internal_node_id
 from app.services.node_recovery import cleanup_interrupted_media_nodes
 from app.services.project_service import DEFAULT_EPISODE_COUNT, ProjectService
+from app.services.reference_mentions import refresh_node_reference_mentions
 
 router = APIRouter()
 
@@ -1823,6 +1824,7 @@ async def update_project_canvas_node_detail(
 
     next_input = _strip_ui_private(current_input)
     node.input_json = json.dumps(next_input, ensure_ascii=False)
+    await refresh_node_reference_mentions(db, node)
     if node.type == "text" and "output" in fields_set:
         node.output_json = json.dumps(req.output, ensure_ascii=False) if req.output not in (None, "") else None
     node.updated_at = datetime.utcnow()
