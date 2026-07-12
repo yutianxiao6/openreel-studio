@@ -503,9 +503,25 @@ def load_user_templates(input_values: dict[str, Any] | None = None) -> list[dict
 
 
 def load_templates(input_values: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    user = load_user_templates(input_values=input_values)
+    from app.agent import workflow_template_store
+
+    builtin_templates = load_builtin_templates(input_values=input_values)
+    builtin_ids = {str(item.get("id") or "") for item in builtin_templates}
+    allowed_user_ids: set[str] = set()
+    for record in workflow_template_store.list_user_template_records():
+        summary = record.get("summary") if isinstance(record.get("summary"), dict) else {}
+        version = record.get("version") if isinstance(record.get("version"), dict) else {}
+        audit = version.get("audit") if isinstance(version.get("audit"), dict) else {}
+        template_id = str(summary.get("id") or "")
+        if template_id and (template_id not in builtin_ids or audit.get("can_run") is True):
+            allowed_user_ids.add(template_id)
+    user = [
+        item
+        for item in load_user_templates(input_values=input_values)
+        if str(item.get("id") or "") in allowed_user_ids
+    ]
     user_ids = {str(item.get("id") or "") for item in user}
-    builtin = [item for item in load_builtin_templates(input_values=input_values) if item.get("id") not in user_ids]
+    builtin = [item for item in builtin_templates if item.get("id") not in user_ids]
     return [*user, *builtin]
 
 
@@ -679,8 +695,10 @@ def list_template_summaries() -> list[dict[str, Any]]:
     builtin_ids = {str(raw.get("id") or "") for _, raw in builtin}
     summaries: list[dict[str, Any]] = []
     user_ids: set[str] = set()
+    invalid_builtin_override_ids: set[str] = set()
     for record in workflow_template_store.list_user_template_records():
         version = record.get("version") if isinstance(record.get("version"), dict) else {}
+        audit = version.get("audit") if isinstance(version.get("audit"), dict) else {}
         workflow = version.get("workflow") if isinstance(version.get("workflow"), dict) else None
         if not workflow:
             continue
@@ -693,14 +711,21 @@ def list_template_summaries() -> list[dict[str, Any]]:
             )
         except WorkflowTemplateError:
             continue
-        user_ids.add(str(summary.get("id") or ""))
+        summary_id = str(summary.get("id") or "")
+        if summary_id in builtin_ids and audit.get("can_run") is not True:
+            invalid_builtin_override_ids.add(summary_id)
+            continue
+        user_ids.add(summary_id)
         summary["overrides_builtin"] = summary.get("id") in builtin_ids
         summaries.append(summary)
-    summaries.extend(
-        _template_summary_from_raw(raw, path=str(path), scope="builtin", source="builtin_template")
-        for path, raw in builtin
-        if raw.get("id") not in user_ids
-    )
+    for path, raw in builtin:
+        if raw.get("id") in user_ids:
+            continue
+        summary = _template_summary_from_raw(raw, path=str(path), scope="builtin", source="builtin_template")
+        if summary.get("id") in invalid_builtin_override_ids:
+            summary["overrides_builtin"] = True
+            summary["invalid_user_override"] = True
+        summaries.append(summary)
     summaries.sort(key=lambda item: (
         item.get("scope") != "user",
         item.get("id") != DEFAULT_WORKFLOW_TEMPLATE_ID,

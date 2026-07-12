@@ -312,8 +312,18 @@ async def _get_active_provider(kind: str) -> MediaProvider | None:
             .where(MediaProvider.kind == kind)
             .where(MediaProvider.is_active == True)
             .where(MediaProvider.enabled == True)
+            .order_by(MediaProvider.created_at, MediaProvider.id)
         )
-        return result.first()
+        provider = result.first()
+        if provider:
+            return provider
+        fallback = await session.exec(
+            select(MediaProvider)
+            .where(MediaProvider.kind == kind)
+            .where(MediaProvider.enabled == True)
+            .order_by(MediaProvider.created_at, MediaProvider.id)
+        )
+        return fallback.first()
 
 
 async def _get_provider_by_name(kind: str, name: str) -> MediaProvider | None:

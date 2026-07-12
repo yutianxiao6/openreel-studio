@@ -343,6 +343,12 @@ async def _authorize_workflow_for_run(
     resolved_template_id = str(template.get("id") or template_id or "").strip()
     if not resolved_template_id:
         return None
+    if str(template.get("scope") or "").strip() == "builtin":
+        audit = audit_workflow_spec(template, normalized=template, sample_inputs=inputs or {})
+        return _workflow_run_authorization_error(
+            {"kind": "template", "template_id": resolved_template_id, "scope": "builtin"},
+            audit,
+        )
     try:
         loaded = workflow_template_store.load_user_template(resolved_template_id)
     except workflow_template_store.WorkflowTemplateStoreError:

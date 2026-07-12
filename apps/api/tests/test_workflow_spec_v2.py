@@ -787,6 +787,49 @@ def test_user_template_file_stays_a_plain_portable_v2_document(
     assert "runner" not in str(stored)
 
 
+def test_invalid_user_override_does_not_hide_runnable_builtin_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin = {"id": "general_short_drama_workflow", "scope": "builtin", "name": "内置流程"}
+    user = {"id": "general_short_drama_workflow", "scope": "user", "name": "旧用户覆盖"}
+    record = {
+        "summary": {"id": "general_short_drama_workflow"},
+        "version": {"audit": {"can_run": False}},
+    }
+    monkeypatch.setattr(canvas_workflow_templates, "load_builtin_templates", lambda input_values=None: [builtin])
+    monkeypatch.setattr(canvas_workflow_templates, "load_user_templates", lambda input_values=None: [user])
+    monkeypatch.setattr(workflow_template_store, "list_user_template_records", lambda: [record])
+
+    templates = canvas_workflow_templates.load_templates()
+
+    assert templates == [builtin]
+
+
+@pytest.mark.asyncio
+async def test_builtin_run_authorization_ignores_invalid_same_id_user_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        workflow_tools,
+        "audit_workflow_spec",
+        lambda *args, **kwargs: {"can_run": True, "status": "pass"},
+    )
+
+    def fail_if_user_override_is_loaded(_template_id: str):
+        raise AssertionError("builtin authorization must not load a same-id user override")
+
+    monkeypatch.setattr(workflow_template_store, "load_user_template", fail_if_user_override_is_loaded)
+
+    error = await workflow_tools._authorize_workflow_for_run(
+        project_id="project-1",
+        template={"id": "general_short_drama_workflow", "scope": "builtin", "steps": []},
+        template_id="general_short_drama_workflow",
+        inputs={},
+    )
+
+    assert error is None
+
+
 def test_default_unnamed_label_does_not_overwrite_workflow_title(tmp_path) -> None:
     saved = workflow_template_store.save_user_template(
         workflow=_base_spec(),

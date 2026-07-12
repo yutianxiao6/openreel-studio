@@ -730,6 +730,12 @@ function previewMediaCrossOrigin(sourceUrl: string): "anonymous" | undefined {
   }
 }
 
+function requiresCanvasVideoPreview(): boolean {
+  if (typeof navigator === "undefined") return false
+  const userAgent = navigator.userAgent || ""
+  return /Windows/i.test(userAgent) && /Electron/i.test(userAgent)
+}
+
 function timeFromPointer(
   event: { clientX: number },
   container: HTMLElement,
@@ -1493,6 +1499,7 @@ export default function VideoEditPanel({
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const [previewScale, setPreviewScale] = useState<PreviewScale>("fit")
   const [playbackResolution, setPlaybackResolution] = useState<PlaybackResolution>("full")
+  const canvasVideoPreview = useMemo(requiresCanvasVideoPreview, [])
   const [loopEnabled, setLoopEnabled] = useState(false)
   const [loopRange, setLoopRange] = useState({ inFrame: 0, outFrame: 0 })
   const [tracks, setTracks] = useState<TimelineTrackState[]>(defaultTimelineTracks)
@@ -2699,8 +2706,8 @@ export default function VideoEditPanel({
   useEffect(() => {
     const video = videoRef.current
     const canvas = programCanvasRef.current
-    if (!video || !canvas || currentVideoItem?.type !== "video" || playbackResolution === "full") return
-    const factor = playbackResolution === "half" ? 0.5 : 0.25
+    if (!video || !canvas || currentVideoItem?.type !== "video" || (playbackResolution === "full" && !canvasVideoPreview)) return
+    const factor = playbackResolution === "full" ? 1 : playbackResolution === "half" ? 0.5 : 0.25
     const width = Math.max(16, Math.round(sequenceSpec.settings.width * factor))
     const height = Math.max(16, Math.round(sequenceSpec.settings.height * factor))
     canvas.width = width
@@ -2747,13 +2754,13 @@ export default function VideoEditPanel({
       if (callbackId) video.cancelVideoFrameCallback(callbackId)
       if (animationFrame) window.cancelAnimationFrame(animationFrame)
     }
-  }, [currentVideoClip?.clipId, currentVideoItem, currentVisualTransform, playbackResolution, sequenceSpec.settings.height, sequenceSpec.settings.width])
+  }, [canvasVideoPreview, currentVideoClip?.clipId, currentVideoItem, currentVisualTransform, playbackResolution, sequenceSpec.settings.height, sequenceSpec.settings.width])
 
   useEffect(() => {
     const video = transitionVideoRef.current
     const canvas = transitionProgramCanvasRef.current
-    if (!video || !canvas || transitionVideoItem?.type !== "video" || playbackResolution === "full") return
-    const factor = playbackResolution === "half" ? 0.5 : 0.25
+    if (!video || !canvas || transitionVideoItem?.type !== "video" || (playbackResolution === "full" && !canvasVideoPreview)) return
+    const factor = playbackResolution === "full" ? 1 : playbackResolution === "half" ? 0.5 : 0.25
     const width = Math.max(16, Math.round(sequenceSpec.settings.width * factor))
     const height = Math.max(16, Math.round(sequenceSpec.settings.height * factor))
     canvas.width = width
@@ -2788,7 +2795,7 @@ export default function VideoEditPanel({
       if (callbackId) video.cancelVideoFrameCallback(callbackId)
       if (animationFrame) window.cancelAnimationFrame(animationFrame)
     }
-  }, [playbackResolution, sequenceSpec.settings.height, sequenceSpec.settings.width, transitionVideoClip?.clipId, transitionVideoItem, transitionVisualTransform])
+  }, [canvasVideoPreview, playbackResolution, sequenceSpec.settings.height, sequenceSpec.settings.width, transitionVideoClip?.clipId, transitionVideoItem, transitionVisualTransform])
 
   const timeToFrame = useCallback((time: number) => (
     Math.max(0, Math.round(time * framesPerSecond))
@@ -4388,11 +4395,11 @@ export default function VideoEditPanel({
                       preload="metadata"
                       className={cn(
                         "object-contain [color-scheme:dark]",
-                        playbackResolution === "full"
+                        playbackResolution === "full" && !canvasVideoPreview
                           ? cn("h-full w-full", activeVideoTransition && "absolute inset-0")
                           : "pointer-events-none absolute h-px w-px opacity-0",
                       )}
-                      style={playbackResolution === "full"
+                      style={playbackResolution === "full" && !canvasVideoPreview
                         ? {
                             ...currentVisualTransformStyle,
                             zIndex: currentVisualLayerZ,
@@ -4431,11 +4438,11 @@ export default function VideoEditPanel({
                       preload="metadata"
                       className={cn(
                         "object-contain [color-scheme:dark]",
-                        playbackResolution === "full"
+                        playbackResolution === "full" && !canvasVideoPreview
                           ? "absolute inset-0 h-full w-full"
                           : "pointer-events-none absolute h-px w-px opacity-0",
                       )}
-                      style={playbackResolution === "full"
+                      style={playbackResolution === "full" && !canvasVideoPreview
                         ? {
                             ...visualTransformStyle(transitionVisualTransform),
                             zIndex: transitionVisualLayerZ,
@@ -4448,7 +4455,7 @@ export default function VideoEditPanel({
                     />
                   )
                 )}
-                {currentVideoItem?.type === "video" && playbackResolution !== "full" && (
+                {currentVideoItem?.type === "video" && (playbackResolution !== "full" || canvasVideoPreview) && (
                   <canvas
                     ref={programCanvasRef}
                     data-openreel-program-canvas="true"
@@ -4457,7 +4464,7 @@ export default function VideoEditPanel({
                     style={{ zIndex: currentVisualLayerZ, opacity: currentVisualLayerOpacity }}
                   />
                 )}
-                {transitionVideoItem?.type === "video" && playbackResolution !== "full" && (
+                {transitionVideoItem?.type === "video" && (playbackResolution !== "full" || canvasVideoPreview) && (
                   <canvas
                     ref={transitionProgramCanvasRef}
                     data-openreel-transition-program-canvas="true"

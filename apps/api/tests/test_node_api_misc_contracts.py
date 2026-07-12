@@ -35,6 +35,41 @@ def test_public_node_types_are_generic_only():
     assert set(node_universal._NODE_FIELD_SCHEMA) == {"text", "image", "video", "audio"}
 
 
+@pytest.mark.asyncio
+async def test_media_provider_falls_back_to_first_enabled_when_no_active_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fallback_provider = SimpleNamespace(id="provider-1", name="configured-image")
+
+    class FakeResult:
+        def __init__(self, value: object | None) -> None:
+            self.value = value
+
+        def first(self) -> object | None:
+            return self.value
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def exec(self, _statement: object) -> FakeResult:
+            self.calls += 1
+            return FakeResult(None if self.calls == 1 else fallback_provider)
+
+    fake_session = FakeSession()
+
+    @asynccontextmanager
+    async def fake_session_scope():
+        yield fake_session
+
+    monkeypatch.setattr(media_provider, "session_scope", fake_session_scope)
+
+    selected = await media_provider._get_active_provider("image")
+
+    assert selected is fallback_provider
+    assert fake_session.calls == 2
+
+
 def test_project_active_workflow_template_state_round_trips():
     template_id = routes_projects.canvas_workflow_templates.list_template_summaries()[0]["id"]
 

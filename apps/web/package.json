@@ -9,7 +9,7 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "promo:studio": "remotion studio remotion/index.ts",
-    "promo:render": "remotion render remotion/index.ts OpenReelPromo ../../dist/openreel-promo-v0.1.9.mp4 --codec=h264"
+    "promo:render": "remotion render remotion/index.ts OpenReelPromo ../../dist/openreel-promo-v0.1.10.mp4 --codec=h264"
   },
   "dependencies": {
     "@drama/shared": "workspace:*",

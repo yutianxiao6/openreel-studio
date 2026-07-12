@@ -10562,7 +10562,12 @@ export default function WorkflowCanvas({
   )
 
   useEffect(() => {
-    setWorkflowRuntimeInstanceId("")
+    const selectedRuntime = workflowRuntimePayloadRef.current
+    setWorkflowRuntimeInstanceId(
+      workflowRuntimeTemplateId(selectedRuntime) === activeWorkflowTemplateId
+        ? workflowRuntimeId(selectedRuntime)
+        : "",
+    )
     setWorkflowRuntimeOrigin(null)
     setWorkflowRunningStepIds([])
     setWorkflowRunningAll(false)
@@ -11568,9 +11573,9 @@ export default function WorkflowCanvas({
         origin_x: origin.x,
         origin_y: origin.y,
       })
-      if (result?.ok === false) throw new Error(String(result.error || "步骤运行失败"))
       if (result?.instance_id) setWorkflowRuntimeInstanceId(String(result.instance_id))
       if (result?.runtime) upsertWorkflowRuntimePayload(result.runtime)
+      if (result?.ok === false) throw new Error(String(result.error || "步骤运行失败"))
       await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true, fitView: true })
       await refreshWorkflowTemplates()
       return result
@@ -11578,6 +11583,7 @@ export default function WorkflowCanvas({
       setWorkflowTemplatesError(workflowErrorMessage(error))
       try {
         await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+        await refreshWorkflowTemplates()
       } catch {
         // Keep the visible workflow error if the follow-up refresh also fails.
       }
@@ -11639,15 +11645,16 @@ export default function WorkflowCanvas({
         origin_x: origin.x,
         origin_y: origin.y,
       })
-      if (result?.ok === false) throw new Error(String(result.error || "步骤运行失败"))
       if (result?.instance_id) setWorkflowRuntimeInstanceId(String(result.instance_id))
       if (result?.runtime) upsertWorkflowRuntimePayload(result.runtime)
+      if (result?.ok === false) throw new Error(String(result.error || "步骤运行失败"))
       await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true, fitView: true })
       await refreshWorkflowTemplates()
     } catch (error) {
       setWorkflowTemplatesError(workflowErrorMessage(error))
       try {
         await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+        await refreshWorkflowTemplates()
       } catch {
         // Keep the visible workflow error if the follow-up refresh also fails.
       }
@@ -11704,14 +11711,15 @@ export default function WorkflowCanvas({
         origin_y: origin.y,
         max_steps: Math.max(activeWorkflowSteps.length + 20, 120),
       })
-      if (result?.ok === false) throw new Error(String(result.error || "工作流执行失败"))
       if (result?.runtime) upsertWorkflowRuntimePayload(result.runtime)
       if (result?.instance_id) setWorkflowRuntimeInstanceId(String(result.instance_id))
+      if (result?.ok === false) throw new Error(String(result.error || "工作流执行失败"))
       await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true, fitView: true })
     } catch (error) {
       setWorkflowTemplatesError(workflowErrorMessage(error))
       try {
         await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+        await refreshWorkflowTemplates()
       } catch {
         // Keep the visible workflow error if the follow-up refresh also fails.
       }
@@ -11723,6 +11731,7 @@ export default function WorkflowCanvas({
     activeWorkflowSteps,
     currentProject?.id,
     refreshCanvas,
+    refreshWorkflowTemplates,
     workflowCanvasOrigin,
     workflowMaterializeInputs,
     workflowRunUiOverrides,
