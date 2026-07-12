@@ -4830,6 +4830,7 @@ const WORKFLOW_GRAPH_NODE_WIDTH = 272
 const WORKFLOW_GRAPH_NODE_HEIGHT = 132
 const WORKFLOW_GRAPH_COLUMN_GAP = 360
 const WORKFLOW_GRAPH_LEVEL_GAP = 190
+const WORKFLOW_EDITOR_INPUT_STEP_ID = "__workflow_root_inputs__"
 const WORKFLOW_GRAPH_SNAP_DISTANCE = 14
 const WORKFLOW_GRAPH_DRAG_COMMIT_DISTANCE = 10
 
@@ -5099,7 +5100,8 @@ function WorkflowEditorGraph({
     const running = !editable && (runningSet.has(step.id) || status === "running")
     const selected = selectedStepId === step.id
     const kind = workflowStepAuthoringKind(step)
-    const kindLabel = WORKFLOW_AUTHORING_KIND_OPTIONS.find((item) => item.value === kind)?.label || kind
+    const isInputStep = step.id === WORKFLOW_EDITOR_INPUT_STEP_ID || workflowStepIsInputStep(step)
+    const kindLabel = isInputStep ? "输入字段" : WORKFLOW_AUTHORING_KIND_OPTIONS.find((item) => item.value === kind)?.label || kind
     const childScopeId = workflowStepChildScopeId(step)
     const canToggleScope = editable && Boolean(childScopeId) && Boolean(onToggleStepScope)
     const scopeExpanded = Boolean(childScopeId) && !collapsedScopeIds?.has(childScopeId)
@@ -5121,12 +5123,16 @@ function WorkflowEditorGraph({
       : "rgba(255,255,255,0.14)"
     const isProductStep = workflowStepIsCanvasProduct(step)
     const isLoopKind = kind === "loop" || Boolean(childScopeId)
-    const categoryLabel = isProductStep
+    const categoryLabel = isInputStep
+      ? "流程输入"
+      : isProductStep
       ? "画布产物"
       : isLoopKind
       ? "流程控制"
       : "处理动作"
-    const categoryClass = isProductStep
+    const categoryClass = isInputStep
+      ? "border-amber-200/30 bg-amber-300/[0.12] text-amber-100"
+      : isProductStep
       ? "border-cyan-200/28 bg-cyan-300/[0.12] text-cyan-50"
       : isLoopKind
       ? "border-violet-200/24 bg-violet-300/[0.09] text-violet-100"
@@ -5141,6 +5147,8 @@ function WorkflowEditorGraph({
       : step.description || workflowStepKindLabel(step)
     const cardBackground = selected
       ? "linear-gradient(145deg, rgba(8,145,178,0.24), rgba(9,16,25,0.98) 58%, rgba(5,9,15,0.99))"
+      : isInputStep
+      ? "linear-gradient(145deg, rgba(120,53,15,0.34), rgba(24,18,12,0.98) 62%)"
       : isProductStep
       ? "linear-gradient(145deg, rgba(8,47,73,0.82), rgba(6,55,60,0.42) 48%, rgba(7,11,18,0.98))"
       : childScopeId
@@ -5169,14 +5177,14 @@ function WorkflowEditorGraph({
                 isProductStep ? "rounded-xl shadow-[0_0_20px_rgba(34,211,238,0.14)]" : "rounded-lg",
                 workflowStepToneClass(step),
               )}>
-                {workflowStepGraphIcon(step)}
+                {isInputStep ? "入" : workflowStepGraphIcon(step)}
               </div>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[13px] font-semibold tracking-[0.01em] text-zinc-50">{step.title || step.id}</div>
                 <div className="mt-1 flex items-center gap-1.5 text-[9px] text-zinc-500">
                   <span className="truncate">{kindLabel}</span>
                   <span className="text-zinc-700">/</span>
-                  <span className="truncate">{workflowStepOutputLabel(step)}</span>
+                  <span className="truncate">{isInputStep ? "字段集合" : workflowStepOutputLabel(step)}</span>
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -5214,7 +5222,7 @@ function WorkflowEditorGraph({
                     <WorkflowScopeToggleIcon expanded={scopeExpanded} />
                   </button>
                 )}
-                {editable && onCreateStep && insertNodeTypes.length > 0 && (
+                {editable && !isInputStep && onCreateStep && insertNodeTypes.length > 0 && (
                   <button
                     type="button"
                     aria-label={childScopeId ? "添加到循环内部" : "添加下一步"}
@@ -5283,7 +5291,8 @@ function WorkflowEditorGraph({
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
       type: "default",
-      draggable: editable,
+      draggable: editable && !isInputStep,
+      connectable: editable && !isInputStep,
       style: {
         width: WORKFLOW_GRAPH_NODE_WIDTH,
         minHeight: WORKFLOW_GRAPH_NODE_HEIGHT,
@@ -5489,7 +5498,7 @@ function WorkflowEditorGraph({
   }, [editable, flowInstance])
 
   const handleNodeContextMenu = useCallback((event: MouseEvent, node: FlowNode) => {
-    if (!editable || !flowInstance || String(node.id).startsWith("__workflow_alignment_")) return
+    if (!editable || !flowInstance || node.id === WORKFLOW_EDITOR_INPUT_STEP_ID || String(node.id).startsWith("__workflow_alignment_")) return
     event.preventDefault()
     event.stopPropagation()
     const position = flowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY })
@@ -5547,7 +5556,7 @@ function WorkflowEditorGraph({
       deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
       minZoom={0.28}
       maxZoom={1.8}
-      defaultViewport={{ x: 48, y: 96, zoom: 0.86 }}
+      defaultViewport={{ x: steps.some((step) => step.id === WORKFLOW_EDITOR_INPUT_STEP_ID) ? 356 : 48, y: 96, zoom: 0.86 }}
       onInit={setFlowInstance}
       onNodesChange={handleNodesChange}
       onEdgesChange={handleEdgesChange}
@@ -7502,7 +7511,7 @@ function WorkflowTemplatePanel({
   const [draftInputSpecs, setDraftInputSpecs] = useState<Record<string, WorkflowInputDraftSpec>>({})
   const [paletteSearch, setPaletteSearch] = useState("")
   const [toolboxOpen, setToolboxOpen] = useState(true)
-  const [inspectorOpen, setInspectorOpen] = useState(true)
+  const [inspectorOpen, setInspectorOpen] = useState(false)
   const [collapsedTemplateScopeIds, setCollapsedTemplateScopeIds] = useState<Set<string>>(() => new Set())
   const [workflowMediaProviders, setWorkflowMediaProviders] = useState<MediaProviderSummary[]>([])
   const [workflowVideoProtocols, setWorkflowVideoProtocols] = useState<VideoProtocolSummary[]>([])
@@ -7645,6 +7654,47 @@ function WorkflowTemplatePanel({
   )
   const activeTemplateScopeTitle = workflowTemplateScopeTitle(activeTemplateScopeId, draftSteps, selected)
   const displayedSteps = templateDisplaySteps
+  const editorDisplayedSteps = useMemo(() => {
+    const layoutPositions = workflowGraphAutoLayout(displayedSteps)
+    const positioned = displayedSteps.map((step, index) => ({
+      step,
+      position: workflowExplicitEditorPosition(step) || layoutPositions.get(step.id) || workflowEditorPosition(step, index),
+    }))
+    const entrySteps = positioned.filter(({ step }) => (
+      !workflowStringValue(step.repeat_group_id) && workflowCleanIdList(step.depends_on).length === 0
+    ))
+    const anchors = entrySteps.length > 0 ? entrySteps : positioned.slice(0, 1)
+    const minX = positioned.length > 0 ? Math.min(...positioned.map((item) => item.position.x)) : 0
+    const inputY = anchors.length > 0
+      ? anchors.reduce((sum, item) => sum + item.position.y, 0) / anchors.length
+      : 0
+    const inputStep: WorkflowTemplateStepSummary = {
+      id: WORKFLOW_EDITOR_INPUT_STEP_ID,
+      title: "流程输入",
+      node_type: "text",
+      kind: "text",
+      role: "entry",
+      runner: "workflow_input",
+      depends_on: [],
+      description: `定义 ${draftInputIds.length} 个运行输入字段`,
+      ui: {
+        position: {
+          x: minX - WORKFLOW_GRAPH_COLUMN_GAP,
+          y: inputY,
+        },
+      },
+    }
+    const entryIds = new Set(entrySteps.map((item) => item.step.id))
+    const projectedSteps = displayedSteps.map((step) => (
+      entryIds.has(step.id)
+        ? workflowCloneEditorStep({
+            ...step,
+            layout_after: workflowCleanIdList([...(step.layout_after || []), WORKFLOW_EDITOR_INPUT_STEP_ID]),
+          })
+        : step
+    ))
+    return [inputStep, ...projectedSteps]
+  }, [displayedSteps, draftInputIds.length])
   const detailStep = detailStepId ? displayedSteps.find((step) => step.id === detailStepId) : undefined
   const runningSet = useMemo(() => new Set(runningStepIds), [runningStepIds])
   const nodeTypeGroups = useMemo(() => {
@@ -8674,19 +8724,30 @@ function WorkflowTemplatePanel({
               详情
             </button>
           </div>
-          {displayedSteps.length > 0 ? (
+          {editorDisplayedSteps.length > 0 ? (
             <WorkflowEditorGraph
-              steps={displayedSteps}
+              steps={editorDisplayedSteps}
               nodeStates={nodeStates}
-              selectedStepId={detailStepId || ""}
+              selectedStepId={detailStepId || (inspectorOpen ? WORKFLOW_EDITOR_INPUT_STEP_ID : "")}
               onSelectStep={(stepId) => {
+                if (stepId === WORKFLOW_EDITOR_INPUT_STEP_ID) {
+                  setDetailStepId(null)
+                  setInspectorOpen(true)
+                  return
+                }
                 setDetailStepId(stepId)
-                if (stepId) setInspectorOpen(true)
+                setInspectorOpen(Boolean(stepId))
               }}
               onRunStep={onRunStep}
               onMoveStep={moveDraftStep}
-              onConnectSteps={connectDraftSteps}
-              onDisconnectSteps={disconnectDraftSteps}
+              onConnectSteps={(source, target) => {
+                if (source === WORKFLOW_EDITOR_INPUT_STEP_ID || target === WORKFLOW_EDITOR_INPUT_STEP_ID) return
+                connectDraftSteps(source, target)
+              }}
+              onDisconnectSteps={(source, target) => {
+                if (source === WORKFLOW_EDITOR_INPUT_STEP_ID || target === WORKFLOW_EDITOR_INPUT_STEP_ID) return
+                disconnectDraftSteps(source, target)
+              }}
               onToggleStepScope={toggleTemplateStepScope}
               onCreateStep={addDraftStep}
               onDeleteSteps={deleteDraftSteps}
