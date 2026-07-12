@@ -3390,7 +3390,7 @@ function WorkflowRunDock({
               const runtimeInputValues = inputValuesByInstance[runtimeId] || workflowRuntimeInputValues(runtime) || {}
               const missingInputIds = workflowMissingInputIds(inputIds, runtimeInputValues, requiredInputIds, inputSpecs)
               const inputBlocked = missingInputIds.length > 0
-              const inputPanelOpen = inputIds.length > 0 && (inputPanelOverrides[runtimeId] ?? inputBlocked)
+              const inputPanelOpen = inputIds.length > 0 && (inputPanelOverrides[runtimeId] ?? false)
               const rawStepMap = workflowRuntimeRawStepMap(runtime)
               const mergedSteps = workflowRuntimeStepSummariesFromPayload(runtime, template?.steps || [])
               const nodeStates = workflowRuntimeStepStatesFromPayload(runtime)
@@ -5903,7 +5903,17 @@ function WorkflowStepInspector({
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <div className="grid gap-3">
             {!readOnly && (
-              renderFormFieldConfig("这里只定义运行时需要哪些字段；具体内容在画布流程控制栏填写。")
+              <details className="rounded-xl border border-amber-200/14 bg-amber-300/[0.035]">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-[11px] font-semibold text-amber-100/85 hover:bg-amber-300/[0.04]">
+                  <span>输入字段定义</span>
+                  <span className="rounded-full border border-amber-200/14 bg-black/18 px-2 py-0.5 text-[10px] font-normal text-amber-100/60">
+                    {inputIds.length} 项
+                  </span>
+                </summary>
+                <div className="border-t border-amber-200/10 p-2">
+                  {renderFormFieldConfig("这里只定义运行时需要哪些字段；具体内容在画布流程控制栏填写。")}
+                </div>
+              </details>
             )}
             <section className="rounded-md border border-white/[0.08] bg-black/18 p-3">
               <div className="mb-2 text-[11px] font-semibold text-zinc-300">基础信息</div>
