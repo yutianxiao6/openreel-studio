@@ -37,6 +37,19 @@ def test_workflow_spec_patch_finds_nested_step() -> None:
     assert found == (children, 0, children[0])
 
 
+def test_workflow_character_and_scene_prompts_use_image_prompt_model_task() -> None:
+    for primary_skill, title in (
+        ("character_prompt", "主要人物参考图提示词"),
+        ("scene_prompt", "场景参考图提示词"),
+    ):
+        task_type = node_universal._workflow_text_task_type(
+            {"primary_skill": primary_skill, "step_id": f"{primary_skill}_step"},
+            {"title": title},
+        )
+
+        assert task_type == "image_prompt_generation"
+
+
 async def fake_noop_sync_dependency_edges(project_id: str, node_id: str, input_data: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "changed": False, "added_edges": [], "removed_edges": []}
 

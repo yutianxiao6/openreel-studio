@@ -157,6 +157,58 @@ async def test_workflow_spec_uses_agent_loop_config_fallback(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_unmapped_workflow_task_uses_configured_agent_provider(monkeypatch) -> None:
+    provider_names: list[str] = []
+
+    async def fake_lookup_provider(name: str):
+        provider_names.append(name)
+        return SimpleNamespace(
+            name=name,
+            provider="openai",
+            model_name="configured-workflow-model",
+            base_url="https://relay.example.test/v1",
+            api_key="configured-key",
+            max_output_tokens=4096,
+            context_window_tokens=None,
+            max_input_tokens=None,
+            supports_prompt_cache=None,
+            supports_vision=None,
+            tokenizer=None,
+            tier=None,
+            params_json=None,
+        )
+
+    agent_loop_config = SimpleNamespace(
+        task_type="agent_loop",
+        llm_provider_name="configured-agent",
+        enabled=True,
+        temperature=0.3,
+        max_tokens=2048,
+        top_p=0.9,
+        fallback_model=None,
+    )
+    db = _FakeDb([None, agent_loop_config])
+    monkeypatch.setattr(llm_service, "_lookup_llm_provider", fake_lookup_provider)
+
+    cfg = await llm_service._resolve_config("outline_generation", db, None)
+
+    assert db.calls == 2
+    assert provider_names == ["configured-agent"]
+    assert cfg["model"] == "openai/configured-workflow-model"
+    assert cfg["api_base"] == "https://relay.example.test/v1"
+    assert cfg["api_key"] == "configured-key"
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_hosted_default_fails_before_litellm_auth(monkeypatch) -> None:
+    db = _FakeDb([None, None])
+    monkeypatch.setattr(llm_service, "_resolve_env_key_for_default", lambda model: None)
+
+    with pytest.raises(llm_service.LLMConfigurationError, match="Configure an Agent or model-tier LLM"):
+        await llm_service._resolve_config("outline_generation", db, None)
+
+
+@pytest.mark.asyncio
 async def test_node_override_provider_name_resolves_configured_llm_provider(monkeypatch) -> None:
     async def fake_lookup_provider(name: str):
         assert name == "Panel Text"

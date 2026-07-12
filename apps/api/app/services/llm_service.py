@@ -66,6 +66,10 @@ _CONTEXT_ERROR_MARKERS = (
 _MAX_OUTPUT_FINISH_REASONS = {"length", "max_tokens"}
 
 
+class LLMConfigurationError(RuntimeError):
+    """Raised when a hosted LLM task has no configured provider or API key."""
+
+
 def _llm_request_timeout_seconds() -> float:
     try:
         return max(10.0, float(os.getenv("DRAMA_LLM_REQUEST_TIMEOUT_SECONDS", "90") or "90"))
@@ -156,7 +160,7 @@ async def _resolve_config(
     db: AsyncSession | None,
     node_override: str | None,
 ) -> dict[str, Any]:
-    """优先级：node_override > model_configs.llm_provider_name > settings 默认。"""
+    """优先级：node_override > task mapping > agent mapping > authenticated env default。"""
     if node_override:
         provider_row = await _lookup_llm_provider_by_override(node_override)
         if provider_row is not None:
@@ -171,43 +175,38 @@ async def _resolve_config(
         }
 
     cfg_row = None
+    provider_row = None
     if db is not None:
         from app.db.models import ModelConfig
-        result = await db.exec(
-            select(ModelConfig)
-            .where(
-                ModelConfig.task_type == task_type,
-                ModelConfig.enabled == True,  # noqa: E712
-            )
-            .order_by(ModelConfig.created_at.desc())
-            .limit(1)
-        )
-        cfg_row = result.first()
-        if cfg_row is None and task_type == "agent_loop":
-            legacy_result = await db.exec(
-                select(ModelConfig)
-                .where(
-                    ModelConfig.task_type == "intent_parse",
-                    ModelConfig.enabled == True,  # noqa: E712
-                )
-                .order_by(ModelConfig.created_at.desc())
-                .limit(1)
-            )
-            cfg_row = legacy_result.first()
-        fallback_task = _TASK_CONFIG_FALLBACKS.get(task_type)
-        if cfg_row is None and fallback_task:
-            fallback_result = await db.exec(
-                select(ModelConfig)
-                .where(
-                    ModelConfig.task_type == fallback_task,
-                    ModelConfig.enabled == True,  # noqa: E712
-                )
-                .order_by(ModelConfig.created_at.desc())
-                .limit(1)
-            )
-            cfg_row = fallback_result.first()
 
-    provider_row = await _lookup_llm_provider(cfg_row.llm_provider_name) if cfg_row else None
+        candidate_tasks = [task_type]
+        if task_type == "agent_loop":
+            candidate_tasks.append("intent_parse")
+        else:
+            fallback_task = _TASK_CONFIG_FALLBACKS.get(task_type)
+            if fallback_task:
+                candidate_tasks.append(fallback_task)
+            candidate_tasks.append("agent_loop")
+
+        for candidate_task in dict.fromkeys(candidate_tasks):
+            result = await db.exec(
+                select(ModelConfig)
+                .where(
+                    ModelConfig.task_type == candidate_task,
+                    ModelConfig.enabled == True,  # noqa: E712
+                )
+                .order_by(ModelConfig.created_at.desc())
+                .limit(1)
+            )
+            candidate_row = result.first()
+            if candidate_row is None:
+                continue
+            candidate_provider = await _lookup_llm_provider(candidate_row.llm_provider_name)
+            if candidate_provider is None:
+                continue
+            cfg_row = candidate_row
+            provider_row = candidate_provider
+            break
 
     if provider_row is not None:
         return _config_from_provider_row(
@@ -218,15 +217,37 @@ async def _resolve_config(
             max_tokens=cfg_row.max_tokens if cfg_row and cfg_row.max_tokens else None,
         )
 
-    # 兜底：用 settings 里的默认 model（无 base_url/key，靠 env）
+    # Source/dev fallback is allowed only when the default hosted model has an
+    # actual environment/runtime key. Desktop installs must never call an
+    # unconfigured built-in provider merely because it is the source default.
+    default_model = _default_model_for(task_type)
+    default_key = _resolve_env_key_for_default(default_model)
+    if _hosted_default_requires_auth(default_model) and not default_key:
+        raise LLMConfigurationError(
+            f"No configured LLM provider for task {task_type!r}. "
+            "Configure an Agent or model-tier LLM in Settings before running this step."
+        )
     return {
-        "model": _default_model_for(task_type),
+        "model": default_model,
         "temperature": 0.7,
         "max_tokens": 8192,
         "api_base": None,
-        "api_key": _resolve_env_key_for_default(_default_model_for(task_type)),
+        "api_key": default_key,
         "model_metadata": {},
     }
+
+
+def _hosted_default_requires_auth(model: str) -> bool:
+    normalized = str(model or "").strip().lower()
+    return normalized.startswith((
+        "deepseek/",
+        "openai/",
+        "gpt-",
+        "anthropic/",
+        "claude",
+        "dashscope/",
+        "gemini/",
+    ))
 
 
 def _resolve_env_key_for_default(model: str) -> str | None:
