@@ -8,8 +8,8 @@ RUN ln -s /workspace/data /workspace/apps/api/data
 
 RUN pip install uv
 
-COPY apps/api/pyproject.toml apps/api/README.md ./
-RUN uv sync --no-dev
+COPY apps/api/pyproject.toml apps/api/uv.lock apps/api/README.md ./
+RUN uv sync --frozen --no-dev
 
 COPY apps/api/app/ ./app/
 COPY plugins/ /workspace/plugins/
