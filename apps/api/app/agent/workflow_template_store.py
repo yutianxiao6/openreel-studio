@@ -461,7 +461,7 @@ def list_user_template_records() -> list[dict[str, Any]]:
                     continue
                 seen.add(template_id)
                 records.append(record)
-            except (OSError, WorkflowTemplateStoreError, WorkflowAuditError):
+            except (OSError, ValueError, WorkflowAuditError):
                 continue
         for manifest_path in sorted(root.glob("*/manifest.json")):
             try:
@@ -471,7 +471,7 @@ def list_user_template_records() -> list[dict[str, Any]]:
                     continue
                 seen.add(template_id)
                 records.append(record)
-            except (OSError, WorkflowTemplateStoreError, WorkflowAuditError):
+            except (OSError, ValueError, WorkflowAuditError):
                 continue
     records.sort(key=_record_sort_key)
     return records

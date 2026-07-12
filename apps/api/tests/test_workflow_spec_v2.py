@@ -12,6 +12,8 @@ from app.agent.workflow_spec import (
     parse_workflow_spec,
     workflow_spec_payload,
 )
+from app.agent import canvas_workflow_templates
+from app.agent.workflow_execution_plan import compile_private_execution_template
 
 
 def _base_spec() -> dict:
@@ -278,3 +280,52 @@ def test_v2_canonical_payload_contains_no_runtime_state() -> None:
     assert "plan_hash" not in payload
     assert "status" not in str(payload)
     assert "runner" not in str(payload)
+
+
+def test_builtin_template_is_native_v2_and_has_logical_media_steps() -> None:
+    summary = next(
+        item
+        for item in canvas_workflow_templates.list_template_summaries()
+        if item["id"] == "general_short_drama_workflow"
+    )
+    assert summary["workflow_spec_version"] == WORKFLOW_SPEC_VERSION
+    assert [step["id"] for step in summary["steps"]] == [
+        "episode_plan",
+        "script",
+        "production_plan",
+        "character_images",
+        "segment_production",
+    ]
+    segment_loop = summary["steps"][-1]
+    assert [step["id"] for step in segment_loop["steps"]][-2:] == ["storyboard", "final_video"]
+    assert not any(step["id"].endswith("_prompt") for step in segment_loop["steps"])
+
+
+def test_builtin_v2_compiles_private_phases_without_persisting_them() -> None:
+    public = canvas_workflow_templates.get_builtin_template(
+        "general_short_drama_workflow"
+    )["public_spec"]
+    private = compile_private_execution_template(public)
+    assert private["schema"] == WORKFLOW_PLAN_VERSION
+    assert private["public_spec"] == public
+    assert "node_type" not in str(public)
+    assert "runner" not in str(public)
+    assert "model_tier" not in str(private)
+
+    segment_loop = next(step for step in private["steps"] if step["id"] == "segment_production")
+    private_child_ids = [step["id"] for step in segment_loop["steps"]]
+    assert "storyboard__prompt" in private_child_ids
+    assert "storyboard" in private_child_ids
+    assert "final_video__prompt" in private_child_ids
+    assert "final_video" in private_child_ids
+
+
+def test_template_loader_rejects_v1_instead_of_converting_it() -> None:
+    legacy = {
+        "workflow_spec_version": "openreel.workflow.v1",
+        "id": "legacy",
+        "name": "旧模板",
+        "steps": [{"id": "text", "node_type": "text", "runner": "node.run"}],
+    }
+    with pytest.raises(canvas_workflow_templates.WorkflowTemplateError):
+        canvas_workflow_templates.normalize_inline_workflow(legacy)
