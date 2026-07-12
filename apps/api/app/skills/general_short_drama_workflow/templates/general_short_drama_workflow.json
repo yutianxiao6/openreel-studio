@@ -78,10 +78,10 @@
       "description": "多集项目的连续剧情规划；单集项目自动跳过。",
       "when": {"path": "inputs.episode_count", "op": "gt", "value": 1},
       "prompt": {
-        "role": "你是专业影视编剧，负责把总体情节拆成连续而各自完整的短剧分集。",
-        "task": "根据剧情 {{ inputs.plot }}、风格 {{ inputs.style }}、类型 {{ inputs.video_type }} 和集数 {{ inputs.episode_count }} 规划每一集。",
-        "output": "输出 episodes 数组；每项包含 index、title、plot、continuity_note。plot 写清主要事件、人物动机、冲突推进和结尾钩子。",
-        "check": "集数准确；每集有独立起承转合；前后集因果衔接且悬念递进。"
+        "role": "你是一位专业影视编剧，把总体情节拆成连续短剧的分集大纲。",
+        "task": "基于剧情 {{ inputs.plot }}、视觉风格 {{ inputs.style }}、视频类型 {{ inputs.video_type }} 和集数 {{ inputs.episode_count }} 规划多集方向。",
+        "output": "只输出结构化分集规划，包含 episodes；每集包含 index、title、plot、continuity_note。plot 控制在 120-220 字，写清本集主要事件、人物动机、冲突推进和结尾钩子。",
+        "check": "集数准确；每集有独立起承转合；前后集因果衔接、悬念递进；不输出剧本正文、分段、人物表、场景表或分镜。"
       },
       "output": {
         "schema": {
@@ -108,10 +108,10 @@
       "kind": "text",
       "needs": ["episode_plan"],
       "prompt": {
-        "role": "你是专业影视编剧和导演，负责写可直接用于视频生产的完整剧本。",
-        "task": "根据剧情 {{ inputs.plot }}、视觉风格 {{ inputs.style }}、类型 {{ inputs.video_type }}、分集规划 {{ steps.episode_plan.output }}、单集时长 {{ inputs.duration_seconds }} 秒和每段时长 {{ inputs.segment_seconds }} 秒写剧本。",
-        "output": "先写一句整体梗概，再按【第N段｜起止秒｜标题】拆段。每段包含场景环境、出场人物、动作、对白或旁白、情绪氛围和结尾画面。只写剧本正文。",
-        "check": "段数按总时长除以每段时长向上取整；每段不超时；人物动机、冲突和画面连续。"
+        "role": "你是一位专业影视编剧和导演，根据用户情节、视频风格和类型生成完整短剧剧本。",
+        "task": "基于剧情 {{ inputs.plot }}、视觉风格 {{ inputs.style }}、类型 {{ inputs.video_type }}、分集规划 {{ steps.episode_plan.output }}、单集总时长 {{ inputs.duration_seconds }} 秒和每段目标时长 {{ inputs.segment_seconds }} 秒生成完整剧本。段数由总时长除以每段时长向上取整；自然语言描述与结构化时长冲突时，以结构化时长为准。",
+        "output": "只输出剧本正文，不输出 JSON。正文先写一句整体故事梗概，再按【第N段｜起止秒｜标题】拆段。每段必须包含场景环境、出场人物、人物动作、对白或旁白、情绪氛围和结尾画面；段内配角和纯场景信息直接写进该段正文，供后续拆分使用。",
+        "check": "段落数量匹配时长计算；每段时长不超过 {{ inputs.segment_seconds }} 秒；剧情具有入口状态、触发、动作推进、情绪转折和落点画面；整体故事连续，能支撑后续人物、场景、分镜和视频提示词生成。"
       },
       "output": {"canvas": true},
       "fields": {"purpose": "script", "stage": "script"}
@@ -122,10 +122,10 @@
       "kind": "object",
       "needs": ["script"],
       "prompt": {
-        "role": "你是影视美术统筹和制片规划师，负责把剧本整理成稳定、可复用的生产数据。",
-        "task": "阅读剧本 {{ steps.script.output }}，结合风格 {{ inputs.style }}、单集时长 {{ inputs.duration_seconds }} 秒和每段时长 {{ inputs.segment_seconds }} 秒，整理统一风格、主要人物与逐段制作计划。",
-        "output": "输出 style_template、main_characters 和 segments。主要人物包含 character_id、name、identity、appearance、wardrobe、consistency_rules。每段包含 segment_id、index、start_second、end_second、duration_seconds、title、script_excerpt、appearing_character_ids、scene_brief。",
-        "check": "人物 ID 稳定且唯一；segments 完整覆盖剧本时长且不重叠；段内人物 ID 必须来自 main_characters。"
+        "role": "你是一位专业影视美术总监，根据完整剧本统一规划人物、场景和视觉风格，确保全片一致性。",
+        "task": "阅读剧本 {{ steps.script.output }}，结合视觉风格 {{ inputs.style }}、视频类型 {{ inputs.video_type }}、单集时长 {{ inputs.duration_seconds }} 秒和每段时长 {{ inputs.segment_seconds }} 秒，整理固定视觉模板、主要人物与逐段制作计划。",
+        "output": "只输出结构化规划，包含 style_template、main_characters 和 segments。style_template 不能简单复制用户风格词，要结合年代、地域、氛围、色调、光影、构图和画面质感推导固定模板。main_characters 只包含贯穿剧情的核心角色，每个角色写清稳定 ID、身份、性别与年龄段、体型、发型、五官、服装材质、关键道具和一致性规则。segments 完整记录起止时间、当前段正文、实际出镜主要人物 ID 和纯环境 scene_brief。",
+        "check": "同一角色跨段的 ID、姓名、年龄、脸、发型、服装和身份一致；segments 完整覆盖剧本时长且不重叠；段内人物 ID 只来自 main_characters；scene_brief 是纯环境描述，不混入人物外貌。"
       },
       "output": {
         "schema": {
@@ -190,10 +190,10 @@
           "title": "人物参考图",
           "kind": "image",
           "prompt": {
-            "role": "你是影视角色概念设计师，负责制作可跨镜头复用的高清人物定妆参考图。",
-            "task": "为 {{ character.name }}（ID {{ character.character_id }}）制作人物定妆图。身份：{{ character.identity }}；外貌：{{ character.appearance }}；服装：{{ character.wardrobe }}；一致性规则：{{ character.consistency_rules }}；统一风格：{{ steps.production_plan.output.style_template }}。",
-            "output": "写一段可直接用于图片模型的中文提示词，明确正面全身、自然站姿、清晰五官、服饰材质、统一光线和纯净背景。",
-            "check": "不改变年龄、发型、五官、体型和核心服装；不加入其他人物、文字、水印或拼贴。"
+            "role": "你是人物视觉设定师，按官方设定集角色视觉参考表写单个主要人物的参考图提示词。",
+            "task": "基于角色 {{ character.name }}（ID {{ character.character_id }}）、身份 {{ character.identity }}、外貌 {{ character.appearance }}、服装 {{ character.wardrobe }}、一致性规则 {{ character.consistency_rules }}、完整剧本 {{ steps.script.output }} 和统一风格 {{ steps.production_plan.output.style_template }}，写这一名角色的人物官方设定集提示词正文。",
+            "output": "只输出纯文本 image prompt，不输出 JSON。采用“官方设定集角色视觉参考表，真人摄影级质感，纯白背景图解风排版”。在同一张官方角色设定表中依次组织角色身份与姓名、脸部与体态、正面/侧面/背面全身三面图、四分之三角度、表情特写、服装与装备拆解、配色与材质、关键道具、世界观边注、统一风格模板和画面要求。人物保持可复用的中性设定姿态，背景为纯白或浅灰设定板，不写剧情动作、场景叙事或分镜镜头。",
+            "check": "同一脸、同一发型、同一服装、同一装备和同一身体比例稳定；五官、发型、服饰层次、材质、配色和道具足够明确；只出现当前角色，不加入无关人物、水印或宣传文案；输出能作为后续分镜与视频的主要人物视觉参考。"
           },
           "fields": {
             "purpose": "character_reference",
@@ -222,10 +222,10 @@
           "title": "分段剧本",
           "kind": "text",
           "prompt": {
-            "role": "你是现场执行导演，负责把完整剧本整理为当前视频段的准确执行稿。",
-            "task": "根据完整剧本 {{ steps.script.output }} 和当前段 {{ segment }}，写当前段从 {{ segment.start_second }} 秒到 {{ segment.end_second }} 秒的执行稿。",
-            "output": "只写当前段正文，包含时间、场景、人物、动作、对白或旁白、镜头节奏、声音和结尾画面。",
-            "check": "内容只覆盖当前段；时长为 {{ segment.duration_seconds }} 秒；与相邻剧情和人物状态连续。"
+            "role": "你是影视编剧助理，从完整剧本中整理当前段的独立剧本文本。",
+            "task": "基于当前段 {{ segment }} 和完整剧本 {{ steps.script.output }}，提取并润色从 {{ segment.start_second }} 秒到 {{ segment.end_second }} 秒的当前段剧本，只处理当前段，不改写其他段。",
+            "output": "只输出当前段剧本正文，不输出 JSON。格式为【第{{ segment.index }}段｜{{ segment.start_second }}-{{ segment.end_second }}s｜{{ segment.title }}】后接正文。正文包含场景环境、出场人物、人物动作、对白或旁白、情绪氛围和结尾画面；段内配角和纯场景信息写在正文里。",
+            "check": "该段能独立阅读；时长不超过 {{ segment.duration_seconds }} 秒；文本与总剧本一致，并能直接作为后续场景、分镜和视频提示词的唯一段落输入。"
           },
           "output": {"canvas": true},
           "fields": {"purpose": "segment_script", "stage": "segment_script"}
@@ -236,10 +236,10 @@
           "kind": "object",
           "needs": ["segment_script"],
           "prompt": {
-            "role": "你是场景美术和选角统筹，负责当前段的场景一致性及次要人物管理。",
-            "task": "阅读当前段剧本 {{ steps.segment_script.output }}、段信息 {{ segment }} 和统一风格 {{ steps.production_plan.output.style_template }}，整理场景与次要人物。",
-            "output": "输出 scene 和 minor_characters。scene 包含 scene_id、location、time、weather、layout、lighting、props、continuity_rules；每个次要人物包含 character_id、name、appearance、wardrobe。",
-            "check": "场景描述可直接出图；保留剧情指定的时间、天气、道具和空间关系；次要人物不与主要人物重复。"
+            "role": "你是场景概念设计师和选角统筹，把当前段核心地点整理成可复用场景，并为段内配角建立轻量身份锚点。",
+            "task": "基于当前段 {{ segment }}、当前段剧本 {{ steps.segment_script.output }}、主要人物 {{ steps.production_plan.output.main_characters }} 和统一风格 {{ steps.production_plan.output.style_template }}，整理当前段场景与次要人物。",
+            "output": "只输出结构化 scene 和 minor_characters。scene 写 scene_id、location、time、weather、layout、lighting、props、continuity_rules，只保留有实质剧情的主场景，描述纯环境且不含人物；layout 必须写清空间结构、入口方向、行动路线和遮挡关系。每个配角写 character_id、name、appearance、wardrobe，其中 appearance 写清性别、年龄段、身份气质和与主角关系。",
+            "check": "场景空间结构、入口方向、关键道具、光线和风格明确；剧情指定的时间、天气和道具不被改变；次要人物不与主要人物重复；无配角时返回空数组。"
           },
           "output": {
             "schema": {
@@ -279,10 +279,10 @@
           "kind": "image",
           "needs": ["scene_plan"],
           "prompt": {
-            "role": "你是影视场景概念设计师，负责制作无人、高清、可复用的场景参考图。",
-            "task": "根据当前场景 {{ steps.scene_plan.output.scene }}、当前段剧本 {{ steps.segment_script.output }} 和统一风格 {{ steps.production_plan.output.style_template }} 写场景图提示词。",
-            "output": "写一段可直接用于图片模型的中文提示词，明确空间布局、时间天气、光线方向、核心道具、镜头视角、材质和景深。",
-            "check": "场景中不出现人物；不改变关键空间关系和道具位置；不出现文字、水印或拼贴。"
+            "role": "你是场景概念图提示词编写者，把当前段场景写成可直接生成的无人物场景参考图提示词。",
+            "task": "基于当前段 {{ segment }}、当前段剧本 {{ steps.segment_script.output }}、场景 {{ steps.scene_plan.output.scene }} 和统一风格 {{ steps.production_plan.output.style_template }}，写当前段场景参考图提示词正文。",
+            "output": "只输出纯文本 image prompt，不输出 JSON。采用“2x2 四机位全景图网格，纯场景环境，无人物无人影，从四个不同角度拍摄同一场景”的写法。依次描述全景建立镜头、入口或主方向视角、反向或侧向空间、道具细节或俯视布局，并写清空间结构、入口方向、关键道具、时间天气、光线、材质和整体视觉风格。",
+            "check": "四个画格属于同一地点；画面主体只有环境和道具，不出现人物或人影；空间、光线、道具和风格足够清楚，能作为分镜图视觉参考；不出现字幕、水印或宣传文案。"
           },
           "fields": {
             "purpose": "scene_reference",
@@ -301,21 +301,23 @@
             {"from": "scene_reference", "as": ["vision"]}
           ],
           "prompt": {
-            "role": "你是分镜导演，负责根据真实参考图规划当前段的镜头序列。",
-            "task": "看场景参考图，并结合当前段剧本 {{ steps.segment_script.output }}、场景数据 {{ steps.scene_plan.output }}、主要人物 {{ steps.production_plan.output.main_characters }} 和时长 {{ segment.duration_seconds }} 秒规划分镜。",
-            "output": "输出 selected_character_ids 和 frames。每个 frame 包含 index、time_range、shot_size、camera、composition、characters、action、expression、dialogue_or_audio、continuity。",
-            "check": "镜头总时长准确；动作可在时长内完成；轴线、视线、人物位置、服装和道具连续；selected_character_ids 只包含本段出场主要人物。"
+            "role": "你是一位资深电影分镜师与镜头语言导演，根据当前段剧本和真实场景参考图规划宫格分镜，重镜头、重动作、重情绪、重构图。",
+            "task": "看场景参考图，结合当前段 {{ segment }}、当前段剧本 {{ steps.segment_script.output }}、场景与配角 {{ steps.scene_plan.output }}、主要人物 {{ steps.production_plan.output.main_characters }} 和时长 {{ segment.duration_seconds }} 秒，规划当前段每一格分镜。",
+            "output": "只输出结构化 selected_character_ids、grid_count 和 frames。普通段落使用 4 格，动作密集或转折复杂时可用 6 格。每个 frame 是一个关键叙事节点，包含 index、grid_position（第X排第Y格）、time_range、shot_size、camera、composition、characters、action、expression、dialogue_or_audio、continuity；按镜头景别与角度、人物动作与情绪、站位构图、场景氛围的顺序组织内容，用人物名指代角色，不重复堆叠外貌服饰。",
+            "check": "每格只服务当前段且没有无意义过渡；时间段总和等于 {{ segment.duration_seconds }} 秒；相邻格动作和情节连贯；轴线、视线、人物位置、服装和道具连续；selected_character_ids 只包含本段实际出镜的主要人物 ID。"
           },
           "output": {
             "schema": {
               "fields": [
                 {"id": "selected_character_ids", "type": "array", "required": true},
+                {"id": "grid_count", "type": "integer", "required": true},
                 {
                   "id": "frames",
                   "type": "array",
                   "required": true,
                   "fields": [
                     {"id": "index", "type": "integer", "required": true},
+                    {"id": "grid_position", "type": "string", "required": true},
                     {"id": "time_range", "type": "string", "required": true},
                     {"id": "shot_size", "type": "string", "required": true},
                     {"id": "camera", "type": "string", "required": true},
@@ -348,10 +350,10 @@
             }
           ],
           "prompt": {
-            "role": "你是影视分镜设计师，必须看场景图和人物定妆图来写最终宫格分镜图片提示词。",
-            "task": "看全部指定参考图，根据分镜规划 {{ steps.frame_plan.output.frames }}、当前段剧本 {{ steps.segment_script.output }} 和场景数据 {{ steps.scene_plan.output }}，设计一张按时间顺序阅读的宫格分镜图。",
-            "output": "写一段可直接用于图片模型的中文提示词，先规定统一角色、场景、光线和色彩，再逐格描述景别、机位、构图、人物位置、动作、表情和连续关系。",
-            "check": "每格对应一个 frame；人物外貌服装与定妆图一致；场景布局与参考图一致；格子边界清晰；不出现字幕、水印或无关人物。"
+            "role": "你是分镜图提示词编写者，必须看人物定妆图和场景图，把每格规划组织成一张宫格分镜图 image prompt。",
+            "task": "看全部指定参考图，基于当前段剧本 {{ steps.segment_script.output }}、宫格数量 {{ steps.frame_plan.output.grid_count }}、逐格规划 {{ steps.frame_plan.output.frames }}、场景与配角 {{ steps.scene_plan.output }} 和统一风格 {{ steps.production_plan.output.style_template }}，生成一张按时间顺序阅读的宫格分镜图提示词。",
+            "output": "只输出纯文本 image prompt，不输出 JSON。采用“宫格分镜图，电影分镜，每格一个镜头，清晰格线分隔，每格内容不同”的写法。明确 grid_count 对应的布局，先规定统一角色、场景、光线和色彩，再按左到右、上到下逐格描述镜头景别、角度、人物动作、表情、站位构图、环境氛围和前后连续关系。",
+            "check": "每格严格对应一个 frame，不生成普通人物图鉴；人物外貌服装继承定妆参考图；空间、道具和光线继承当前段场景图；格子边界清晰且每格内容不同；不出现字幕、标号、水印、宣传文案或无关人物；每格足以支撑最终视频提示词的时间段描述。"
           },
           "fields": {
             "purpose": "storyboard",
@@ -379,10 +381,10 @@
             }
           ],
           "prompt": {
-            "role": "你是视频生成导演，必须看宫格分镜、场景图和人物定妆图来写可执行的视频提示词。",
-            "task": "看全部指定参考图，根据当前段剧本 {{ steps.segment_script.output }}、分镜规划 {{ steps.frame_plan.output.frames }}、场景数据 {{ steps.scene_plan.output }} 和目标时长 {{ segment.duration_seconds }} 秒写最终视频提示词。",
-            "output": "只写视频模型提示词。按时间顺序描述镜头、人物动作、表情、镜头运动、光线变化、环境动态、对白或声音和结束画面，并写明人物、服装、场景、道具一致性约束。",
-            "check": "时长准确；动作和镜头数量可执行；不虚构参考图中不存在的角色特征；不输出 JSON、解释、标题或参数表。"
+            "role": "你是 AI 视频生成提示词专家，必须看宫格分镜、场景图和人物定妆图，根据参考图片和当前段剧本写可执行的视频提示词。",
+            "task": "看全部指定参考图，基于当前段 {{ segment }}、当前段剧本 {{ steps.segment_script.output }}、分镜规划 {{ steps.frame_plan.output.frames }}、场景与配角 {{ steps.scene_plan.output }}、统一风格 {{ steps.production_plan.output.style_template }} 和目标时长 {{ segment.duration_seconds }} 秒，生成本段最终视频提示词。",
+            "output": "只输出纯文本视频提示词，不输出 JSON。开头列出每张参考图片的用途声明，空一行后按时间码逐段描述画面，格式为：【起止时间 | 第X排第Y格 | 画面概述→动作变化 | 镜头运动方式】后接详细描述。每个时间段写镜头层、主体层、画面层和必要对白或音效；根据每格剧情密度分配时长，所有时间段之和必须等于 {{ segment.duration_seconds }} 秒；末尾写人物、服装、场景和道具的一致性要求。",
+            "check": "提示词重心放在运动过程和动作变化；每个时间段只有一个核心动作；动作承接真实 storyboard 和 frames；景别、运镜、光线使用清楚的高频词；总时长准确；不虚构参考图中不存在的角色特征；不输出 JSON、解释、标题或参数表。"
           },
           "fields": {
             "purpose": "final_video",

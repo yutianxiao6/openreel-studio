@@ -349,6 +349,54 @@ def test_builtin_template_is_native_v2_and_has_logical_media_steps() -> None:
     assert not any(step["id"].endswith("_prompt") for step in segment_loop["steps"])
 
 
+def test_builtin_template_preserves_artifact_prompt_writing_methods() -> None:
+    public = canvas_workflow_templates.get_builtin_template(
+        "general_short_drama_workflow"
+    )["public_spec"]
+    top_level = {step["id"]: step for step in public["steps"]}
+    character_image = top_level["character_images"]["steps"][0]
+    segment_steps = {
+        step["id"]: step for step in top_level["segment_production"]["steps"]
+    }
+
+    assert "官方设定集角色视觉参考表" in character_image["prompt"]["output"]
+    assert "正面/侧面/背面全身三面图" in character_image["prompt"]["output"]
+    assert "2x2 四机位全景图网格" in segment_steps["scene_reference"]["prompt"]["output"]
+    assert "宫格分镜图，电影分镜，每格一个镜头" in segment_steps["storyboard"]["prompt"]["output"]
+    assert "参考图片的用途声明" in segment_steps["final_video"]["prompt"]["output"]
+    assert "画面概述→动作变化" in segment_steps["final_video"]["prompt"]["output"]
+
+    frame_schema = {
+        field["id"]: field
+        for field in segment_steps["frame_plan"]["output"]["schema"]["fields"]
+    }
+    assert "grid_count" in frame_schema
+    assert "grid_position" in {
+        field["id"] for field in frame_schema["frames"]["fields"]
+    }
+
+    private = compile_private_execution_template(public)
+    private_top_level = {step["id"]: step for step in private["steps"]}
+    private_character_steps = {
+        step["id"]: step for step in private_top_level["character_images"]["steps"]
+    }
+    private_segment_steps = {
+        step["id"]: step for step in private_top_level["segment_production"]["steps"]
+    }
+    assert "官方设定集角色视觉参考表" in private_character_steps[
+        "character_image__prompt"
+    ]["prompt_template"]
+    assert "2x2 四机位全景图网格" in private_segment_steps[
+        "scene_reference__prompt"
+    ]["prompt_template"]
+    assert "每格一个镜头" in private_segment_steps["storyboard__prompt"][
+        "prompt_template"
+    ]
+    assert "画面概述→动作变化" in private_segment_steps["final_video__prompt"][
+        "prompt_template"
+    ]
+
+
 def test_builtin_v2_compiles_private_phases_without_persisting_them() -> None:
     public = canvas_workflow_templates.get_builtin_template(
         "general_short_drama_workflow"
