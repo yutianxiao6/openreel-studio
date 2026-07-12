@@ -2675,6 +2675,15 @@ async def _build_video_http_v1_payload(
     mode_config = _video_http_v1_mode_config(protocol, mode, profile)
     if not mode_config and isinstance(protocol.get("modes"), dict):
         return None, {"error": f"video_http_v1 protocol 不支持 mode={mode}", "error_kind": "bad_request", "mode": mode}
+    explicit_mode = str(extra.get("video_mode") or extra.get("mode") or extra.get("generation_mode") or "").strip()
+    if explicit_mode and mode == "text_to_video" and raw_refs:
+        return None, {
+            "error": "video_http_v1 文生视频模式不接受参考图片或其他媒体；请移除参考媒体，或切换为图生视频/多模态参考模式",
+            "error_kind": "bad_request",
+            "error_code": "video_mode_reference_conflict",
+            "mode": mode,
+            "reference_count": len(raw_refs),
+        }
     raw_refs, limit_warnings = _video_http_v1_truncate_refs_for_mode(mode, mode_config, raw_refs)
 
     duration, duration_error = _video_http_v1_duration(duration_seconds, protocol, profile, mode_config)
@@ -3055,7 +3064,7 @@ async def _call_video_http_v1(
         "request": (payload_meta or {}).get("request") or {},
     }
     if status in succeeded:
-        return await _video_http_v1_completed_result(
+        completed = await _video_http_v1_completed_result(
             provider=provider,
             protocol=protocol,
             project_id=project_id,
@@ -3066,6 +3075,10 @@ async def _call_video_http_v1(
             polls=[],
             save_locally=save_locally,
         )
+        completed.setdefault("mode", (payload_meta or {}).get("mode"))
+        completed.setdefault("reference_warnings", (payload_meta or {}).get("reference_warnings") or [])
+        completed.setdefault("resolved_media_references", (payload_meta or {}).get("resolved_media_references") or [])
+        return completed
     if status in failed:
         return {
             "error": _video_http_v1_provider_message(create_data or {}),

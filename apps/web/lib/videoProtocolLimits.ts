@@ -159,7 +159,34 @@ export function videoModeConfig(
 ): VideoProtocolModeSummary | undefined {
   const entries = videoModeEntriesForProvider(protocol, profile)
   const canonical = canonicalVideoMode(mode)
-  return entries.get(canonical) || entries.values().next().value
+  return entries.get(canonical)
+}
+
+export function inferVideoModeFromReferences(
+  mode: string,
+  supportedModes: string[],
+  referenceImageCount: number,
+): string {
+  const modes = Array.from(new Set(supportedModes.map(canonicalVideoMode).filter(Boolean)))
+  const explicit = canonicalVideoMode(mode)
+  if (explicit && modes.includes(explicit)) return explicit
+  if (referenceImageCount > 0) {
+    if (modes.includes("multimodal_reference")) return "multimodal_reference"
+    if (referenceImageCount >= 2 && modes.includes("first_last_frame")) return "first_last_frame"
+    if (modes.includes("first_frame")) return "first_frame"
+  } else if (modes.includes("text_to_video")) {
+    return "text_to_video"
+  }
+  return modes[0] || ""
+}
+
+export function videoSupportedModesForProvider(
+  provider: MediaProviderSummary | undefined,
+  protocols: VideoProtocolSummary[],
+): string[] {
+  const protocol = videoProtocolForProvider(provider, protocols)
+  const profile = videoProfileForModel(protocol, String(provider?.model_name || ""))
+  return Array.from(videoModeEntriesForProvider(protocol, profile).keys())
 }
 
 export function videoReferenceImageLimit(modeConfig: VideoProtocolModeSummary | undefined): number | undefined {
@@ -172,10 +199,16 @@ export function videoReferenceImageLimitForProvider(
   provider: MediaProviderSummary | undefined,
   protocols: VideoProtocolSummary[],
   mode: string,
+  referenceImageCount = 0,
 ): number | undefined {
   const protocol = videoProtocolForProvider(provider, protocols)
   const profile = videoProfileForModel(protocol, String(provider?.model_name || ""))
-  return videoReferenceImageLimit(videoModeConfig(protocol, mode, profile))
+  const effectiveMode = inferVideoModeFromReferences(
+    mode,
+    Array.from(videoModeEntriesForProvider(protocol, profile).keys()),
+    referenceImageCount,
+  )
+  return videoReferenceImageLimit(videoModeConfig(protocol, effectiveMode, profile))
 }
 
 export function videoSupportedRatiosForProvider(

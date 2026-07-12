@@ -16,7 +16,7 @@ import {
   uploadFile,
   uploadProjectNodeMedia,
 } from "@/lib/api"
-import { videoReferenceImageLimit } from "@/lib/videoProtocolLimits"
+import { inferVideoModeFromReferences, videoReferenceImageLimit } from "@/lib/videoProtocolLimits"
 import {
   inputFieldsFromNodeInput,
   nodePromptText,
@@ -2799,10 +2799,8 @@ function canonicalVideoMode(value: string): string {
   return mode
 }
 
-function effectiveVideoMode(value: string, options: Array<{ value: string }>): string {
-  const canonical = canonicalVideoMode(value)
-  if (options.some((item) => item.value === canonical)) return canonical
-  return options[0]?.value || ""
+function effectiveVideoMode(value: string, options: Array<{ value: string }>, referenceImageCount = 0): string {
+  return inferVideoModeFromReferences(value, options.map((item) => item.value), referenceImageCount)
 }
 
 function videoModeConfig(
@@ -3059,7 +3057,7 @@ function videoReferenceLimitForDraft(
   const protocol = videoProtocolForProvider(selectedProvider, protocols)
   const profile = videoProfileForModel(protocol, modelName)
   const modeOptions = videoProtocolModeOptions(protocol, profile)
-  const mode = effectiveVideoMode(draft.video_mode, modeOptions)
+  const mode = effectiveVideoMode(draft.video_mode, modeOptions, draft.reference_images.length)
   return videoReferenceImageLimit(videoModeConfig(protocol, mode, profile))
 }
 
@@ -4470,7 +4468,9 @@ function NodeEditView({
   const selectedVideoProtocol = videoProtocolForProvider(selectedVideoProvider, videoProtocols)
   const selectedVideoProfile = videoProfileForModel(selectedVideoProtocol, selectedVideoModelName)
   const videoModeOptions = videoProtocolModeOptions(selectedVideoProtocol, selectedVideoProfile)
-  const activeVideoMode = effectiveVideoMode(draft.video_mode, videoModeOptions)
+  const implicitReferenceImages = referenceMentionCandidateRefs(referenceMentionCandidates)
+  const visibleReferenceImageCount = referenceDisplayCount(draft.reference_images, implicitReferenceImages, projectId)
+  const activeVideoMode = effectiveVideoMode(draft.video_mode, videoModeOptions, visibleReferenceImageCount)
   const providerVideoResolutions = mediaProviderParamStringArray(selectedVideoProvider, "supported_resolutions", "resolutions")
     .map((item) => item.toLowerCase())
   const providerVideoRatios = mediaProviderParamStringArray(selectedVideoProvider, "supported_ratios", "ratios", "supported_aspect_ratios")
@@ -4516,21 +4516,19 @@ function NodeEditView({
     const protocol = videoProtocolForProvider(selectedProvider, videoProtocols)
     const profile = videoProfileForModel(protocol, modelForResolution)
     const modeOptions = videoProtocolModeOptions(protocol, profile)
-    const video_mode = effectiveVideoMode(draft.video_mode, modeOptions)
+    const video_mode = effectiveVideoMode(draft.video_mode, modeOptions, visibleReferenceImageCount)
     onChange({
       model,
       ...normalizeVideoDraftForMode(draft, selectedProvider, protocol, profile, video_mode),
     })
   }
   const updateVideoMode = (videoMode: string) => {
-    const mode = effectiveVideoMode(videoMode, videoModeOptions)
+    const mode = effectiveVideoMode(videoMode, videoModeOptions, visibleReferenceImageCount)
     onChange(normalizeVideoDraftForMode(draft, selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, mode))
   }
   const updateAudioProvider = (providerName: string) => {
     onChange({ model: providerName })
   }
-  const implicitReferenceImages = referenceMentionCandidateRefs(referenceMentionCandidates)
-  const visibleReferenceImageCount = referenceDisplayCount(draft.reference_images, implicitReferenceImages, projectId)
   const videoReferenceRule = videoReferenceRuleHint(activeVideoModeConfig, visibleReferenceImageCount)
   const updatePrompt = (prompt: string, selected?: ReferenceMentionCandidate) => {
     if (selected && !draft.reference_images.includes(selected.ref)) {
@@ -6065,7 +6063,9 @@ function NodeCanvasContextPanel({
   const selectedVideoProtocol = videoProtocolForProvider(selectedVideoProvider, videoProtocols)
   const selectedVideoProfile = videoProfileForModel(selectedVideoProtocol, selectedVideoModelName)
   const videoModeOptions = videoProtocolModeOptions(selectedVideoProtocol, selectedVideoProfile)
-  const activeVideoMode = effectiveVideoMode(draft.video_mode, videoModeOptions)
+  const implicitReferenceImages = referenceMentionCandidateRefs(referenceMentionCandidates)
+  const visibleReferenceImageCount = referenceDisplayCount(draft.reference_images, implicitReferenceImages, projectId)
+  const activeVideoMode = effectiveVideoMode(draft.video_mode, videoModeOptions, visibleReferenceImageCount)
   const providerVideoResolutions = mediaProviderParamStringArray(selectedVideoProvider, "supported_resolutions", "resolutions")
     .map((item) => item.toLowerCase())
   const providerVideoRatios = mediaProviderParamStringArray(selectedVideoProvider, "supported_ratios", "ratios", "supported_aspect_ratios")
@@ -6093,7 +6093,7 @@ function NodeCanvasContextPanel({
   const activeVideoDurationBounds = videoDurationBounds(activeVideoDurationRule)
   const videoReferenceRule = videoReferenceRuleHint(
     activeVideoModeConfig,
-    referenceDisplayCount(draft.reference_images, referenceMentionCandidateRefs(referenceMentionCandidates), projectId),
+    visibleReferenceImageCount,
   )
   const titleValue = draft.title || node.title || ""
   const mainText = isText ? draft.content : draft.prompt
@@ -6152,17 +6152,16 @@ function NodeCanvasContextPanel({
     const protocol = videoProtocolForProvider(selectedProvider, videoProtocols)
     const profile = videoProfileForModel(protocol, modelForResolution)
     const modeOptions = videoProtocolModeOptions(protocol, profile)
-    const video_mode = effectiveVideoMode(draft.video_mode, modeOptions)
+    const video_mode = effectiveVideoMode(draft.video_mode, modeOptions, visibleReferenceImageCount)
     onChange({
       model,
       ...normalizeVideoDraftForMode(draft, selectedProvider, protocol, profile, video_mode),
     })
   }
   const updateVideoMode = (videoMode: string) => {
-    const mode = effectiveVideoMode(videoMode, videoModeOptions)
+    const mode = effectiveVideoMode(videoMode, videoModeOptions, visibleReferenceImageCount)
     onChange(normalizeVideoDraftForMode(draft, selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, mode))
   }
-  const implicitReferenceImages = referenceMentionCandidateRefs(referenceMentionCandidates)
   const updatePrompt = (prompt: string, selected?: ReferenceMentionCandidate) => {
     if (selected && !draft.reference_images.includes(selected.ref)) {
       onChange({ prompt, reference_images: [...draft.reference_images, selected.ref] })

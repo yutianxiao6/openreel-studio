@@ -95,8 +95,10 @@ import { cn } from "@/lib/utils"
 import { canvasNodeDisplayText } from "@/lib/nodeDisplay"
 import {
   defaultVideoResolutionForProvider,
+  inferVideoModeFromReferences,
   resolveVideoProvider,
   videoReferenceImageLimitForProvider,
+  videoSupportedModesForProvider,
   videoSupportedRatiosForProvider,
   videoSupportedResolutionsForProvider,
   type MediaProviderSummary,
@@ -9646,13 +9648,19 @@ function videoReferenceLimitForCanvasNode(
   node: FlowNode,
   providers: MediaProviderSummary[],
   protocols: VideoProtocolSummary[],
+  referenceImageCount: number,
 ): number | undefined {
   if (canvasNodeType(node) !== "video") return undefined
   const input = canvasNodeInput(node)
   const model = workflowStringValue(input.model)
   const mode = workflowStringValue(input.video_mode || input.mode)
   const provider = resolveVideoProvider(model, providers)
-  return videoReferenceImageLimitForProvider(provider, protocols, mode)
+  const effectiveMode = inferVideoModeFromReferences(
+    mode,
+    videoSupportedModesForProvider(provider, protocols),
+    referenceImageCount,
+  )
+  return videoReferenceImageLimitForProvider(provider, protocols, effectiveMode, referenceImageCount)
 }
 
 function invalidVideoReferenceEdgeKeys(
@@ -9666,12 +9674,12 @@ function invalidVideoReferenceEdgeKeys(
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
   for (const target of nodes) {
     if (canvasNodeType(target) !== "video") continue
-    const limit = videoReferenceLimitForCanvasNode(target, providers, protocols)
-    if (limit === undefined) continue
     const incomingImageEdges = edges.filter((edge) => {
       if (edge.target !== target.id) return false
       return canvasNodeType(nodeById.get(edge.source)) === "image"
     })
+    const limit = videoReferenceLimitForCanvasNode(target, providers, protocols, incomingImageEdges.length)
+    if (limit === undefined) continue
     const max = Math.max(0, limit)
     incomingImageEdges.slice(max).forEach((edge) => invalid.add(edgeKey(edge)))
   }

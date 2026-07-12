@@ -152,7 +152,10 @@ For video nodes, use:
   model.
 - `fields.video_mode`: optional explicit mode such as `text_to_video`,
   `first_frame`, `first_last_frame`, or `multimodal_reference`. When omitted,
-  the backend infers mode from frame fields and media references.
+  the backend infers mode from frame fields and media references and persists
+  the resolved mode on the video node. An explicit mode is authoritative;
+  `text_to_video` with any media reference is rejected instead of silently
+  dropping the reference.
 - `fields.references`: image references with `role:"visual_reference"` when the
   chosen model/path needs source images.
 - `fields.reference_images`: image references for image-to-video or multimodal
@@ -170,7 +173,9 @@ For video nodes, use:
 - `fields.duration_seconds`：目标时长，单位秒。
 - `fields.resolution`：当前模型/协议支持的分辨率。
 - `fields.video_mode`：可选显式模式，例如 `text_to_video`、`first_frame`、
-  `first_last_frame`、`multimodal_reference`；留空时后端按首尾帧和媒体引用推断。
+  `first_last_frame`、`multimodal_reference`；留空时后端按首尾帧和媒体引用推断，
+  并把实际模式写回视频节点。显式选择 `text_to_video` 时不能携带任何媒体参考，
+  冲突请求会直接失败，不再静默丢弃图片。
 - `fields.reference_images`：图片参考。
 - `fields.reference_videos`：视频参考，每项一行 URL、`node:` 或 `asset:`。
 - `fields.reference_audios`：音频参考，每项一行 URL、`node:` 或 `asset:`。

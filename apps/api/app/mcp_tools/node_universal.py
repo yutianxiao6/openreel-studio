@@ -4906,6 +4906,12 @@ async def _run_video_node(project_id: str, node_id: str, f: dict) -> dict:
         record_asset=True,
     )
     if isinstance(result, dict):
+        resolved_mode = str(result.get("video_mode") or result.get("mode") or "").strip()
+        if resolved_mode and not str(f.get("video_mode") or f.get("mode") or "").strip():
+            persisted_fields = dict(f)
+            persisted_fields["video_mode"] = resolved_mode
+            persisted_fields.pop("mode", None)
+            await canvas_tools.update_node(node_id, {"input_data": persisted_fields})
         result["prompt"] = prompt
         result["input"] = media_history.strip_media_history(f)
     if reference_warnings:

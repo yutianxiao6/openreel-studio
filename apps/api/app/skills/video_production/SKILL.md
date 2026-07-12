@@ -100,6 +100,7 @@ Standalone 节点仍要写清：
 - `fields.purpose`
 - `fields.stage`
 - `fields.references`
+- `fields.video_mode` 与媒体引用一致：留空可由后端推断；显式 `text_to_video` 不携带图片、视频或音频参考
 - prompt 中每个需要明确指代的参考图都使用对应的精确 `@参考图标签`
 - image/video 的可执行 prompt
 - video 的 `duration_seconds`、`aspect_ratio` 和 `production_path`

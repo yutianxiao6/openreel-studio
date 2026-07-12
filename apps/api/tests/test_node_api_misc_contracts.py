@@ -2118,6 +2118,7 @@ async def test_video_runner_requires_model_authored_prompt():
 @pytest.mark.asyncio
 async def test_video_runner_passes_resolved_reference_images(monkeypatch):
     captured: dict = {}
+    updates: list[dict] = []
 
     async def fake_reference_images(project_id: str, fields: dict):
         assert project_id == "proj-1"
@@ -2132,11 +2133,18 @@ async def test_video_runner_passes_resolved_reference_images(monkeypatch):
         return {
             "status": "queued",
             "provider": "stub",
+            "mode": "multimodal_reference",
             "reference_images": kwargs.get("reference_images") or [],
         }
 
+    async def fake_update_node(node_id: str, patch: dict):
+        assert node_id == "video-1"
+        updates.append(patch)
+        return {"id": node_id, **patch}
+
     monkeypatch.setattr(node_universal, "_reference_images_for_video_run", fake_reference_images)
     monkeypatch.setattr(node_universal.media_generation, "generate_video", fake_generate_video)
+    monkeypatch.setattr(node_universal.canvas_tools, "update_node", fake_update_node)
 
     result = await node_universal._run_video_node(
         "proj-1",
@@ -2159,6 +2167,28 @@ async def test_video_runner_passes_resolved_reference_images(monkeypatch):
     assert captured["generate"]["resolution"] == "1440x2560"
     assert captured["generate"]["extra"]["generate_audio"] is False
     assert result["reference_warnings"] == ["跳过未完成参考图"]
+    assert updates[0]["input_data"]["video_mode"] == "multimodal_reference"
+
+
+@pytest.mark.asyncio
+async def test_video_http_v1_explicit_text_mode_rejects_reference_images():
+    payload, error = await media_provider._build_video_http_v1_payload(
+        provider=_video_http_provider(),
+        project_id="proj-1",
+        prompt="雨夜里的霓虹街巷",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=8,
+        reference_images=["https://example.com/ref.png"],
+        extra_override={"video_mode": "text_to_video", "resolution": "720p"},
+    )
+
+    assert payload is None
+    assert error["error_kind"] == "bad_request"
+    assert error["error_code"] == "video_mode_reference_conflict"
+    assert error["mode"] == "text_to_video"
+    assert error["reference_count"] == 1
+    assert "不接受参考图片" in error["error"]
 
 
 @pytest.mark.asyncio
@@ -2171,6 +2201,7 @@ async def test_media_generation_video_preserves_reference_images_without_default
             "ok": True,
             "provider": "video-provider",
             "model": "video-model",
+            "mode": "multimodal_reference",
             "status": "completed",
             "url": "https://example.com/video.mp4",
             "resolved_reference_images": ["/tmp/ref.png"],
@@ -2200,6 +2231,7 @@ async def test_media_generation_video_preserves_reference_images_without_default
     assert result["asset_id"] is None
     assert result["reference_images"] == ["node:image-1"]
     assert result["resolved_reference_images"] == ["/tmp/ref.png"]
+    assert result["video_mode"] == "multimodal_reference"
 
 
 @pytest.mark.asyncio

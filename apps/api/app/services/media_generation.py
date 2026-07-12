@@ -397,6 +397,8 @@ def _video_output(
         "resolution": result.get("resolution") or resolution,
         "provider": result.get("provider"),
         "model": result.get("model"),
+        "mode": result.get("mode"),
+        "video_mode": result.get("mode"),
         "job_id": result.get("job_id"),
         "url": _video_display_url(result),
         "local_url": result.get("local_url"),
