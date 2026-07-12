@@ -2699,8 +2699,8 @@ export default function VideoEditPanel({
   useEffect(() => {
     const video = videoRef.current
     const canvas = programCanvasRef.current
-    if (!video || !canvas || currentVideoItem?.type !== "video") return
-    const factor = playbackResolution === "full" ? 1 : playbackResolution === "half" ? 0.5 : 0.25
+    if (!video || !canvas || currentVideoItem?.type !== "video" || playbackResolution === "full") return
+    const factor = playbackResolution === "half" ? 0.5 : 0.25
     const width = Math.max(16, Math.round(sequenceSpec.settings.width * factor))
     const height = Math.max(16, Math.round(sequenceSpec.settings.height * factor))
     canvas.width = width
@@ -2752,8 +2752,8 @@ export default function VideoEditPanel({
   useEffect(() => {
     const video = transitionVideoRef.current
     const canvas = transitionProgramCanvasRef.current
-    if (!video || !canvas || transitionVideoItem?.type !== "video") return
-    const factor = playbackResolution === "full" ? 1 : playbackResolution === "half" ? 0.5 : 0.25
+    if (!video || !canvas || transitionVideoItem?.type !== "video" || playbackResolution === "full") return
+    const factor = playbackResolution === "half" ? 0.5 : 0.25
     const width = Math.max(16, Math.round(sequenceSpec.settings.width * factor))
     const height = Math.max(16, Math.round(sequenceSpec.settings.height * factor))
     canvas.width = width
@@ -4388,9 +4388,17 @@ export default function VideoEditPanel({
                       preload="metadata"
                       className={cn(
                         "object-contain [color-scheme:dark]",
-                        "pointer-events-none absolute h-px w-px opacity-0",
+                        playbackResolution === "full"
+                          ? cn("h-full w-full", activeVideoTransition && "absolute inset-0")
+                          : "pointer-events-none absolute h-px w-px opacity-0",
                       )}
-                      style={{ ...currentVisualTransformStyle, opacity: 0 }}
+                      style={playbackResolution === "full"
+                        ? {
+                            ...currentVisualTransformStyle,
+                            zIndex: currentVisualLayerZ,
+                            opacity: currentVisualTransform.opacity * currentVisualLayerOpacity,
+                          }
+                        : { ...currentVisualTransformStyle, opacity: 0 }}
                       onLoadedMetadata={(event) => {
                         const nextDuration = Number(event.currentTarget.duration || 0)
                         registerSourceDuration(currentVideoItem.src, nextDuration)
@@ -4423,16 +4431,24 @@ export default function VideoEditPanel({
                       preload="metadata"
                       className={cn(
                         "object-contain [color-scheme:dark]",
-                        "pointer-events-none absolute h-px w-px opacity-0",
+                        playbackResolution === "full"
+                          ? "absolute inset-0 h-full w-full"
+                          : "pointer-events-none absolute h-px w-px opacity-0",
                       )}
-                      style={{ opacity: 0 }}
+                      style={playbackResolution === "full"
+                        ? {
+                            ...visualTransformStyle(transitionVisualTransform),
+                            zIndex: transitionVisualLayerZ,
+                            opacity: transitionVisualTransform.opacity * transitionVisualLayerOpacity,
+                          }
+                        : { opacity: 0 }}
                       data-openreel-transition-video="true"
                       data-transition-layer={transitionVisualIsIncoming ? "incoming" : "outgoing"}
                       data-transition-layer-opacity={transitionVisualLayerOpacity.toFixed(4)}
                     />
                   )
                 )}
-                {currentVideoItem?.type === "video" && (
+                {currentVideoItem?.type === "video" && playbackResolution !== "full" && (
                   <canvas
                     ref={programCanvasRef}
                     data-openreel-program-canvas="true"
@@ -4441,7 +4457,7 @@ export default function VideoEditPanel({
                     style={{ zIndex: currentVisualLayerZ, opacity: currentVisualLayerOpacity }}
                   />
                 )}
-                {transitionVideoItem?.type === "video" && (
+                {transitionVideoItem?.type === "video" && playbackResolution !== "full" && (
                   <canvas
                     ref={transitionProgramCanvasRef}
                     data-openreel-transition-program-canvas="true"
