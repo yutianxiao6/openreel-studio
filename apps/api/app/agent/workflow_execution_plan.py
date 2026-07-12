@@ -21,15 +21,6 @@ from app.agent.workflow_spec import (
 
 
 _STEP_PATH_RE = re.compile(r"^steps\.([A-Za-z][A-Za-z0-9_-]*)\.(.+)$")
-_INPUT_PATH_RE = re.compile(r"^inputs\.([A-Za-z][A-Za-z0-9_-]*)$")
-_INVERTED_OPERATORS = {
-    "eq": "!=",
-    "ne": "==",
-    "lt": ">=",
-    "lte": ">",
-    "gt": "<=",
-    "gte": "<",
-}
 
 
 def _prompt_template(step: WorkflowStep) -> str:
@@ -52,23 +43,6 @@ def _output_schema(step: WorkflowStep) -> dict[str, Any] | None:
     payload = schema.model_dump(by_alias=True, exclude_none=True)
     payload["allow_extra_fields"] = payload.pop("allow_extra", False)
     return payload
-
-
-def _condition_to_private_skip(step: WorkflowStep) -> str:
-    condition = step.when
-    if condition is None:
-        return ""
-    input_match = _INPUT_PATH_RE.fullmatch(condition.path.strip())
-    if not input_match:
-        return ""
-    path = f"{{{{inputs.{input_match.group(1)}}}}}"
-    if condition.op == "empty":
-        return f"{path} is not empty"
-    if condition.op == "not_empty":
-        return f"{path} is empty"
-    operator = _INVERTED_OPERATORS[condition.op]
-    value = json.dumps(condition.value, ensure_ascii=False)
-    return f"{path} {operator} {value}"
 
 
 def _step_paths_by_id(spec: WorkflowSpec) -> tuple[dict[str, WorkflowStep], dict[str, str | None]]:
@@ -144,9 +118,8 @@ def _base_private_step(
     }
     if step.description:
         payload["description"] = step.description
-    skip = _condition_to_private_skip(step)
-    if skip:
-        payload["auto_skip_when"] = skip
+    if step.when is not None:
+        payload["when"] = step.when.model_dump(by_alias=True, exclude_none=True)
     return payload
 
 
@@ -174,7 +147,6 @@ def _private_prompt_step(
         "surface": "draft_canvas" if canvas else "workflow_runtime",
         "visibility": "canvas" if canvas else "flow_only",
         "prompt_template": _prompt_template(step),
-        "runtime_hidden": not canvas,
         "manual_only": False,
     })
     if prompt_refs:
@@ -243,7 +215,6 @@ def _compile_private_step(
             "runner": "workflow_plugin",
             "surface": "workflow_runtime",
             "visibility": "flow_only",
-            "runtime_hidden": True,
             "plugin": step.plugin.model_dump(by_alias=True, exclude_none=True) if step.plugin else {},
         })
         return [payload]

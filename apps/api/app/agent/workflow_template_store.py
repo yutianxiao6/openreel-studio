@@ -625,7 +625,8 @@ def clone_template_to_artifact(
     try:
         loaded = load_user_template(template_id, version_id)
     except WorkflowTemplateStoreError:
-        workflow = canvas_workflow_templates.get_template(template_id)
+        template = canvas_workflow_templates.get_template(template_id)
+        workflow = template.get("public_spec") if isinstance(template.get("public_spec"), dict) else template
         sample_inputs: dict[str, Any] = {}
         normalized = canvas_workflow_templates.normalize_inline_workflow(workflow, input_values=sample_inputs)
         preview = workflow_spec_artifacts.workflow_spec_preview(workflow, normalized=normalized)

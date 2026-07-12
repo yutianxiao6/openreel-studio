@@ -83,5 +83,40 @@ def workflow_step_auto_skipped(
     step: dict[str, Any],
     inputs: dict[str, Any] | None,
 ) -> bool:
+    structured = step.get("when")
+    if isinstance(structured, dict):
+        path = str(structured.get("path") or "").strip()
+        key = path[len("inputs."):] if path.startswith("inputs.") else ""
+        if not key:
+            return False
+        left = condition_value_from_inputs(inputs, key)
+        operator = str(structured.get("op") or "").strip()
+        right = structured.get("value")
+        if operator == "empty":
+            return left not in (None, "", [], {})
+        if operator == "not_empty":
+            return left in (None, "", [], {})
+        left_number = coerce_condition_number(left)
+        right_number = coerce_condition_number(right)
+        if left_number is not None and right_number is not None:
+            left, right = left_number, right_number
+        try:
+            if operator == "eq":
+                matched = left == right
+            elif operator == "ne":
+                matched = left != right
+            elif operator == "lt":
+                matched = left < right
+            elif operator == "lte":
+                matched = left <= right
+            elif operator == "gt":
+                matched = left > right
+            elif operator == "gte":
+                matched = left >= right
+            else:
+                matched = True
+        except TypeError:
+            matched = False
+        return not matched
     condition = str(step.get("auto_skip_when") or "").strip()
     return bool(condition and workflow_auto_skip_condition_met(condition, inputs))

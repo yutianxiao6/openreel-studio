@@ -2259,7 +2259,8 @@ def _finalize_workflow_spec_result(
                 message = f"{message} " + "; ".join(str(item) for item in issues[:3])
             return _workflow_spec_validation_error(message)
         result_preview = result_payload.get("preview") if isinstance(result_payload.get("preview"), dict) else {}
-        template_preview = workflow_spec_artifacts.workflow_spec_preview(template, normalized=template)
+        public_spec = template.get("public_spec") if isinstance(template.get("public_spec"), dict) else template
+        template_preview = workflow_spec_artifacts.workflow_spec_preview(public_spec, normalized=template)
         preview = {**template_preview, **result_preview}
         validation = result_payload.get("validation") if isinstance(result_payload.get("validation"), dict) else {}
         if validation.get("ok") is False and result_payload.get("_normalized_child_ask_user"):
@@ -2269,12 +2270,11 @@ def _finalize_workflow_spec_result(
                 "ok": True,
                 "workflow_id": template.get("id"),
                 "step_count": len(template.get("steps") or []),
-                "dimension_count": len(template.get("dimensions") or {}) if isinstance(template.get("dimensions"), dict) else 0,
                 "protocol": {
-                    "workflow_spec_version": template.get("workflow_spec_version"),
-                    "required_capabilities": template.get("required_capabilities") or [],
-                    "required_extensions": template.get("required_extensions") or [],
-                    "extension_ids": list((template.get("extensions") or {}).keys()) if isinstance(template.get("extensions"), dict) else [],
+                    "schema": public_spec.get("schema"),
+                    "execution_plan_version": template.get("schema"),
+                    "plan_hash": template.get("plan_hash"),
+                    "requirements": template.get("requirements") or {},
                 },
             }
         return {

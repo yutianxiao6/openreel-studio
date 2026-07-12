@@ -25,6 +25,18 @@ _STEP_PATH_RE = re.compile(
 _INPUT_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9_])inputs\.([A-Za-z][A-Za-z0-9_-]*)(?:\.[A-Za-z0-9_-]+|\[\])*(?![A-Za-z0-9_])"
 )
+_FORBIDDEN_ROUTING_KEYS = {
+    "api_base",
+    "api_key",
+    "llm_task_type",
+    "model",
+    "model_id",
+    "model_name",
+    "model_tier",
+    "provider",
+    "provider_id",
+    "task_type",
+}
 
 WorkflowStepKind = Literal[
     "text",
@@ -174,6 +186,8 @@ class WorkflowCondition(_StrictModel):
     def _validate_value(self) -> "WorkflowCondition":
         if not self.path.strip():
             raise ValueError("condition path cannot be empty")
+        if not re.fullmatch(r"inputs\.[A-Za-z][A-Za-z0-9_-]*", self.path.strip()):
+            raise ValueError("condition path must reference one root input")
         if self.op in {"empty", "not_empty"} and self.value is not None:
             raise ValueError(f"condition operator {self.op} does not accept value")
         if self.op not in {"empty", "not_empty"} and self.value is None:
@@ -304,6 +318,37 @@ class WorkflowSpec(_StrictModel):
         for extension_id in self.extensions:
             if "." not in extension_id:
                 raise ValueError("extension keys must be namespaced")
+        routing_paths: list[str] = []
+
+        def visit(value: Any, path: str) -> None:
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    child_path = f"{path}.{key}" if path else str(key)
+                    if str(key).strip().lower() in _FORBIDDEN_ROUTING_KEYS:
+                        routing_paths.append(child_path)
+                    visit(item, child_path)
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    visit(item, f"{path}[{index}]")
+
+        visit(self.ui, "ui")
+        visit(self.extensions, "extensions")
+        def visit_step(step: WorkflowStep) -> None:
+            visit(step.fields, f"steps.{step.id}.fields")
+            visit(step.ui, f"steps.{step.id}.ui")
+            if step.plugin is not None:
+                visit(step.plugin.inputs, f"steps.{step.id}.plugin.inputs")
+                visit(step.plugin.settings, f"steps.{step.id}.plugin.settings")
+            for child in step.steps:
+                visit_step(child)
+
+        for step in self.steps:
+            visit_step(step)
+        if routing_paths:
+            raise ValueError(
+                "reusable workflow cannot contain provider/model routing fields: "
+                + ", ".join(routing_paths[:12])
+            )
         return self
 
 

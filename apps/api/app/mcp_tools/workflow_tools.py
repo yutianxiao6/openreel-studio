@@ -61,6 +61,7 @@ from app.services.node_public_ids import internal_to_public_id_map, model_visibl
 
 
 _WORKFLOW_STEP_METADATA_KEYS = (
+    "logical_step_id",
     "source_node_id",
     "source_label",
     "source_category",
@@ -1128,6 +1129,7 @@ def _workflow_runtime_template_step_public_payload(
         "artifact_node_ids": [],
     }
     for key in (
+        "logical_step_id",
         "template_step_id",
         "repeat_group_id",
         "repeat_group_label",
@@ -1615,6 +1617,67 @@ async def workflow_runtime_request_pause(
     }
 
 
+def _collapse_workflow_runtime_phases(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Expose one logical V2 step while retaining private prompt phases internally."""
+    groups: dict[tuple[str, int, str], list[dict[str, Any]]] = {}
+    order: list[tuple[str, int, str]] = []
+    for step in steps:
+        logical_id = str(step.get("logical_step_id") or step.get("template_step_id") or step.get("id") or "").strip()
+        group_id = str(step.get("repeat_group_id") or "").strip()
+        try:
+            group_index = int(step.get("repeat_group_index") or 0)
+        except (TypeError, ValueError):
+            group_index = 0
+        key = (group_id, group_index, logical_id)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(step)
+
+    id_to_public: dict[str, str] = {}
+    representatives: dict[tuple[str, int, str], dict[str, Any]] = {}
+    for key in order:
+        phases = groups[key]
+        representative = next(
+            (step for step in reversed(phases) if step.get("canvas_output") and not step.get("runtime_only")),
+            phases[-1],
+        )
+        representatives[key] = representative
+        public_id = str(representative.get("id") or key[2]).strip()
+        for phase in phases:
+            phase_id = str(phase.get("id") or "").strip()
+            if phase_id:
+                id_to_public[phase_id] = public_id
+
+    result: list[dict[str, Any]] = []
+    status_priority = {"failed": 5, "running": 4, "ready": 3, "waiting": 2, "idle": 1, "completed": 0}
+    for key in order:
+        phases = groups[key]
+        representative = deepcopy(representatives[key])
+        statuses = [str(step.get("status") or "idle") for step in phases]
+        failed_phase = next((step for step in phases if step.get("status") == "failed"), None)
+        if failed_phase:
+            representative["status"] = "failed"
+            representative["error"] = failed_phase.get("error") or representative.get("error") or ""
+        elif any(status == "running" for status in statuses):
+            representative["status"] = "running"
+        elif all(status == "completed" for status in statuses):
+            representative["status"] = "completed"
+        elif representative.get("status") != "completed":
+            representative["status"] = max(statuses, key=lambda item: status_priority.get(item, 1))
+        representative["logical_step_id"] = key[2]
+        representative["run_count"] = sum(int(step.get("run_count") or 0) for step in phases)
+        dependencies: list[str] = []
+        for phase in phases:
+            for dependency in phase.get("depends_on") or []:
+                resolved = id_to_public.get(str(dependency), str(dependency))
+                if resolved and resolved != representative.get("id") and resolved not in dependencies:
+                    dependencies.append(resolved)
+        representative["depends_on"] = dependencies
+        result.append(representative)
+    return result
+
+
 def _workflow_runtime_public_payload(
     state: dict[str, Any],
     *,
@@ -1705,6 +1768,7 @@ def _workflow_runtime_public_payload(
     for step_id, runtime_step in runtime_steps_by_id.items():
         if step_id not in used_step_ids:
             public_steps.append(runtime_step)
+    public_steps = _collapse_workflow_runtime_phases(public_steps)
     payload = _workflow_runtime_payload_with_graph_state({
         "instance_id": selected_id or selected.get("instance_id") or "",
         "template_id": selected_template_id,
@@ -1984,6 +2048,7 @@ def workflow_runtime_step_public_payload(
         ],
     }
     for key in (
+        "logical_step_id",
         "template_step_id",
         "repeat_group_id",
         "repeat_group_label",
@@ -2304,6 +2369,13 @@ def _input_summary(inputs: dict[str, Any]) -> dict[str, Any]:
 
 def _workflow_effective_inputs(template: dict[str, Any] | None, inputs: dict[str, Any] | None) -> dict[str, Any]:
     result: dict[str, Any] = {}
+    defaults = template.get("defaults") if isinstance(template, dict) else None
+    if isinstance(defaults, dict):
+        result.update({
+            str(key): deepcopy(value)
+            for key, value in defaults.items()
+            if key != "fields" and value not in (None, "", [], {})
+        })
     input_defaults = template.get("input_defaults") if isinstance(template, dict) else None
     if isinstance(input_defaults, dict):
         result.update({
@@ -2543,11 +2615,11 @@ def _workflow_protocol_payload(template: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in {
-            "workflow_spec_version": template.get("workflow_spec_version"),
-            "protocol_version": protocol.get("protocol_version") or template.get("workflow_spec_version"),
-            "required_capabilities": template.get("required_capabilities") or [],
-            "required_extensions": template.get("required_extensions") or [],
-            "extension_ids": list((template.get("extensions") or {}).keys()) if isinstance(template.get("extensions"), dict) else [],
+            "schema": canvas_workflow_templates.WORKFLOW_SPEC_PROTOCOL_VERSION,
+            "protocol_version": protocol.get("protocol_version") or canvas_workflow_templates.WORKFLOW_SPEC_PROTOCOL_VERSION,
+            "execution_plan_version": protocol.get("execution_plan_version") or template.get("schema"),
+            "plan_hash": protocol.get("plan_hash") or template.get("plan_hash"),
+            "requirements": template.get("requirements") or {},
         }.items()
         if value not in (None, "", [], {})
     }
@@ -3926,7 +3998,7 @@ async def workflow_semantic_review(
                 template_id,
                 input_values=input_values,
             )
-            raw_workflow = template
+            raw_workflow = template.get("public_spec") if isinstance(template.get("public_spec"), dict) else template
             normalized = template
             source = {
                 "kind": "template",
@@ -6427,16 +6499,20 @@ async def _workflow_ready_step_batch(
         instance_id=instance_id,
     )
     selected_instance_id = str(instance_id or runtime_payload.get("instance_id") or "").strip()
-    records_by_step = {
-        str(step.get("id") or ""): step
-        for step in (runtime_payload.get("steps") or [])
-        if isinstance(step, dict) and step.get("id")
-    }
     steps = [step for step in active_template.get("steps") or [] if isinstance(step, dict)]
     steps_by_id = {
         str(step.get("id") or "").strip(): step
         for step in steps
         if str(step.get("id") or "").strip()
+    }
+    runtime_state = _workflow_runtime_state(state)
+    runtime_instances = runtime_state.get("instances") if isinstance(runtime_state.get("instances"), dict) else {}
+    selected_instance = runtime_instances.get(selected_instance_id) if selected_instance_id else None
+    raw_records = selected_instance.get("steps") if isinstance(selected_instance, dict) and isinstance(selected_instance.get("steps"), dict) else {}
+    records_by_step = {
+        str(step_id): record
+        for step_id, record in raw_records.items()
+        if isinstance(record, dict) and str(step_id).strip()
     }
     virtual_step_ids = _virtual_workflow_step_ids(steps, inputs)
 
@@ -7005,18 +7081,17 @@ async def _emit_canvas_action(project_id: str, action: str, payload: dict[str, A
 
 @register(
     "workflow.protocol_info",
-    description="查看当前 workflow spec 协议版本、核心能力和扩展字段规则。",
+    description="查看当前 Workflow Spec v2 合同、引用角色、执行模式和可用插件。",
     tags=["workflow", "read", "meta"],
     search_hint=(
         "workflow spec protocol capabilities extensions custom nodes import "
         "工作流 协议 能力 扩展 自定义节点 导入"
     ),
     usage_hints=[
-        "编译可复用 workflow spec 前可读取一次，按 available_capabilities 声明 required_capabilities。",
-        "需要看图写文本时读取 capability_details.core.vision_context，按其中作者层字段和角色示例写 spec。",
-        "完整作者层协议说明见 docs/workflow-spec-protocol.md。",
-        "第三方能力写进 required_capabilities 或 required_extensions；当前引擎缺失时导入会返回明确缺项。",
-        "扩展私有配置放 extensions、extension_config、x 或 x-openreel；未知扩展字段会保留。",
+        "workflow 统一使用 schema='openreel.workflow.v2'。",
+        "需要看图写提示词使用 uses.as=['vision']；媒体生成参考使用 reference。",
+        "第三方步骤使用 namespaced plugin.id；插件不可用时保存和运行前报错。",
+        "可移植 spec 不写 provider、model、tier 或私有运行字段。",
     ],
     is_read_only=True,
     is_concurrency_safe=True,

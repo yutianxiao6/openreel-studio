@@ -19,6 +19,7 @@ from app.agent.workflow_audit import audit_workflow_spec
 from app.agent.workflow_spec_prompt_contract import WORKFLOW_SPEC_V2_GUIDE
 from app.agent import workflow_template_store
 from app.config import settings
+from app.mcp_tools import node_universal, workflow_tools
 
 
 def _base_spec() -> dict:
@@ -84,6 +85,14 @@ def test_v2_rejects_deleted_root_fields() -> None:
         payload[field] = {}
         with pytest.raises(WorkflowSpecError):
             parse_workflow_spec(payload)
+
+
+@pytest.mark.parametrize("field", ["model", "model_tier", "provider", "llm_task_type", "api_key"])
+def test_v2_rejects_provider_and_model_routing_even_inside_fields(field: str) -> None:
+    payload = _base_spec()
+    payload["steps"][0]["fields"] = {field: "configured-elsewhere"}
+    with pytest.raises(WorkflowSpecError, match="provider/model routing"):
+        parse_workflow_spec(payload)
 
 
 def test_v2_compiler_is_deterministic_and_has_no_provider_routing() -> None:
@@ -197,6 +206,11 @@ def test_v2_rejects_unknown_input_step_and_cycles() -> None:
     )
     with pytest.raises(WorkflowSpecError, match="dependency cycle"):
         compile_workflow_spec(cycle)
+
+    output_condition = _base_spec()
+    output_condition["steps"][0]["when"] = {"path": "steps.other.output.ready", "op": "eq", "value": True}
+    with pytest.raises(WorkflowSpecError, match="condition path must reference one root input"):
+        compile_workflow_spec(output_condition)
 
 
 def test_v2_loop_has_one_explicit_source_and_no_implicit_repeat_aliases() -> None:
@@ -323,6 +337,46 @@ def test_builtin_v2_compiles_private_phases_without_persisting_them() -> None:
     assert "storyboard" in private_child_ids
     assert "final_video__prompt" in private_child_ids
     assert "final_video" in private_child_ids
+    assert all("runtime_hidden" not in step for step in segment_loop["steps"])
+
+
+def test_private_loop_expansion_resolves_item_fields_but_keeps_workflow_paths() -> None:
+    public = canvas_workflow_templates.get_builtin_template(
+        "general_short_drama_workflow"
+    )["public_spec"]
+    normalized = canvas_workflow_templates.normalize_inline_workflow(
+        public,
+        input_values={
+            "production_plan": {
+                "output": {
+                    "main_characters": [
+                        {"character_id": "hero", "name": "阿澈", "identity": "少年", "appearance": "黑发", "wardrobe": "蓝衣", "consistency_rules": "保持一致"}
+                    ],
+                    "segments": [
+                        {"segment_id": "s1", "duration_seconds": 9, "title": "相遇"}
+                    ],
+                }
+            }
+        },
+    )
+    character_prompt = next(step for step in normalized["steps"] if step["id"].endswith("character_image__prompt"))
+    final_video = next(step for step in normalized["steps"] if step["id"].endswith("final_video"))
+
+    assert "阿澈" in character_prompt["prompt_template"]
+    assert "{{ steps.production_plan.output.style_template }}" in character_prompt["prompt_template"]
+    assert final_video["fields"]["duration_seconds"] == "9"
+
+
+def test_private_llm_phases_execute_even_though_they_are_not_public_nodes() -> None:
+    template = canvas_workflow_templates.get_builtin_template(
+        "general_short_drama_workflow",
+        input_values={"plot": "雨夜相遇", "duration_seconds": 15, "episode_count": 1},
+    )
+    virtual = workflow_tools._virtual_workflow_step_ids(template["steps"], template["input_values"])
+
+    assert "episode_plan" in virtual
+    assert "script__generate" not in virtual
+    assert next(step for step in template["steps"] if step["id"] == "script__generate")["surface"] == "workflow_runtime"
 
 
 def test_template_loader_rejects_v1_instead_of_converting_it() -> None:
@@ -387,3 +441,107 @@ def test_user_template_file_stays_a_plain_portable_v2_document(
     assert "workflow" not in stored
     assert "x-openreel" not in stored
     assert "runner" not in str(stored)
+
+
+def test_workflow_llm_routing_does_not_classify_titles_or_skills() -> None:
+    for workflow, fields in (
+        ({"primary_skill": "character_prompt"}, {"title": "主要人物参考图提示词"}),
+        ({"llm_task_type": "script_generation"}, {"title": "剧本"}),
+        ({}, {"title": "任意文本"}),
+    ):
+        assert node_universal._workflow_text_task_type(workflow, fields) == "workflow_text_generation"
+
+
+def test_runtime_public_steps_collapse_private_prompt_phases() -> None:
+    collapsed = workflow_tools._collapse_workflow_runtime_phases([
+        {
+            "id": "storyboard__prompt",
+            "logical_step_id": "storyboard",
+            "title": "分镜图 · 提示词",
+            "type": "text",
+            "status": "completed",
+            "runtime_only": True,
+            "canvas_output": False,
+            "depends_on": ["scene"],
+            "run_count": 1,
+        },
+        {
+            "id": "storyboard",
+            "logical_step_id": "storyboard",
+            "title": "分镜图",
+            "type": "image",
+            "status": "completed",
+            "runtime_only": False,
+            "canvas_output": True,
+            "depends_on": ["storyboard__prompt", "scene"],
+            "node_id": "node-storyboard",
+            "run_count": 1,
+        },
+    ])
+
+    assert len(collapsed) == 1
+    assert collapsed[0]["id"] == "storyboard"
+    assert collapsed[0]["logical_step_id"] == "storyboard"
+    assert collapsed[0]["depends_on"] == ["scene"]
+    assert collapsed[0]["run_count"] == 2
+    assert "提示词" not in collapsed[0]["title"]
+
+
+def test_runtime_public_payload_never_exposes_builtin_prompt_phase() -> None:
+    state = {
+        "workflow_input_values": {
+            "by_instance": {
+                "wf_v2": {
+                    "workflow_id": "general_short_drama_workflow",
+                    "instance_id": "wf_v2",
+                    "values": {"plot": "雨夜相遇", "duration_seconds": 15},
+                }
+            }
+        },
+        "workflow_runtime": {
+            "instances": {
+                "wf_v2": {
+                    "template_id": "general_short_drama_workflow",
+                    "template_name": "通用视频制作工作流",
+                    "steps": {
+                        "script__generate": {
+                            "type": "text",
+                            "title": "剧本 · 生成",
+                            "status": "completed",
+                            "surface": "workflow_runtime",
+                            "workflow": {
+                                "step_id": "script__generate",
+                                "logical_step_id": "script",
+                                "surface": "workflow_runtime",
+                                "runtime_hidden": True,
+                            },
+                            "output": {"content": "生成的剧本"},
+                        },
+                        "script": {
+                            "type": "text",
+                            "title": "剧本",
+                            "status": "completed",
+                            "surface": "draft_canvas",
+                            "node_id": "node-script",
+                            "workflow": {
+                                "step_id": "script",
+                                "logical_step_id": "script",
+                                "surface": "draft_canvas",
+                            },
+                            "output": {"content": "生成的剧本"},
+                        },
+                    },
+                }
+            }
+        },
+    }
+    payload = workflow_tools.workflow_runtime_public_payload(
+        state,
+        template_id="general_short_drama_workflow",
+        instance_id="wf_v2",
+    )
+    ids = [step["id"] for step in payload["steps"]]
+
+    assert "script" in ids
+    assert "script__generate" not in ids
+    assert next(step for step in payload["steps"] if step["id"] == "script")["status"] == "completed"

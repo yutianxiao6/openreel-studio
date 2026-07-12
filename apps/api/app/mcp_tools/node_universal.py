@@ -4033,35 +4033,8 @@ def _should_generate_workflow_text(fields: dict[str, Any], action: str | None) -
 
 
 def _workflow_text_task_type(workflow: dict[str, Any], fields: dict[str, Any]) -> str:
-    explicit = str(workflow.get("llm_task_type") or fields.get("llm_task_type") or "").strip()
-    if explicit:
-        return explicit
-    text = search_blob(
-        workflow.get("primary_skill"),
-        workflow.get("prompt_ref"),
-        workflow.get("purpose"),
-        workflow.get("step_id"),
-        workflow.get("source_node_id"),
-        fields.get("purpose"),
-        fields.get("stage"),
-        fields.get("title"),
-    )
-    if "video_prompt" in text or "videoprompt" in text or "视频提示词" in text:
-        return "video_prompt_generation"
-    if "shot_grid" in text or "storyboard" in text or "planframes" in text or "分镜" in text:
-        return "storyboard_generation"
-    if (
-        "character_prompt" in text
-        or "scene_prompt" in text
-        or "image_prompt" in text
-        or "人物参考图提示词" in text
-        or "场景参考图提示词" in text
-        or "图片提示词" in text
-    ):
-        return "image_prompt_generation"
-    if "script" in text or "episodeplan" in text or "剧本" in text or "分集" in text:
-        return "script_generation"
-    return "outline_generation"
+    del workflow, fields
+    return "workflow_text_generation"
 
 
 def _strip_llm_fences(content: str) -> str:

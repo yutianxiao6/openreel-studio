@@ -25,7 +25,7 @@ DEFAULT_WORKFLOW_TEMPLATE_ID = "general_short_drama_workflow"
 _VALID_NODE_TYPES = {"text", "image", "video", "audio"}
 _TEMPLATE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,100}$")
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
-_INSTANCE_TOKEN_RE = re.compile(r"\{\{\s*(?:instance\.)?([A-Za-z][A-Za-z0-9_]*)\s*\}\}")
+_INSTANCE_TOKEN_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 
 
 class WorkflowTemplateError(ValueError):
@@ -232,16 +232,29 @@ def _instance_suffix(instance: dict[str, Any], index: int, key: str = "") -> str
     return _normalize_inline_id(selected, fallback=f"i{index}")
 
 
-def _render_instance_tokens(value: Any, instance: dict[str, Any]) -> Any:
+def _render_instance_tokens(value: Any, instance: dict[str, Any], item_name: str) -> Any:
     if isinstance(value, str):
-        return _INSTANCE_TOKEN_RE.sub(
-            lambda match: str(instance.get(match.group(1), match.group(0))),
-            value,
-        )
+        def replace(match: re.Match[str]) -> str:
+            expression = str(match.group(1) or "").strip()
+            parts = [part for part in expression.split(".") if part]
+            if parts and parts[0] in {item_name, "instance"}:
+                parts = parts[1:]
+            elif len(parts) != 1:
+                return match.group(0)
+            current: Any = instance
+            for part in parts:
+                if not isinstance(current, dict) or part not in current:
+                    return match.group(0)
+                current = current[part]
+            if isinstance(current, (dict, list)):
+                return json.dumps(current, ensure_ascii=False, sort_keys=True)
+            return str(current)
+
+        return _INSTANCE_TOKEN_RE.sub(replace, value)
     if isinstance(value, list):
-        return [_render_instance_tokens(item, instance) for item in value]
+        return [_render_instance_tokens(item, instance, item_name) for item in value]
     if isinstance(value, dict):
-        return {key: _render_instance_tokens(item, instance) for key, item in value.items()}
+        return {key: _render_instance_tokens(item, instance, item_name) for key, item in value.items()}
     return value
 
 
@@ -292,7 +305,7 @@ def _expand_private_loops(
             for child in children:
                 if not isinstance(child, dict):
                     continue
-                rendered = _render_instance_tokens(deepcopy(child), instance)
+                rendered = _render_instance_tokens(deepcopy(child), instance, item_name)
                 template_child_id = str(child.get("id") or "").strip()
                 rendered["id"] = local_ids[template_child_id]
                 label = str(instance.get("label") or f"实例{instance_index}")

@@ -4300,7 +4300,7 @@ async def test_node_run_workflow_text_node_uses_one_shot_llm(monkeypatch):
 
     async def fake_call_llm(**kwargs):
         llm_calls.append(kwargs)
-        assert kwargs["task_type"] == "script_generation"
+        assert kwargs["task_type"] == "workflow_text_generation"
         assert "剧本写法 skill 正文" not in kwargs["message"]
         assert "江湖雨夜相逢" in kwargs["message"]
         assert "rendered_prompt_template" in kwargs["message"]
