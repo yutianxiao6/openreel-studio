@@ -5,11 +5,13 @@ import json
 import re
 import time
 import uuid
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from app.agent import canvas_workflow_templates
 from app.agent.workflow_audit import ensure_workflow_audit_passes
+from app.agent.workflow_spec import WORKFLOW_SPEC_VERSION, compile_workflow_spec, parse_workflow_spec
 
 from app.agent.context_compact import tool_results_dir
 
@@ -126,65 +128,38 @@ def _workflow_input_ids(workflow: dict[str, Any]) -> list[str]:
 
 
 def workflow_spec_preview(workflow: dict[str, Any], *, normalized: dict[str, Any] | None = None) -> dict[str, Any]:
-    source = normalized if isinstance(normalized, dict) else workflow
-    if source is workflow:
-        try:
-            source = canvas_workflow_templates.normalize_inline_workflow(workflow)
-        except canvas_workflow_templates.WorkflowTemplateError:
-            source = workflow
-    steps = source.get("steps") if isinstance(source.get("steps"), list) else []
-    dimensions = source.get("dimensions") if isinstance(source.get("dimensions"), dict) else {}
-    deferred_groups = source.get("deferred_groups") if isinstance(source.get("deferred_groups"), list) else []
-    protocol = source.get("protocol") if isinstance(source.get("protocol"), dict) else {}
-    extensions = source.get("extensions") if isinstance(source.get("extensions"), dict) else workflow.get("extensions")
-    extensions = extensions if isinstance(extensions, dict) else {}
+    del normalized
+    spec = parse_workflow_spec(workflow)
+    plan = compile_workflow_spec(spec)
+    steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+    extensions = spec.extensions
     return {
-        "id": source.get("id") or workflow.get("id"),
-        "name": source.get("name") or workflow.get("name"),
-        "description": source.get("description") or workflow.get("description") or "",
-        "workflow_spec_version": source.get("workflow_spec_version") or workflow.get("workflow_spec_version") or "",
-        "required_capabilities": list(source.get("required_capabilities") or workflow.get("required_capabilities") or []),
-        "required_extensions": list(source.get("required_extensions") or workflow.get("required_extensions") or []),
+        "id": spec.id,
+        "name": spec.title,
+        "title": spec.title,
+        "description": spec.description,
+        "schema": WORKFLOW_SPEC_VERSION,
         "extension_ids": list(extensions.keys())[:24],
         "protocol": {
-            key: protocol.get(key)
-            for key in ("protocol_version", "engine_protocol_version", "supported", "missing_capabilities", "missing_extensions")
-            if protocol.get(key) not in (None, "", [], {})
+            "protocol_version": WORKFLOW_SPEC_VERSION,
+            "execution_plan_version": plan.get("schema"),
+            "supported": True,
+            "plan_hash": plan.get("plan_hash"),
         },
         "step_count": len(steps),
-        "dimension_count": _dict_len(dimensions),
-        "deferred_group_count": _list_len(deferred_groups),
-        "reusable": bool(workflow.get("reusable", True)),
-        "input_ids": _workflow_input_ids(workflow),
-        "required_inputs": list(source.get("required_inputs") or workflow.get("required_inputs") or []),
+        "requirements": deepcopy(plan.get("requirements") or {}),
+        "input_ids": list(spec.inputs),
+        "required_inputs": [key for key, item in spec.inputs.items() if item.required],
         "first_steps": [
             {
                 "id": step.get("id"),
                 "title": step.get("title") or step.get("id"),
-                "node_type": step.get("node_type"),
-                "surface": step.get("surface") or "",
-                "visibility": step.get("visibility") or "",
+                "kind": step.get("kind"),
                 "depends_on": step.get("depends_on") or [],
-                "phase": step.get("phase") or "",
-                "group": step.get("group") or "",
-                "kind": step.get("kind") or "",
                 "ui": step.get("ui") if isinstance(step.get("ui"), dict) else {},
-                "prompt_template": step.get("prompt_template") or "",
-                "prompt_ref": step.get("prompt_ref") or "",
             }
             for step in steps[:8]
             if isinstance(step, dict)
-        ],
-        "dimensions": list(dimensions.keys())[:12],
-        "deferred_groups": [
-            {
-                "id": item.get("id"),
-                "title": item.get("title") or item.get("id"),
-                "depends_on": item.get("depends_on") or [],
-                "status": item.get("status") or "deferred",
-            }
-            for item in deferred_groups[:8]
-            if isinstance(item, dict)
         ],
     }
 

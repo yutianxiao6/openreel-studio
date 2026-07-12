@@ -296,46 +296,17 @@ def _workflow_payload_from_template_file(
     payload: dict[str, Any],
     path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
-    sample_inputs: dict[str, Any] = {}
-    preview: dict[str, Any] = {}
-    self_check: dict[str, Any] = {}
-    source: dict[str, Any] = {"source": "workflow_template_file", "path": str(path)}
-    kind = str(payload.get("kind") or "").strip()
-    workflow = payload.get("workflow") if isinstance(payload.get("workflow"), dict) else None
-    if kind == "openreel.workflow_template.export" and workflow:
-        version = payload.get("version") if isinstance(payload.get("version"), dict) else {}
-        preview = payload.get("preview") if isinstance(payload.get("preview"), dict) else {}
-        sample_inputs = version.get("sample_inputs") if isinstance(version.get("sample_inputs"), dict) else {}
-        self_check = version.get("self_check") if isinstance(version.get("self_check"), dict) else {}
-        source = version.get("source") if isinstance(version.get("source"), dict) else source
-    elif kind == "workflow_template_version" and workflow:
-        preview = payload.get("preview") if isinstance(payload.get("preview"), dict) else {}
-        sample_inputs = payload.get("sample_inputs") if isinstance(payload.get("sample_inputs"), dict) else {}
-        self_check = payload.get("self_check") if isinstance(payload.get("self_check"), dict) else {}
-        source = payload.get("source") if isinstance(payload.get("source"), dict) else source
-    elif workflow and not isinstance(payload.get("steps"), list):
-        preview = payload.get("preview") if isinstance(payload.get("preview"), dict) else {}
-        sample_inputs = payload.get("sample_inputs") if isinstance(payload.get("sample_inputs"), dict) else {}
-        self_check = payload.get("self_check") if isinstance(payload.get("self_check"), dict) else {}
-        source = payload.get("source") if isinstance(payload.get("source"), dict) else source
-    else:
-        workflow = payload
-    if not isinstance(workflow, dict):
-        raise WorkflowTemplateStoreError(f"workflow template file has no workflow object: {path.name}")
-    x_openreel = workflow.get("x-openreel") if isinstance(workflow.get("x-openreel"), dict) else {}
-    template_meta = x_openreel.get(WORKFLOW_TEMPLATE_METADATA_KEY) if isinstance(x_openreel, dict) else None
-    if isinstance(template_meta, dict):
-        if not sample_inputs and isinstance(template_meta.get("sample_inputs"), dict):
-            sample_inputs = template_meta["sample_inputs"]
-        if not preview and isinstance(template_meta.get("preview"), dict):
-            preview = template_meta["preview"]
-        if not self_check and isinstance(template_meta.get("self_check"), dict):
-            self_check = template_meta["self_check"]
-        if isinstance(template_meta.get("source"), dict):
-            source = template_meta["source"]
-        elif isinstance(template_meta.get("source_skill"), dict):
-            source = {**source, "source_skill": template_meta["source_skill"]}
-    return deepcopy(workflow), deepcopy(sample_inputs), deepcopy(preview), deepcopy(self_check), deepcopy(source)
+    if not isinstance(payload.get("steps"), list):
+        raise WorkflowTemplateStoreError(
+            f"workflow template file must be a plain openreel.workflow.v2 document: {path.name}"
+        )
+    return (
+        deepcopy(payload),
+        {},
+        {},
+        {},
+        {"source": "workflow_template_file", "path": str(path)},
+    )
 
 
 def _record_from_template_file(path: Path) -> dict[str, Any]:
@@ -343,13 +314,12 @@ def _record_from_template_file(path: Path) -> dict[str, Any]:
     workflow, sample_inputs, user_preview, self_check, source = _workflow_payload_from_template_file(payload, path)
     normalized_id = normalize_template_id(workflow.get("id") or path.stem)
     workflow["id"] = normalized_id
-    workflow.setdefault("name", path.stem)
-    workflow.setdefault("reusable", True)
     normalized, structural_preview, audit = _preview_workflow(workflow, sample_inputs)
-    template_name = str(workflow.get("name") or structural_preview.get("name") or normalized_id).strip()
+    template_name = str(workflow.get("title") or structural_preview.get("name") or normalized_id).strip()
     description = str(workflow.get("description") or structural_preview.get("description") or "").strip()
-    category = str(workflow.get("category") or structural_preview.get("category") or "user").strip() or "user"
-    applies_to = str(workflow.get("applies_to") or structural_preview.get("applies_to") or "").strip()
+    ui = workflow.get("ui") if isinstance(workflow.get("ui"), dict) else {}
+    category = str(ui.get("category") or structural_preview.get("category") or "user").strip() or "user"
+    applies_to = ""
     merged_preview = {
         **{
             key: value
@@ -369,7 +339,7 @@ def _record_from_template_file(path: Path) -> dict[str, Any]:
     }
     modified_ms = int(path.stat().st_mtime * 1000) if path.exists() else _now_ms()
     version_id = FILE_TEMPLATE_VERSION_ID
-    version_label = str(workflow.get("version") or "file").strip() or "file"
+    version_label = "file"
     manifest = {
         "kind": "workflow_template",
         "schema_version": TEMPLATE_LIBRARY_SCHEMA_VERSION,
@@ -545,19 +515,16 @@ def save_user_template(
     if not isinstance(workflow, dict):
         raise WorkflowTemplateStoreError("workflow must be an object")
     normalized, structural_preview, audit = _preview_workflow(workflow, sample_inputs)
-    template_name = str(name or workflow.get("name") or structural_preview.get("name") or "未命名流程").strip()
+    template_name = str(name or workflow.get("title") or structural_preview.get("name") or "未命名流程").strip()
     normalized_id = normalize_template_id(template_id or workflow.get("id") or template_name)
     if _template_exists(normalized_id) and not replace_existing:
         normalized_id = unique_template_id(normalized_id)
     workflow_to_store = deepcopy(workflow)
     workflow_to_store["id"] = normalized_id
-    workflow_to_store["name"] = template_name
+    workflow_to_store["title"] = template_name
     workflow_to_store["description"] = str(description or workflow_to_store.get("description") or structural_preview.get("description") or "").strip()
-    workflow_to_store["category"] = str(category or workflow_to_store.get("category") or "user").strip() or "user"
-    workflow_to_store["applies_to"] = str(applies_to or workflow_to_store.get("applies_to") or "").strip()
-    if version:
-        workflow_to_store["version"] = str(version).strip()
-    workflow_to_store["reusable"] = True
+    ui = workflow_to_store.get("ui") if isinstance(workflow_to_store.get("ui"), dict) else {}
+    workflow_to_store["ui"] = {**ui, "category": str(category or ui.get("category") or "user")}
 
     normalized, structural_preview, audit = _preview_workflow(workflow_to_store, sample_inputs)
     merged_preview = {
@@ -571,23 +538,10 @@ def save_user_template(
         "name": template_name,
         "description": str(description or workflow_to_store.get("description") or structural_preview.get("description") or "").strip(),
         "category": str(category or workflow_to_store.get("category") or "user").strip() or "user",
-        "applies_to": str(applies_to or workflow_to_store.get("applies_to") or "").strip(),
+        "applies_to": str(applies_to or "").strip(),
         "scope": "user",
         "source": "user_template",
         "downloadable": True,
-    }
-    x_openreel = workflow_to_store.get("x-openreel") if isinstance(workflow_to_store.get("x-openreel"), dict) else {}
-    workflow_to_store["x-openreel"] = {
-        **deepcopy(x_openreel),
-        WORKFLOW_TEMPLATE_METADATA_KEY: {
-            "schema_version": WORKFLOW_TEMPLATE_METADATA_SCHEMA_VERSION,
-            "saved_at_ms": _now_ms(),
-            "source": deepcopy(source or {}),
-            "sample_inputs": deepcopy(sample_inputs or {}),
-            "self_check": deepcopy(self_check or {}),
-            "audit": deepcopy(audit),
-            "preview": deepcopy(merged_preview),
-        },
     }
     path = _template_file_path(normalized_id)
     _write_json(path, workflow_to_store)
@@ -606,7 +560,6 @@ def save_user_template(
             "ok": True,
             "workflow_id": normalized.get("id"),
             "step_count": len(normalized.get("steps") or []),
-            "dimension_count": len(normalized.get("dimensions") or {}),
             "deferred_group_count": len(normalized.get("deferred_groups") or []),
             "audit": {
                 "status": audit.get("status"),

@@ -2326,9 +2326,9 @@ def _draft_key(project_id: str, draft_id: str) -> str:
 
 def _workflow_base(workflow: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = dict(workflow or {})
+    payload.setdefault("schema", canvas_workflow_templates.WORKFLOW_SPEC_PROTOCOL_VERSION)
     payload.setdefault("id", "model_authored_workflow")
-    payload.setdefault("name", payload.get("id") or "模型编排工作流")
-    payload.setdefault("workflow_spec_version", canvas_workflow_templates.WORKFLOW_SPEC_PROTOCOL_VERSION)
+    payload.setdefault("title", payload.get("id") or "模型编排工作流")
     payload.setdefault("steps", [])
     return payload
 
@@ -2363,11 +2363,6 @@ def _has_filled_content_value(value: Any) -> bool:
 
 def _workflow_framework_content_issues(workflow: dict[str, Any]) -> list[str]:
     issues: list[str] = []
-    authoring_prompt_allowed = (
-        str(workflow.get("schema") or workflow.get("authoring_spec_version") or "").strip()
-        == "openreel.workflow.authoring.v1"
-        or workflow.get("authoring") is True
-    )
 
     def check_step(step: dict[str, Any], path: str) -> None:
         step_id = str(step.get("id") or path).strip() or path
@@ -2375,7 +2370,7 @@ def _workflow_framework_content_issues(workflow: dict[str, Any]) -> list[str]:
             key_text = str(key or "").strip()
             if key_text in {"fields", "steps"}:
                 continue
-            if authoring_prompt_allowed and key_text == "prompt" and isinstance(value, dict):
+            if key_text == "prompt" and isinstance(value, dict):
                 continue
             if key_text.lower() in _FRAMEWORK_CONTENT_KEYS and _has_filled_content_value(value):
                 issues.append(f"{step_id}.{key_text}")
@@ -7610,10 +7605,9 @@ async def workflow_draft_commit(
     usage_hints=[
         "workflow 只写 id/name/description/defaults/dimensions/inputs 等稳定模板信息，steps 留给 append_steps。",
         "inputs 若是字段定义会写入 workflow.inputs；本次剧情、集数、段数等样例值写 sample_inputs。",
-        "优先写作者层 spec：workflow.schema='openreel.workflow.authoring.v1'，step 写 kind、phase、needs、for_each、references、prompt、output。",
-        "prompt 写 role/system、task/instruction、output、check；工具会编译成运行时 prompt_template。",
-        "后端会自动补 node_type、runner、surface、visibility、output_mode、repeat 和 reference_selectors。",
-        "作者层 spec 不写 runner、surface、workflow_runtime 或 draft_canvas；这些运行字段由编译器补齐。",
+        "统一写 workflow.schema='openreel.workflow.v2'，step 写 kind、needs、prompt、output、foreach 和 uses。",
+        "prompt 写 role、task、output、check；工具会编译私有执行阶段。",
+        "V2 不写 node_type、runner、surface、visibility、prompt_template 或 reference_selectors。",
         "剧本、分镜、图片 prompt、视频 prompt 成品由 workflow 运行阶段根据 inputs 和上游输出生成。",
         "长期复用的动态数量使用输入名引用，例如 repeat.segment_count='segmentCount' 或 dimension.input_count='segmentCount'。",
         "这个工具只保存 spec 草稿，不创建画布节点。",
@@ -8773,7 +8767,7 @@ async def workflow_materialize(
             "ok": False,
             "error": str(exc),
             "error_kind": "workflow_spec_error",
-            "hint": "workflow 可传作者层 spec（schema openreel.workflow.authoring.v1，step 写 kind/needs/prompt）或运行时 spec；运行时普通 step 写 id/title/node_type，repeat group 写 id/title/steps 和 repeat/instances。",
+            "hint": "workflow 只接受 schema openreel.workflow.v2；步骤写 kind/needs/prompt/output，循环写 kind='loop'、foreach 和 steps。",
         }
     required_error = _required_input_error(template, inputs)
     if required_error:

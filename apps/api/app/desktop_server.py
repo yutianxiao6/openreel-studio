@@ -83,11 +83,11 @@ def _ensure_desktop_env() -> None:
 
 def _run_packaging_smoke() -> None:
     from app.agent.prompt_assembler import PromptContext, assemble_split_result
-    from app.agent.workflow_spec_prompt_contract import AUTHORING_SPEC_GUIDE
+    from app.agent.workflow_spec_prompt_contract import WORKFLOW_SPEC_V2_GUIDE
     from app.config_store.schema import MediaProviderEntry
     from app.services import media_operations, subprocess_utils
 
-    if not AUTHORING_SPEC_GUIDE.strip():
+    if not WORKFLOW_SPEC_V2_GUIDE.strip():
         raise RuntimeError("workflow spec prompt contract is empty")
     workflow_prompt = assemble_split_result(
         PromptContext(

@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from app.agent.workflow_authoring_spec import compile_authoring_workflow
+from app.agent.workflow_execution_plan import compile_private_execution_template
+from app.agent.workflow_spec import WorkflowSpecError, compile_workflow_spec
 from app.config import settings
 from app.mcp_tools import workflow_tools
 from app.services import workflow_plugins
@@ -76,7 +77,6 @@ async def test_workflow_protocol_info_exposes_custom_plugin_nodes(plugin_project
     result = await workflow_tools.workflow_protocol_info(project_id="project-1")
 
     assert result["ok"] is True
-    assert "video.keyframe_extractor" in result["available_extensions"]
     nodes = result["available_plugin_nodes"]
     assert nodes[0]["plugin_id"] == "video.keyframe_extractor"
     assert nodes[0]["type"] == "echo"
@@ -103,48 +103,50 @@ async def test_workflow_python_plugin_runtime_executes(plugin_project_root: Path
     assert run_result["logs"] == [{"level": "info", "message": "echo done"}]
 
 
-def test_authoring_spec_compiles_plugin_steps_without_exposing_runner() -> None:
-    compiled = compile_authoring_workflow(
-        {
-            "schema": "openreel.workflow.authoring.v1",
-            "id": "plugin_flow",
-            "title": "插件流程",
-            "steps": [
-                {
-                    "id": "extract",
-                    "title": "提取关键帧",
-                    "kind": "plugin",
-                    "plugin": "video.keyframe_extractor",
-                    "plugin_node_type": "keyframe_extract",
-                    "plugin_settings": {"count": 4},
-                    "output": {"canvas": False},
-                }
-            ],
-        }
-    )
+def test_v2_compiles_plugin_steps_into_private_runner() -> None:
+    public = {
+        "schema": "openreel.workflow.v2",
+        "id": "plugin_flow",
+        "title": "插件流程",
+        "steps": [
+            {
+                "id": "extract",
+                "title": "提取关键帧",
+                "kind": "plugin",
+                "plugin": {
+                    "id": "video.keyframe_extractor",
+                    "action": "keyframe_extract",
+                    "settings": {"count": 4},
+                },
+            }
+        ],
+    }
+    compiled = compile_private_execution_template(public)
 
     step = compiled["steps"][0]
     assert step["runner"] == "workflow_plugin"
-    assert step.get("extension") == "video.keyframe_extractor" or step.get("plugin") == "video.keyframe_extractor"
-    assert step["plugin_node_type"] == "keyframe_extract"
+    assert step["plugin"]["id"] == "video.keyframe_extractor"
+    assert step["plugin"]["action"] == "keyframe_extract"
 
 
-def test_authoring_spec_preserves_step_output_schema() -> None:
-    compiled = compile_authoring_workflow(
+def test_v2_preserves_structured_output_schema() -> None:
+    compiled = compile_workflow_spec(
         {
-            "schema": "openreel.workflow.authoring.v1",
+            "schema": "openreel.workflow.v2",
             "id": "structured_flow",
             "title": "结构化流程",
             "steps": [
                 {
                     "id": "segments",
                     "title": "分段规划",
-                    "kind": "plan",
-                    "output_mode": "json",
-                    "output_schema": {
-                        "fields": [
-                            {"id": "segments", "label": "分段", "type": "array", "required": True},
-                        ],
+                    "kind": "object",
+                    "prompt": {"task": "规划分段。"},
+                    "output": {
+                        "schema": {
+                            "fields": [
+                                {"id": "segments", "label": "分段", "type": "array", "required": True},
+                            ]
+                        }
                     },
                 }
             ],
@@ -152,57 +154,22 @@ def test_authoring_spec_preserves_step_output_schema() -> None:
     )
 
     step = compiled["steps"][0]
-    assert step["output_mode"] == "json"
-    assert step["output_schema"]["fields"][0]["id"] == "segments"
+    assert step["output"]["shape"] == "object"
+    assert step["output"]["schema"]["fields"][0]["id"] == "segments"
 
 
-def test_authoring_spec_preserves_advanced_workflow_and_step_fields() -> None:
-    compiled = compile_authoring_workflow(
-        {
-            "schema": "openreel.workflow.authoring.v1",
+def test_v2_rejects_deleted_advanced_runtime_fields() -> None:
+    with pytest.raises(WorkflowSpecError):
+        compile_workflow_spec({
+            "schema": "openreel.workflow.v2",
             "id": "advanced_flow",
             "title": "高级流程",
-            "inputs": [
-                {"id": "topic", "type": "string"},
-                {"id": "episodes", "type": "array"},
-            ],
-            "defaults": {"aspect_ratio": "9:16"},
-            "dimensions": {"episode": {"from": "inputs.episodes"}},
-            "extensions": {"example.extension": {"enabled": True}},
-            "capabilities": {"parallel": True},
-            "required_capabilities": ["core.reference_selectors"],
-            "required_extensions": ["example.extension"],
-            "steps": [
-                {
-                    "id": "advanced_step",
-                    "title": "高级节点",
-                    "kind": "text",
-                    "bindings": {"topic": "{{ inputs.topic }}"},
-                    "context_refs": [{"step": "brief", "role": "context"}],
-                    "inputs_schema": {"topic": {"type": "string"}},
-                    "prompt_spec": {"format": "sections"},
-                    "extension_config": {"mode": "strict"},
-                    "completion": {"max_tokens": 800},
-                    "settings": {"model_tier": "strong"},
-                    "io": {"input": {"topic": "string"}},
-                    "x": {"custom": True},
-                    "x-openreel": {"panel": "advanced"},
-                    "capability": "text.generate",
-                    "expand_when": "{{ inputs.topic }} != \"\"",
-                    "runtime_hidden": True,
-                }
-            ],
-        }
-    )
-
-    assert compiled["defaults"]["aspect_ratio"] == "9:16"
-    assert compiled["required_capabilities"] == ["core.reference_selectors"]
-    assert compiled["required_extensions"] == ["example.extension"]
-    step = compiled["steps"][0]
-    assert step["bindings"]["topic"] == "{{ inputs.topic }}"
-    assert step["context_refs"][0]["step"] == "brief"
-    assert step["extension_config"]["mode"] == "strict"
-    assert step["completion"]["max_tokens"] == 800
-    assert step["x-openreel"]["panel"] == "advanced"
-    assert step["capability"] == "text.generate"
-    assert step["runtime_hidden"] is True
+            "steps": [{
+                "id": "advanced_step",
+                "title": "高级节点",
+                "kind": "text",
+                "prompt": {"task": "生成文本。"},
+                "settings": {"model_tier": "strong"},
+                "runtime_hidden": True,
+            }],
+        })

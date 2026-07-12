@@ -98,13 +98,13 @@ async def test_restore_builtin_workflow_template_removes_user_override(
 
 def test_project_active_workflow_imported_state_restores_preview():
     workflow = {
+        "schema": "openreel.workflow.v2",
         "id": "grid_storyboard_workflow",
-        "name": "宫格分镜流程",
-        "inputs": ["plot"],
-        "required_inputs": ["plot"],
+        "title": "宫格分镜流程",
+        "inputs": {"plot": {"type": "long_text", "label": "剧情", "required": True}},
         "steps": [
-            {"id": "input", "title": "输入", "node_type": "text"},
-            {"id": "storyboard", "title": "宫格分镜", "node_type": "image", "depends_on": ["input"]},
+            {"id": "script", "title": "剧本", "kind": "text", "prompt": {"task": "根据 {{ inputs.plot }} 写剧本。"}},
+            {"id": "storyboard", "title": "宫格分镜", "kind": "image", "needs": ["script"], "prompt": {"task": "写分镜图提示词。"}},
         ],
     }
 
@@ -128,12 +128,12 @@ def test_project_active_workflow_imported_state_restores_preview():
     assert payload["preview"]["first_steps"][1]["id"] == "storyboard"
 
 
-def test_project_active_workflow_imported_authoring_spec_returns_compiled_preview():
+def test_project_active_workflow_imported_v2_returns_logical_preview():
     workflow = {
-        "schema": "openreel.workflow.authoring.v1",
+        "schema": "openreel.workflow.v2",
         "id": "grid_storyboard_authoring",
         "title": "宫格分镜作者层流程",
-        "inputs": {"plot": {"type": "long_text", "required": True}},
+        "inputs": {"plot": {"type": "long_text", "label": "剧情", "required": True}},
         "steps": [
             {
                 "id": "script",
@@ -166,15 +166,12 @@ def test_project_active_workflow_imported_authoring_spec_returns_compiled_previe
 
     assert payload is not None
     assert payload["workflow"] == workflow
-    assert payload["preview"]["workflow_spec_version"] == "openreel.workflow.v1"
+    assert payload["preview"]["schema"] == "openreel.workflow.v2"
     assert payload["preview"]["input_ids"] == ["plot"]
     assert payload["preview"]["required_inputs"] == ["plot"]
-    assert payload["preview"]["first_steps"][0]["node_type"] == "text"
-    assert payload["preview"]["first_steps"][0]["surface"] == "draft_canvas"
-    assert payload["preview"]["first_steps"][1]["id"] == "storyboard_prompt"
-    assert payload["preview"]["first_steps"][1]["surface"] == "workflow_runtime"
-    assert payload["preview"]["first_steps"][2]["node_type"] == "image"
-    assert payload["preview"]["first_steps"][2]["surface"] == "draft_canvas"
+    assert payload["preview"]["first_steps"][0]["kind"] == "text"
+    assert payload["preview"]["first_steps"][1]["id"] == "storyboard"
+    assert payload["preview"]["first_steps"][1]["kind"] == "image"
 
 
 def test_project_workflow_runtime_payload_restores_latest_matching_instance():

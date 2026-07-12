@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 
 import pytest
@@ -14,6 +15,10 @@ from app.agent.workflow_spec import (
 )
 from app.agent import canvas_workflow_templates
 from app.agent.workflow_execution_plan import compile_private_execution_template
+from app.agent.workflow_audit import audit_workflow_spec
+from app.agent.workflow_spec_prompt_contract import WORKFLOW_SPEC_V2_GUIDE
+from app.agent import workflow_template_store
+from app.config import settings
 
 
 def _base_spec() -> dict:
@@ -329,3 +334,56 @@ def test_template_loader_rejects_v1_instead_of_converting_it() -> None:
     }
     with pytest.raises(canvas_workflow_templates.WorkflowTemplateError):
         canvas_workflow_templates.normalize_inline_workflow(legacy)
+
+
+def test_v2_audit_reports_logical_outputs_and_private_deferred_loops() -> None:
+    public = canvas_workflow_templates.get_builtin_template(
+        "general_short_drama_workflow"
+    )["public_spec"]
+    report = audit_workflow_spec(public)
+
+    assert report["status"] == "pass"
+    assert report["protocol"]["protocol_version"] == WORKFLOW_SPEC_VERSION
+    assert report["dry_run"]["final_output_ids"] == [
+        "script",
+        "character_image",
+        "segment_script",
+        "scene_reference",
+        "storyboard",
+        "final_video",
+    ]
+    assert report["dry_run"]["deferred_group_ids"] == ["character_images", "segment_production"]
+
+
+def test_workflow_build_guide_documents_v2_high_frequency_errors() -> None:
+    assert "openreel.workflow.v2" in WORKFLOW_SPEC_V2_GUIDE
+    assert "vision" in WORKFLOW_SPEC_V2_GUIDE
+    assert "reference" in WORKFLOW_SPEC_V2_GUIDE
+    assert "select.values" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Do not create prompt sibling steps" in WORKFLOW_SPEC_V2_GUIDE
+    assert "provider/model routing" in WORKFLOW_SPEC_V2_GUIDE
+    assert "openreel.workflow.authoring.v1" not in WORKFLOW_SPEC_V2_GUIDE
+
+
+def test_user_template_file_stays_a_plain_portable_v2_document(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "PROJECT_ROOT", str(tmp_path))
+    saved = workflow_template_store.save_user_template(
+        workflow=_base_spec(),
+        template_id="portable_video_flow",
+        name="可移植视频流程",
+        replace_existing=True,
+    )
+    stored = json.loads(
+        (tmp_path / "workflow_templates" / "portable_video_flow.json").read_text(encoding="utf-8")
+    )
+
+    assert saved["ok"] is True
+    assert stored["schema"] == WORKFLOW_SPEC_VERSION
+    assert stored["id"] == "portable_video_flow"
+    assert stored["title"] == "可移植视频流程"
+    assert "workflow" not in stored
+    assert "x-openreel" not in stored
+    assert "runner" not in str(stored)

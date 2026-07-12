@@ -26,9 +26,9 @@ from app.mcp_tools.registry import register
     usage_hints=[
         "create 传 workflow；update 传 base 和 operations；replace 传 base 和 workflow。",
         "base 可引用 artifact_ref、template_id 或 version_id；save.target 为 artifact 或 template。",
-        "新建或大改优先作者层 schema='openreel.workflow.authoring.v1'。",
-        "workflow 描述输入、步骤、提示词模板、循环、依赖、输出和节点设置；正文产物由运行阶段生成。",
-        "工具会编译作者层 spec、校验协议、执行 deterministic audit，并返回 artifact_ref 或 template_id。",
+        "新建和修改统一使用 schema='openreel.workflow.v2'。",
+        "workflow 描述输入、逻辑步骤、提示词、循环、依赖、输出、引用角色和节点设置；正文产物由运行阶段生成。",
+        "工具会校验 V2、编译私有执行计划、执行 deterministic audit，并返回 artifact_ref 或 template_id。",
     ],
     schema={
         "type": "object",

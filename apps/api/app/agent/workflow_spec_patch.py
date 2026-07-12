@@ -11,6 +11,7 @@ from typing import Any
 
 from app.agent import canvas_workflow_templates, workflow_spec_artifacts, workflow_template_store
 from app.agent.workflow_audit import WorkflowAuditError
+from app.agent.workflow_spec import WORKFLOW_SPEC_VERSION
 
 
 _FRAMEWORK_CONTENT_KEYS = {
@@ -60,11 +61,10 @@ def _merge_dict(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
 
 def _workflow_base(workflow: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = dict(workflow or {})
+    payload.setdefault("schema", WORKFLOW_SPEC_VERSION)
     payload.setdefault("id", "model_authored_workflow")
-    payload.setdefault("name", payload.get("id") or "模型编排工作流")
-    payload.setdefault("workflow_spec_version", canvas_workflow_templates.WORKFLOW_SPEC_PROTOCOL_VERSION)
+    payload.setdefault("title", payload.get("id") or "模型编排工作流")
     payload.setdefault("steps", [])
-    payload["reusable"] = True
     return payload
 
 
@@ -93,13 +93,11 @@ def _workflow_protocol_payload(template: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in {
-            "workflow_spec_version": template.get("workflow_spec_version"),
-            "protocol_version": protocol.get("protocol_version") or template.get("workflow_spec_version"),
-            "required_capabilities": template.get("required_capabilities") or [],
-            "required_extensions": template.get("required_extensions") or [],
-            "extension_ids": list((template.get("extensions") or {}).keys())
-            if isinstance(template.get("extensions"), dict)
-            else [],
+            "schema": WORKFLOW_SPEC_VERSION,
+            "protocol_version": protocol.get("protocol_version") or WORKFLOW_SPEC_VERSION,
+            "execution_plan_version": protocol.get("execution_plan_version"),
+            "plan_hash": protocol.get("plan_hash") or template.get("plan_hash"),
+            "requirements": template.get("requirements") or {},
         }.items()
         if value not in (None, "", [], {})
     }
@@ -132,11 +130,6 @@ def _has_filled_content_value(value: Any) -> bool:
 
 def _workflow_framework_content_issues(workflow: dict[str, Any]) -> list[str]:
     issues: list[str] = []
-    authoring_prompt_allowed = (
-        str(workflow.get("schema") or workflow.get("authoring_spec_version") or "").strip()
-        == "openreel.workflow.authoring.v1"
-        or workflow.get("authoring") is True
-    )
 
     def check_step(step: dict[str, Any], path: str) -> None:
         step_id = str(step.get("id") or path).strip() or path
@@ -144,7 +137,7 @@ def _workflow_framework_content_issues(workflow: dict[str, Any]) -> list[str]:
             key_text = str(key or "").strip()
             if key_text in {"fields", "steps"}:
                 continue
-            if authoring_prompt_allowed and key_text == "prompt":
+            if key_text == "prompt":
                 continue
             if key_text.lower() in _FRAMEWORK_CONTENT_KEYS and _has_filled_content_value(value):
                 issues.append(f"{step_id}.{key_text}")
@@ -177,20 +170,16 @@ def _workflow_framework_content_error(workflow: dict[str, Any]) -> dict[str, Any
         "error": "Workflow spec must describe the framework only; fill node content during node execution",
         "error_kind": "workflow_framework_content_not_allowed",
         "content_fields": issues[:24],
-        "hint": "使用 schema='openreel.workflow.authoring.v1' 保留 step prompt 作为模板；spec 写输入、步骤、循环、依赖、输出和节点设置，运行正文由节点执行生成。",
+        "hint": "使用 schema='openreel.workflow.v2'；step.prompt 只写可复用模板，生成正文由运行阶段产出。",
     }
 
 
 def _workflow_spec_error_hint(message: str) -> str:
     text = str(message or "")
-    if "repeat group requires" in text:
-        return (
-            "补齐循环展开来源：作者层可写 for_each='steps.plan.output.items'，"
-            "或 repeat.items='{{steps.plan.output.items}}' + item_name='item'，"
-            "或 repeat.count='segmentCount' + repeat.scope_key='segment'。"
-        )
-    if "Invalid authoring step kind" in text:
-        return "使用作者层 step kind：text、plan、collection、plugin、loop、canvas_text、image、video、audio；list 可作为 collection 的别名。"
+    if "foreach" in text:
+        return "循环使用 kind='loop'，foreach 只写 items 或 count 其中一个，并写 as；items 使用 steps.<id>.output... 路径。"
+    if "kind" in text:
+        return "步骤 kind 只能是 text、object、collection、image、video、audio、loop、plugin。"
     return "修订后的 workflow 未通过最终校验；调整 patch 后重试。"
 
 
@@ -553,6 +542,7 @@ def _load_base_workflow(
             loaded = workflow_template_store.load_user_template(template_id, version_id)
         except workflow_template_store.WorkflowTemplateStoreError:
             workflow = canvas_workflow_templates.get_template(template_id)
+            workflow = workflow.get("public_spec") if isinstance(workflow.get("public_spec"), dict) else workflow
             source = {
                 "source_kind": "builtin_template",
                 "template_id": template_id,
@@ -631,11 +621,11 @@ def _save_template(
     saved = workflow_template_store.save_user_template(
         workflow=workflow,
         template_id=str(save.get("template_id") or workflow.get("id") or ""),
-        name=str(save.get("name") or workflow.get("name") or ""),
+        name=str(save.get("name") or workflow.get("title") or ""),
         description=str(save.get("description") or workflow.get("description") or ""),
         category=str(save.get("category") or "user"),
-        applies_to=str(save.get("applies_to") or workflow.get("applies_to") or ""),
-        version=str(save.get("version") or workflow.get("version") or ""),
+        applies_to=str(save.get("applies_to") or ""),
+        version=str(save.get("version") or ""),
         source=source,
         sample_inputs=sample_inputs,
         self_check=self_check,
@@ -658,7 +648,6 @@ def _validation_payload(normalized: dict[str, Any], audit: dict[str, Any]) -> di
         "ok": True,
         "workflow_id": normalized.get("id"),
         "step_count": len(normalized.get("steps") or []),
-        "dimension_count": len(normalized.get("dimensions") or {}),
         "deferred_group_count": len(normalized.get("deferred_groups") or []),
         "reusable": True,
         "protocol": _workflow_protocol_payload(normalized),
