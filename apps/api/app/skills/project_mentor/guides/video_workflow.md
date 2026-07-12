@@ -15,7 +15,7 @@ workflow skill；没有匹配项时通过 `skill.search` / `skill.get` 读取内
 场景图、分镜图和最终 video 节点可由 `node.run` 完成。可复用 workflow
 物化后，主 Agent 用 deferred `workflow.run_step`、`workflow.run_next` 或
 `workflow.run_all` 传入 `inputs` 并启动流程；workflow runner 按依赖选择步骤，
-内部调用节点 runner 执行已编译的 `prompt_template`，完成节点内容、最终 prompt 和媒体运行。
+内部调用节点 runner 执行由公开 `step.prompt` 编译出的私有提示词阶段，完成节点内容、最终 prompt 和媒体运行。
 长项目在框架阶段批量查询所需 prompt skill，形成 `skill_plan`，由 workflow 编译阶段吸收进各步模板，后续同类
 节点复用这份计划。
 
@@ -62,4 +62,4 @@ workflow skill；没有匹配项时通过 `skill.search` / `skill.get` 读取内
 
 图片和视频 prompt 写法按模块分开。剧本、人物图、场景图、分镜图和
 最终视频提示词分别使用独立 prompt skill；搜索顺序是用户自定义 prompt
-skill，然后是内置默认 prompt skill。可复用 workflow 编译阶段把这些写法吸收进每步 `prompt_template`；standalone worker 只读取当前模块需要的一份。
+skill，然后是内置默认 prompt skill。可复用 workflow 把这些写法放进每个逻辑步骤的 `prompt`；standalone worker 只读取当前模块需要的一份。

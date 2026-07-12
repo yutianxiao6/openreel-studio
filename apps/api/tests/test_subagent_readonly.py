@@ -1364,14 +1364,16 @@ async def test_agent_run_workflow_spec_rejects_half_authoring_workflow(monkeypat
 async def test_agent_run_workflow_spec_blocks_committed_artifact_ref(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(workflow_spec_artifacts, "tool_results_dir", lambda: tmp_path)
     saved = workflow_spec_artifacts.save_workflow_spec_artifact(
-        project_id="project-1",
-        workflow={
-            "id": "committed_workflow",
-            "name": "已提交工作流",
-            "steps": [
-                {"id": "brief", "title": "需求", "node_type": "text"},
-                {"id": "script", "title": "剧本", "node_type": "text", "depends_on": ["brief"]},
-            ],
+            project_id="project-1",
+            workflow={
+                "schema": "openreel.workflow.v2",
+                "id": "committed_workflow",
+                "title": "已提交工作流",
+                "inputs": {},
+                "steps": [
+                    {"id": "brief", "title": "需求", "kind": "text", "prompt": {"task": "整理需求。"}},
+                    {"id": "script", "title": "剧本", "kind": "text", "needs": ["brief"], "prompt": {"task": "写剧本。"}},
+                ],
         },
         self_check={"passed": True, "checks": ["已校验"], "issues": []},
     )
@@ -1449,10 +1451,12 @@ async def test_agent_run_workflow_spec_defaults_plain_video_to_general_template(
     assert [field["id"] for field in payload["input_fields"]] == [
         "plot",
         "style",
-        "type",
-        "episodeCount",
-        "durationSeconds",
-        "segmentSeconds",
+        "video_type",
+        "episode_count",
+        "duration_seconds",
+        "segment_seconds",
+        "aspect_ratio",
+        "resolution",
     ]
     assert all("missing" not in field for field in payload["input_fields"])
     assert all("question" not in field for field in payload["input_fields"])
@@ -1500,10 +1504,12 @@ async def test_agent_run_workflow_spec_accepts_explicit_reusable_template_id(mon
     assert [field["id"] for field in payload["input_fields"]] == [
         "plot",
         "style",
-        "type",
-        "episodeCount",
-        "durationSeconds",
-        "segmentSeconds",
+        "video_type",
+        "episode_count",
+        "duration_seconds",
+        "segment_seconds",
+        "aspect_ratio",
+        "resolution",
     ]
     assert all("missing" not in field for field in payload["input_fields"])
     assert "workflow" not in payload
@@ -1558,10 +1564,12 @@ async def test_agent_run_workflow_spec_ask_user_with_template_returns_schema(mon
     assert [field["id"] for field in payload["input_fields"]] == [
         "plot",
         "style",
-        "type",
-        "episodeCount",
-        "durationSeconds",
-        "segmentSeconds",
+        "video_type",
+        "episode_count",
+        "duration_seconds",
+        "segment_seconds",
+        "aspect_ratio",
+        "resolution",
     ]
     assert all("missing" not in field for field in payload["input_fields"])
     assert all("question" not in field for field in payload["input_fields"])
@@ -1581,14 +1589,16 @@ async def test_agent_run_workflow_spec_blocks_artifact_ref_even_with_self_check(
 
     monkeypatch.setattr(workflow_spec_artifacts, "tool_results_dir", lambda: tmp_path)
     saved = workflow_spec_artifacts.save_workflow_spec_artifact(
-        project_id="project-1",
-        workflow={
-            "id": "committed_workflow",
-            "name": "已提交工作流",
-            "steps": [
-                {"id": "brief", "title": "需求", "node_type": "text"},
-                {"id": "script", "title": "剧本", "node_type": "text", "depends_on": ["brief"]},
-            ],
+            project_id="project-1",
+            workflow={
+                "schema": "openreel.workflow.v2",
+                "id": "committed_workflow",
+                "title": "已提交工作流",
+                "inputs": {},
+                "steps": [
+                    {"id": "brief", "title": "需求", "kind": "text", "prompt": {"task": "整理需求。"}},
+                    {"id": "script", "title": "剧本", "kind": "text", "needs": ["brief"], "prompt": {"task": "写剧本。"}},
+                ],
         },
         self_check={"passed": True, "checks": ["已校验"], "issues": []},
     )

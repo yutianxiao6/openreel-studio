@@ -15,7 +15,7 @@ applies_to: 视频制作 视频工作流 默认视频流程 workflow template ge
 - 默认视频运行模式只使用现有模板引用、补齐输入并运行 workflow。
 - 用户主动要求查询或选择模板时，优先委派 `workflow_spec` 选择器；只在需要展示列表时读取 workflow 模板目录。
 - 运行前补齐阻塞输入：剧情/主题 `plot`、时长 `durationSeconds`；可选输入是视觉风格 `style`、视频类型 `type`、集数 `episodeCount`、每段时长 `segmentSeconds`。
-- 模板里的 graph 步骤已经带 `prompt_template`；运行期按模板执行，不把完整 prompt skill 原文塞进主 Agent。
+- 模板里的 V2 逻辑步骤已经带 `prompt`；运行期编译成私有提示词阶段执行，不把完整 prompt skill 原文塞进主 Agent。
 - prompt 模块索引用于模板维护、局部改提示词或 standalone 节点：剧本 `script_writing`，人物图 `character_prompt`，场景图 `scene_prompt`，宫格分镜 `shot_grid_prompt`，视频提示词 `video_prompt`，故事模板图 `story_template_method`。
 - 每个节点都是独立任务单元；`task` 只记录进度；生产依赖写节点 `fields.references`，图片引用用 `role:"visual_reference"`，文字上下文用 `role:"context"`，直接采用已有图片用 `role:"source_image"`。
 - `skill.get(detail="full")` 返回的正文是指南内容；`path` 只做诊断来源，不作为 `file.read_text` 目标。
@@ -86,7 +86,7 @@ workflow.runtime_status
 | 视频提示词 | `video_prompt` | 最终视频提示词 |
 | 故事模板图 | `story_template_method` | 故事模板图/视觉开发板 |
 
-用户自定义 prompt skill 优先于内置 skill。模板维护时，把稳定写法写进对应 step 的 `prompt_template`。
+用户自定义 prompt skill 优先于内置 skill。模板维护时，把稳定写法写进对应公开 step 的 `prompt`。
 
 ## Standalone 节点
 

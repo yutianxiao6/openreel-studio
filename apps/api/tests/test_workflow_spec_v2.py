@@ -18,8 +18,10 @@ from app.agent.workflow_execution_plan import compile_private_execution_template
 from app.agent.workflow_audit import audit_workflow_spec
 from app.agent.workflow_spec_prompt_contract import WORKFLOW_SPEC_V2_GUIDE
 from app.agent import workflow_template_store
+from app.agent import workflow_canvas_projection
 from app.config import settings
 from app.mcp_tools import node_universal, workflow_tools
+from app.mcp_tools.registry import registry
 
 
 def _base_spec() -> dict:
@@ -70,6 +72,20 @@ def test_v2_is_the_only_accepted_public_schema() -> None:
         ("auto_skip_when", "{{ inputs.episode_count }} <= 1"),
         ("context_refs", []),
         ("reference_selectors", []),
+        ("repeat", {"count": 2}),
+        ("for_each", "steps.script.output"),
+        ("bindings", {}),
+        ("prompt_spec", {}),
+        ("expansion", {}),
+        ("completion", {}),
+        ("io", {}),
+        ("branch", "legacy"),
+        ("expand_when", "legacy"),
+        ("instance_scope", {}),
+        ("repeat_group_id", "legacy"),
+        ("source_category", "legacy"),
+        ("source_ui", "legacy"),
+        ("source_behavior", "legacy"),
     ],
 )
 def test_v2_rejects_deleted_step_fields(field: str, value: object) -> None:
@@ -85,6 +101,19 @@ def test_v2_rejects_deleted_root_fields() -> None:
         payload[field] = {}
         with pytest.raises(WorkflowSpecError):
             parse_workflow_spec(payload)
+
+
+def test_legacy_workflow_authoring_tools_are_not_registered() -> None:
+    names = {tool.name for tool in registry.list_tools()}
+    assert {
+        "workflow.draft.start",
+        "workflow.draft.append_steps",
+        "workflow.draft.commit",
+        "workflow.spec.start",
+        "workflow.spec.append_steps",
+        "workflow.spec.commit",
+        "workflow.spec.patch",
+    }.isdisjoint(names)
 
 
 @pytest.mark.parametrize("field", ["model", "model_tier", "provider", "llm_task_type", "api_key"])
@@ -398,7 +427,7 @@ def test_v2_audit_reports_logical_outputs_and_private_deferred_loops() -> None:
 
     assert report["status"] == "pass"
     assert report["protocol"]["protocol_version"] == WORKFLOW_SPEC_VERSION
-    assert report["dry_run"]["final_output_ids"] == [
+    assert report["dry_run"]["visible_output_ids"] == [
         "script",
         "character_image",
         "segment_script",
@@ -406,7 +435,39 @@ def test_v2_audit_reports_logical_outputs_and_private_deferred_loops() -> None:
         "storyboard",
         "final_video",
     ]
+    assert report["dry_run"]["leaf_visible_output_ids"] == ["final_video"]
+    assert report["dry_run"]["final_output_ids"] == ["final_video"]
     assert report["dry_run"]["deferred_group_ids"] == ["character_images", "segment_production"]
+
+
+def test_builtin_v2_canvas_projection_hides_private_phases_and_expands_final_videos() -> None:
+    public = canvas_workflow_templates.get_builtin_template(
+        "general_short_drama_workflow"
+    )["public_spec"]
+    result = workflow_canvas_projection.project_workflow_canvas(
+        project_id="projection-test",
+        workflow=public,
+        inputs={"plot": "雨夜天台收到未来来信", "duration_seconds": 30, "segment_seconds": 15},
+        context={
+            "production_plan": {
+                "output": {
+                    "main_characters": [{"character_id": "hero", "name": "林岚"}],
+                    "segments": [
+                        {"segment_id": "s1", "duration_seconds": 15},
+                        {"segment_id": "s2", "duration_seconds": 15},
+                    ],
+                }
+            }
+        },
+    )
+
+    canvas_ids = [node["id"] for node in result["canvas"]["nodes"]]
+    assert result["ok"] is True
+    assert not any("__prompt" in step_id or "__generate" in step_id for step_id in canvas_ids)
+    assert [node["id"] for node in result["canvas"]["final_outputs"]] == [
+        "segment_production_s1_final_video",
+        "segment_production_s2_final_video",
+    ]
 
 
 def test_workflow_build_guide_documents_v2_high_frequency_errors() -> None:
@@ -431,7 +492,7 @@ def test_user_template_file_stays_a_plain_portable_v2_document(
         replace_existing=True,
     )
     stored = json.loads(
-        (tmp_path / "workflow_templates" / "portable_video_flow.json").read_text(encoding="utf-8")
+        (tmp_path / "workflow_templates" / "user" / "portable_video_flow.json").read_text(encoding="utf-8")
     )
 
     assert saved["ok"] is True

@@ -1,122 +1,80 @@
 # Workflow Spec 协议
 
-[English](../workflow-spec-protocol.md) · [中文文档首页](../README.md)
+OpenReel 只接受一种可移植工作流格式：`openreel.workflow.v2`。导入、导出、
+模板存储和 Workflow Build Mode 都直接读写这份公开文档。编译后的执行阶段和
+项目运行状态属于私有实现，不进入可复用 Spec。
 
-OpenReel Workflow Spec 用于描述可复用创作流程。推荐作者层协议是 `openreel.workflow.authoring.v1`，后端会编译成画布运行使用的 `openreel.workflow.v1`。
-
-## 最小作者层 Spec
+## 公开文档
 
 ```json
 {
-  "schema": "openreel.workflow.authoring.v1",
-  "id": "storyboard_workflow",
-  "title": "分镜工作流",
+  "schema": "openreel.workflow.v2",
+  "id": "storyboard_video",
+  "title": "分镜视频",
+  "description": "根据剧情生成分镜和视频。",
+  "tags": ["video"],
   "inputs": {
-    "plot": { "type": "long_text", "label": "剧情", "required": true }
+    "plot": {
+      "type": "long_text",
+      "label": "剧情",
+      "required": true
+    }
   },
   "steps": [
     {
-      "id": "script",
-      "title": "剧本",
-      "kind": "text",
+      "id": "storyboard",
+      "title": "分镜图",
+      "kind": "image",
       "prompt": {
-        "role": "编剧",
-        "task": "把输入剧情写成分段剧本。",
-        "output": "包含人物、场景和动作的可读剧本。",
-        "check": "每一段都有明确画面变化。"
+        "role": "分镜导演",
+        "task": "根据 {{ inputs.plot }} 设计分镜。",
+        "check": "保持人物和镜头方向连续。"
+      }
+    },
+    {
+      "id": "final_video",
+      "title": "成片",
+      "kind": "video",
+      "needs": ["storyboard"],
+      "prompt": {
+        "task": "根据 {{ steps.storyboard.output }} 编写最终视频提示词。"
       },
-      "output": { "canvas": true, "key": "script" }
+      "uses": [
+        {"from": "storyboard", "as": ["vision", "reference"]}
+      ]
     }
   ]
 }
 ```
 
-普通用户通过 Workflow Build Mode 搭建，不需要手写 JSON。
+根字段只有 `schema`、`id`、`title`、`description`、`tags`、`inputs`、
+`steps`、`ui` 和带命名空间的 `extensions`。输入按 id 建立对象，可包含
+`type`、`label`、`description`、`required`、`default`、`min`、`max` 和
+`options`。
 
-## 顶层字段
+步骤类型只有 `text`、`object`、`collection`、`image`、`video`、`audio`、
+`loop` 和 `plugin`。步骤可包含 `id`、`title`、`kind`、`description`、
+`needs`、`prompt`、`output`、`fields`、`uses`、`when`、`execution`、
+`on_error`、`foreach`、嵌套 `steps`、`plugin` 和 `ui`。未知字段会被拒绝。
 
-| 字段 | 作用 |
-| --- | --- |
-| `schema` | 协议版本。 |
-| `id` | 稳定 ASCII 工作流 ID。 |
-| `title` | 用户看到的标题。 |
-| `inputs` | 运行前必须提供的值。 |
-| `steps` | 可复用步骤。 |
-| `required_capabilities` | 工作流依赖的引擎能力。 |
-| `required_extensions` | 导入或运行前必须安装的扩展。 |
-| `extensions` | 可选命名空间扩展元数据。 |
+## 数据与执行
 
-## 步骤字段
-
-- `id`：稳定步骤 ID。
-- `title`：用户可见名称。
-- `kind`：输入、文本、集合、循环、插件、图片、视频、音频等作者层类型。
-- `needs`：真实执行依赖。
-- `for_each`：循环数据源。
-- `item_name`：当前循环元素的局部名称。
-- `references`：动态视觉或上下文参考选择器。
-- `prompt`：当前步骤的结构化提示词。
-- `output`：输出 key 以及是否创建可见画布节点。
-- `fields`：写入画布节点的字段。
-- `phase`、`group`、`ui`：可选展示信息。
-- `extension_config`：步骤级命名空间扩展配置。
-
-## Prompt 分段
-
-`prompt` 支持 role/system、task/instruction、output 和 check。编译器生成稳定分段；每个运行实例只接收当前步骤需要的输入和上游结果。
-
-## 画布产物与运行时中间态
-
-可见产物：
+数据路径统一使用 `inputs.<id>`、`steps.<id>.output` 和当前循环变量。
+只有在数据路径没有表达顺序关系时才写 `needs`。运行条件是正向结构化条件：
 
 ```json
-{ "output": { "canvas": true, "key": "storyboards" } }
+{"when": {"path": "inputs.episode_count", "op": "gt", "value": 1}}
 ```
 
-只保留在运行时：
+`execution` 取 `auto` 或 `manual`；`on_error` 取 `stop` 或 `continue`。
+重复任务只能使用一个 `loop` 步骤、嵌套步骤，以及唯一的
+`foreach.items` 或 `foreach.count` 来源。
 
-```json
-{ "output": { "canvas": false, "key": "scene_plan" } }
-```
+媒体引用统一写 `uses`。`vision` 会把解析后的真实图片像素交给提示词模型，
+`reference` 会把媒体交给生成模型，`source` 会直接采用一个已有媒体输出。
+同一来源可以同时使用 `vision` 和 `reference`。
 
-运行时提供等价的 `canvas_output` 和 `runtime_only` 元数据。显式输出字段优先于旧 `surface` 和 `visibility`。
+Provider、模型 id、模型档位、API 地址、本次生成正文、运行状态、画布节点 id、
+私有 runner 和内部提示词阶段都不是可移植字段，由运行器根据项目与用户配置解析。
 
-## 动态展开
-
-重复结构只定义一次，再从输入或上游输出展开：
-
-```json
-{
-  "id": "scene_image",
-  "kind": "image",
-  "for_each": "scene_plan.output.scenes",
-  "item_name": "scene"
-}
-```
-
-兼容层接受集合/list、repeat group 和字符串 `prompt_template` 等别名。编译后实例保留稳定 `template_step_id`，同时获得具体实例 ID。
-
-每个 repeat group 必须通过 `for_each`、`repeat.count` 或协议支持的其他基数表达式定义来源。缺少基数时必须在运行前校验失败。
-
-## 参考选择器
-
-选择器可以从上游集合动态选择素材：
-
-```json
-{
-  "references": {
-    "characters": {
-      "source": "frame_plan.output.appearing_characters",
-      "candidates": "character_reference"
-    }
-  }
-}
-```
-
-Runner 解析成具体候选，并写入可见节点的 `fields.references`。
-
-## 扩展与兼容
-
-核心协议保持稳定，可选能力通过命名空间 capability 和 extension 声明。未知可选扩展元数据会保留；未知且必需的能力或扩展会阻止导入和运行。
-
-旧运行时 Spec 的 `node_type`、`depends_on`、`prompt_template`、`surface` 和 `visibility` 仍可读取。新工作流应使用作者层协议，由编译器生成运行字段。
+旧工作流协议和作者字段不再受支持，导入前必须重写为 V2。

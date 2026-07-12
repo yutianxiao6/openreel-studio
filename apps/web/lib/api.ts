@@ -197,6 +197,11 @@ export interface WorkflowTemplateStepSummary {
   phase?: string
   group?: string
   kind?: string
+  description?: string
+  execution?: "auto" | "manual" | string
+  on_error?: "stop" | "continue" | string
+  when?: Record<string, unknown>
+  uses?: Array<Record<string, unknown>>
   ui?: Record<string, unknown>
   output?: Record<string, unknown>
   authoring?: Record<string, unknown>
@@ -206,9 +211,7 @@ export interface WorkflowTemplateStepSummary {
   source_ui?: string
   source_behavior?: string
   mode?: string
-  repeat?: Record<string, unknown>
   foreach?: Record<string, unknown> | Record<string, unknown>[]
-  bindings?: Record<string, unknown>
   role?: string
   start_action?: string
   execution_state?: string
@@ -232,7 +235,6 @@ export interface WorkflowTemplateStepSummary {
   prompt_spec?: Record<string, unknown>
   prompt_template?: string
   reads_from?: string[]
-  context_refs?: unknown
   layout_after?: string[]
   shape?: string
   child_scope_id?: string
@@ -247,9 +249,6 @@ export interface WorkflowTemplateStepSummary {
   reference_selectors?: Array<Record<string, unknown>>
   optional?: boolean
   manual_only?: boolean
-  auto_skip_when?: string
-  output_mode?: string
-  output_schema?: Record<string, unknown>
   extension?: string
   extension_config?: Record<string, unknown>
   capability?: string
@@ -258,10 +257,7 @@ export interface WorkflowTemplateStepSummary {
   io?: Record<string, unknown>
   x?: unknown
   "x-openreel"?: unknown
-  plugin?: string
-  plugin_node_type?: string
-  plugin_inputs?: Record<string, unknown>
-  plugin_settings?: Record<string, unknown>
+  plugin?: string | Record<string, unknown>
   operation?: string
   runtime_hidden?: boolean
   virtual?: boolean
@@ -309,6 +305,9 @@ export interface WorkflowTemplateSummary {
   id: string
   name: string
   description?: string
+  tags?: string[]
+  ui?: Record<string, unknown>
+  extensions?: Record<string, unknown>
   category?: string
   applies_to?: string
   version?: string

@@ -14,7 +14,7 @@ def isolate_user_workflow_templates(
     tmp_path: Path,
 ) -> None:
     """Keep local user templates from changing deterministic test results."""
-    template_root = tmp_path / "workflow_templates"
+    template_root = tmp_path / "workflow_templates" / "user"
     monkeypatch.setattr(
         workflow_template_store,
         "workflow_template_library_root",

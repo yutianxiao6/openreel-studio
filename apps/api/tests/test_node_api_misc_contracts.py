@@ -172,6 +172,8 @@ def test_project_active_workflow_imported_v2_returns_logical_preview():
     assert payload["preview"]["first_steps"][0]["kind"] == "text"
     assert payload["preview"]["first_steps"][1]["id"] == "storyboard"
     assert payload["preview"]["first_steps"][1]["kind"] == "image"
+    assert [step["id"] for step in payload["preview"]["first_steps"]] == ["script", "storyboard"]
+    assert all("__" not in step["id"] for step in payload["preview"]["first_steps"])
 
 
 def test_project_workflow_runtime_payload_restores_latest_matching_instance():

@@ -1,6 +1,6 @@
 """Root-level reusable workflow template library.
 
-User templates live under PROJECT_ROOT/workflow_templates as workflow spec
+User templates live under PROJECT_ROOT/workflow_templates/user as workflow spec
 JSON files. Built-in templates are loaded from app skills separately.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from app.agent.workflow_audit import WorkflowAuditError, ensure_workflow_audit_p
 
 TEMPLATE_LIBRARY_SCHEMA_VERSION = "workflow_template_library_v1"
 TEMPLATE_VERSION_SCHEMA_VERSION = "workflow_template_version_v1"
-USER_WORKFLOW_TEMPLATE_RELATIVE_DIR = Path("workflow_templates")
+USER_WORKFLOW_TEMPLATE_RELATIVE_DIR = Path("workflow_templates/user")
 FILE_TEMPLATE_VERSION_ID = "file"
 WORKFLOW_TEMPLATE_METADATA_KEY = "workflow_template"
 WORKFLOW_TEMPLATE_METADATA_SCHEMA_VERSION = "workflow_template_file_meta_v1"
@@ -60,7 +60,7 @@ def workflow_template_library_root() -> Path:
     return root
 
 
-def _template_roots(*, include_legacy: bool = True) -> list[Path]:
+def _template_roots() -> list[Path]:
     return [workflow_template_library_root()]
 
 
@@ -120,7 +120,7 @@ def normalize_template_id(value: Any, *, fallback_name: str = "workflow_template
 
 def _template_exists(template_id: str) -> bool:
     normalized = normalize_template_id(template_id)
-    for root in _template_roots(include_legacy=True):
+    for root in _template_roots():
         if (root / f"{normalized}.json").exists():
             return True
         if (root / normalized / "manifest.json").exists():
@@ -422,7 +422,7 @@ def _record_from_manifest_path(manifest_path: Path) -> dict[str, Any]:
 def list_user_template_records() -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for root in _template_roots(include_legacy=True):
+    for root in _template_roots():
         for path in sorted(root.glob("*.json")):
             try:
                 record = _record_from_template_file(path)
@@ -475,7 +475,7 @@ def load_user_template(template_id: str, version_id: str = "") -> dict[str, Any]
         }
     # Fallback for old manifest versions when a specific non-active version is requested.
     if wanted_version:
-        for root in _template_roots(include_legacy=True):
+        for root in _template_roots():
             manifest_path = root / normalized / "manifest.json"
             if not manifest_path.exists():
                 continue

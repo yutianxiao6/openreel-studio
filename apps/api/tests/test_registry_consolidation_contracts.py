@@ -312,7 +312,7 @@ async def test_project_mentor_video_workflow_full_is_mode_index_not_step_dump() 
     assert "无人物场景四宫格四视图" in guide
     assert "分镜图或故事模板图" in guide
     assert "独立 prompt skill" in guide
-    assert "编译阶段把这些写法吸收进每步 `prompt_template`" in guide
+    assert "可复用 workflow 把这些写法放进每个逻辑步骤的 `prompt`" in guide
     assert "standalone worker 只读取当前模块需要的一份" in guide
     assert "每个节点是独立任务单元" in guide
 

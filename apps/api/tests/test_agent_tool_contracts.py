@@ -324,12 +324,9 @@ def test_tool_runtime_metadata_is_profile_aware() -> None:
 
 
 def test_workflow_spec_tools_are_registered_from_split_module() -> None:
-    from app.mcp_tools import workflow_tools
-
     spec = registry.get("workflow.spec.apply_patch")
     assert spec is not None
     assert spec.handler.__module__ == "app.mcp_tools.workflow_spec_tools"
-    assert workflow_tools.workflow_spec_apply_patch.__module__ == "app.mcp_tools.workflow_spec_tools"
 
 
 def test_node_create_schema_uses_single_references_entrypoint() -> None:

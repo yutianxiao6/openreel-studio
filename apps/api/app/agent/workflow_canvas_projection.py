@@ -443,6 +443,7 @@ def _step_node(step: dict[str, Any]) -> dict[str, Any]:
         "repeat_group_id": str(step.get("repeat_group_id") or "").strip(),
         "repeat_group_label": str(step.get("repeat_group_label") or "").strip(),
         "repeat_group_index": step.get("repeat_group_index"),
+        "template_step_id": str(step.get("template_step_id") or step_id).strip(),
         "virtual": _is_virtual_step(step),
         "prompt": _prompt_summary(step),
     }
@@ -486,6 +487,7 @@ def _canvas_node(step: dict[str, Any]) -> dict[str, Any]:
         "repeat_group_id": str(step.get("repeat_group_id") or "").strip(),
         "repeat_group_label": str(step.get("repeat_group_label") or "").strip(),
         "repeat_group_index": step.get("repeat_group_index"),
+        "template_step_id": str(step.get("template_step_id") or step_id).strip(),
         "display_source": {
             "step_id": source_step,
             "path": _source_path(step),
@@ -635,7 +637,12 @@ def project_workflow_canvas(
         "canvas": {
             "nodes": canvas_nodes,
             "edges": _canvas_edges(flow_edges, canvas_ids),
-            "final_outputs": [node for node in canvas_nodes if str(node.get("step_id") or "") in final_output_ids],
+            "final_outputs": [
+                node
+                for node in canvas_nodes
+                if str(node.get("step_id") or "") in final_output_ids
+                or str(node.get("template_step_id") or "") in final_output_ids
+            ],
         },
         "mappings": {
             "step_to_canvas": {

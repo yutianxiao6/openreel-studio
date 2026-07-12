@@ -27,12 +27,7 @@ from app.agent.workflow_review import build_workflow_semantic_review_evidence
 from app.db.session import session_scope
 from app.mcp_tools import canvas_tools
 from app.mcp_tools.registry import register
-from app.mcp_tools.workflow_conditions import (
-    condition_value_from_inputs as _condition_value_from_inputs,
-    coerce_condition_number as _coerce_condition_number,
-    workflow_auto_skip_condition_met as _workflow_auto_skip_condition_met,
-    workflow_step_auto_skipped as _workflow_step_auto_skipped,
-)
+from app.mcp_tools.workflow_conditions import workflow_step_condition_skipped as _workflow_step_condition_skipped
 from app.mcp_tools.workflow_reference_matching import (
     REFERENCE_SELECTOR_TOKEN_FIELDS as _REFERENCE_SELECTOR_TOKEN_FIELDS,
     flatten_workflow_values as _flatten_workflow_values,
@@ -124,7 +119,6 @@ _WORKFLOW_STEP_METADATA_KEYS = (
     "authoring",
     "output",
 )
-_WORKFLOW_DRAFTS: dict[str, dict[str, Any]] = {}
 _WORKFLOW_INPUT_RUNNERS = {"workflow_input", "input_form", "manual_input"}
 _WORKFLOW_RUNTIME_STATE_KEY = "workflow_runtime"
 _WORKFLOW_INPUT_VALUES_STATE_KEY = "workflow_input_values"
@@ -147,127 +141,6 @@ _WORKFLOW_RUNTIME_MEDIA_OUTPUT_KEYS = (
     "asset_id",
 )
 _ACTIVE_WORKFLOW_STATE_KEY = "active_workflow"
-
-
-def _workflow_step_input_schema() -> dict[str, Any]:
-    return {
-        "type": "object",
-        "additionalProperties": True,
-        "properties": {
-            "id": {"type": "string"},
-            "title": {"type": "string"},
-            "kind": {"type": "string", "enum": ["input", "text", "canvas_text", "plan", "json", "collection", "image", "video", "audio", "plugin", "llm_text", "llm_json", "review", "loop"]},
-            "phase": {"type": "string"},
-            "group": {"type": "string"},
-            "needs": {"type": "array", "items": {"type": "string"}},
-            "for_each": {
-                "oneOf": [
-                    {"type": "string"},
-                    {"type": "object", "additionalProperties": True},
-                ],
-            },
-            "item_name": {"type": "string"},
-            "references": {
-                "oneOf": [
-                    {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-                    {"type": "object", "additionalProperties": True},
-                ],
-            },
-            "prompt": {"type": "object", "additionalProperties": True},
-            "output": {"type": "object", "additionalProperties": True},
-            "ui": {"type": "object", "additionalProperties": True},
-            "node_type": {"type": "string", "enum": ["text", "image", "video", "audio"]},
-            "depends_on": {"type": "array", "items": {"type": "string"}},
-            "primary_skill": {"type": "string"},
-            "skill_category": {"type": "string"},
-            "prompt_ref": {"type": "string"},
-            "prompt_spec": {"type": "object", "additionalProperties": True},
-            "prompt_template": {
-                "type": "string",
-                "description": "Reusable node run prompt skeleton. Prefer multiline sections: SYSTEM, USER, OUTPUT, CHECK. Compose SYSTEM from the workflow skill's natural-language node rules; use placeholders, not final generated content.",
-            },
-            "context_refs": {
-                "type": "array",
-                "items": {
-                    "oneOf": [
-                        {"type": "string"},
-                        {"type": "object", "additionalProperties": True},
-                    ]
-                },
-                "description": "Additional workflow step ids to expose as read context. Use role=vision_context only when a text/LLM step must receive the referenced image pixels; visual_reference is reserved for media generation.",
-            },
-            "output_mode": {"type": "string"},
-            "output_schema": {"type": "object", "additionalProperties": True},
-            "completion": {"type": "object", "additionalProperties": True},
-            "operation": {"type": "string"},
-            "capability": {"type": "string"},
-            "plugin": {"type": "string"},
-            "plugin_node_type": {"type": "string"},
-            "plugin_inputs": {"type": "object", "additionalProperties": True},
-            "plugin_settings": {"type": "object", "additionalProperties": True},
-            "surface": {"type": "string", "enum": ["draft_canvas", "workflow_runtime"]},
-            "visibility": {"type": "string", "enum": ["canvas", "flow_only", "workflow_runtime"]},
-            "required_capabilities": {"type": "array", "items": {"type": "string"}},
-            "required_extensions": {"type": "array", "items": {"type": "string"}},
-            "extension": {
-                "oneOf": [
-                    {"type": "string"},
-                    {"type": "object", "additionalProperties": True},
-                ],
-            },
-            "extension_config": {"type": "object", "additionalProperties": True},
-            "io": {"type": "object", "additionalProperties": True},
-            "x": {"type": "object", "additionalProperties": True},
-            "x-openreel": {"type": "object", "additionalProperties": True},
-            "runner": {"type": "string"},
-            "reference_selectors": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-            "depends_on_previous": {
-                "type": "array",
-                "items": {
-                    "oneOf": [
-                        {"type": "string"},
-                        {"type": "object", "additionalProperties": True},
-                    ]
-                },
-            },
-            "fields": {"type": "object", "additionalProperties": True},
-            "inputs_schema": {"type": "object", "additionalProperties": True},
-            "position": {"type": "object", "additionalProperties": True},
-            "acceptance": {"type": "string"},
-            "source_node_id": {"type": "string"},
-            "source_label": {"type": "string"},
-            "source_category": {"type": "string"},
-            "source_ui": {"type": "string"},
-            "source_behavior": {"type": "string"},
-            "mode": {"type": "string"},
-            "repeat": {"type": "object", "additionalProperties": True},
-            "foreach": {
-                "oneOf": [
-                    {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-                    {"type": "object", "additionalProperties": True},
-                ],
-            },
-            "instances": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-            "steps": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-            "bindings": {"type": "object", "additionalProperties": True},
-            "expansion": {"type": "object", "additionalProperties": True},
-            "collection": {"type": "object", "additionalProperties": True},
-            "instance_scope": {"type": "object", "additionalProperties": True},
-            "item_source": {"type": "string"},
-            "branch": {"type": "string"},
-            "template_step_id": {"type": "string"},
-            "expand_when": {"type": "string"},
-            "expands_to": {"type": "array", "items": {"type": "string"}},
-            "repeat_group_id": {"type": "string"},
-            "repeat_group_label": {"type": "string"},
-            "repeat_group_index": {"type": "integer"},
-            "optional": {"type": "boolean"},
-            "manual_only": {"type": "boolean"},
-            "auto_skip_when": {"type": "string"},
-            "runtime_hidden": {"type": "boolean"},
-        },
-        "required": ["id", "title"],
-    }
 
 
 def _number(value: Any, default: float) -> float:
@@ -1101,7 +974,7 @@ def _workflow_runtime_template_step_public_payload(
     step_id = str(step.get("id") or "").strip()
     if not step_id:
         return {}
-    is_virtual = _workflow_input_step_spec(step, inputs) or _workflow_step_auto_skipped(step, inputs) or bool(step.get("runtime_hidden"))
+    is_virtual = _workflow_input_step_spec(step, inputs) or _workflow_step_condition_skipped(step, inputs) or bool(step.get("runtime_hidden"))
     status = "completed" if is_virtual else "idle"
     canvas_output = _workflow_step_surface(step) != "workflow_runtime"
     payload: dict[str, Any] = {
@@ -2392,144 +2265,6 @@ def _workflow_effective_inputs(template: dict[str, Any] | None, inputs: dict[str
     return result
 
 
-def _draft_key(project_id: str, draft_id: str) -> str:
-    return f"{project_id}:{draft_id}"
-
-
-def _workflow_base(workflow: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = dict(workflow or {})
-    payload.setdefault("schema", canvas_workflow_templates.WORKFLOW_SPEC_PROTOCOL_VERSION)
-    payload.setdefault("id", "model_authored_workflow")
-    payload.setdefault("title", payload.get("id") or "模型编排工作流")
-    payload.setdefault("steps", [])
-    return payload
-
-
-_FRAMEWORK_CONTENT_KEYS = {
-    "body",
-    "caption",
-    "captions",
-    "content",
-    "dialogue",
-    "dialogues",
-    "final_prompt",
-    "image_prompt",
-    "negative_prompt",
-    "prompt",
-    "script",
-    "story",
-    "subtitle",
-    "subtitles",
-    "text",
-    "video_prompt",
-}
-
-
-def _has_filled_content_value(value: Any) -> bool:
-    if value in (None, "", [], {}):
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    return True
-
-
-def _workflow_framework_content_issues(workflow: dict[str, Any]) -> list[str]:
-    issues: list[str] = []
-
-    def check_step(step: dict[str, Any], path: str) -> None:
-        step_id = str(step.get("id") or path).strip() or path
-        for key, value in step.items():
-            key_text = str(key or "").strip()
-            if key_text in {"fields", "steps"}:
-                continue
-            if key_text == "prompt" and isinstance(value, dict):
-                continue
-            if key_text.lower() in _FRAMEWORK_CONTENT_KEYS and _has_filled_content_value(value):
-                issues.append(f"{step_id}.{key_text}")
-        fields = step.get("fields")
-        if isinstance(fields, dict):
-            for key, value in fields.items():
-                key_text = str(key or "").strip()
-                if key_text.lower() in _FRAMEWORK_CONTENT_KEYS and _has_filled_content_value(value):
-                    issues.append(f"{step_id}.fields.{key_text}")
-        child_steps = step.get("steps")
-        if isinstance(child_steps, list):
-            for index, child in enumerate(child_steps, start=1):
-                if isinstance(child, dict):
-                    check_step(child, f"{step_id}.steps[{index}]")
-
-    steps = workflow.get("steps")
-    if isinstance(steps, list):
-        for index, step in enumerate(steps, start=1):
-            if isinstance(step, dict):
-                check_step(step, f"steps[{index}]")
-    return issues
-
-
-def _workflow_framework_content_error(workflow: dict[str, Any]) -> dict[str, Any] | None:
-    issues = _workflow_framework_content_issues(workflow)
-    if not issues:
-        return None
-    return {
-        "ok": False,
-        "error": "Workflow spec must describe the framework only; fill node content during node execution",
-        "error_kind": "workflow_framework_content_not_allowed",
-        "content_fields": issues[:24],
-        "hint": "spec 只写框架和提示词模板；作者层 step 写 kind、needs、for_each、references、prompt、output，后端编译 runner、surface 和引用选择器。",
-    }
-
-
-def _looks_like_input_schema_map(value: Any) -> bool:
-    if not isinstance(value, dict) or not value:
-        return False
-    schema_keys = {"type", "label", "description", "required", "default", "enum", "options"}
-    schema_like = 0
-    for item in value.values():
-        if isinstance(item, dict) and any(key in item for key in schema_keys):
-            schema_like += 1
-    return schema_like > 0 and schema_like >= max(1, len(value) // 2)
-
-
-def _input_schema_list_from_mapping(value: dict[str, Any]) -> list[dict[str, Any]]:
-    inputs: list[dict[str, Any]] = []
-    for key, item in value.items():
-        input_def: dict[str, Any] = {"id": str(key)}
-        if isinstance(item, dict):
-            input_def.update(deepcopy(item))
-            input_def.setdefault("id", str(key))
-        else:
-            input_def["default"] = deepcopy(item)
-        inputs.append(input_def)
-    return inputs
-
-
-def _sample_inputs_from_schema_map(value: dict[str, Any]) -> dict[str, Any]:
-    sample: dict[str, Any] = {}
-    for key, item in value.items():
-        if isinstance(item, dict) and item.get("default") not in (None, "", [], {}):
-            sample[str(key)] = deepcopy(item.get("default"))
-    return sample
-
-
-def _prepare_reusable_workflow_spec(
-    workflow: dict[str, Any] | None,
-    inputs: dict[str, Any] | None,
-    sample_inputs: dict[str, Any] | None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    prepared = _workflow_base(workflow)
-    samples = dict(sample_inputs or {})
-    if isinstance(inputs, dict) and inputs:
-        if _looks_like_input_schema_map(inputs):
-            if not prepared.get("inputs"):
-                prepared["inputs"] = _input_schema_list_from_mapping(inputs)
-            if not samples:
-                samples = _sample_inputs_from_schema_map(inputs)
-        elif not samples:
-            samples = dict(inputs)
-    prepared["reusable"] = True
-    return prepared, samples
-
-
 def _dimension_input_values(
     inputs: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
@@ -2566,39 +2301,6 @@ def _required_input_error(template: dict[str, Any], inputs: dict[str, Any] | Non
         "template_id": template.get("id"),
         "template_name": template.get("name"),
         "hint": "根据 input_questions 调用 interaction.request_input 补齐缺失输入，再继续运行或实例化工作流。",
-    }
-
-
-def _validate_draft_workflow(
-    draft: dict[str, Any],
-    *,
-    input_values: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    workflow = _workflow_base(draft.get("workflow") if isinstance(draft.get("workflow"), dict) else {})
-    workflow["steps"] = list(draft.get("steps") or [])
-    return canvas_workflow_templates.normalize_inline_workflow(
-        workflow,
-        input_values=input_values if input_values is not None else (
-            draft.get("sample_inputs")
-            if isinstance(draft.get("sample_inputs"), dict)
-            else (draft.get("inputs") if isinstance(draft.get("inputs"), dict) else {})
-        ),
-    )
-
-
-def _draft_summary(draft: dict[str, Any], *, normalized: dict[str, Any] | None = None) -> dict[str, Any]:
-    steps = normalized.get("steps") if isinstance(normalized, dict) else draft.get("steps")
-    steps = steps if isinstance(steps, list) else []
-    return {
-        "draft_id": draft.get("draft_id"),
-        "project_id": draft.get("project_id"),
-        "title": draft.get("title") or "",
-        "workflow_id": (normalized or draft.get("workflow") or {}).get("id"),
-        "workflow_name": (normalized or draft.get("workflow") or {}).get("name"),
-        "step_count": len(steps),
-        "deferred_group_count": len((normalized or {}).get("deferred_groups") or []),
-        "batch_count": len(draft.get("batches") or []),
-        "step_ids": [str(step.get("id") or "") for step in steps if isinstance(step, dict)],
     }
 
 
@@ -2869,7 +2571,7 @@ def _virtual_workflow_step_ids(steps: list[dict[str, Any]], inputs: dict[str, An
         if str(step.get("id") or "").strip()
         and (
             _workflow_input_step_spec(step, inputs)
-            or _workflow_step_auto_skipped(step, inputs)
+            or _workflow_step_condition_skipped(step, inputs)
             or bool(step.get("runtime_hidden"))
         )
     }
@@ -2939,7 +2641,7 @@ def _virtual_workflow_step_result(
     inputs: dict[str, Any] | None,
 ) -> dict[str, Any]:
     input_facts = _input_summary(inputs or {})
-    skipped = _workflow_step_auto_skipped(step, inputs)
+    skipped = _workflow_step_condition_skipped(step, inputs)
     result_type = "workflow_skip" if skipped else "workflow_input"
     content = "该步骤已按输入条件跳过。" if skipped else "运行输入已保存。"
     step_id = str(step.get("id") or "").strip()
@@ -2968,7 +2670,7 @@ def _virtual_workflow_step_result(
                 "title": step.get("title") or step_id or "输入",
                 "input_facts": input_facts,
                 "content": content,
-                "reason": str(step.get("auto_skip_when") or "").strip() if skipped else "",
+                "reason": deepcopy(step.get("when")) if skipped else "",
             },
         },
     }
@@ -7456,707 +7158,6 @@ async def workflow_instantiate(
 
 
 @register(
-    "workflow.draft.start",
-    description="创建模型编排的 workflow 草稿；后续分批追加 steps，最后 commit 物化到画布。",
-    tags=["workflow", "write"],
-    search_hint=(
-        "start workflow draft append steps commit batch materialize canvas graph "
-        "分批 工作流 草稿 追加 步骤 提交 物化 画布"
-    ),
-    usage_hints=[
-        "大工作流先 start，再用 workflow.draft.append_steps 分批提交，每批 5-8 个 step。",
-        "workflow 只写 id/name/defaults 等稳定元信息；steps 留给 append_steps。",
-    ],
-    schema={
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string"},
-            "title": {"type": "string"},
-            "workflow": {"type": "object", "additionalProperties": True},
-            "inputs": {"type": "object", "additionalProperties": True},
-            "expected_batches": {"type": "array", "items": {"type": "string"}},
-        },
-    },
-)
-async def workflow_draft_start(
-    project_id: str,
-    title: str = "",
-    workflow: dict[str, Any] | None = None,
-    inputs: dict[str, Any] | None = None,
-    expected_batches: list[str] | None = None,
-) -> dict[str, Any]:
-    if not project_id:
-        return {"ok": False, "error": "project_id is required", "error_kind": "missing_project_id"}
-    draft_id = f"wfd_{uuid.uuid4().hex[:10]}"
-    payload = {
-        "draft_id": draft_id,
-        "project_id": project_id,
-        "title": title,
-        "workflow": _workflow_base(workflow),
-        "inputs": inputs or {},
-        "expected_batches": list(expected_batches or []),
-        "batches": [],
-        "steps": [],
-    }
-    _WORKFLOW_DRAFTS[_draft_key(project_id, draft_id)] = payload
-    return {
-        "ok": True,
-        **_draft_summary(payload),
-        "expected_batches": payload["expected_batches"],
-        "next_action": "调用 workflow.draft.append_steps 追加第一批 steps；每批保持短字段。",
-    }
-
-
-@register(
-    "workflow.draft.append_steps",
-    description="向 workflow 草稿追加一批 steps 并校验依赖；不创建画布节点。",
-    tags=["workflow", "write"],
-    search_hint=(
-        "append workflow draft steps batch validate dependencies continue spec "
-        "追加 工作流 草稿 步骤 分批 校验 依赖 续写"
-    ),
-    usage_hints=[
-        "这是低层运行时草稿入口；新建可复用 workflow spec 使用 workflow.spec.apply_patch 的作者层协议。",
-        "每批 steps 按依赖顺序排列；depends_on 可以引用之前批次或本批前面的 step id。",
-        "重复流程可作为一个 step 提交：包含 steps 子数组和 instances/foreach、repeat.count、repeat.episode_count + repeat.segment_count，或 foreach.dimension。",
-        "使用本工具时写运行时 step：普通 step 写 id/title/node_type/depends_on；group step 写 id/title/steps/repeat。",
-    ],
-    schema={
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string"},
-            "draft_id": {"type": "string"},
-            "batch_label": {"type": "string"},
-            "steps": {
-                "type": "array",
-                "items": {"type": "object", "additionalProperties": True},
-            },
-        },
-        "required": ["draft_id", "steps"],
-    },
-)
-async def workflow_draft_append_steps(
-    project_id: str,
-    draft_id: str,
-    steps: list[dict[str, Any]],
-    batch_label: str = "",
-) -> dict[str, Any]:
-    if not project_id:
-        return {"ok": False, "error": "project_id is required", "error_kind": "missing_project_id"}
-    key = _draft_key(project_id, draft_id)
-    draft = _WORKFLOW_DRAFTS.get(key)
-    if not draft:
-        return {
-            "ok": False,
-            "error": f"Workflow draft {draft_id} not found",
-            "error_kind": "workflow_draft_not_found",
-            "hint": "先调用 workflow.draft.start，或使用返回的 draft_id 继续追加。",
-        }
-    if not isinstance(steps, list) or not steps:
-        return {
-            "ok": False,
-            "error": "steps is required",
-            "error_kind": "workflow_steps_required",
-        }
-    candidate = deepcopy(draft)
-    candidate["steps"] = [*list(candidate.get("steps") or []), *steps]
-    try:
-        normalized = _validate_draft_workflow(candidate)
-    except canvas_workflow_templates.WorkflowTemplateError as exc:
-        return {
-            "ok": False,
-            "error": str(exc),
-            "error_kind": "workflow_spec_error",
-            "hint": "这是运行时草稿校验：修正本批 step id、node_type、repeat group 或 depends_on；作者层新建请改用 workflow.spec.*。",
-            "draft": _draft_summary(draft),
-        }
-
-    draft["steps"] = candidate["steps"]
-    draft.setdefault("batches", []).append({
-        "label": batch_label or f"batch_{len(draft.get('batches') or []) + 1}",
-        "count": len(steps),
-    })
-    return {
-        "ok": True,
-        **_draft_summary(draft, normalized=normalized),
-        "added_count": len(steps),
-        "batch_label": batch_label,
-        "next_action": "继续 append_steps 追加下一批；全部批次完成后调用 workflow.draft.commit。",
-    }
-
-
-@register(
-    "workflow.draft.commit",
-    description="校验 workflow 草稿并物化成画布 draft 节点和依赖边；不生成内容、不运行节点。",
-    tags=["workflow", "write"],
-    search_hint=(
-        "commit workflow draft materialize batch steps canvas graph nodes edges "
-        "提交 工作流 草稿 分批 物化 画布 节点 连线"
-    ),
-    usage_hints=[
-        "所有批次追加完成后调用；commit 成功后草稿会从运行时草稿表移除。",
-    ],
-    schema={
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string"},
-            "draft_id": {"type": "string"},
-            "title": {"type": "string"},
-            "inputs": {"type": "object", "additionalProperties": True},
-            "origin_x": {"type": "number"},
-            "origin_y": {"type": "number"},
-            "spacing_x": {"type": "number"},
-            "spacing_y": {"type": "number"},
-        },
-        "required": ["draft_id"],
-    },
-)
-async def workflow_draft_commit(
-    project_id: str,
-    draft_id: str,
-    title: str = "",
-    inputs: dict[str, Any] | None = None,
-    context: dict[str, Any] | None = None,
-    origin_x: float = 120,
-    origin_y: float = 120,
-    spacing_x: float = 360,
-    spacing_y: float = 240,
-) -> dict[str, Any]:
-    if not project_id:
-        return {"ok": False, "error": "project_id is required", "error_kind": "missing_project_id"}
-    key = _draft_key(project_id, draft_id)
-    draft = _WORKFLOW_DRAFTS.get(key)
-    if not draft:
-        return {
-            "ok": False,
-            "error": f"Workflow draft {draft_id} not found",
-            "error_kind": "workflow_draft_not_found",
-        }
-    try:
-        effective_inputs = inputs if inputs is not None else draft.get("inputs")
-        template = _validate_draft_workflow(
-            draft,
-            input_values=_dimension_input_values(
-                effective_inputs if isinstance(effective_inputs, dict) else {},
-                context,
-            ),
-        )
-    except canvas_workflow_templates.WorkflowTemplateError as exc:
-        return {
-            "ok": False,
-            "error": str(exc),
-            "error_kind": "workflow_spec_error",
-            "draft": _draft_summary(draft),
-        }
-    required_error = _required_input_error(template, effective_inputs if isinstance(effective_inputs, dict) else {})
-    if required_error:
-        required_error["draft"] = _draft_summary(draft, normalized=template)
-        return required_error
-    result = await _materialize_template(
-        project_id=project_id,
-        template=template,
-        title=title or str(draft.get("title") or ""),
-        inputs=inputs if inputs is not None else draft.get("inputs"),
-        origin_x=origin_x,
-        origin_y=origin_y,
-        spacing_x=spacing_x,
-        spacing_y=spacing_y,
-    )
-    if result.get("ok") is True:
-        _WORKFLOW_DRAFTS.pop(key, None)
-        result["draft_id"] = draft_id
-        result["draft_committed"] = True
-    return result
-
-
-@register(
-    "workflow.spec.start",
-    description="兼容入口：创建 artifact-only workflow spec 草稿；当前搭建模式使用 workflow.spec.apply_patch。",
-    tags=["workflow", "artifact", "read"],
-    search_hint=(
-        "workflow spec artifact draft start append steps commit batch no canvas "
-        "工作流 spec artifact 草稿 分批 追加 保存 不物化"
-    ),
-    usage_hints=[
-        "workflow 只写 id/name/description/defaults/dimensions/inputs 等稳定模板信息，steps 留给 append_steps。",
-        "inputs 若是字段定义会写入 workflow.inputs；本次剧情、集数、段数等样例值写 sample_inputs。",
-        "统一写 workflow.schema='openreel.workflow.v2'，step 写 kind、needs、prompt、output、foreach 和 uses。",
-        "prompt 写 role、task、output、check；工具会编译私有执行阶段。",
-        "V2 不写 node_type、runner、surface、visibility、prompt_template 或 reference_selectors。",
-        "剧本、分镜、图片 prompt、视频 prompt 成品由 workflow 运行阶段根据 inputs 和上游输出生成。",
-        "长期复用的动态数量使用输入名引用，例如 repeat.segment_count='segmentCount' 或 dimension.input_count='segmentCount'。",
-        "这个工具只保存 spec 草稿，不创建画布节点。",
-    ],
-    schema={
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string"},
-            "title": {"type": "string"},
-            "workflow": {"type": "object", "additionalProperties": True},
-            "inputs": {"type": "object", "additionalProperties": True, "description": "字段定义会进入 workflow.inputs；普通值会作为 sample_inputs。"},
-            "sample_inputs": {"type": "object", "additionalProperties": True, "description": "只用于编译期校验展开的样例输入；不写入 workflow 本体。"},
-            "expected_batches": {"type": "array", "items": {"type": "string"}},
-            "user_preview": {"type": "object", "additionalProperties": True},
-            "self_check": {"type": "object", "additionalProperties": True},
-        },
-    },
-)
-async def workflow_spec_start(
-    project_id: str,
-    title: str = "",
-    workflow: dict[str, Any] | None = None,
-    inputs: dict[str, Any] | None = None,
-    sample_inputs: dict[str, Any] | None = None,
-    expected_batches: list[str] | None = None,
-    user_preview: dict[str, Any] | None = None,
-    self_check: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    if not project_id:
-        return {"ok": False, "error": "project_id is required", "error_kind": "missing_project_id"}
-    draft_id = f"wfs_{uuid.uuid4().hex[:10]}"
-    reusable_workflow, validation_sample_inputs = _prepare_reusable_workflow_spec(
-        workflow,
-        inputs,
-        sample_inputs,
-    )
-    payload = {
-        "kind": "workflow_spec_artifact_draft",
-        "draft_id": draft_id,
-        "project_id": project_id,
-        "title": title,
-        "workflow": reusable_workflow,
-        "sample_inputs": validation_sample_inputs,
-        "expected_batches": list(expected_batches or []),
-        "user_preview": dict(user_preview or {}),
-        "self_check": dict(self_check or {}),
-        "batches": [],
-        "steps": [],
-    }
-    _WORKFLOW_DRAFTS[_draft_key(project_id, draft_id)] = payload
-    return {
-        "ok": True,
-        **_draft_summary(payload),
-        "expected_batches": payload["expected_batches"],
-        "next_action": "兼容草稿已创建；继续 append_steps/commit，或改用 workflow.spec.apply_patch 一次校验保存。",
-    }
-
-
-@register(
-    "workflow.spec.append_steps",
-    description="兼容入口：向 artifact-only workflow spec 草稿追加 steps；当前搭建模式使用 workflow.spec.apply_patch。",
-    tags=["workflow", "artifact", "read"],
-    search_hint=(
-        "workflow spec artifact append steps validate batch no canvas "
-        "工作流 spec artifact 追加 步骤 校验 分批 不物化"
-    ),
-    usage_hints=[
-        "作者层每批 steps 按依赖顺序排列；needs 引用之前步骤或本批前面的 step id。",
-        "重复流程写 for_each，例如 production_plan.segments；相同 for_each 的连续/相关 step 会编译成一个 repeat group。",
-        "字段保持可读：普通 step 写 id/title/kind/phase/needs/prompt/output；动态 step 再加 for_each、item_name、references。",
-        "prompt 用 role/system、task/instruction、output、check 表达可复用写法；只写占位符和生成方法，不写本次剧情、剧本、分镜、图片 prompt 或视频 prompt 成品正文。",
-        "作者层 step 写 kind、needs、prompt、output；运行字段由编译器补齐。",
-        "append 阶段的校验是 advisory；最终 workflow.spec.commit 会做严格校验。",
-    ],
-    schema={
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string"},
-            "draft_id": {"type": "string"},
-            "batch_label": {"type": "string"},
-            "steps": {
-                "type": "array",
-                "items": _workflow_step_input_schema(),
-            },
-        },
-        "required": ["draft_id", "steps"],
-    },
-)
-async def workflow_spec_append_steps(
-    project_id: str,
-    draft_id: str,
-    steps: list[dict[str, Any]],
-    batch_label: str = "",
-) -> dict[str, Any]:
-    if not project_id:
-        return {"ok": False, "error": "project_id is required", "error_kind": "missing_project_id"}
-    key = _draft_key(project_id, draft_id)
-    draft = _WORKFLOW_DRAFTS.get(key)
-    if not draft or draft.get("kind") != "workflow_spec_artifact_draft":
-        return {
-            "ok": False,
-            "error": f"Workflow spec draft {draft_id} not found",
-            "error_kind": "workflow_spec_draft_not_found",
-            "hint": "先调用 workflow.spec.start，或使用返回的 draft_id 继续追加。",
-        }
-    if not isinstance(steps, list) or not steps:
-        return {
-            "ok": False,
-            "error": "steps is required",
-            "error_kind": "workflow_steps_required",
-        }
-    candidate = deepcopy(draft)
-    candidate["steps"] = [*list(candidate.get("steps") or []), *steps]
-    normalized: dict[str, Any] | None = None
-    validation_warning = ""
-    try:
-        normalized = _validate_draft_workflow(candidate)
-    except canvas_workflow_templates.WorkflowTemplateError as exc:
-        validation_warning = str(exc)
-
-    draft["steps"] = candidate["steps"]
-    draft.setdefault("batches", []).append({
-        "label": batch_label or f"batch_{len(draft.get('batches') or []) + 1}",
-        "count": len(steps),
-    })
-    return {
-        "ok": True,
-        **_draft_summary(draft, normalized=normalized),
-        "added_count": len(steps),
-        "batch_label": batch_label,
-        "validation": {
-            "ok": validation_warning == "",
-            "warning": validation_warning,
-        },
-        "next_action": "兼容草稿已追加；继续 append_steps/commit，或改用 workflow.spec.apply_patch 一次校验保存。",
-    }
-
-
-@register(
-    "workflow.spec.commit",
-    description="兼容入口：校验 workflow spec 草稿并保存为 artifact_ref；当前搭建模式使用 workflow.spec.apply_patch。",
-    tags=["workflow", "artifact", "read"],
-    search_hint=(
-        "workflow spec artifact commit save artifact_ref batch no canvas "
-        "工作流 spec artifact 保存 引用 分批 不物化"
-    ),
-    usage_hints=[
-        "所有批次追加完成后调用；成功后返回 artifact_ref 和用户可读 preview。",
-        "sample_inputs 只用于校验动态展开，不写入 workflow 本体；长期复用时由 materialize_artifact 传新的 inputs。",
-        "commit 保存的是可复用框架；包含正文内容的 content/prompt/script/video_prompt 字段会被拒绝。",
-        "self_check 写本次结构检查结论；未传时工具会生成基础检查摘要。",
-    ],
-    schema={
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string"},
-            "draft_id": {"type": "string"},
-            "inputs": {"type": "object", "additionalProperties": True, "description": "作为 sample_inputs 使用。"},
-            "sample_inputs": {"type": "object", "additionalProperties": True, "description": "只用于校验展开的样例输入。"},
-            "context": {"type": "object", "additionalProperties": True},
-            "user_preview": {"type": "object", "additionalProperties": True},
-            "self_check": {"type": "object", "additionalProperties": True},
-        },
-        "required": ["draft_id"],
-    },
-)
-async def workflow_spec_commit(
-    project_id: str,
-    draft_id: str,
-    inputs: dict[str, Any] | None = None,
-    sample_inputs: dict[str, Any] | None = None,
-    context: dict[str, Any] | None = None,
-    user_preview: dict[str, Any] | None = None,
-    self_check: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    if not project_id:
-        return {"ok": False, "error": "project_id is required", "error_kind": "missing_project_id"}
-    key = _draft_key(project_id, draft_id)
-    draft = _WORKFLOW_DRAFTS.get(key)
-    if not draft or draft.get("kind") != "workflow_spec_artifact_draft":
-        return {
-            "ok": False,
-            "error": f"Workflow spec draft {draft_id} not found",
-            "error_kind": "workflow_spec_draft_not_found",
-        }
-    workflow = _workflow_base(draft.get("workflow") if isinstance(draft.get("workflow"), dict) else {})
-    workflow["steps"] = list(draft.get("steps") or [])
-    workflow["reusable"] = True
-    try:
-        effective_inputs = (
-            sample_inputs
-            if sample_inputs is not None
-            else (inputs if inputs is not None else draft.get("sample_inputs"))
-        )
-        normalized = canvas_workflow_templates.normalize_inline_workflow(
-            workflow,
-            input_values=_dimension_input_values(
-                effective_inputs if isinstance(effective_inputs, dict) else {},
-                context,
-            ),
-        )
-    except canvas_workflow_templates.WorkflowTemplateError as exc:
-        return {
-            "ok": False,
-            "error": str(exc),
-            "error_kind": "workflow_spec_error",
-            "draft": _draft_summary(draft),
-        }
-
-    merged_preview = dict(draft.get("user_preview") or {})
-    if isinstance(user_preview, dict):
-        merged_preview.update(user_preview)
-    merged_check = dict(draft.get("self_check") or {})
-    if isinstance(self_check, dict):
-        merged_check.update(self_check)
-    if not merged_check:
-        merged_check = {
-            "passed": True,
-            "checks": [
-                f"已保存 {len(normalized.get('steps') or [])} 个可物化步骤。",
-                f"分批提交 {len(draft.get('batches') or [])} 批。",
-            ],
-            "issues": [],
-        }
-    if merged_check.get("passed") is False:
-        return {
-            "ok": False,
-            "error": "Workflow spec self_check failed",
-            "error_kind": "workflow_self_check_failed",
-            "self_check": merged_check,
-            "draft": _draft_summary(draft),
-        }
-    framework_error = _workflow_framework_content_error(workflow)
-    if framework_error is not None:
-        framework_error["draft"] = _draft_summary(draft)
-        return framework_error
-
-    try:
-        artifact = workflow_spec_artifacts.save_workflow_spec_artifact(
-            project_id=project_id,
-            workflow=workflow,
-            normalized=normalized,
-            self_check=merged_check,
-            user_preview=merged_preview,
-            sample_inputs=effective_inputs if isinstance(effective_inputs, dict) else {},
-            source={
-                "agent": "workflow_spec",
-                "draft_id": draft_id,
-                "batches": list(draft.get("batches") or []),
-                "reusable": True,
-            },
-        )
-    except WorkflowAuditError as exc:
-        return {
-            "ok": False,
-            "error": str(exc),
-            "error_kind": "workflow_audit_failed",
-            "audit": exc.report,
-            "draft": _draft_summary(draft, normalized=normalized),
-        }
-    _WORKFLOW_DRAFTS.pop(key, None)
-    return {
-        "ok": True,
-        "status": "completed",
-        "artifact_ref": artifact["artifact_ref"],
-        "preview": artifact["preview"],
-        "validation": {
-            "ok": True,
-            "workflow_id": normalized.get("id"),
-            "step_count": len(normalized.get("steps") or []),
-            "dimension_count": len(normalized.get("dimensions") or {}),
-            "deferred_group_count": len(normalized.get("deferred_groups") or []),
-            "reusable": True,
-            "protocol": _workflow_protocol_payload(normalized),
-            "audit": {
-                "status": artifact.get("audit", {}).get("status") if isinstance(artifact.get("audit"), dict) else "",
-                "can_save": artifact.get("audit", {}).get("can_save") if isinstance(artifact.get("audit"), dict) else None,
-                "can_run": artifact.get("audit", {}).get("can_run") if isinstance(artifact.get("audit"), dict) else None,
-                "recommended_use": artifact.get("audit", {}).get("recommended_use") if isinstance(artifact.get("audit"), dict) else "",
-                "severity_counts": artifact.get("audit", {}).get("severity_counts") if isinstance(artifact.get("audit"), dict) else {},
-            },
-        },
-        "audit": artifact.get("audit") or {},
-        "self_check": artifact.get("self_check") or {},
-        "draft_id": draft_id,
-        "draft_committed": True,
-        "next_action": "artifact_ref 已保存；可在需要时提升为用户模板或用于 workflow 运行。",
-    }
-
-
-@register(
-    "workflow.spec.apply_patch",
-    description="创建、替换或修订 workflow spec，并在一次调用内完成校验、audit 和保存。",
-    tags=["workflow", "artifact", "write"],
-    search_hint=(
-        "workflow spec apply patch create update replace save artifact template audit "
-        "工作流 spec 一次写入 新建 修订 替换 保存 模板 artifact 校验"
-    ),
-    usage_hints=[
-        "create 传 workflow；update 传 base 和 operations；replace 传 base 和 workflow。",
-        "base 可引用 artifact_ref、template_id 或 version_id；save.target 为 artifact 或 template。",
-        "workflow 只描述可复用框架、输入、步骤、提示词模板和依赖；正文产物由运行阶段生成。",
-        "工具会编译作者层 spec、校验协议、执行 deterministic audit，并返回 artifact_ref 或 template_id。",
-    ],
-    schema={
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string"},
-            "operation": {"type": "string", "enum": ["create", "update", "replace"]},
-            "base": {
-                "type": "object",
-                "additionalProperties": True,
-                "properties": {
-                    "artifact_ref": {"type": "string"},
-                    "template_id": {"type": "string"},
-                    "version_id": {"type": "string"},
-                },
-            },
-            "workflow": {"type": "object", "additionalProperties": True},
-            "operations": {
-                "type": "array",
-                "items": {"type": "object", "additionalProperties": True},
-            },
-            "sample_inputs": {"type": "object", "additionalProperties": True},
-            "context": {"type": "object", "additionalProperties": True},
-            "save": {
-                "type": "object",
-                "additionalProperties": True,
-                "properties": {
-                    "target": {"type": "string", "enum": ["artifact", "template"]},
-                    "template_id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "description": {"type": "string"},
-                    "category": {"type": "string"},
-                    "applies_to": {"type": "string"},
-                    "version": {"type": "string"},
-                    "replace_existing": {"type": "boolean"},
-                },
-            },
-            "user_preview": {"type": "object", "additionalProperties": True},
-            "self_check": {"type": "object", "additionalProperties": True},
-        },
-        "required": ["operation"],
-    },
-)
-async def workflow_spec_apply_patch(
-    project_id: str,
-    operation: str,
-    base: dict[str, Any] | None = None,
-    workflow: dict[str, Any] | None = None,
-    operations: list[dict[str, Any]] | None = None,
-    sample_inputs: dict[str, Any] | None = None,
-    context: dict[str, Any] | None = None,
-    save: dict[str, Any] | None = None,
-    user_preview: dict[str, Any] | None = None,
-    self_check: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return workflow_spec_patch_service.apply_workflow_spec_patch(
-        project_id=project_id,
-        operation=operation,
-        base=base,
-        workflow=workflow,
-        operations=operations,
-        sample_inputs=sample_inputs,
-        context=context,
-        save=save,
-        user_preview=user_preview,
-        self_check=self_check,
-    )
-
-
-@register(
-    "workflow.spec.read",
-    description="读取 workflow spec artifact 的 preview 或 workflow；供 spec 子 Agent 做复用模板微调。",
-    tags=["workflow", "artifact", "read"],
-    search_hint=(
-        "workflow spec artifact read preview workflow reusable revise tweak "
-        "工作流 spec artifact 读取 预览 模板 微调 修订"
-    ),
-    usage_hints=[
-        "主 Agent 只保留 artifact_ref；需要微调时在隔离上下文读取并修订。",
-        "detail='preview' 只返回用户可读摘要；detail='workflow' 返回完整模板给隔离子 Agent。",
-    ],
-    schema={
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string"},
-            "artifact_ref": {"type": "string"},
-            "detail": {"type": "string", "enum": ["preview", "workflow"]},
-        },
-        "required": ["artifact_ref"],
-    },
-)
-async def workflow_spec_read(
-    project_id: str,
-    artifact_ref: str,
-    detail: str = "preview",
-) -> dict[str, Any]:
-    if not project_id:
-        return {"ok": False, "error": "project_id is required", "error_kind": "missing_project_id"}
-    try:
-        artifact = workflow_spec_artifacts.load_workflow_spec_artifact(project_id, artifact_ref)
-    except FileNotFoundError as exc:
-        return {"ok": False, "error": str(exc), "error_kind": "workflow_spec_artifact_not_found"}
-    except (ValueError, json.JSONDecodeError) as exc:
-        return {"ok": False, "error": str(exc), "error_kind": "workflow_spec_artifact_error"}
-    payload = {
-        "ok": True,
-        "artifact_ref": artifact_ref,
-        "reusable": bool(artifact.get("reusable", True)),
-        "preview": artifact.get("preview") or {},
-        "sample_inputs": artifact.get("sample_inputs") or {},
-        "self_check": artifact.get("self_check") or {},
-    }
-    if str(detail or "").strip() == "workflow":
-        payload["workflow"] = artifact.get("workflow") or {}
-    return payload
-
-
-@register(
-    "workflow.spec.patch",
-    description="兼容入口：基于已有 workflow spec artifact 创建修订版；当前搭建模式使用 workflow.spec.apply_patch。",
-    tags=["workflow", "artifact", "read"],
-    search_hint=(
-        "workflow spec artifact patch revise tweak create revision reusable "
-        "工作流 spec artifact 微调 修订 patch 新版本 复用模板"
-    ),
-    usage_hints=[
-        "这个工具生成新的 artifact_ref，不修改原 artifact。",
-        "常用 operations: merge_workflow, merge_step, add_step, insert_between, remove_step, replace_steps。",
-        "在 A 后插入节点并让 B 改依赖它，使用 insert_between: step, after_id, before_id。",
-        "也支持 JSON Patch 风格 replace/add path/value，例如 /steps/script/primary_skill。",
-        "patch 只微调框架；作者层 artifact 可修改 step.prompt，运行时 artifact 可修改 prompt_template；content、script、video_prompt 等成品正文由 workflow 运行阶段生成。",
-        "小改动可用 merge_step/add_step；当前搭建模式统一用 workflow.spec.apply_patch。",
-    ],
-    schema={
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string"},
-            "artifact_ref": {"type": "string"},
-            "operations": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-            "sample_inputs": {"type": "object", "additionalProperties": True},
-            "context": {"type": "object", "additionalProperties": True},
-            "user_preview": {"type": "object", "additionalProperties": True},
-            "self_check": {"type": "object", "additionalProperties": True},
-        },
-        "required": ["artifact_ref", "operations"],
-    },
-)
-async def workflow_spec_patch(
-    project_id: str,
-    artifact_ref: str,
-    operations: list[dict[str, Any]],
-    sample_inputs: dict[str, Any] | None = None,
-    context: dict[str, Any] | None = None,
-    user_preview: dict[str, Any] | None = None,
-    self_check: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    result = workflow_spec_patch_service.apply_workflow_spec_patch(
-        project_id=project_id,
-        operation="update",
-        base={"artifact_ref": artifact_ref},
-        operations=operations,
-        sample_inputs=sample_inputs,
-        context=context,
-        user_preview=user_preview,
-        self_check=self_check,
-    )
-    if result.get("ok") is True:
-        result["base_artifact_ref"] = artifact_ref
-    return result
-
-
-@register(
     "workflow.template.resolve",
     description="按 skill 摘要或目标检索内置和用户可复用 workflow 模板候选。",
     tags=["workflow", "artifact", "read"],
@@ -8386,39 +7387,7 @@ def _current_workflow_template_id(state: dict[str, Any], base_template_id: str =
     return ""
 
 
-def _workflow_with_current_instance_overrides(
-    workflow: dict[str, Any],
-    records: list[dict[str, Any]],
-) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    patched = deepcopy(workflow)
-    steps = patched.get("steps")
-    if not isinstance(steps, list):
-        return patched, []
-    applied: list[dict[str, str]] = []
-    for record in records:
-        workflow_meta = _workflow_metadata_from_node(record)
-        step_id = str(workflow_meta.get("step_id") or workflow_meta.get("template_step_id") or "").strip()
-        if not step_id:
-            continue
-        fields = record.get("input") if isinstance(record.get("input"), dict) else {}
-        field_workflow = fields.get("workflow") if isinstance(fields.get("workflow"), dict) else workflow_meta
-        prompt_template = str(field_workflow.get("prompt_template") or "").strip()
-        if not prompt_template and record.get("type") == "text":
-            prompt_template = str(fields.get("prompt") or record.get("prompt") or "").strip()
-        if not prompt_template:
-            continue
-        found = workflow_spec_patch_service.find_workflow_step_container(steps, step_id)
-        if found is None:
-            continue
-        current = str(found[2].get("prompt_template") or "").strip()
-        if current == prompt_template:
-            continue
-        found[2]["prompt_template"] = prompt_template
-        applied.append({"step_id": step_id, "field": "prompt_template"})
-    return patched, applied
-
-
-def _apply_step_prompt_template_overrides(
+def _apply_step_prompt_overrides(
     workflow: dict[str, Any],
     overrides: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
@@ -8431,29 +7400,32 @@ def _apply_step_prompt_template_overrides(
     applied: list[dict[str, str]] = []
     for step_id, value in overrides.items():
         step_key = str(step_id or "").strip()
-        prompt_template = str(value or "").strip()
-        if not step_key or not prompt_template:
+        if not step_key:
+            continue
+        prompt = deepcopy(value) if isinstance(value, dict) else {"task": str(value or "").strip()}
+        if not str(prompt.get("task") or "").strip():
             continue
         found = workflow_spec_patch_service.find_workflow_step_container(steps, step_key)
         if found is None:
             continue
-        found[2]["prompt_template"] = prompt_template
-        applied.append({"step_id": step_key, "field": "prompt_template"})
+        found[2]["prompt"] = prompt
+        applied.append({"step_id": step_key, "field": "prompt"})
     return patched, applied
+
 
 
 @register(
     "workflow.template.save_current",
-    description="把当前已运行或已编辑的工作流实例保存为用户可复用模板。",
+    description="把当前工作流的公开 V2 spec 保存为用户可复用模板。",
     tags=["workflow", "artifact", "read"],
     search_hint=(
-        "save current workflow instance as user reusable template from canvas edited prompt_template "
+        "save current workflow public v2 spec as user reusable template "
         "保存 当前 流程 画布 实例 用户 可复用 模板 另存为 模板"
     ),
     usage_hints=[
         "用户说把当前流程/画布流程另存为今后可选模板时使用；不需要重新编写 spec。",
-        "会读取当前实例节点上的 workflow.prompt_template 覆盖基础模板，再写入 workflow_templates/。",
-        "如果用户指定了模板里某个步骤的新提示词模板，用 step_prompt_templates 按 step_id 传入。",
+        "运行状态、画布节点内容和私有提示词阶段不会写回模板。",
+        "如果用户明确指定某个步骤的新提示词合同，用 step_prompts 按 step id 传入。",
         "已有 artifact_ref 且要直接提升 artifact 时才用 workflow.template.promote。",
     ],
     schema={
@@ -8469,10 +7441,15 @@ def _apply_step_prompt_template_overrides(
             "applies_to": {"type": "string"},
             "version": {"type": "string"},
             "replace_existing": {"type": "boolean"},
-            "step_prompt_templates": {
+            "step_prompts": {
                 "type": "object",
-                "additionalProperties": {"type": "string"},
-                "description": "可选：按 step_id 覆盖保存到模板里的 prompt_template，例如 {\"script\":\"SYSTEM: ...\"}。",
+                "additionalProperties": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "object", "additionalProperties": True},
+                    ]
+                },
+                "description": "可选：按 step id 覆盖公开 V2 的 step.prompt。",
             },
             "source_skill_name": {"type": "string"},
             "source_skill_scope": {"type": "string"},
@@ -8491,7 +7468,7 @@ async def workflow_template_save_current(
     applies_to: str = "",
     version: str = "",
     replace_existing: bool = False,
-    step_prompt_templates: dict[str, Any] | None = None,
+    step_prompts: dict[str, Any] | None = None,
     source_skill_name: str = "",
     source_skill_scope: str = "",
     source_skill_summary: str = "",
@@ -8524,30 +7501,20 @@ async def workflow_template_save_current(
     except canvas_workflow_templates.WorkflowTemplateError as exc:
         return {"ok": False, "error": str(exc), "error_kind": "workflow_template_error"}
 
-    records = [
-        node
-        for node in await canvas_tools.list_nodes(project_id)
-        if str(_workflow_metadata_from_node(node).get("template_id") or "").strip() == selected_template_id
-        and (
-            not selected_instance_id
-            or str(_workflow_metadata_from_node(node).get("instance_id") or "").strip() == selected_instance_id
-        )
-    ]
-    records.extend(_workflow_runtime_records_from_state(
-        state,
-        template_id=selected_template_id,
-        instance_id=selected_instance_id,
-    ))
-    workflow, applied = _workflow_with_current_instance_overrides(base_template, records)
-    workflow, explicit_applied = _apply_step_prompt_template_overrides(workflow, step_prompt_templates)
-    applied = [*applied, *explicit_applied]
-    template_name = str(name or workflow.get("name") or base_template.get("name") or "当前流程模板").strip()
+    public_spec = base_template.get("public_spec")
+    if not isinstance(public_spec, dict):
+        return {
+            "ok": False,
+            "error": "Selected workflow does not expose a public V2 spec",
+            "error_kind": "workflow_public_spec_missing",
+        }
+    workflow, applied = _apply_step_prompt_overrides(deepcopy(public_spec), step_prompts)
+    template_name = str(name or workflow.get("title") or base_template.get("name") or "当前流程模板").strip()
     if template_id:
         workflow["id"] = template_id
-    workflow["name"] = template_name
+    workflow["title"] = template_name
     if description:
         workflow["description"] = description
-    workflow["reusable"] = True
     try:
         saved = workflow_template_store.save_user_template(
             workflow=workflow,
@@ -8583,7 +7550,7 @@ async def workflow_template_save_current(
         "base_template_id": selected_template_id,
         "instance_id": selected_instance_id,
         "applied_overrides": applied,
-        "next_action": "模板已保存到 workflow_templates/；前端可选择，下载可用 workflow.template.export。",
+        "next_action": "模板已保存到 workflow_templates/user/；前端可选择，下载可用 workflow.template.export。",
     }
 
 
@@ -8664,7 +7631,7 @@ async def workflow_template_promote(
         return {"ok": False, "error": str(exc), "error_kind": "workflow_spec_error"}
     return {
         **promoted,
-        "next_action": "模板已写入 workflow_templates/；前端刷新后可直接选择，下载可用 workflow.template.export 或前端下载按钮。",
+        "next_action": "模板已写入 workflow_templates/user/；前端刷新后可直接选择，下载可用 workflow.template.export 或前端下载按钮。",
     }
 
 
@@ -8712,98 +7679,25 @@ async def workflow_template_export(
 
 @register(
     "workflow.materialize",
-    description="把模型写好的结构化 workflow spec 物化成画布 draft 节点和依赖边；不生成内容、不运行节点。",
+    description="校验并物化一个 openreel.workflow.v2 文档；仅用于已有 V2 spec，搭建或修改请使用 Workflow Build Mode。",
     tags=["workflow", "write"],
-    search_hint=(
-        "materialize model authored workflow spec canvas graph draft nodes edges "
-        "模型写好 工作流 结构化 spec 物化 画布 节点 连线"
-    ),
+    search_hint="materialize workflow v2 canvas draft nodes edges 物化 工作流 画布 节点 连线",
     usage_hints=[
-        "当主 Agent 已经规划出 steps 时调用；workflow.steps 按依赖顺序排列。",
-        "每个 step 使用 node_type=text|image|video|audio，depends_on 引用前面 step 的 id。",
-        "重复流程可写一个 repeat group：step 内嵌 steps，并提供 instances/foreach、repeat.count、repeat.episode_count + repeat.segment_count 或 foreach.dimension；能解析时会展开成真实节点。",
-        "dimension 可来自 inputs、instances、count、from_step/path 或 context；当前缺少 planner 输出时 group 会返回 deferred_groups，等上游节点完成后把输出放进 inputs/context 再物化。",
-        "大工作流用紧凑 step：短 title/purpose/source_behavior，省略长正文和长 position。",
-        "内联 workflow.id 可省略；step.id 使用小写下划线，源系统 id 放 source_node_id。",
-        "用户事实放顶层 inputs；workflow.inputs 是输入定义数组，可省略。",
+        "workflow 必须是完整的 openreel.workflow.v2 文档；旧字段、未知字段和包装对象会被拒绝。",
+        "inputs 只提供本次运行值，不会写回可复用 spec。",
     ],
     schema={
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "project_id": {"type": "string"},
             "workflow": {
                 "type": "object",
+                "description": "完整 openreel.workflow.v2 文档。",
                 "additionalProperties": True,
-                "properties": {
-                    "id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "description": {"type": "string"},
-                    "defaults": {"type": "object", "additionalProperties": True},
-                    "dimensions": {"type": "object", "additionalProperties": True},
-                    "steps": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": True,
-                            "properties": {
-                                "id": {"type": "string"},
-                                "title": {"type": "string"},
-                                "node_type": {"type": "string", "enum": ["text", "image", "video", "audio"]},
-                                "purpose": {"type": "string"},
-                                "primary_skill": {"type": "string"},
-                                "skill_category": {"type": "string"},
-                                "depends_on": {"type": "array", "items": {"type": "string"}},
-                                "steps": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-                                "instances": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-                                "foreach": {
-                                    "oneOf": [
-                                        {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-                                        {"type": "object", "additionalProperties": True},
-                                    ],
-                                },
-                                "bindings": {"type": "object", "additionalProperties": True},
-                                "fields": {"type": "object", "additionalProperties": True},
-                                "position": {"type": "object", "additionalProperties": True},
-                                "acceptance": {"type": "string"},
-                                "source_node_id": {"type": "string"},
-                                "source_label": {"type": "string"},
-                                "source_category": {"type": "string"},
-                                "source_ui": {"type": "string"},
-                                "source_behavior": {"type": "string"},
-                                "mode": {"type": "string"},
-                                "repeat": {"type": "object", "additionalProperties": True},
-                                "role": {"type": "string"},
-                                "start_action": {"type": "string"},
-                                "execution_state": {"type": "string"},
-                                "inputs_schema": {"type": "object", "additionalProperties": True},
-                                "expansion": {"type": "object", "additionalProperties": True},
-                                "collection": {"type": "object", "additionalProperties": True},
-                                "instance_scope": {"type": "object", "additionalProperties": True},
-                                "item_source": {"type": "string"},
-                                "branch": {"type": "string"},
-                                "template_step_id": {"type": "string"},
-                                "expand_when": {"type": "string"},
-                                "expands_to": {"type": "array", "items": {"type": "string"}},
-                                "repeat_group_id": {"type": "string"},
-                                "repeat_group_label": {"type": "string"},
-                                "repeat_group_index": {"type": "integer"},
-                                "prompt_ref": {"type": "string"},
-                                "prompt_spec": {"type": "object", "additionalProperties": True},
-                                "prompt_template": {"type": "string"},
-                                "runner": {"type": "string"},
-                                "optional": {"type": "boolean"},
-                                "manual_only": {"type": "boolean"},
-                                "auto_skip_when": {"type": "string"},
-                            },
-                            "required": ["id", "title"],
-                        },
-                    },
-                },
-                "required": ["steps"],
             },
             "title": {"type": "string"},
             "inputs": {"type": "object", "additionalProperties": True},
-            "context": {"type": "object", "additionalProperties": True},
             "origin_x": {"type": "number"},
             "origin_y": {"type": "number"},
             "spacing_x": {"type": "number"},
@@ -8812,6 +7706,7 @@ async def workflow_template_export(
         "required": ["workflow"],
     },
 )
+
 async def workflow_materialize(
     project_id: str,
     workflow: dict[str, Any],
@@ -8950,13 +7845,3 @@ async def workflow_materialize_artifact(
     )
     result["artifact_ref"] = artifact_ref
     return result
-
-
-# Compatibility exports: spec read/write tools are registered and implemented
-# in workflow_spec_tools. Keep these names on workflow_tools for existing
-# tests, REST helpers, and migration code that import workflow_tools directly.
-from app.mcp_tools.workflow_spec_tools import (  # noqa: E402
-    workflow_spec_apply_patch as workflow_spec_apply_patch,
-    workflow_spec_patch as workflow_spec_patch,
-    workflow_spec_read as workflow_spec_read,
-)

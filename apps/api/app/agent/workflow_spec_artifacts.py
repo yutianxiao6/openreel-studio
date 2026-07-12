@@ -131,7 +131,14 @@ def workflow_spec_preview(workflow: dict[str, Any], *, normalized: dict[str, Any
     del normalized
     spec = parse_workflow_spec(workflow)
     plan = compile_workflow_spec(spec)
-    steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+    logical_steps: list[Any] = []
+
+    def collect(steps: list[Any]) -> None:
+        for step in steps:
+            logical_steps.append(step)
+            collect(step.steps)
+
+    collect(spec.steps)
     extensions = spec.extensions
     return {
         "id": spec.id,
@@ -146,20 +153,25 @@ def workflow_spec_preview(workflow: dict[str, Any], *, normalized: dict[str, Any
             "supported": True,
             "plan_hash": plan.get("plan_hash"),
         },
-        "step_count": len(steps),
+        "step_count": len(logical_steps),
         "requirements": deepcopy(plan.get("requirements") or {}),
         "input_ids": list(spec.inputs),
         "required_inputs": [key for key, item in spec.inputs.items() if item.required],
         "first_steps": [
             {
-                "id": step.get("id"),
-                "title": step.get("title") or step.get("id"),
-                "kind": step.get("kind"),
-                "depends_on": step.get("depends_on") or [],
-                "ui": step.get("ui") if isinstance(step.get("ui"), dict) else {},
+                "id": step.id,
+                "title": step.title,
+                "kind": step.kind,
+                "needs": list(step.needs),
+                "description": step.description,
+                "execution": step.execution,
+                "on_error": step.on_error,
+                "when": step.when.model_dump(by_alias=True, exclude_none=True) if step.when else None,
+                "foreach": step.foreach.model_dump(by_alias=True, exclude_none=True) if step.foreach else None,
+                "uses": [item.model_dump(by_alias=True, exclude_none=True) for item in step.uses],
+                "ui": deepcopy(step.ui),
             }
-            for step in steps[:8]
-            if isinstance(step, dict)
+            for step in logical_steps[:8]
         ],
     }
 

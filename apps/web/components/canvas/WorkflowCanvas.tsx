@@ -463,23 +463,20 @@ interface WorkflowEditorCreateMenu {
   sourceStepId?: string
 }
 
-type WorkflowAuthoringKind = "input" | "text" | "collection" | "plan" | "loop" | "canvas_text" | "image" | "video" | "audio" | "plugin" | "review"
-type WorkflowInspectorTab = "properties" | "io" | "prompt" | "advanced" | "run" | "help"
+type WorkflowAuthoringKind = "text" | "object" | "collection" | "loop" | "image" | "video" | "audio" | "plugin"
+type WorkflowInspectorTab = "properties" | "io" | "prompt" | "run"
 
-const WORKFLOW_AUTHORING_SPEC_VERSION = "openreel.workflow.authoring.v1"
+const WORKFLOW_SPEC_VERSION = "openreel.workflow.v2"
 
 const WORKFLOW_AUTHORING_KIND_OPTIONS: Array<{ value: WorkflowAuthoringKind; label: string }> = [
-  { value: "input", label: "输入" },
-  { value: "text", label: "生成文本" },
-  { value: "collection", label: "提取集合" },
-  { value: "plan", label: "分段拆分" },
-  { value: "loop", label: "遍历执行" },
-  { value: "canvas_text", label: "文本节点" },
-  { value: "image", label: "图片节点" },
-  { value: "video", label: "视频节点" },
-  { value: "audio", label: "音频节点" },
-  { value: "plugin", label: "插件动作" },
-  { value: "review", label: "质量检查" },
+  { value: "text", label: "文本" },
+  { value: "object", label: "结构化对象" },
+  { value: "collection", label: "结构化列表" },
+  { value: "loop", label: "循环" },
+  { value: "image", label: "图片" },
+  { value: "video", label: "视频" },
+  { value: "audio", label: "音频" },
+  { value: "plugin", label: "插件" },
 ]
 
 const WORKFLOW_INSPECTOR_TABS: Array<{ value: WorkflowInspectorTab; label: string }> = [
@@ -487,15 +484,18 @@ const WORKFLOW_INSPECTOR_TABS: Array<{ value: WorkflowInspectorTab; label: strin
   { value: "io", label: "上下游" },
   { value: "prompt", label: "提示词" },
   { value: "run", label: "结果" },
-  { value: "help", label: "说明" },
 ]
 
 const WORKFLOW_INPUT_TYPE_OPTIONS = [
   { value: "text", label: "单行文本" },
   { value: "long_text", label: "大段文字" },
   { value: "number", label: "数字" },
+  { value: "integer", label: "整数" },
   { value: "boolean", label: "是/否" },
+  { value: "enum", label: "单选" },
+  { value: "image", label: "图片" },
   { value: "video", label: "视频节点" },
+  { value: "audio", label: "音频" },
   { value: "json", label: "列表" },
 ]
 
@@ -507,12 +507,6 @@ const WORKFLOW_FORM_INPUT_PRESETS: WorkflowInputPreset[] = [
   { id: "aspect_ratio", label: "画面比例", type: "text", description: "例如：9:16、16:9。", default: "9:16" },
 ]
 
-const WORKFLOW_OUTPUT_MODE_OPTIONS = [
-  { value: "", label: "文本/默认" },
-  { value: "text", label: "文本" },
-  { value: "json", label: "结构化字段" },
-]
-
 const WORKFLOW_FIELD_TYPE_OPTIONS = [
   { value: "string", label: "文本" },
   { value: "number", label: "数字" },
@@ -522,25 +516,27 @@ const WORKFLOW_FIELD_TYPE_OPTIONS = [
 ]
 
 const WORKFLOW_REFERENCE_ROLE_OPTIONS = [
-  { value: "visual_reference", label: "视觉参考" },
-  { value: "source_image", label: "源图" },
-  { value: "context", label: "上下文" },
+  { value: "vision", label: "让提示词模型看图" },
+  { value: "reference", label: "作为媒体生成参考" },
+  { value: "vision_reference", label: "看图并作为生成参考" },
+  { value: "source", label: "直接采用现有媒体" },
 ]
 
-const WORKFLOW_SKIP_OPERATOR_OPTIONS = [
+const WORKFLOW_CONDITION_OPERATOR_OPTIONS = [
   { value: "", label: "不设置" },
-  { value: "empty", label: "为空时不运行" },
-  { value: "==", label: "等于" },
-  { value: "!=", label: "不等于" },
-  { value: "<", label: "小于" },
-  { value: "<=", label: "小于等于" },
-  { value: ">", label: "大于" },
-  { value: ">=", label: "大于等于" },
+  { value: "empty", label: "为空" },
+  { value: "not_empty", label: "不为空" },
+  { value: "eq", label: "等于" },
+  { value: "ne", label: "不等于" },
+  { value: "lt", label: "小于" },
+  { value: "lte", label: "小于等于" },
+  { value: "gt", label: "大于" },
+  { value: "gte", label: "大于等于" },
 ]
 
-type WorkflowSkipInputKind = "number" | "boolean" | "collection" | "text"
+type WorkflowConditionInputKind = "number" | "boolean" | "collection" | "text"
 
-function workflowInputTypeCategory(inputType?: string): WorkflowSkipInputKind {
+function workflowInputTypeCategory(inputType?: string): WorkflowConditionInputKind {
   const normalizedType = String(inputType || "text").trim().toLowerCase()
   if (["number", "integer", "int", "float", "decimal"].includes(normalizedType)) return "number"
   if (["boolean", "bool", "checkbox"].includes(normalizedType)) return "boolean"
@@ -579,25 +575,25 @@ function workflowInputOptionsFromRaw(raw: Record<string, unknown>): Array<{ valu
   return result.length > 0 ? result : undefined
 }
 
-function workflowSkipOperatorOptionsForInputType(inputType?: string): typeof WORKFLOW_SKIP_OPERATOR_OPTIONS {
+function workflowConditionOperatorOptionsForInputType(inputType?: string): typeof WORKFLOW_CONDITION_OPERATOR_OPTIONS {
   const kind = workflowInputTypeCategory(inputType)
   const allowed = new Set(
     kind === "number"
-      ? ["", "empty", "==", "!=", "<", "<=", ">", ">="]
+      ? ["", "empty", "not_empty", "eq", "ne", "lt", "lte", "gt", "gte"]
       : kind === "boolean"
-        ? ["", "==", "!="]
+        ? ["", "eq", "ne"]
         : kind === "collection"
-          ? ["", "empty"]
-          : ["", "empty", "==", "!="],
+          ? ["", "empty", "not_empty"]
+          : ["", "empty", "not_empty", "eq", "ne"],
   )
-  return WORKFLOW_SKIP_OPERATOR_OPTIONS.filter((item) => allowed.has(item.value))
+  return WORKFLOW_CONDITION_OPERATOR_OPTIONS.filter((item) => allowed.has(item.value))
 }
 
-function workflowDefaultSkipOperatorForInputType(inputType?: string): string {
-  return workflowInputTypeCategory(inputType) === "boolean" ? "==" : "empty"
+function workflowDefaultConditionOperatorForInputType(inputType?: string): string {
+  return workflowInputTypeCategory(inputType) === "boolean" ? "eq" : "not_empty"
 }
 
-function workflowDefaultSkipCompareValueForInputType(inputType?: string, currentValue = ""): string {
+function workflowDefaultConditionCompareValueForInputType(inputType?: string, currentValue = ""): string {
   const value = currentValue.trim()
   const kind = workflowInputTypeCategory(inputType)
   if (kind === "boolean") return /^(true|false)$/i.test(value) ? value.toLowerCase() : "true"
@@ -605,37 +601,11 @@ function workflowDefaultSkipCompareValueForInputType(inputType?: string, current
   return currentValue
 }
 
-function workflowSkipOperatorIsAllowed(operator: string, inputType?: string): boolean {
-  return workflowSkipOperatorOptionsForInputType(inputType).some((item) => item.value === operator)
+function workflowConditionOperatorIsAllowed(operator: string, inputType?: string): boolean {
+  return workflowConditionOperatorOptionsForInputType(inputType).some((item) => item.value === operator)
 }
 
-const WORKFLOW_ADVANCED_WORKFLOW_KEYS = [
-  "version",
-  "applies_to",
-  "defaults",
-  "dimensions",
-  "ui",
-  "phases",
-  "extensions",
-  "capabilities",
-  "required_capabilities",
-  "required_extensions",
-]
-
-const WORKFLOW_STEP_ADVANCED_JSON_KEYS = [
-  { key: "fields", label: "fields", rows: 5 },
-  { key: "inputs_schema", label: "inputs_schema", rows: 4 },
-  { key: "prompt_spec", label: "prompt_spec", rows: 4 },
-  { key: "extension_config", label: "extension_config", rows: 4 },
-  { key: "expansion", label: "expansion", rows: 4 },
-  { key: "collection", label: "collection", rows: 4 },
-  { key: "instance_scope", label: "instance_scope", rows: 4 },
-  { key: "completion", label: "completion", rows: 4 },
-  { key: "settings", label: "settings", rows: 4 },
-  { key: "io", label: "io", rows: 4 },
-  { key: "x", label: "x", rows: 4 },
-  { key: "x-openreel", label: "x-openreel", rows: 4 },
-]
+const WORKFLOW_ADVANCED_WORKFLOW_KEYS = ["ui", "extensions"]
 
 function asWorkflowObject(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -819,32 +789,11 @@ function workflowInputDraftSpecsFromWorkflow(
     if (options || current.options) nextSpec.options = options || current.options
     result[id] = nextSpec
   }
-  const inputSchema = asWorkflowObject(sourceWorkflow?.inputs_schema)
-  if (inputSchema) {
-    for (const [id, value] of Object.entries(inputSchema)) {
+  const inputMap = asWorkflowObject(sourceWorkflow?.inputs)
+  if (inputMap) {
+    for (const [id, value] of Object.entries(inputMap)) {
       const spec = asWorkflowObject(value)
       if (spec) addSpec(id, spec)
-    }
-  }
-  const rawInputs = sourceWorkflow?.inputs
-  if (Array.isArray(rawInputs)) {
-    for (const item of rawInputs) {
-      if (typeof item === "string") {
-        result[item] = { type: "text", ...(result[item] || {}) }
-      } else {
-        const input = asWorkflowObject(item)
-        const id = String(input?.id || input?.name || input?.key || "").trim()
-        if (input && id) addSpec(id, input)
-      }
-    }
-  } else {
-    const inputMap = asWorkflowObject(rawInputs)
-    if (inputMap) {
-      for (const [id, value] of Object.entries(inputMap)) {
-        const spec = asWorkflowObject(value)
-        if (spec) addSpec(id, spec)
-        else result[id] = { type: "text", default: value == null ? "" : String(value) }
-      }
     }
   }
   for (const input of inputs) {
@@ -863,16 +812,11 @@ function workflowCloneEditorStep(step: WorkflowTemplateStepSummary): WorkflowTem
     reads_from: readsFrom.length > 0 ? readsFrom : undefined,
     ui: step.ui ? { ...step.ui } : undefined,
     output: step.output ? { ...step.output } : undefined,
-    output_schema: step.output_schema ? workflowCloneValue(step.output_schema) : undefined,
-    authoring: step.authoring ? { ...step.authoring } : undefined,
     fields: step.fields ? { ...step.fields } : undefined,
-    bindings: step.bindings ? workflowCloneValue(step.bindings) : undefined,
-    inputs_schema: step.inputs_schema ? workflowCloneValue(step.inputs_schema) : undefined,
     expansion: step.expansion ? workflowCloneValue(step.expansion) : undefined,
     collection: step.collection ? workflowCloneValue(step.collection) : undefined,
     instance_scope: step.instance_scope ? workflowCloneValue(step.instance_scope) : undefined,
     prompt_spec: step.prompt_spec ? workflowCloneValue(step.prompt_spec) : undefined,
-    context_refs: workflowHasValue(step.context_refs) ? workflowCloneValue(step.context_refs) : undefined,
     extension_config: step.extension_config ? workflowCloneValue(step.extension_config) : undefined,
     completion: step.completion ? workflowCloneValue(step.completion) : undefined,
     settings: step.settings ? workflowCloneValue(step.settings) : undefined,
@@ -881,13 +825,9 @@ function workflowCloneEditorStep(step: WorkflowTemplateStepSummary): WorkflowTem
     "x-openreel": workflowHasValue(step["x-openreel"]) ? workflowCloneValue(step["x-openreel"]) : undefined,
     prompt: workflowHasValue(step.prompt) ? workflowCloneValue(step.prompt) : undefined,
     references: workflowHasValue(step.references) ? workflowCloneValue(step.references) : undefined,
-    repeat: step.repeat ? { ...step.repeat } : undefined,
     foreach: Array.isArray(step.foreach)
       ? step.foreach.map((item) => ({ ...item }))
       : step.foreach ? { ...step.foreach } : undefined,
-    reference_selectors: Array.isArray(step.reference_selectors)
-      ? step.reference_selectors.map((item) => ({ ...item }))
-      : undefined,
   }
 }
 
@@ -993,26 +933,21 @@ function workflowEditorTopologicalSteps(steps: WorkflowTemplateStepSummary[]): W
 }
 
 function workflowStepAuthoringKind(step: WorkflowTemplateStepSummary): WorkflowAuthoringKind {
-  const authoring = asWorkflowObject(step.authoring)
-  const raw = String(authoring?.kind || step.kind || "").trim().toLowerCase()
-  if (raw === "input") return "input"
+  const raw = String(step.kind || "").trim().toLowerCase()
   if (raw === "loop" || step.shape === "loop" || step.role === "repeat_group") return "loop"
   if (raw === "collection") return "collection"
-  if (raw === "canvas_text" || raw === "canvas-text") return "canvas_text"
-  if (raw === "plan" || raw === "json" || raw === "llm_json") return "plan"
+  if (raw === "object") return "object"
   if (raw === "image") return "image"
   if (raw === "video") return "video"
   if (raw === "audio") return "audio"
-  if (raw === "plugin" || step.runner === "workflow_plugin") return "plugin"
-  if (raw === "review") return "review"
-  if (step.runner === "workflow_input" || step.role === "entry") return "input"
-  if (step.node_type === "image" || step.node_type === "video" || step.node_type === "audio") return step.node_type
+  if (raw === "plugin") return "plugin"
   return "text"
 }
 
 function workflowStepIsCanvasProduct(step: WorkflowTemplateStepSummary): boolean {
   const kind = workflowStepAuthoringKind(step)
-  return kind === "canvas_text" || kind === "image" || kind === "video" || kind === "audio"
+  const output = asWorkflowObject(step.output)
+  return kind === "image" || kind === "video" || kind === "audio" || (kind === "text" && output?.canvas === true)
 }
 
 function workflowCanvasOutputFromStep(step: WorkflowTemplateStepSummary): boolean {
@@ -1021,13 +956,10 @@ function workflowCanvasOutputFromStep(step: WorkflowTemplateStepSummary): boolea
 
 function workflowStepPromptObject(step: WorkflowTemplateStepSummary): Record<string, unknown> | undefined {
   if (workflowHasValue(step.prompt)) {
-    if (typeof step.prompt === "string") return { template: step.prompt }
     const prompt = asWorkflowObject(step.prompt)
     if (prompt) return workflowCloneValue(prompt)
   }
-  const text = String(step.prompt_template || "").trim()
-  if (!text) return undefined
-  return { template: text }
+  return undefined
 }
 
 function workflowAuthoringInputSpecs(
@@ -1035,33 +967,22 @@ function workflowAuthoringInputSpecs(
   requiredInputs: string[],
   sourceWorkflow?: Record<string, unknown>,
   inputSpecs?: Record<string, WorkflowInputDraftSpec>,
-): Array<Record<string, unknown>> {
+): Record<string, Record<string, unknown>> {
   const required = new Set(requiredInputs)
   const sourceById = new Map<string, Record<string, unknown>>()
-  const rawInputs = sourceWorkflow?.inputs
-  if (Array.isArray(rawInputs)) {
-    for (const item of rawInputs) {
-      if (typeof item === "string") {
-        sourceById.set(item, { id: item })
-      } else {
-        const input = asWorkflowObject(item)
-        const id = String(input?.id || input?.name || input?.key || "").trim()
-        if (input && id) sourceById.set(id, workflowCloneValue({ ...input, id }))
-      }
-    }
-  } else {
-    const inputMap = asWorkflowObject(rawInputs)
-    if (inputMap) {
-      for (const [id, value] of Object.entries(inputMap)) {
-        const spec = asWorkflowObject(value)
-        sourceById.set(id, spec ? workflowCloneValue({ id, ...spec }) : { id, default: workflowCloneValue(value) })
-      }
+  const inputMap = asWorkflowObject(sourceWorkflow?.inputs)
+  if (inputMap) {
+    for (const [id, value] of Object.entries(inputMap)) {
+      const spec = asWorkflowObject(value)
+      if (spec) sourceById.set(id, workflowCloneValue({ id, ...spec }))
     }
   }
-  return inputs.map((id) => {
+  return Object.fromEntries(inputs.map((id) => {
     const spec = workflowCloneValue(sourceById.get(id) || { id })
     const draft = inputSpecs?.[id]
-    spec.id = id
+    delete spec.id
+    delete spec.name
+    delete spec.key
     if (draft) {
       spec.type = draft.type || "text"
       if (draft.label) spec.label = draft.label
@@ -1073,10 +994,11 @@ function workflowAuthoringInputSpecs(
       if (draft.options && draft.options.length > 0) spec.options = draft.options.map((option) => ({ ...option }))
       else if (draft.options) delete spec.options
     }
-    if (required.has(id)) spec.required = true
-    else if (spec.required === true) delete spec.required
-    return spec
-  })
+    spec.label = workflowStringValue(spec.label) || workflowInputLabel(id)
+    spec.type = workflowStringValue(spec.type) || "text"
+    spec.required = required.has(id)
+    return [id, spec]
+  }))
 }
 
 function workflowCopyAuthoringField(source: Record<string, unknown>, target: Record<string, unknown>, key: string) {
@@ -1096,9 +1018,8 @@ function workflowSpecFieldsWithoutTemplateModel(step: Record<string, unknown>): 
   const fields = asWorkflowObject(step.fields)
   if (!fields) return undefined
   const next = { ...fields }
-  const kind = workflowStringValue(step.kind || step.type || step.node_type).toLowerCase()
-  const nodeType = workflowStringValue(step.node_type).toLowerCase()
-  if (["image", "video", "audio"].includes(kind) || ["image", "video", "audio"].includes(nodeType)) {
+  const kind = workflowStringValue(step.kind).toLowerCase()
+  if (["image", "video", "audio"].includes(kind)) {
     delete next.model
   }
   return Object.keys(next).length > 0 ? next : undefined
@@ -1139,125 +1060,44 @@ function workflowAuthoringStepFromSummary({
   const kind = workflowStepAuthoringKind(step)
   const stepRecord = step as unknown as Record<string, unknown>
   const id = stepIdMap.get(step.id) || workflowSanitizeStepId(step.id || `step_${index + 1}`, `step_${index + 1}`)
-  const nodeType = workflowNodeType(step.node_type)
-  const output = asWorkflowObject(step.output)
-  const cleanOutput = output
-    ? Object.fromEntries(Object.entries(output).filter(([key]) => key !== "canvas" && key !== "show_on_canvas"))
-    : undefined
   const result: Record<string, unknown> = {
     id,
     title: step.title || id,
     kind,
-    node_type: kind === "input" || kind === "loop" || kind === "canvas_text" ? "text" : nodeType,
   }
+  if (step.description) result.description = step.description
   const needs = workflowMappedDependencyIds(step.depends_on, stepIdMap, normalizedStepIds)
   if (needs.length > 0) result.needs = needs
-  const layoutAfter = workflowMappedDependencyIds(step.layout_after, stepIdMap, normalizedStepIds)
-  if (layoutAfter.length > 0) result.layout_after = layoutAfter
-
-  for (const key of [
-    "phase",
-    "group",
-    "purpose",
-    "acceptance",
-    "primary_skill",
-    "prompt_ref",
-    "output_mode",
-    "extension",
-    "capability",
-    "plugin",
-    "plugin_node_type",
-    "operation",
-    "auto_skip_when",
-    "item_name",
-    "item_source",
-    "branch",
-    "expand_when",
-    "mode",
-    "source_node_id",
-    "source_label",
-    "source_category",
-    "source_ui",
-    "source_behavior",
-  ]) {
-    workflowCopyAuthoringField(stepRecord, result, key)
-  }
-  for (const key of ["manual_only", "optional", "runtime_hidden"]) {
-    if (typeof stepRecord[key] === "boolean") result[key] = stepRecord[key]
-  }
-  for (const key of [
-    "ui",
-    "bindings",
-    "inputs_schema",
-    "expansion",
-    "collection",
-    "instance_scope",
-    "prompt_spec",
-    "extension_config",
-    "plugin_inputs",
-    "plugin_settings",
-    "context_refs",
-    "completion",
-    "settings",
-    "io",
-    "x",
-    "x-openreel",
-  ]) {
-    workflowCopyAuthoringField(stepRecord, result, key)
-  }
+  result.execution = step.execution === "manual" ? "manual" : "auto"
+  result.on_error = step.on_error === "continue" ? "continue" : "stop"
+  workflowCopyAuthoringField(stepRecord, result, "when")
+  workflowCopyAuthoringField(stepRecord, result, "ui")
   const authoringFields = workflowAuthoringFieldsWithoutUiModel(step)
   if (authoringFields) result.fields = authoringFields
-  workflowCopyAuthoringField(stepRecord, result, "output_schema")
-  if (kind === "collection") {
-    const schema = asWorkflowObject(result.output_schema) || {}
-    result.output_mode = "json"
-    result.output_schema = { ...schema, type: "collection", items_key: workflowStringValue(schema.items_key) || "items" }
-    result.collection = {
-      kind: "llm_extracted_items",
-      ...(asWorkflowObject(result.collection) || {}),
-    }
-  }
-  const readsFrom = workflowCleanIdList(step.reads_from)
-  if (readsFrom.length > 0) result.reads_from = readsFrom
-  const expandsTo = workflowCleanIdList(step.expands_to)
-  if (expandsTo.length > 0) result.expands_to = expandsTo
-  const authoring = asWorkflowObject(step.authoring)
-  if (authoring) {
-    for (const key of ["plugin", "plugin_node_type", "plugin_inputs", "plugin_settings"]) {
-      if (!workflowHasValue(result[key]) && workflowHasValue(authoring[key])) result[key] = workflowCloneValue(authoring[key])
-    }
-  }
 
   if (kind === "loop") {
-    workflowCopyAuthoringField(stepRecord, result, "repeat")
     workflowCopyAuthoringField(stepRecord, result, "foreach")
     if (nested && nested.length > 0) result.steps = nested
-  } else if (!parentScopeId) {
-    workflowCopyAuthoringField(stepRecord, result, "foreach")
+    return result
   }
 
   const prompt = workflowStepPromptObject(step)
-  if (prompt) result.prompt = prompt
+  if (prompt && kind !== "plugin") result.prompt = prompt
+  if (Array.isArray(step.uses) && step.uses.length > 0) result.uses = workflowCloneValue(step.uses)
 
-  const references = workflowHasValue(step.references)
-    ? step.references
-    : Array.isArray(step.reference_selectors) && step.reference_selectors.length > 0
-    ? step.reference_selectors
-    : undefined
-  if (workflowHasValue(references)) result.references = workflowCloneValue(references)
-
-  if (kind !== "loop") {
-    result.output = {
-      ...(cleanOutput || {}),
-      type: nodeType,
-      ...(kind === "collection" ? { mode: "json" } : {}),
-    }
-  } else if (output && Object.keys(output).length > 0) {
-    result.output = {
-      ...(cleanOutput || {}),
-      type: "text",
-    }
+  if (kind === "plugin") {
+    const plugin = asWorkflowObject(stepRecord.plugin)
+    if (plugin) result.plugin = workflowCloneValue(plugin)
+    return result
   }
+
+  const output = asWorkflowObject(step.output)
+  if (kind === "text" && output?.canvas === true) result.output = { canvas: true }
+  if (kind === "object" || kind === "collection") {
+    const schema = asWorkflowObject(output?.schema)
+    if (schema) result.output = { schema: workflowCloneValue(schema) }
+  }
+  void parentScopeId
   return result
 }
 
@@ -1308,19 +1148,15 @@ function workflowAuthoringSpecFromSteps({
   }
 
   const workflow: Record<string, unknown> = {
-    schema: WORKFLOW_AUTHORING_SPEC_VERSION,
-    authoring_spec_version: WORKFLOW_AUTHORING_SPEC_VERSION,
-    authoring: true,
+    schema: WORKFLOW_SPEC_VERSION,
     id: workflowSanitizeStepId(id || name || "edited_workflow", "edited_workflow"),
-    name: name || "编辑的工作流",
+    title: name || "编辑的工作流",
     description,
-    category: "workflow",
     inputs: workflowAuthoringInputSpecs(inputs, requiredInputs, sourceWorkflow, inputSpecs),
-    required_inputs: requiredInputs,
     steps: buildScope(WORKFLOW_TEMPLATE_ROOT_SCOPE_ID),
   }
   if (sourceWorkflow) {
-    for (const key of ["version", "applies_to", "defaults", "dimensions", "ui", "phases", "extensions", "capabilities", "required_capabilities", "required_extensions"]) {
+    for (const key of ["tags", "ui", "extensions"]) {
       if (!(key in workflow)) workflowCopyAuthoringField(sourceWorkflow, workflow, key)
     }
   }
@@ -1350,20 +1186,22 @@ function workflowArtifactPreviewFromEvent(detail: unknown): WorkflowArtifactPrev
       return {
         id,
         title: String(step.title || id),
-        node_type: workflowNodeType(step.node_type),
-        depends_on: workflowCleanIdList(step.depends_on),
-        phase: typeof step.phase === "string" ? step.phase : undefined,
-        group: typeof step.group === "string" ? step.group : undefined,
-        kind: typeof step.kind === "string" ? step.kind : undefined,
+        node_type: workflowNodeType(["image", "video", "audio"].includes(workflowStringValue(step.kind)) ? step.kind : "text"),
+        depends_on: workflowCleanIdList(step.needs).length > 0
+          ? workflowCleanIdList(step.needs)
+          : workflowCleanIdList(step.depends_on),
+        kind: workflowStringValue(step.kind) || "text",
+        description: typeof step.description === "string" ? step.description : undefined,
         ui: asWorkflowObject(step.ui),
         output: asWorkflowObject(step.output),
-        authoring: asWorkflowObject(step.authoring),
-        prompt_template: typeof step.prompt_template === "string" ? step.prompt_template : undefined,
-        prompt_ref: typeof step.prompt_ref === "string" ? step.prompt_ref : undefined,
-        surface: typeof step.surface === "string" ? step.surface : undefined,
-        visibility: typeof step.visibility === "string" ? step.visibility : undefined,
-        reference_selectors: Array.isArray(step.reference_selectors)
-          ? step.reference_selectors.filter((item) => Boolean(asWorkflowObject(item))) as Array<Record<string, unknown>>
+        prompt: asWorkflowObject(step.prompt),
+        foreach: asWorkflowObject(step.foreach),
+        when: asWorkflowObject(step.when),
+        plugin: asWorkflowObject(step.plugin),
+        execution: typeof step.execution === "string" ? step.execution : undefined,
+        on_error: typeof step.on_error === "string" ? step.on_error : undefined,
+        uses: Array.isArray(step.uses)
+          ? step.uses.filter((item) => Boolean(asWorkflowObject(item))) as Array<Record<string, unknown>>
           : undefined,
       }
     })
@@ -1404,129 +1242,37 @@ function workflowArtifactPreviewFromEvent(detail: unknown): WorkflowArtifactPrev
 }
 
 function workflowInputIdsFromSpec(workflow: Record<string, unknown>): string[] {
-  const result: string[] = []
-  const inputs = workflow.inputs
-  if (Array.isArray(inputs)) {
-    for (const item of inputs) {
-      if (typeof item === "string" && item.trim() && !result.includes(item.trim())) result.push(item.trim())
-      if (item && typeof item === "object" && !Array.isArray(item)) {
-        const input = item as Record<string, unknown>
-        const id = String(input.id || input.name || "").trim()
-        if (id && !result.includes(id)) result.push(id)
-      }
-    }
-  } else if (inputs && typeof inputs === "object") {
-    for (const key of Object.keys(inputs as Record<string, unknown>)) {
-      const id = key.trim()
-      if (id && !result.includes(id)) result.push(id)
-    }
-  }
-  const schema = workflow.inputs_schema
-  if (schema && typeof schema === "object" && !Array.isArray(schema)) {
-    for (const key of Object.keys(schema as Record<string, unknown>)) {
-      const id = key.trim()
-      if (id && !result.includes(id)) result.push(id)
-    }
-  }
-  return result
+  return Object.keys(asWorkflowObject(workflow.inputs) || {}).map((id) => id.trim()).filter(Boolean)
 }
 
 function workflowRequiredInputIdsFromSpec(workflow: Record<string, unknown>): string[] {
-  return Array.isArray(workflow.required_inputs)
-    ? workflowCleanIdList(workflow.required_inputs)
-    : []
+  const inputs = asWorkflowObject(workflow.inputs)
+  if (!inputs) return []
+  return Object.entries(inputs)
+    .filter(([, value]) => asWorkflowObject(value)?.required === true)
+    .map(([id]) => id)
 }
 
 function workflowStepMetadataFromSpec(step: Record<string, unknown>): Partial<WorkflowTemplateStepSummary> {
   const result: Partial<WorkflowTemplateStepSummary> = {}
-  const objectKeys = [
-    "repeat",
-    "foreach",
-    "bindings",
-    "expansion",
-    "collection",
-    "instance_scope",
-    "prompt",
-    "prompt_spec",
-    "ui",
-    "output",
-    "output_schema",
-    "authoring",
-    "extension_config",
-    "plugin_inputs",
-    "plugin_settings",
-    "completion",
-    "settings",
-    "io",
-    "x",
-    "x-openreel",
-  ] as const
+  const objectKeys = ["foreach", "prompt", "ui", "output", "when", "plugin"] as const
   for (const key of objectKeys) {
     const value = asWorkflowObject(step[key])
-    if (value) result[key] = value
+    if (value) (result as Record<string, unknown>)[key] = value
   }
-  if (workflowHasValue(step.inputs_schema)) result.inputs_schema = workflowCloneValue(step.inputs_schema) as Record<string, unknown> | Record<string, unknown>[]
-  if (workflowHasValue(step.context_refs)) result.context_refs = workflowCloneValue(step.context_refs)
   const cleanFields = workflowSpecFieldsWithoutTemplateModel(step)
   if (cleanFields) result.fields = cleanFields
-  const rawForeach = step.foreach ?? step.for_each
-  const foreachObject = asWorkflowObject(rawForeach)
-  if (foreachObject) {
-    result.foreach = foreachObject
-  } else if (Array.isArray(rawForeach)) {
-    result.foreach = rawForeach
-      .map((item) => asWorkflowObject(item))
-      .filter((item): item is Record<string, unknown> => Boolean(item))
-  } else if (typeof rawForeach === "string" && rawForeach.trim()) {
-    result.foreach = { from: rawForeach.trim() }
-  }
   if (typeof step.prompt === "string" && step.prompt.trim()) result.prompt = step.prompt
-  if (Array.isArray(step.references)) result.references = workflowCloneValue(step.references)
-  else if (workflowHasValue(step.references)) result.references = workflowCloneValue(step.references)
-  const stringKeys = [
-    "role",
-    "start_action",
-    "execution_state",
-    "item_source",
-    "branch",
-    "template_step_id",
-    "expand_when",
-    "repeat_group_id",
-    "repeat_group_label",
-    "mode",
-    "surface",
-    "visibility",
-    "phase",
-    "group",
-    "kind",
-    "output_mode",
-    "extension",
-    "capability",
-    "plugin",
-    "plugin_node_type",
-    "operation",
-    "source_label",
-    "source_category",
-    "item_name",
-  ] as const
-  for (const key of stringKeys) {
-    if (typeof step[key] === "string") result[key] = step[key] as string
-  }
-  const expandsTo = workflowCleanIdList(step.expands_to)
-  if (expandsTo.length > 0) result.expands_to = expandsTo
-  const layoutAfter = workflowCleanIdList(step.layout_after)
-  if (layoutAfter.length > 0) result.layout_after = layoutAfter
-  const readsFrom = workflowCleanIdList(step.reads_from)
-  if (readsFrom.length > 0) result.reads_from = readsFrom
-  if (Array.isArray(step.reference_selectors)) {
-    result.reference_selectors = step.reference_selectors
+  if (Array.isArray(step.uses)) {
+    result.uses = step.uses
       .map((item) => asWorkflowObject(item))
       .filter((item): item is Record<string, unknown> => Boolean(item))
   }
-  if (typeof step.manual_only === "boolean") result.manual_only = step.manual_only
-  if (typeof step.optional === "boolean") result.optional = step.optional
-  if (typeof step.auto_skip_when === "string") result.auto_skip_when = step.auto_skip_when
-  if (typeof step.runtime_hidden === "boolean") result.runtime_hidden = step.runtime_hidden
+  const stringKeys = ["kind", "execution", "on_error"] as const
+  for (const key of stringKeys) {
+    if (typeof step[key] === "string") (result as Record<string, unknown>)[key] = step[key]
+  }
+  if (typeof step.description === "string") result.description = step.description
   return result
 }
 
@@ -1536,21 +1282,14 @@ function workflowStepSummariesFromSpecSteps(rawSteps: unknown): WorkflowTemplate
   const seen = new Set<string>()
   const visit = (
     items: unknown[],
-    options: { parentScopeId?: string; parentScopeLabel?: string; inheritedRepeat?: Record<string, unknown>; prefix?: string } = {},
+    options: { parentScopeId?: string; parentScopeLabel?: string; prefix?: string } = {},
   ) => {
     for (const [rawIndex, item] of items.entries()) {
       const step = asWorkflowObject(item)
       if (!step) continue
       const nested = Array.isArray(step.steps) ? step.steps : []
       const kind = typeof step.kind === "string" ? step.kind : ""
-      const explicitNodeType = typeof step.node_type === "string" ? step.node_type : ""
-      if (!explicitNodeType && !kind && nested.length > 0) {
-        visit(nested, options)
-        continue
-      }
-      const nodeType = explicitNodeType
-        ? explicitNodeType
-        : kind === "image" || kind === "video" || kind === "audio"
+      const nodeType = kind === "image" || kind === "video" || kind === "audio"
         ? kind
         : "text"
       const id = String(step.id || `${options.prefix || ""}step_${rawIndex + 1}`).trim()
@@ -1569,24 +1308,15 @@ function workflowStepSummariesFromSpecSteps(rawSteps: unknown): WorkflowTemplate
         depends_on: workflowCleanIdList(step.depends_on).length > 0
           ? workflowCleanIdList(step.depends_on)
           : workflowCleanIdList(step.needs),
-        purpose: typeof step.purpose === "string" ? step.purpose : undefined,
-        primary_skill: typeof step.primary_skill === "string" ? step.primary_skill : undefined,
-        acceptance: typeof step.acceptance === "string" ? step.acceptance : undefined,
-        source_node_id: typeof step.source_node_id === "string" ? step.source_node_id : undefined,
-        prompt_template: typeof step.prompt_template === "string" ? step.prompt_template : undefined,
-        prompt_ref: typeof step.prompt_ref === "string" ? step.prompt_ref : undefined,
-        runner: typeof step.runner === "string" ? step.runner : undefined,
-        optional: typeof step.optional === "boolean" ? step.optional : undefined,
-        auto_skip_when: typeof step.auto_skip_when === "string" ? step.auto_skip_when : undefined,
+        description: typeof step.description === "string" ? step.description : undefined,
         ...workflowStepMetadataFromSpec(step),
       }
       if (options.parentScopeId) {
         summary.repeat_group_id = options.parentScopeId
         summary.repeat_group_label = options.parentScopeLabel || options.parentScopeId
-        if (options.inheritedRepeat && !summary.repeat) summary.repeat = workflowCloneValue(options.inheritedRepeat)
       }
-      if (nested.length > 0 || kind === "loop" || step.role === "repeat_group") {
-        summary.role = typeof step.role === "string" ? step.role : "repeat_group"
+      if (nested.length > 0 || kind === "loop") {
+        summary.role = "repeat_group"
         summary.shape = "loop"
         summary.child_scope_id = id
         summary.has_children = true
@@ -1596,11 +1326,9 @@ function workflowStepSummariesFromSpecSteps(rawSteps: unknown): WorkflowTemplate
       }
       steps.push(summary)
       if (nested.length > 0) {
-        const inheritedRepeat = asWorkflowObject(step.repeat)
         visit(nested, {
           parentScopeId: id,
           parentScopeLabel: summary.title || id,
-          inheritedRepeat,
           prefix: `${id}_`,
         })
       }
@@ -1726,14 +1454,25 @@ function workflowCanonicalTemplateForPreview(
 
 function workflowSourceFromTemplateSummary(template: WorkflowTemplateSummary | undefined): Record<string, unknown> | undefined {
   if (!template) return undefined
+  const inputSchema = asWorkflowObject(template.inputs_schema) || {}
+  const inputs = Object.fromEntries((template.inputs || []).map((id) => [
+    id,
+    asWorkflowObject(inputSchema[id]) || {
+      type: "text",
+      label: workflowInputLabel(id),
+      required: (template.required_inputs || []).includes(id),
+    },
+  ]))
   return {
+    schema: WORKFLOW_SPEC_VERSION,
     id: template.id,
-    name: template.name,
+    title: template.name,
     description: template.description,
-    inputs: template.inputs,
-    inputs_schema: template.inputs_schema,
-    required_inputs: template.required_inputs,
+    inputs,
     steps: template.steps,
+    ...(Array.isArray(template.tags) ? { tags: template.tags } : {}),
+    ...(asWorkflowObject(template.ui) ? { ui: template.ui } : {}),
+    ...(asWorkflowObject(template.extensions) ? { extensions: template.extensions } : {}),
   }
 }
 
@@ -1788,10 +1527,16 @@ function workflowStepsForTemplateSource(
 ): WorkflowTemplateStepSummary[] {
   const canonical = workflowCanonicalTemplateForPreview(artifactPreview, selected, templates)
   if (workflowPreviewShouldUseCanonicalTemplate(artifactPreview) && canonical && canonical.id === artifactPreview?.id && canonical.steps.length > 0) {
-    return canonical.steps
+    return workflowStepSummariesFromSpecSteps(canonical.steps)
   }
+  const artifactWorkflowSteps = artifactPreview?.workflow && Array.isArray(artifactPreview.workflow.steps)
+    ? workflowStepSummariesFromSpecSteps(artifactPreview.workflow.steps)
+    : []
+  if (artifactWorkflowSteps.length > 0) return artifactWorkflowSteps
   const rawSteps = artifactPreview?.steps ?? selected?.steps ?? EMPTY_WORKFLOW_STEPS
-  return artifactPreview ? workflowTemplateStepsWithoutRuntimeInstances(rawSteps) : rawSteps
+  const normalized = workflowStepSummariesFromSpecSteps(rawSteps)
+  const steps = normalized.length > 0 ? normalized : rawSteps
+  return artifactPreview ? workflowTemplateStepsWithoutRuntimeInstances(steps) : steps
 }
 
 function workflowGraphStepsForTemplateSource(
@@ -1811,23 +1556,22 @@ function workflowGraphStepsForTemplateSource(
 function workflowPreviewFromImportedSpec(payload: unknown, filename: string): WorkflowArtifactPreview | null {
   const root = asWorkflowObject(payload)
   if (!root) return null
-  const workflow = asWorkflowObject(root.workflow) || root
-  if (!Array.isArray(workflow.steps)) return null
+  const workflow = root
+  if (workflow.schema !== WORKFLOW_SPEC_VERSION || !Array.isArray(workflow.steps)) return null
   const steps = workflowStepSummariesFromSpecSteps(workflow.steps)
-  const dimensions = asWorkflowObject(workflow.dimensions)
   return {
     artifactRef: "",
     source: "imported",
     workflow,
     id: String(workflow.id || filename || "imported_workflow_spec"),
-    name: String(workflow.name || filename || "导入的 workflow spec"),
-    description: String(workflow.description || root.description || "本地导入的 workflow spec"),
+    name: String(workflow.title || filename || "导入的 workflow spec"),
+    description: String(workflow.description || "本地导入的 workflow spec"),
     inputs: workflowInputIdsFromSpec(workflow),
     requiredInputs: workflowRequiredInputIdsFromSpec(workflow),
     stepCount: steps.length,
-    dimensionCount: dimensions ? Object.keys(dimensions).length : 0,
+    dimensionCount: 0,
     deferredGroupCount: 0,
-    dimensions: dimensions ? Object.keys(dimensions).slice(0, 12) : [],
+    dimensions: [],
     deferredGroups: [],
     steps,
   }
@@ -2158,40 +1902,28 @@ function workflowConditionNumber(value: unknown): number | null {
   return Number.isFinite(numeric) ? numeric : null
 }
 
-function workflowAutoSkipMet(condition: unknown, values: Record<string, string>): boolean {
-  const text = typeof condition === "string" ? condition.trim() : ""
-  if (!text) return false
-  const compare = text.match(/^\{\{\s*inputs\.([A-Za-z0-9_]+)\s*\}\}\s*(<=|>=|==|!=|<|>)\s*([+-]?\d+(?:\.\d+)?|true|false|"[^"]*"|'[^']*')$/i)
-  if (compare) {
-    const left = workflowConditionValue(values, compare[1])
-    const rawRight = compare[3]
-    const right = rawRight.toLowerCase() === "true"
-      ? true
-      : rawRight.toLowerCase() === "false"
-      ? false
-      : /^["']/.test(rawRight)
-      ? rawRight.slice(1, -1)
-      : Number(rawRight)
-    const leftNumber = workflowConditionNumber(left)
-    const rightNumber = workflowConditionNumber(right)
-    const a = leftNumber !== null && rightNumber !== null ? leftNumber : left
-    const b = leftNumber !== null && rightNumber !== null ? rightNumber : right
-    switch (compare[2]) {
-      case "<=": return (a as number) <= (b as number)
-      case ">=": return (a as number) >= (b as number)
-      case "<": return (a as number) < (b as number)
-      case ">": return (a as number) > (b as number)
-      case "==": return a === b
-      case "!=": return a !== b
-      default: return false
-    }
+function workflowConditionMet(condition: unknown, values: Record<string, string>): boolean {
+  const parsed = workflowParseCondition(condition)
+  if (!parsed.inputId || !parsed.operator) return true
+  const left = workflowConditionValue(values, parsed.inputId)
+  const rightObject = asWorkflowObject(condition)
+  const right = rightObject?.value
+  const isEmpty = left == null || left === "" || (Array.isArray(left) && left.length === 0)
+  if (parsed.operator === "empty") return isEmpty
+  if (parsed.operator === "not_empty") return !isEmpty
+  const leftNumber = workflowConditionNumber(left)
+  const rightNumber = workflowConditionNumber(right)
+  const a = leftNumber !== null && rightNumber !== null ? leftNumber : left
+  const b = leftNumber !== null && rightNumber !== null ? rightNumber : right
+  switch (parsed.operator) {
+    case "lte": return (a as number) <= (b as number)
+    case "gte": return (a as number) >= (b as number)
+    case "lt": return (a as number) < (b as number)
+    case "gt": return (a as number) > (b as number)
+    case "eq": return a === b
+    case "ne": return a !== b
+    default: return true
   }
-  const empty = text.match(/^\{\{\s*inputs\.([A-Za-z0-9_]+)\s*\}\}\s+is\s+empty$/i)
-  if (empty) {
-    const value = workflowConditionValue(values, empty[1])
-    return value == null || value === ""
-  }
-  return false
 }
 
 function workflowStepIsVirtual(step: WorkflowTemplateStepSummary, values: Record<string, string>, inputIds: string[]): boolean {
@@ -2202,7 +1934,7 @@ function workflowStepIsVirtual(step: WorkflowTemplateStepSummary, values: Record
   if (inputIds.length > 0 && (stepId === "input" || stepId === "inputs" || stepId === "workflow_input")) return true
   if (role === "repeat_group") return true
   if (step.runtime_hidden) return true
-  if (workflowAutoSkipMet(step.auto_skip_when, values)) return true
+  if (step.when && !workflowConditionMet(step.when, values)) return true
   return false
 }
 
@@ -2212,7 +1944,6 @@ function workflowStepIsInputStep(step: WorkflowTemplateStepSummary | undefined, 
   const runner = workflowStringValue(step.runner)
   const stepId = workflowStringValue(step.id).toLowerCase()
   return (
-    kind === "input" ||
     runner === "workflow_input" ||
     runner === "input_form" ||
     runner === "manual_input" ||
@@ -2325,15 +2056,13 @@ function workflowStepStateClass(status: string): string {
 
 function workflowStepKindLabel(step: WorkflowTemplateStepSummary): string {
   const kind = workflowStepAuthoringKind(step)
-  if (kind === "input") return "输入"
-  if (kind === "text") return "生成文本"
-  if (kind === "plan") return "分段拆分"
-  if (step.shape === "loop" || step.role === "repeat_group" || kind === "loop") return "遍历执行"
-  if (step.collection || step.foreach || kind === "collection") return "提取集合"
-  if (kind === "canvas_text") return "文本节点"
-  if (kind === "image") return "图片节点"
-  if (kind === "video") return "视频节点"
-  if (kind === "audio") return "音频节点"
+  if (kind === "text") return "文本"
+  if (kind === "object") return "结构化对象"
+  if (step.shape === "loop" || step.role === "repeat_group" || kind === "loop") return "循环"
+  if (kind === "collection") return "结构化列表"
+  if (kind === "image") return "图片"
+  if (kind === "video") return "视频"
+  if (kind === "audio") return "音频"
   if (step.runner === "node.run") return workflowRunnerDisplay(step.runner, step.node_type)
   if (step.runner === "workflow_plugin") return "插件动作"
   if (step.runner === "workflow_canvas_output") return "画布产物"
@@ -2342,33 +2071,27 @@ function workflowStepKindLabel(step: WorkflowTemplateStepSummary): string {
 
 function workflowStepGraphIcon(step: WorkflowTemplateStepSummary): string {
   const kind = workflowStepAuthoringKind(step)
-  if (kind === "input") return "入"
-  if (kind === "text") return "生"
-  if (kind === "collection") return "提"
-  if (kind === "plan") return "拆"
-  if (kind === "loop") return "遍"
-  if (kind === "canvas_text") return "文"
+  if (kind === "text") return "文"
+  if (kind === "object") return "构"
+  if (kind === "collection") return "列"
+  if (kind === "loop") return "循"
   if (kind === "image") return "图"
   if (kind === "video") return "视"
   if (kind === "audio") return "音"
   if (kind === "plugin") return "插"
-  if (kind === "review") return "检"
   return "文"
 }
 
 function workflowStepToneClass(step: WorkflowTemplateStepSummary): string {
   const kind = workflowStepAuthoringKind(step)
-  if (kind === "input") return "border-amber-200/26 bg-amber-300/[0.09] text-amber-100"
   if (kind === "text") return "border-sky-200/20 bg-sky-300/[0.07] text-sky-100"
-  if (kind === "plan") return "border-blue-200/20 bg-blue-300/[0.07] text-blue-100"
+  if (kind === "object") return "border-blue-200/20 bg-blue-300/[0.07] text-blue-100"
   if (kind === "loop" || step.role === "repeat_group") return "border-violet-200/28 bg-violet-300/[0.11] text-violet-100"
   if (kind === "collection" || step.collection || step.foreach) return "border-emerald-200/24 bg-emerald-300/[0.09] text-emerald-100"
-  if (kind === "canvas_text") return "border-teal-200/34 bg-teal-300/[0.13] text-teal-50"
   if (kind === "image") return "border-cyan-200/36 bg-cyan-300/[0.14] text-cyan-50"
   if (kind === "video") return "border-rose-200/36 bg-rose-300/[0.13] text-rose-50"
   if (kind === "audio") return "border-orange-200/34 bg-orange-300/[0.13] text-orange-50"
   if (kind === "plugin") return "border-fuchsia-200/24 bg-fuchsia-300/[0.09] text-fuchsia-100"
-  if (kind === "review") return "border-lime-200/24 bg-lime-300/[0.08] text-lime-100"
   return "border-white/10 bg-white/[0.04] text-zinc-300"
 }
 
@@ -2396,18 +2119,22 @@ function workflowStepRepeatLabel(step: WorkflowTemplateStepSummary): string {
 }
 
 function workflowStepRepeatSource(step: WorkflowTemplateStepSummary): string {
-  const repeat = asWorkflowObject(step.repeat)
-  const repeatForeach = asWorkflowObject(repeat?.foreach)
-  const directForeach = asWorkflowObject(step.foreach)
-  const raw = repeatForeach?.from || repeatForeach?.source || repeat?.foreach || directForeach?.from || directForeach?.source || step.foreach
-  return typeof raw === "string" ? raw : ""
+  const foreach = asWorkflowObject(step.foreach)
+  if (typeof foreach?.items === "string") return foreach.items
+  if (typeof foreach?.count === "string") return foreach.count
+  if (typeof foreach?.count === "number") return String(foreach.count)
+  return ""
 }
 
-function workflowLoopSourceParts(value: string): { source: string; path: string } {
+function workflowLoopSourceParts(value: string): { type: "input" | "step" | "fixed" | ""; source: string; path: string } {
   const text = value.trim()
-  if (!text) return { source: "", path: "" }
-  const [source, ...rest] = text.split(".")
-  return { source: source || "", path: rest.join(".") }
+  if (!text) return { type: "", source: "", path: "" }
+  const input = text.match(/^inputs\.([A-Za-z][A-Za-z0-9_-]*)(?:\.(.*))?$/)
+  if (input) return { type: "input", source: input[1], path: input[2] || "" }
+  const step = text.match(/^steps\.([A-Za-z][A-Za-z0-9_-]*)\.output(?:\.(.*?))?(?:\[\])?$/)
+  if (step) return { type: "step", source: step[1], path: (step[2] || "").replace(/\[\]$/, "") }
+  if (/^\d+$/.test(text)) return { type: "fixed", source: text, path: "" }
+  return { type: "", source: "", path: "" }
 }
 
 function workflowDependencyCandidateSteps(
@@ -2427,7 +2154,7 @@ function workflowLoopSourceStepCandidates(
   steps: WorkflowTemplateStepSummary[],
 ): WorkflowTemplateStepSummary[] {
   return workflowDependencyCandidateSteps(step, steps)
-    .filter((candidate) => workflowStepAuthoringKind(candidate) !== "loop")
+    .filter((candidate) => ["object", "collection"].includes(workflowStepAuthoringKind(candidate)))
 }
 
 function workflowScopeOptionsForStep(
@@ -2454,7 +2181,7 @@ function workflowNodePaletteItemIsDuplicate(item: WorkflowNodeTypeDefinition): b
 }
 
 function workflowOutputSchemaFields(step: WorkflowTemplateStepSummary): Array<Record<string, unknown>> {
-  const schema = asWorkflowObject(step.output_schema)
+  const schema = asWorkflowObject(asWorkflowObject(step.output)?.schema)
   const fields = Array.isArray(schema?.fields) ? schema.fields : []
   return fields.map((item) => asWorkflowObject(item)).filter((item): item is Record<string, unknown> => Boolean(item))
 }
@@ -2475,34 +2202,35 @@ function workflowPatchOutputSchemaField(
   index: number,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
-  const schema = asWorkflowObject(step.output_schema) || {}
+  const schema = asWorkflowObject(asWorkflowObject(step.output)?.schema) || {}
   const fields = workflowOutputSchemaFields(step)
   const nextFields = fields.map((field, fieldIndex) => fieldIndex === index ? { ...field, ...patch } : field)
   return { ...schema, fields: nextFields }
 }
 
 function workflowAddOutputSchemaField(step: WorkflowTemplateStepSummary): Record<string, unknown> {
-  const schema = asWorkflowObject(step.output_schema) || {}
+  const schema = asWorkflowObject(asWorkflowObject(step.output)?.schema) || {}
   const fields = workflowOutputSchemaFields(step)
   const id = workflowUniqueFieldId("field", fields)
   return { ...schema, fields: [...fields, { id, label: id, type: "string" }] }
 }
 
 function workflowRemoveOutputSchemaField(step: WorkflowTemplateStepSummary, index: number): Record<string, unknown> {
-  const schema = asWorkflowObject(step.output_schema) || {}
+  const schema = asWorkflowObject(asWorkflowObject(step.output)?.schema) || {}
   return { ...schema, fields: workflowOutputSchemaFields(step).filter((_, fieldIndex) => fieldIndex !== index) }
 }
 
 function workflowReferenceRows(step: WorkflowTemplateStepSummary): Array<Record<string, unknown>> {
-  const raw = workflowHasValue(step.references) ? step.references : step.reference_selectors
-  if (Array.isArray(raw)) {
-    return raw.map((item) => asWorkflowObject(item)).filter((item): item is Record<string, unknown> => Boolean(item))
-  }
-  const obj = asWorkflowObject(raw)
-  if (!obj) return []
-  return Object.entries(obj).map(([name, value]) => {
-    const row = asWorkflowObject(value)
-    return row ? { name, ...row } : { name, source_step: workflowStringValue(value), role: "visual_reference" }
+  if (!Array.isArray(step.uses)) return []
+  return step.uses.map((item) => {
+    const roles = Array.isArray(item.as) ? item.as.map(workflowStringValue).filter(Boolean) : []
+    return {
+      ...item,
+      source_step: workflowStringValue(item.from),
+      role: roles.includes("vision") && roles.includes("reference")
+        ? "vision_reference"
+        : roles[0] || "reference",
+    }
   })
 }
 
@@ -2512,133 +2240,32 @@ function workflowAddReferenceRow(step: WorkflowTemplateStepSummary, candidates: 
   return [
     ...rows,
     {
-      name: `reference_${rows.length + 1}`,
-      role: "visual_reference",
+      from: source,
+      as: ["reference"],
       source_step: source,
+      role: "reference",
     },
   ]
 }
 
 function workflowPatchReferenceRow(step: WorkflowTemplateStepSummary, index: number, patch: Record<string, unknown>): Array<Record<string, unknown>> {
-  return workflowReferenceRows(step).map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row)
-}
-
-function workflowRemoveReferenceRow(step: WorkflowTemplateStepSummary, index: number): Array<Record<string, unknown>> {
-  return workflowReferenceRows(step).filter((_, rowIndex) => rowIndex !== index)
-}
-
-function workflowContextRefRows(step: WorkflowTemplateStepSummary): Array<Record<string, unknown>> {
-  const raw = step.context_refs
-  if (Array.isArray(raw)) {
-    return raw.map((item): Record<string, unknown> => {
-      const row = asWorkflowObject(item)
-      return row ? { ...row } : { step: workflowStringValue(item), role: "context" }
-    }).filter((item) => workflowStringValue(item.step || item.id || item.ref || item.source))
-  }
-  const row = asWorkflowObject(raw)
-  if (row) return [{ ...row }]
-  const text = workflowStringValue(raw)
-  return text ? [{ step: text, role: "context" }] : []
-}
-
-function workflowContextRefSource(row: Record<string, unknown>): string {
-  return workflowStringValue(row.step || row.id || row.ref || row.source)
-}
-
-function workflowAddContextRefRow(
-  step: WorkflowTemplateStepSummary,
-  candidates: WorkflowTemplateStepSummary[],
-): Array<Record<string, unknown>> {
-  return [
-    ...workflowContextRefRows(step),
-    {
-      step: candidates[0]?.id || "",
-      role: "context",
-    },
-  ]
-}
-
-function workflowPatchContextRefRow(step: WorkflowTemplateStepSummary, index: number, patch: Record<string, unknown>): Array<Record<string, unknown>> {
-  return workflowContextRefRows(step).map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row)
-}
-
-function workflowRemoveContextRefRow(step: WorkflowTemplateStepSummary, index: number): Array<Record<string, unknown>> {
-  return workflowContextRefRows(step).filter((_, rowIndex) => rowIndex !== index)
-}
-
-function workflowBindingRows(step: WorkflowTemplateStepSummary): Array<Record<string, unknown>> {
-  const bindings = asWorkflowObject(step.bindings)
-  if (!bindings) return []
-  return Object.entries(bindings).map(([key, value]) => {
-    const raw = workflowJsonScalar(value)
-    const input = raw.match(/^\{\{\s*inputs\.([A-Za-z0-9_]+)(?:\.([^}]+?))?\s*\}\}$/)
-    if (input) {
-      return { key, source_type: "input", source: input[1], path: input[2] || "", raw }
+  return workflowReferenceRows(step).map((row, rowIndex) => {
+    const next = rowIndex === index ? { ...row, ...patch } : row
+    const from = workflowStringValue(next.source_step || next.from)
+    const role = workflowStringValue(next.role) || "reference"
+    const result: Record<string, unknown> = {
+      from,
+      as: role === "vision_reference" ? ["vision", "reference"] : [role],
     }
-    const stepRef = raw.match(/^\{\{\s*(?:steps|step)\.([A-Za-z0-9_]+)(?:\.([^}]+?))?\s*\}\}$/)
-    if (stepRef) {
-      return { key, source_type: "step", source: stepRef[1], path: stepRef[2] || "", raw }
-    }
-    return { key, source_type: "raw", source: "", path: "", raw }
+    if (workflowHasValue(next.select)) result.select = workflowCloneValue(next.select)
+    return result
   })
 }
 
-function workflowBindingValueFromParts(sourceType: string, source: string, path: string, raw: string): unknown {
-  const normalizedSource = workflowSanitizeStepId(source, "")
-  const normalizedPath = path.trim().replace(/^\.+/, "")
-  if (sourceType === "input" && normalizedSource) {
-    return `{{ inputs.${normalizedSource}${normalizedPath ? `.${normalizedPath}` : ""} }}`
-  }
-  if (sourceType === "step" && normalizedSource) {
-    return `{{ steps.${normalizedSource}${normalizedPath ? `.${normalizedPath}` : ""} }}`
-  }
-  const trimmed = raw.trim()
-  if (!trimmed) return ""
-  try {
-    return JSON.parse(trimmed)
-  } catch {
-    return raw
-  }
-}
-
-function workflowBindingRowsToObject(rows: Array<Record<string, unknown>>): Record<string, unknown> | undefined {
-  const result: Record<string, unknown> = {}
-  for (const row of rows) {
-    const key = workflowSanitizeStepId(workflowStringValue(row.key), "")
-    if (!key) continue
-    result[key] = workflowBindingValueFromParts(
-      workflowStringValue(row.source_type) || "raw",
-      workflowStringValue(row.source),
-      workflowStringValue(row.path),
-      workflowStringValue(row.raw),
-    )
-  }
-  return Object.keys(result).length > 0 ? result : undefined
-}
-
-function workflowAddBindingRow(
-  step: WorkflowTemplateStepSummary,
-  inputIds: string[],
-  candidates: WorkflowTemplateStepSummary[],
-): Record<string, unknown> | undefined {
-  const rows = workflowBindingRows(step)
-  const key = workflowUniqueInputId("binding", rows.map((row) => workflowStringValue(row.key)))
-  const sourceType = inputIds.length > 0 ? "input" : candidates.length > 0 ? "step" : "raw"
-  const source = sourceType === "input" ? inputIds[0] : sourceType === "step" ? candidates[0]?.id || "" : ""
-  return workflowBindingRowsToObject([...rows, { key, source_type: sourceType, source, path: "", raw: "" }])
-}
-
-function workflowPatchBindingRow(
-  step: WorkflowTemplateStepSummary,
-  index: number,
-  patch: Record<string, unknown>,
-): Record<string, unknown> | undefined {
-  const rows = workflowBindingRows(step).map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row)
-  return workflowBindingRowsToObject(rows)
-}
-
-function workflowRemoveBindingRow(step: WorkflowTemplateStepSummary, index: number): Record<string, unknown> | undefined {
-  return workflowBindingRowsToObject(workflowBindingRows(step).filter((_, rowIndex) => rowIndex !== index))
+function workflowRemoveReferenceRow(step: WorkflowTemplateStepSummary, index: number): Array<Record<string, unknown>> {
+  return workflowReferenceRows(step)
+    .filter((_, rowIndex) => rowIndex !== index)
+    .map((row) => ({ from: workflowStringValue(row.from), as: Array.isArray(row.as) ? row.as : [workflowStringValue(row.role) || "reference"], ...(workflowHasValue(row.select) ? { select: row.select } : {}) }))
 }
 
 function workflowStepFields(step: WorkflowTemplateStepSummary): Record<string, unknown> {
@@ -2708,24 +2335,8 @@ function workflowUiOverridesFromMediaModels(overrides: Record<string, string>): 
 }
 
 function workflowProductSourceStep(step: WorkflowTemplateStepSummary): string {
-  const fields = workflowStepFields(step)
-  const explicit = workflowStringValue(fields.workflow_source_step || fields.source_step || fields.from_step)
-  if (explicit) return explicit
-  return workflowCleanIdList(step.depends_on)[0] || ""
-}
-
-function workflowProductSourcePath(step: WorkflowTemplateStepSummary): string {
-  const fields = workflowStepFields(step)
-  return workflowStringValue(fields.workflow_source_path || fields.source_path || fields.output_path) || "output"
-}
-
-function workflowProductGenerate(step: WorkflowTemplateStepSummary): boolean {
-  const kind = workflowStepAuthoringKind(step)
-  if (kind === "canvas_text") return false
-  const fields = workflowStepFields(step)
-  if (typeof fields.workflow_generate === "boolean") return fields.workflow_generate
-  if (typeof fields.generate === "boolean") return fields.generate
-  return kind === "image" || kind === "video" || kind === "audio"
+  const firstUse = Array.isArray(step.uses) ? asWorkflowObject(step.uses[0]) : undefined
+  return workflowStringValue(firstUse?.from) || workflowCleanIdList(step.depends_on)[0] || ""
 }
 
 interface WorkflowMediaDimensions {
@@ -2904,15 +2515,9 @@ function workflowPatchProductImageAspectAndResolutionFields(
 
 function workflowDefaultCanvasProductFields(
   kind: WorkflowAuthoringKind,
-  sourceStepId = "",
   currentStep?: WorkflowTemplateStepSummary,
 ): Record<string, unknown> {
-  const currentIsProduct = currentStep ? workflowStepIsCanvasProduct(currentStep) : false
-  const fields: Record<string, unknown> = {
-    workflow_source_step: currentStep ? workflowProductSourceStep(currentStep) || sourceStepId : sourceStepId,
-    workflow_source_path: currentStep ? workflowProductSourcePath(currentStep) : "output",
-    workflow_generate: kind !== "canvas_text" && (currentStep && currentIsProduct ? workflowProductGenerate(currentStep) : true),
-  }
+  const fields: Record<string, unknown> = {}
   if (kind === "image" || kind === "video") {
     const aspect = currentStep ? workflowProductAspectDimensions(currentStep) : WORKFLOW_DEFAULT_MEDIA_ASPECT
     fields.aspect_width = aspect.width
@@ -2931,7 +2536,7 @@ function workflowDefaultCanvasProductFields(
     if (currentResolution) fields.resolution = workflowVideoResolutionValue(currentResolution, "")
   }
   const durationSeconds = currentStep ? workflowPositiveIntegerValue(workflowStepFields(currentStep).duration_seconds) : undefined
-  if ((kind === "video" || kind === "audio") && durationSeconds) fields.duration_seconds = durationSeconds
+  if (kind === "video" || kind === "audio") fields.duration_seconds = durationSeconds || 5
   return fields
 }
 
@@ -2965,37 +2570,46 @@ function workflowValueFromFieldInput(rawValue: string, fieldType: string): unkno
   return rawValue
 }
 
-function workflowConditionLiteral(rawValue: string, inputType: string): string {
+function workflowConditionValueFromInput(rawValue: string, inputType: string): unknown {
   const value = rawValue.trim()
   const inputKind = workflowInputTypeCategory(inputType)
   if (inputKind === "boolean") {
-    return value.toLowerCase() === "true" ? "true" : "false"
+    return value.toLowerCase() === "true"
   }
   if (inputKind === "number" && /^-?\d+(?:\.\d+)?$/.test(value)) {
-    return value
+    return Number(value)
   }
-  if (/^(true|false)$/i.test(value)) return value.toLowerCase()
-  if (/^-?\d+(?:\.\d+)?$/.test(value)) return value
-  return JSON.stringify(value)
+  return value
 }
 
-function workflowParseAutoSkipCondition(condition: unknown): { inputId: string; operator: string; value: string } {
-  const text = typeof condition === "string" ? condition.trim() : ""
-  if (!text) return { inputId: "", operator: "", value: "" }
-  const empty = text.match(/^\{\{\s*inputs\.([A-Za-z0-9_]+)\s*\}\}\s+is\s+empty$/i)
-  if (empty) return { inputId: empty[1], operator: "empty", value: "" }
-  const compare = text.match(/^\{\{\s*inputs\.([A-Za-z0-9_]+)\s*\}\}\s*(<=|>=|==|!=|<|>)\s*([+-]?\d+(?:\.\d+)?|true|false|"[^"]*"|'[^']*')$/i)
-  if (!compare) return { inputId: "", operator: "", value: "" }
-  const rawValue = compare[3]
-  const value = /^["']/.test(rawValue) ? rawValue.slice(1, -1) : rawValue
-  return { inputId: compare[1], operator: compare[2], value }
+function workflowParseCondition(condition: unknown): { inputId: string; operator: string; value: string } {
+  const object = asWorkflowObject(condition)
+  const path = workflowStringValue(object?.path)
+  const match = path.match(/^inputs\.([A-Za-z][A-Za-z0-9_-]*)$/)
+  if (!match) return { inputId: "", operator: "", value: "" }
+  return {
+    inputId: match[1],
+    operator: workflowStringValue(object?.op),
+    value: object?.value == null ? "" : workflowJsonScalar(object.value),
+  }
 }
 
-function workflowFormatAutoSkipCondition(inputId: string, operator: string, value: string, inputType = "text"): string | undefined {
+function workflowFormatCondition(
+  inputId: string,
+  operator: string,
+  value: string,
+  inputType = "text",
+): Record<string, unknown> | undefined {
   const normalizedInput = workflowSanitizeStepId(inputId, "")
   if (!normalizedInput || !operator) return undefined
-  if (operator === "empty") return `{{ inputs.${normalizedInput} }} is empty`
-  return `{{ inputs.${normalizedInput} }} ${operator} ${workflowConditionLiteral(value, inputType)}`
+  if (operator === "empty" || operator === "not_empty") {
+    return { path: `inputs.${normalizedInput}`, op: operator }
+  }
+  return {
+    path: `inputs.${normalizedInput}`,
+    op: operator,
+    value: workflowConditionValueFromInput(value, inputType),
+  }
 }
 
 function workflowPromptInputReference(inputId: string, label: string): string {
@@ -3007,17 +2621,18 @@ function workflowPromptInputReference(inputId: string, label: string): string {
 function workflowPromptStepReference(step: WorkflowTemplateStepSummary): string {
   const normalizedStep = workflowSanitizeStepId(step.id, "")
   if (!normalizedStep) return ""
-  return `参考“${step.title || normalizedStep}”：{{ ${normalizedStep}.output }}`
+  return `参考“${step.title || normalizedStep}”：{{ steps.${normalizedStep}.output }}`
 }
 
-function workflowAutoSkipConditionLabel(condition: unknown, inputSpecs: Record<string, WorkflowInputDraftSpec>): string {
-  const parsed = workflowParseAutoSkipCondition(condition)
+function workflowConditionLabel(condition: unknown, inputSpecs: Record<string, WorkflowInputDraftSpec>): string {
+  const parsed = workflowParseCondition(condition)
   if (!parsed.inputId || !parsed.operator) return ""
   const label = workflowInputDisplayName(parsed.inputId, inputSpecs)
   const inputSpec = inputSpecs[parsed.inputId]
-  const operatorLabel = workflowSkipOperatorOptionsForInputType(inputSpec?.type).find((item) => item.value === parsed.operator)?.label
+  const operatorLabel = workflowConditionOperatorOptionsForInputType(inputSpec?.type).find((item) => item.value === parsed.operator)?.label
   if (!operatorLabel) return ""
-  return parsed.operator === "empty" ? `${label}${operatorLabel}` : `如果 ${label} ${operatorLabel} ${parsed.value}，不运行`
+  const noValue = parsed.operator === "empty" || parsed.operator === "not_empty"
+  return `当 ${label} ${operatorLabel}${noValue ? "" : ` ${parsed.value}`} 时运行`
 }
 
 function workflowRunStatusLabel(status: string): string {
@@ -3052,16 +2667,13 @@ function workflowStepPillMark(status: string): string {
 
 function workflowStepPillKindLabel(step: WorkflowTemplateStepSummary): string {
   const kind = workflowStepAuthoringKind(step)
-  if (kind === "input") return "入"
-  if (kind === "text") return "生"
-  if (kind === "collection") return "提"
-  if (kind === "plan") return "拆"
-  if (kind === "loop") return "遍"
-  if (kind === "canvas_text") return "文"
+  if (kind === "text") return "文"
+  if (kind === "object") return "构"
+  if (kind === "collection") return "列"
+  if (kind === "loop") return "循"
   if (kind === "image") return "图"
   if (kind === "video") return "视"
   if (kind === "audio") return "音"
-  if (kind === "review") return "检"
   if (kind === "plugin") return "插"
   return "步"
 }
@@ -3069,10 +2681,9 @@ function workflowStepPillKindLabel(step: WorkflowTemplateStepSummary): string {
 function workflowStepPillKindClass(step: WorkflowTemplateStepSummary): string {
   const kind = workflowStepAuthoringKind(step)
   if (workflowStepIsCanvasProduct(step)) return "border-cyan-200/28 bg-cyan-300/[0.14] text-cyan-50"
-  if (kind === "input") return "border-amber-200/20 bg-amber-300/[0.10] text-amber-100"
   if (kind === "loop") return "border-violet-200/22 bg-violet-300/[0.10] text-violet-100"
   if (kind === "collection") return "border-emerald-200/20 bg-emerald-300/[0.09] text-emerald-100"
-  if (kind === "plan") return "border-blue-200/18 bg-blue-300/[0.08] text-blue-100"
+  if (kind === "object") return "border-blue-200/18 bg-blue-300/[0.08] text-blue-100"
   return "border-white/[0.08] bg-black/18 text-zinc-300"
 }
 
@@ -3994,11 +3605,12 @@ function workflowPluginDefinitionForStep(
   step: WorkflowTemplateStepSummary,
   nodeTypes: WorkflowNodeTypeDefinition[],
 ): WorkflowNodeTypeDefinition | undefined {
-  const plugin = workflowStringValue(step.plugin || asWorkflowObject(step.authoring)?.plugin)
-  const nodeType = workflowStringValue(step.plugin_node_type || asWorkflowObject(step.authoring)?.plugin_node_type)
+  const pluginConfig = asWorkflowObject(step.plugin)
+  const plugin = workflowStringValue(pluginConfig?.id)
+  const action = workflowStringValue(pluginConfig?.action)
   return nodeTypes.find((item) => (
     (plugin ? item.plugin_id === plugin || item.plugin_name === plugin : true) &&
-    (nodeType ? item.type === nodeType || item.id === nodeType : item.id === step.id)
+    (action ? item.type === action || item.id === action : item.id === step.id)
   ))
 }
 
@@ -4067,12 +3679,10 @@ function workflowStepPhaseKey(step: WorkflowTemplateStepSummary, fallbackIndex: 
 }
 
 function workflowStepOutputLabel(step: WorkflowTemplateStepSummary): string {
-  if (workflowStepAuthoringKind(step) === "input") return "运行前输入"
   if (workflowStepAuthoringKind(step) === "text") return "输出正文"
   if (workflowStepAuthoringKind(step) === "collection") return "输出集合"
-  if (workflowStepAuthoringKind(step) === "plan") return "输出分段"
+  if (workflowStepAuthoringKind(step) === "object") return "输出结构化对象"
   if (workflowStepAuthoringKind(step) === "loop") return "逐项执行内部步骤"
-  if (workflowStepAuthoringKind(step) === "canvas_text") return "画布文本"
   if (workflowStepAuthoringKind(step) === "image") return "画布图片"
   if (workflowStepAuthoringKind(step) === "video") return "画布视频"
   if (workflowStepAuthoringKind(step) === "audio") return "画布音频"
@@ -4579,12 +4189,9 @@ function workflowCollectionSummary(value: unknown, steps: WorkflowTemplateStepSu
 }
 
 function workflowRepeatSummary(step: WorkflowTemplateStepSummary): string {
-  const repeat = asWorkflowObject(step.repeat)
   const foreach = asWorkflowObject(step.foreach)
-  const repeatLabel = workflowStringValue(repeat?.label || repeat?.title || repeat?.name)
-  if (repeatLabel) return repeatLabel
-  const foreachLabel = workflowStringValue(foreach?.label || foreach?.title || foreach?.name)
-  if (foreachLabel) return foreachLabel
+  if (workflowHasValue(foreach?.items)) return `逐项处理 ${workflowStringValue(foreach?.items)}`
+  if (workflowHasValue(foreach?.count)) return `重复 ${workflowStringValue(foreach?.count)} 次`
   if (workflowStringValue(step.repeat_group_label)) return workflowReadableLabel(step.repeat_group_label)
   return ""
 }
@@ -4634,7 +4241,7 @@ function workflowExecutionDetailRows(
   inputSpecs: Record<string, WorkflowInputDraftSpec> = {},
 ): Array<{ label: string; value: string }> {
   const referenceSummary = workflowReferenceSelectorSummary(step, steps)
-  const skipLabel = workflowAutoSkipConditionLabel(step.auto_skip_when, inputSpecs)
+  const conditionLabel = workflowConditionLabel(step.when, inputSpecs)
   const rows: Array<{ label: string; value: string }> = [
     { label: "输出位置", value: workflowStepOutputLabel(step) },
     { label: "生成方式", value: workflowRunnerDisplay(step.runner, step.node_type) || workflowStepKindLabel(step) },
@@ -4643,10 +4250,10 @@ function workflowExecutionDetailRows(
     { label: "集合来源", value: workflowCollectionSummary(step.collection || step.foreach, steps) },
     { label: "展开方式", value: workflowRepeatSummary(step) },
     { label: "动态参考", value: referenceSummary },
-    { label: "跳过条件", value: skipLabel },
+    { label: "运行条件", value: conditionLabel },
   ]
-  if (step.optional) rows.push({ label: "可选步骤", value: "是" })
-  if (step.manual_only) rows.push({ label: "生成方式", value: "创建节点后手动生成" })
+  if (step.on_error === "continue") rows.push({ label: "失败处理", value: "继续后续步骤" })
+  if (step.execution === "manual") rows.push({ label: "生成方式", value: "手动运行" })
   return rows.filter((item) => item.value.trim())
 }
 
@@ -5485,19 +5092,14 @@ function WorkflowEditorGraph({
       ? "rgba(167,139,250,0.52)"
       : "rgba(255,255,255,0.14)"
     const isProductStep = workflowStepIsCanvasProduct(step)
-    const isInputKind = kind === "input"
     const isLoopKind = kind === "loop" || Boolean(childScopeId)
     const categoryLabel = isProductStep
       ? "画布产物"
-      : isInputKind
-      ? "输入"
       : isLoopKind
       ? "流程控制"
       : "处理动作"
     const categoryClass = isProductStep
       ? "border-cyan-200/28 bg-cyan-300/[0.12] text-cyan-50"
-      : isInputKind
-      ? "border-amber-200/22 bg-amber-300/[0.08] text-amber-100"
       : isLoopKind
       ? "border-violet-200/24 bg-violet-300/[0.09] text-violet-100"
       : "border-white/[0.08] bg-white/[0.035] text-zinc-300"
@@ -5507,15 +5109,13 @@ function WorkflowEditorGraph({
       ? productSourceTitle
         ? `来自 ${productSourceTitle}`
         : "选择上游输出"
-      : step.purpose || workflowStepKindLabel(step)
+      : step.description || workflowStepKindLabel(step)
     const cardBackground = selected
       ? "linear-gradient(135deg, rgba(8,145,178,0.22), rgba(7,11,18,0.96))"
       : isProductStep
       ? "linear-gradient(135deg, rgba(8,47,73,0.76), rgba(6,78,59,0.38), rgba(7,11,18,0.96))"
       : childScopeId
       ? "linear-gradient(135deg, rgba(88,28,135,0.34), rgba(7,11,18,0.94))"
-      : isInputKind
-      ? "linear-gradient(135deg, rgba(69,26,3,0.22), rgba(7,11,18,0.95))"
       : "linear-gradient(135deg, rgba(24,24,27,0.72), rgba(7,11,18,0.96))"
     const cardShadow = selected
       ? "0 0 0 1px rgba(103,232,249,0.28), 0 18px 34px rgba(0,0,0,0.28)"
@@ -6245,16 +5845,14 @@ function WorkflowStepInspector({
       </section>
     )
   }
-  const selectedStepIsCanvasProduct = step ? workflowStepIsCanvasProduct(step) : false
   useEffect(() => {
     const tabAllowed = WORKFLOW_INSPECTOR_TABS.some((tab) => {
       if (tab.value !== activeTab) return false
       if (tab.value === "run" && !readOnly) return false
-      if (selectedStepIsCanvasProduct && tab.value === "prompt") return false
       return true
     })
-    if (!tabAllowed || activeTab === "advanced") setActiveTab("properties")
-  }, [activeTab, readOnly, selectedStepIsCanvasProduct])
+    if (!tabAllowed) setActiveTab("properties")
+  }, [activeTab, readOnly])
   if (!step) {
     return (
       <aside className="flex h-full w-[360px] shrink-0 flex-col border-l border-white/10 bg-[#10151d]">
@@ -6299,87 +5897,15 @@ function WorkflowStepInspector({
               </div>
             </section>
             <details className="rounded-md border border-white/[0.08] bg-black/18">
-              <summary className="cursor-pointer px-3 py-2 text-[11px] font-semibold text-zinc-400 hover:text-zinc-200">高级设置</summary>
+              <summary className="cursor-pointer px-3 py-2 text-[11px] font-semibold text-zinc-400 hover:text-zinc-200">插件扩展</summary>
               <div className="grid gap-2 border-t border-white/[0.08] p-3">
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="block text-[10px] font-medium text-zinc-500">
-                    version
-                    <input
-                      value={workflowStringValue(workflowAdvanced.version)}
-                      onChange={(event) => onWorkflowAdvancedChange("version", event.target.value || undefined)}
-                      disabled={readOnly}
-                      className={cn(textFieldClass, "mt-1 h-8 font-mono")}
-                    />
-                  </label>
-                  <label className="block text-[10px] font-medium text-zinc-500">
-                    applies_to
-                    <input
-                      value={workflowStringValue(workflowAdvanced.applies_to)}
-                      onChange={(event) => onWorkflowAdvancedChange("applies_to", event.target.value || undefined)}
-                      disabled={readOnly}
-                      className={cn(textFieldClass, "mt-1 h-8 font-mono")}
-                    />
-                  </label>
-                </div>
-                <label className="block text-[10px] font-medium text-zinc-500">
-                  required_capabilities
-                  <input
-                    value={workflowListText(workflowAdvanced.required_capabilities)}
-                    onChange={(event) => onWorkflowAdvancedChange("required_capabilities", workflowTextToList(event.target.value))}
-                    disabled={readOnly}
-                    className={cn(textFieldClass, "mt-1 h-8 font-mono")}
-                  />
-                </label>
-                <label className="block text-[10px] font-medium text-zinc-500">
-                  required_extensions
-                  <input
-                    value={workflowListText(workflowAdvanced.required_extensions)}
-                    onChange={(event) => onWorkflowAdvancedChange("required_extensions", workflowTextToList(event.target.value))}
-                    disabled={readOnly}
-                    className={cn(textFieldClass, "mt-1 h-8 font-mono")}
-                  />
-                </label>
-                <WorkflowJsonEditorField
-                  label="defaults"
-                  value={workflowAdvanced.defaults}
-                  onChange={(value) => onWorkflowAdvancedChange("defaults", value)}
-                  readOnly={readOnly}
-                  rows={5}
-                />
-                <WorkflowJsonEditorField
-                  label="dimensions"
-                  value={workflowAdvanced.dimensions}
-                  onChange={(value) => onWorkflowAdvancedChange("dimensions", value)}
-                  readOnly={readOnly}
-                  rows={5}
-                />
+                <div className="text-[10px] leading-4 text-zinc-500">仅在工作流使用已安装插件时填写命名空间扩展配置。</div>
                 <WorkflowJsonEditorField
                   label="extensions"
                   value={workflowAdvanced.extensions}
                   onChange={(value) => onWorkflowAdvancedChange("extensions", value)}
                   readOnly={readOnly}
                   rows={5}
-                />
-                <WorkflowJsonEditorField
-                  label="capabilities"
-                  value={workflowAdvanced.capabilities}
-                  onChange={(value) => onWorkflowAdvancedChange("capabilities", value)}
-                  readOnly={readOnly}
-                  rows={4}
-                />
-                <WorkflowJsonEditorField
-                  label="ui"
-                  value={workflowAdvanced.ui}
-                  onChange={(value) => onWorkflowAdvancedChange("ui", value)}
-                  readOnly={readOnly}
-                  rows={4}
-                />
-                <WorkflowJsonEditorField
-                  label="phases"
-                  value={workflowAdvanced.phases}
-                  onChange={(value) => onWorkflowAdvancedChange("phases", value)}
-                  readOnly={readOnly}
-                  rows={4}
                 />
               </div>
             </details>
@@ -6544,19 +6070,20 @@ function WorkflowStepInspector({
   const outOfRangeDependencies = cleanStepDependencies.filter((dep) => !dependencyCandidateIds.has(dep))
   const scopeOptions = workflowScopeOptionsForStep(step, steps)
   const currentScopeId = workflowStringValue(step.repeat_group_id) || WORKFLOW_TEMPLATE_ROOT_SCOPE_ID
+  const loopForeach = asWorkflowObject(step.foreach) || {}
   const loopSource = workflowStepRepeatSource(step)
   const loopSourceParts = workflowLoopSourceParts(loopSource)
-  const autoSkipCondition = workflowParseAutoSkipCondition(step.auto_skip_when)
-  const autoSkipInputSpec = autoSkipCondition.inputId ? inputSpecs[autoSkipCondition.inputId] : undefined
-  const autoSkipInputKind = workflowInputTypeCategory(autoSkipInputSpec?.type)
-  const autoSkipOperatorOptions = workflowSkipOperatorOptionsForInputType(autoSkipInputSpec?.type)
-  const autoSkipSelectedOperator = workflowSkipOperatorIsAllowed(autoSkipCondition.operator, autoSkipInputSpec?.type)
-    ? autoSkipCondition.operator
+  const runCondition = workflowParseCondition(step.when)
+  const runConditionInputSpec = runCondition.inputId ? inputSpecs[runCondition.inputId] : undefined
+  const runConditionInputKind = workflowInputTypeCategory(runConditionInputSpec?.type)
+  const runConditionOperatorOptions = workflowConditionOperatorOptionsForInputType(runConditionInputSpec?.type)
+  const runConditionSelectedOperator = workflowConditionOperatorIsAllowed(runCondition.operator, runConditionInputSpec?.type)
+    ? runCondition.operator
     : ""
-  const autoSkipNeedsCompareValue = Boolean(
-    autoSkipCondition.inputId && autoSkipSelectedOperator && autoSkipSelectedOperator !== "empty",
+  const runConditionNeedsCompareValue = Boolean(
+    runCondition.inputId && runConditionSelectedOperator && !["empty", "not_empty"].includes(runConditionSelectedOperator),
   )
-  const autoSkipLabel = workflowAutoSkipConditionLabel(step.auto_skip_when, inputSpecs)
+  const runConditionLabel = workflowConditionLabel(step.when, inputSpecs)
   const loopSourceStepCandidates = workflowLoopSourceStepCandidates(step, steps)
   const loopChildScopeId = kind === "loop" ? workflowStepChildScopeId(step) || step.id : ""
   const loopDescendantIds = loopChildScopeId ? workflowDescendantStepIds(steps, step.id) : new Set<string>()
@@ -6571,30 +6098,23 @@ function WorkflowStepInspector({
       !workflowStepIsInputStep(candidate, inputIds)
     ))
     : []
-  const loopSourceSelectValue = inputIds.includes(loopSource)
-    ? `input:${loopSource}`
-    : loopSourceStepCandidates.some((candidate) => candidate.id === loopSourceParts.source)
+  const loopSourceSelectValue = loopSourceParts.type === "input" && inputIds.includes(loopSourceParts.source)
+    ? `${"count" in loopForeach ? "count" : "input"}:${loopSourceParts.source}`
+    : loopSourceParts.type === "step" && loopSourceStepCandidates.some((candidate) => candidate.id === loopSourceParts.source)
     ? `step:${loopSourceParts.source}`
+    : loopSourceParts.type === "fixed"
+    ? "fixed"
     : ""
   const inputBlocked = isInputStep && missingRequiredInputIds.length > 0
   const isCanvasProduct = workflowStepIsCanvasProduct(step)
-  const outputMode = workflowStringValue(step.output_mode || asWorkflowObject(step.output)?.mode)
-  const outputSchema = asWorkflowObject(step.output_schema) || {}
-  const isCollectionOutput = kind === "collection" || ["collection", "list", "array", "table", "rows"].includes(workflowStringValue(outputSchema.type || outputSchema.kind || outputSchema.shape).toLowerCase())
+  const outputSchema = asWorkflowObject(asWorkflowObject(step.output)?.schema) || {}
+  const isCollectionOutput = kind === "collection"
   const outputSchemaFields = workflowOutputSchemaFields(step)
   const referenceRows = workflowReferenceRows(step)
-  const contextRefRows = workflowContextRefRows(step)
-  const bindingRows = workflowBindingRows(step)
   const referenceCandidates = dependencyCandidates.filter((candidate) => {
     const candidateKind = workflowStepAuthoringKind(candidate)
-    return candidateKind !== "loop" && candidateKind !== "input"
+    return candidateKind !== "loop"
   })
-  const productSourceStep = workflowProductSourceStep(step)
-  const productSourceValue = referenceCandidates.some((candidate) => candidate.id === productSourceStep)
-    ? productSourceStep
-    : ""
-  const productSourcePath = workflowProductSourcePath(step)
-  const productGenerate = workflowProductGenerate(step)
   const productFields = workflowStepFields(step)
   const productModel = workflowStringValue(mediaModelOverrides[step.id])
   const productModelProviders = isCanvasProduct ? workflowMediaProvidersForKind(mediaProviders, kind) : []
@@ -6665,21 +6185,23 @@ function WorkflowStepInspector({
     : "未配置可用视频模型"
   const productDurationSeconds = workflowPositiveIntegerValue(productFields.duration_seconds)
   const pluginDefinition = workflowPluginDefinitionForStep(step, nodeTypes)
-  const pluginInputs = asWorkflowObject(step.plugin_inputs) || {}
-  const pluginSettings = asWorkflowObject(step.plugin_settings) || {}
+  const pluginConfig = asWorkflowObject(step.plugin) || {}
+  const pluginInputs = asWorkflowObject(pluginConfig.inputs) || {}
+  const pluginSettings = asWorkflowObject(pluginConfig.settings) || {}
   const pluginInputSpecs = Array.isArray(pluginDefinition?.inputs)
     ? pluginDefinition.inputs.map((item) => asWorkflowObject(item)).filter((item): item is Record<string, unknown> => Boolean(item))
     : []
   const pluginSettingSpecs = Array.isArray(pluginDefinition?.settings)
     ? pluginDefinition.settings.map((item) => asWorkflowObject(item)).filter((item): item is Record<string, unknown> => Boolean(item))
     : []
-  const promptValue = step.prompt_template || ""
-  const templateTabs = WORKFLOW_INSPECTOR_TABS.filter((tab) => tab.value !== "run" && !(isCanvasProduct && tab.value === "prompt"))
+  const promptObject = asWorkflowObject(step.prompt) || {}
+  const promptValue = workflowStringValue(promptObject.task)
+  const templateTabs = WORKFLOW_INSPECTOR_TABS.filter((tab) => tab.value !== "run")
   const appendPromptText = (text: string) => {
     const value = text.trim()
     if (!value || readOnly) return
     const separator = promptValue.trim() ? "\n\n" : ""
-    onUpdateStep(step.id, { prompt_template: `${promptValue}${separator}${value}` })
+    onUpdateStep(step.id, { prompt: { ...promptObject, task: `${promptValue}${separator}${value}` } })
   }
   const renderPluginFieldInput = (
     field: Record<string, unknown>,
@@ -6802,66 +6324,55 @@ function WorkflowStepInspector({
                 />
               </label>
               <label className="block text-[10px] font-medium text-zinc-500">
-                内部标识
-                <input
-                  value={step.id}
-                  onChange={(event) => onRenameStep(step.id, event.target.value)}
-                  disabled={readOnly}
-                  className={cn(textFieldClass, "mt-1 h-8")}
-                />
-              </label>
-              {isCanvasProduct ? (
-                <div className="rounded-md border border-cyan-200/12 bg-cyan-300/[0.04] px-2.5 py-2">
-                  <div className="text-[10px] font-semibold text-cyan-100/70">画布产物类型</div>
-                  <div className="mt-1 text-[12px] font-semibold text-cyan-50">
-                    {WORKFLOW_AUTHORING_KIND_OPTIONS.find((item) => item.value === kind)?.label || workflowStepKindLabel(step)}
-                  </div>
-                  <div className="mt-1 text-[10px] leading-4 text-cyan-100/45">
-                    产物节点只负责把上游内容放到画布，并在这里配置必要属性。
-                  </div>
-                </div>
-              ) : (
-                <label className="block text-[10px] font-medium text-zinc-500">
-                  步骤类型
-                  <select
+                步骤类型
+                <select
                     value={kind}
                     disabled={readOnly}
                     onChange={(event) => {
                       const nextKind = event.target.value as WorkflowAuthoringKind
-                      const nextIsProduct = nextKind === "canvas_text" || nextKind === "image" || nextKind === "video" || nextKind === "audio"
+                      const nextIsProduct = nextKind === "image" || nextKind === "video" || nextKind === "audio"
                       const nextNodeType = nextKind === "image" || nextKind === "video" || nextKind === "audio" ? nextKind : "text"
                       const currentOutput = asWorkflowObject(step.output) || {}
-                      const currentSchema = asWorkflowObject(step.output_schema) || {}
-                      const nextOutput: Record<string, unknown> = {
-                        ...Object.fromEntries(Object.entries(currentOutput).filter(([key]) => key !== "canvas" && key !== "show_on_canvas")),
-                        type: nextNodeType,
-                      }
-                      if (nextKind === "collection") nextOutput.mode = "json"
-                      else if (kind === "collection") delete nextOutput.mode
+                      const currentSchema = asWorkflowObject(currentOutput.schema) || {}
+                      const structured = nextKind === "collection" || nextKind === "object"
+                      const nextSchema = structured
+                        ? { ...currentSchema, fields: Array.isArray(currentSchema.fields) ? currentSchema.fields : [] }
+                        : undefined
+                      const nextOutput = nextKind === "text" && currentOutput.canvas === true
+                        ? { canvas: true }
+                        : nextSchema
+                        ? { schema: nextSchema }
+                        : undefined
                       const nextFields = nextIsProduct
-                        ? workflowDefaultCanvasProductFields(nextKind, workflowProductSourceStep(step), step)
+                        ? workflowDefaultCanvasProductFields(nextKind, step)
                         : step.fields
                       onUpdateStep(step.id, {
                         kind: nextKind,
                         node_type: nextNodeType,
                         output: nextOutput,
-                        runner: nextIsProduct ? "workflow_canvas_output" : nextKind === "plugin" ? "workflow_plugin" : nextKind === "input" ? "workflow_input" : "node.run",
+                        runner: nextIsProduct ? "workflow_canvas_output" : nextKind === "plugin" ? "workflow_plugin" : "node.run",
                         fields: nextFields,
-                        output_mode: nextKind === "collection" ? "json" : kind === "collection" ? undefined : step.output_mode,
-                        output_schema: nextKind === "collection"
-                          ? { ...currentSchema, type: "collection", items_key: workflowStringValue(currentSchema.items_key || currentSchema.collection_key) || "items" }
-                          : step.output_schema,
-                        collection: nextKind === "collection"
-                          ? { kind: "llm_extracted_items", ...(asWorkflowObject(step.collection) || {}) }
-                          : step.collection,
+                        collection: undefined,
                       })
                     }}
-                    className={cn(textFieldClass, "mt-1 h-8")}
-                  >
-                    {WORKFLOW_AUTHORING_KIND_OPTIONS.filter((item) => item.value !== "input").map((item) => (
-                      <option key={item.value} value={item.value}>{item.label}</option>
-                    ))}
-                  </select>
+                  className={cn(textFieldClass, "mt-1 h-8")}
+                >
+                  {WORKFLOW_AUTHORING_KIND_OPTIONS.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
+              </label>
+              {kind === "text" && (
+                <label className="flex items-center gap-2 rounded border border-cyan-200/12 bg-cyan-300/[0.04] px-2 py-2 text-[11px] text-cyan-50/80">
+                  <input
+                    type="checkbox"
+                    checked={asWorkflowObject(step.output)?.canvas === true}
+                    disabled={readOnly}
+                    onChange={(event) => onUpdateStep(step.id, {
+                      output: event.target.checked ? { canvas: true } : undefined,
+                    })}
+                  />
+                  在画布上显示文本产物
                 </label>
               )}
               <label className="block text-[10px] font-medium text-zinc-500">
@@ -6878,20 +6389,10 @@ function WorkflowStepInspector({
                 </select>
               </label>
               <label className="block text-[10px] font-medium text-zinc-500">
-                分组/阶段
-                <input
-                  value={step.phase || ""}
-                  onChange={(event) => onUpdateStep(step.id, { phase: event.target.value })}
-                  placeholder="例如：人物、场景、分镜"
-                  disabled={readOnly}
-                  className={cn(textFieldClass, "mt-1 h-8")}
-                />
-              </label>
-              <label className="block text-[10px] font-medium text-zinc-500">
                 说明这一步
                 <textarea
-                  value={step.purpose || ""}
-                  onChange={(event) => onUpdateStep(step.id, { purpose: event.target.value })}
+                  value={step.description || ""}
+                  onChange={(event) => onUpdateStep(step.id, { description: event.target.value })}
                   rows={2}
                   disabled={readOnly}
                   className={cn(textFieldClass, "mt-1 min-h-16 resize-none py-1.5 leading-4")}
@@ -6904,34 +6405,38 @@ function WorkflowStepInspector({
                     <select
                       value={loopSourceSelectValue}
                       onChange={(event) => {
-                        const currentRepeat = asWorkflowObject(step.repeat) || {}
-                        const currentForeach = asWorkflowObject(currentRepeat.foreach) || {}
                         const selected = event.target.value
-                        const nextSource = selected.startsWith("input:")
-                          ? selected.slice("input:".length)
+                        const base = {
+                          as: workflowStringValue(loopForeach.as) || "item",
+                          ...(workflowStringValue(loopForeach.key) ? { key: workflowStringValue(loopForeach.key) } : {}),
+                        }
+                        const nextForeach = selected.startsWith("input:")
+                          ? { ...base, items: `inputs.${selected.slice("input:".length)}` }
                           : selected.startsWith("step:")
-                          ? selected.slice("step:".length)
-                          : ""
+                          ? { ...base, items: `steps.${selected.slice("step:".length)}.output[]` }
+                          : selected.startsWith("count:")
+                          ? { ...base, count: `inputs.${selected.slice("count:".length)}` }
+                          : selected === "fixed"
+                          ? { ...base, count: 1 }
+                          : base
                         onUpdateStep(step.id, {
-                          repeat: {
-                            ...currentRepeat,
-                            foreach: {
-                              ...currentForeach,
-                              from: nextSource,
-                            },
-                          },
+                          foreach: nextForeach,
                         })
                       }}
                       disabled={readOnly}
                       className={cn(textFieldClass, "mt-1 h-8")}
                     >
                       <option value="">选择分段列表或上一步列表</option>
-                      {inputIds.map((input) => (
-                        <option key={`input:${input}`} value={`input:${input}`}>输入 · {workflowInputDisplayName(input, inputSpecs)}</option>
+                      {inputIds.filter((input) => workflowStringValue(inputSpecs[input]?.type).toLowerCase() === "json").map((input) => (
+                        <option key={`input:${input}`} value={`input:${input}`}>列表输入 · {workflowInputDisplayName(input, inputSpecs)}</option>
+                      ))}
+                      {inputIds.filter((input) => workflowInputTypeCategory(inputSpecs[input]?.type) === "number").map((input) => (
+                        <option key={`count:${input}`} value={`count:${input}`}>循环次数 · {workflowInputDisplayName(input, inputSpecs)}</option>
                       ))}
                       {loopSourceStepCandidates.map((candidate) => (
                         <option key={`step:${candidate.id}`} value={`step:${candidate.id}`}>上一步 · {candidate.title || candidate.id}</option>
                       ))}
+                      <option value="fixed">固定次数</option>
                     </select>
                   </label>
                   {loopSourceSelectValue.startsWith("step:") && (
@@ -6940,17 +6445,12 @@ function WorkflowStepInspector({
                       <input
                         value={loopSourceParts.path}
                         onChange={(event) => {
-                          const currentRepeat = asWorkflowObject(step.repeat) || {}
-                          const currentForeach = asWorkflowObject(currentRepeat.foreach) || {}
                           const source = loopSourceParts.source
                           const path = event.target.value.trim()
                           onUpdateStep(step.id, {
-                            repeat: {
-                              ...currentRepeat,
-                              foreach: {
-                                ...currentForeach,
-                                from: path ? `${source}.${path}` : source,
-                              },
+                            foreach: {
+                              ...loopForeach,
+                              items: `steps.${source}.output${path ? `.${path}` : ""}[]`,
                             },
                           })
                         }}
@@ -6960,6 +6460,55 @@ function WorkflowStepInspector({
                       />
                     </label>
                   )}
+                  {loopSourceSelectValue === "fixed" && (
+                    <label className="block text-[10px] font-medium text-zinc-500">
+                      循环次数
+                      <input
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={typeof loopForeach.count === "number" ? loopForeach.count : 1}
+                        onChange={(event) => onUpdateStep(step.id, {
+                          foreach: {
+                            ...loopForeach,
+                            count: Math.max(1, Number.parseInt(event.target.value || "1", 10)),
+                          },
+                        })}
+                        disabled={readOnly}
+                        className={cn(textFieldClass, "mt-1 h-8")}
+                      />
+                    </label>
+                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="block text-[10px] font-medium text-zinc-500">
+                      循环项变量
+                      <input
+                        value={workflowStringValue(loopForeach.as) || "item"}
+                        onChange={(event) => onUpdateStep(step.id, {
+                          foreach: { ...loopForeach, as: workflowSanitizeStepId(event.target.value, "item") },
+                        })}
+                        placeholder="item"
+                        disabled={readOnly}
+                        className={cn(textFieldClass, "mt-1 h-8 font-mono")}
+                      />
+                    </label>
+                    <label className="block text-[10px] font-medium text-zinc-500">
+                      唯一键字段（可选）
+                      <input
+                        value={workflowStringValue(loopForeach.key)}
+                        onChange={(event) => {
+                          const next = { ...loopForeach }
+                          const value = event.target.value.trim()
+                          if (value) next.key = value
+                          else delete next.key
+                          onUpdateStep(step.id, { foreach: next })
+                        }}
+                        placeholder="例如 id"
+                        disabled={readOnly}
+                        className={cn(textFieldClass, "mt-1 h-8 font-mono")}
+                      />
+                    </label>
+                  </div>
                 </div>
               )}
             </div>
@@ -7017,18 +6566,18 @@ function WorkflowStepInspector({
             </section>
           )}
 
-          {activeTab === "properties" && isCanvasProduct && kind !== "canvas_text" && (
+          {activeTab === "properties" && (kind === "image" || kind === "video" || kind === "audio") && (
             <section className="rounded-md border border-cyan-200/12 bg-cyan-300/[0.04] p-3">
               <div className="mb-2">
                 <div className="text-[11px] font-semibold text-cyan-100/80">节点属性</div>
                 <div className="mt-1 text-[10px] leading-4 text-cyan-100/45">
-                  只填写生成参数；内容从上游输出读取。
+                  生成参数会保存到模板；模型选择仅用于本次运行，不写入可复用模板。
                 </div>
               </div>
               <div className="grid gap-3">
                 {(kind === "image" || kind === "video" || kind === "audio") && (
                   <label className="block text-[10px] font-medium text-zinc-500">
-                    生成模型
+                    本次运行模型
                     <select
                       value={productModel ? selectedProductProvider?.name || productModel : ""}
                       disabled={productModelSelectDisabled}
@@ -7163,52 +6712,52 @@ function WorkflowStepInspector({
                   <label className="flex items-center gap-2 rounded border border-white/[0.06] bg-white/[0.025] px-2 py-2 text-[11px] text-zinc-300">
                     <input
                       type="checkbox"
-                      checked={step.optional === true}
+                      checked={step.on_error === "continue"}
                       disabled={readOnly}
-                      onChange={(event) => onUpdateStep(step.id, { optional: event.target.checked })}
+                      onChange={(event) => onUpdateStep(step.id, { on_error: event.target.checked ? "continue" : "stop" })}
                     />
-                    可以跳过
+                    失败后继续
                   </label>
                   <label className="flex items-center gap-2 rounded border border-white/[0.06] bg-white/[0.025] px-2 py-2 text-[11px] text-zinc-300">
                     <input
                       type="checkbox"
-                      checked={step.manual_only === true}
+                      checked={step.execution === "manual"}
                       disabled={readOnly}
-                      onChange={(event) => onUpdateStep(step.id, { manual_only: event.target.checked })}
+                      onChange={(event) => onUpdateStep(step.id, { execution: event.target.checked ? "manual" : "auto" })}
                     />
-                    创建后手动生成
+                    手动运行
                   </label>
                 </div>
                 <div className="grid gap-2 rounded-md border border-amber-200/12 bg-amber-300/[0.035] p-2">
                   <div>
-                    <div className="text-[10px] font-semibold text-amber-100/75">什么时候不运行这个节点</div>
+                    <div className="text-[10px] font-semibold text-amber-100/75">运行条件</div>
                     <div className="mt-0.5 text-[10px] leading-4 text-amber-100/50">
-                      只在某个流程输入满足条件时跳过；不需要跳过就保持“不设置”。
+                      设置后，只有流程输入满足条件时才运行；不设置则始终运行。
                     </div>
                   </div>
                   <div className="grid grid-cols-[minmax(0,1fr)_112px] gap-2">
                     <label className="block text-[10px] font-medium text-zinc-500">
                       看哪个输入
                       <select
-                        value={autoSkipCondition.inputId}
+                        value={runCondition.inputId}
                         disabled={readOnly}
                         onChange={(event) => {
                           const nextInput = event.target.value
                           const nextSpec = inputSpecs[nextInput]
-                          const currentOperator = autoSkipSelectedOperator || workflowDefaultSkipOperatorForInputType(nextSpec?.type)
-                          const nextOperator = workflowSkipOperatorIsAllowed(currentOperator, nextSpec?.type)
+                          const currentOperator = runConditionSelectedOperator || workflowDefaultConditionOperatorForInputType(nextSpec?.type)
+                          const nextOperator = workflowConditionOperatorIsAllowed(currentOperator, nextSpec?.type)
                             ? currentOperator
-                            : workflowDefaultSkipOperatorForInputType(nextSpec?.type)
-                          const nextValue = nextOperator && nextOperator !== "empty"
-                            ? workflowDefaultSkipCompareValueForInputType(nextSpec?.type, autoSkipCondition.value)
-                            : autoSkipCondition.value
-                          const nextCondition = workflowFormatAutoSkipCondition(
+                            : workflowDefaultConditionOperatorForInputType(nextSpec?.type)
+                          const nextValue = nextOperator && !["empty", "not_empty"].includes(nextOperator)
+                            ? workflowDefaultConditionCompareValueForInputType(nextSpec?.type, runCondition.value)
+                            : runCondition.value
+                          const nextCondition = workflowFormatCondition(
                             nextInput,
                             nextOperator,
                             nextValue,
                             nextSpec?.type,
                           )
-                          onUpdateStep(step.id, { auto_skip_when: nextCondition })
+                          onUpdateStep(step.id, { when: nextCondition })
                         }}
                         className={cn(textFieldClass, "mt-1 h-8")}
                       >
@@ -7221,44 +6770,44 @@ function WorkflowStepInspector({
                     <label className="block text-[10px] font-medium text-zinc-500">
                       怎么判断
                       <select
-                        value={autoSkipSelectedOperator}
-                        disabled={readOnly || !autoSkipCondition.inputId}
+                        value={runConditionSelectedOperator}
+                        disabled={readOnly || !runCondition.inputId}
                         onChange={(event) => {
                           const operator = event.target.value
-                          const nextValue = operator && operator !== "empty"
-                            ? workflowDefaultSkipCompareValueForInputType(autoSkipInputSpec?.type, autoSkipCondition.value)
-                            : autoSkipCondition.value
-                          const nextCondition = workflowFormatAutoSkipCondition(
-                            autoSkipCondition.inputId,
+                          const nextValue = operator && !["empty", "not_empty"].includes(operator)
+                            ? workflowDefaultConditionCompareValueForInputType(runConditionInputSpec?.type, runCondition.value)
+                            : runCondition.value
+                          const nextCondition = workflowFormatCondition(
+                            runCondition.inputId,
                             operator,
                             nextValue,
-                            autoSkipInputSpec?.type,
+                            runConditionInputSpec?.type,
                           )
-                          onUpdateStep(step.id, { auto_skip_when: nextCondition })
+                          onUpdateStep(step.id, { when: nextCondition })
                         }}
                         className={cn(textFieldClass, "mt-1 h-8")}
                       >
-                        {autoSkipOperatorOptions.map((item) => (
+                        {runConditionOperatorOptions.map((item) => (
                           <option key={item.value || "none"} value={item.value}>{item.label}</option>
                         ))}
                       </select>
                     </label>
                   </div>
-                  {autoSkipNeedsCompareValue && (
+                  {runConditionNeedsCompareValue && (
                     <label className="block text-[10px] font-medium text-zinc-500">
                       和什么值比较
-                      {autoSkipInputKind === "boolean" ? (
+                      {runConditionInputKind === "boolean" ? (
                         <select
-                          value={autoSkipCondition.value.toLowerCase() === "true" ? "true" : "false"}
+                          value={runCondition.value.toLowerCase() === "true" ? "true" : "false"}
                           disabled={readOnly}
                           onChange={(event) => {
-                            const nextCondition = workflowFormatAutoSkipCondition(
-                              autoSkipCondition.inputId,
-                              autoSkipSelectedOperator,
+                            const nextCondition = workflowFormatCondition(
+                              runCondition.inputId,
+                              runConditionSelectedOperator,
                               event.target.value,
-                              autoSkipInputSpec?.type,
+                              runConditionInputSpec?.type,
                             )
-                            onUpdateStep(step.id, { auto_skip_when: nextCondition })
+                            onUpdateStep(step.id, { when: nextCondition })
                           }}
                           className={cn(textFieldClass, "mt-1 h-8")}
                         >
@@ -7267,26 +6816,26 @@ function WorkflowStepInspector({
                         </select>
                       ) : (
                         <input
-                          type={autoSkipInputKind === "number" ? "number" : "text"}
-                          value={autoSkipCondition.value}
+                          type={runConditionInputKind === "number" ? "number" : "text"}
+                          value={runCondition.value}
                           disabled={readOnly}
                           onChange={(event) => {
-                            const nextCondition = workflowFormatAutoSkipCondition(
-                              autoSkipCondition.inputId,
-                              autoSkipSelectedOperator,
+                            const nextCondition = workflowFormatCondition(
+                              runCondition.inputId,
+                              runConditionSelectedOperator,
                               event.target.value,
-                              autoSkipInputSpec?.type,
+                              runConditionInputSpec?.type,
                             )
-                            onUpdateStep(step.id, { auto_skip_when: nextCondition })
+                            onUpdateStep(step.id, { when: nextCondition })
                           }}
                           className={cn(textFieldClass, "mt-1 h-8")}
                         />
                       )}
                     </label>
                   )}
-                  {autoSkipLabel && (
+                  {runConditionLabel && (
                     <div className="rounded border border-amber-200/10 bg-black/16 px-2 py-1.5 text-[11px] leading-4 text-amber-100/75">
-                      {autoSkipLabel}
+                      {runConditionLabel}
                     </div>
                   )}
                 </div>
@@ -7374,71 +6923,7 @@ function WorkflowStepInspector({
           </section>
           )}
 
-          {activeTab === "io" && isCanvasProduct && (
-            <section className="rounded-md border border-cyan-200/12 bg-cyan-300/[0.04] p-3">
-              <div className="mb-2">
-                <div className="text-[11px] font-semibold text-cyan-100/80">内容来源</div>
-                <div className="mt-1 text-[10px] leading-4 text-cyan-100/45">
-                  画布节点只从上游输出取内容，不写提示词，也不调用 LLM。
-                </div>
-              </div>
-              <div className="grid gap-2">
-                <label className="block text-[10px] font-medium text-zinc-500">
-                  选择上游输出
-                  <select
-                    value={productSourceValue}
-                    disabled={readOnly}
-                    onChange={(event) => {
-                      const source = event.target.value
-                      const nextDepends = source
-                        ? workflowCleanIdList([...cleanStepDependencies, source])
-                        : cleanStepDependencies
-                      onUpdateStep(step.id, {
-                        depends_on: nextDepends,
-                        fields: workflowPatchStepFields(step, { workflow_source_step: source }),
-                      })
-                    }}
-                    className={cn(textFieldClass, "mt-1 h-8")}
-                  >
-                    <option value="">选择上游步骤</option>
-                    {productSourceStep && !productSourceValue && (
-                      <option value={productSourceStep}>{workflowStepTitleById(steps, productSourceStep)}</option>
-                    )}
-                    {referenceCandidates.map((candidate) => (
-                      <option key={candidate.id} value={candidate.id}>{candidate.title || candidate.id}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block text-[10px] font-medium text-zinc-500">
-                  读取哪个输出
-                  <input
-                    value={productSourcePath}
-                    disabled={readOnly}
-                    onChange={(event) => onUpdateStep(step.id, {
-                      fields: workflowPatchStepFields(step, { workflow_source_path: event.target.value || "output" }),
-                    })}
-                    placeholder="例如：output 或 output.prompt"
-                    className={cn(textFieldClass, "mt-1 h-8")}
-                  />
-                </label>
-                {kind !== "canvas_text" && (
-                  <label className="flex items-center gap-2 rounded border border-cyan-200/10 bg-black/18 px-2 py-2 text-[11px] text-cyan-50/85">
-                    <input
-                      type="checkbox"
-                      checked={productGenerate}
-                      disabled={readOnly}
-                      onChange={(event) => onUpdateStep(step.id, {
-                        fields: workflowPatchStepFields(step, { workflow_generate: event.target.checked }),
-                      })}
-                    />
-                    运行时使用这个内容生成媒体
-                  </label>
-                )}
-              </div>
-            </section>
-          )}
-
-          {activeTab === "io" && !isInputStep && kind !== "loop" && !isCanvasProduct && (
+          {activeTab === "io" && (kind === "object" || kind === "collection") && (
             <section className="rounded-md border border-emerald-200/12 bg-emerald-300/[0.035] p-3">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div className="text-[11px] font-semibold text-emerald-100/80">{isCollectionOutput ? "列表字段" : "输出格式"}</div>
@@ -7446,10 +6931,7 @@ function WorkflowStepInspector({
                   <button
                     type="button"
                     onClick={() => onUpdateStep(step.id, {
-                      output_mode: isCollectionOutput ? "json" : step.output_mode,
-                      output_schema: isCollectionOutput
-                        ? { ...workflowAddOutputSchemaField(step), type: "collection", items_key: "items" }
-                        : workflowAddOutputSchemaField(step),
+                      output: { schema: workflowAddOutputSchemaField(step) },
                     })}
                     className="h-6 rounded border border-emerald-200/20 bg-emerald-300/10 px-2 text-[10px] font-semibold text-emerald-100 transition hover:bg-emerald-300/16"
                   >
@@ -7458,31 +6940,11 @@ function WorkflowStepInspector({
                 )}
               </div>
               <div className="grid gap-2">
-                {isCollectionOutput ? (
-                  <div className="rounded border border-emerald-200/10 bg-black/16 px-2 py-2 text-[11px] leading-4 text-emerald-50/75">
-                    模型只需要按提示词提取集合；每一项包含下面这些字段。结构化输出要求由后端自动加入，不需要在提示词里写 JSON。
-                  </div>
-                ) : (
-                  <label className="block text-[10px] font-medium text-zinc-500">
-                    输出类型
-                    <select
-                      value={outputMode}
-                      disabled={readOnly}
-                      onChange={(event) => {
-                        const mode = event.target.value
-                        const nextOutput = { ...(asWorkflowObject(step.output) || {}) }
-                        if (mode) nextOutput.mode = mode
-                        else delete nextOutput.mode
-                        onUpdateStep(step.id, { output_mode: mode || undefined, output: nextOutput })
-                      }}
-                      className={cn(textFieldClass, "mt-1 h-8")}
-                    >
-                      {WORKFLOW_OUTPUT_MODE_OPTIONS.map((item) => (
-                        <option key={item.value || "default"} value={item.value}>{item.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                )}
+                <div className="rounded border border-emerald-200/10 bg-black/16 px-2 py-2 text-[11px] leading-4 text-emerald-50/75">
+                  {isCollectionOutput
+                    ? "每一项包含下面这些字段。结构化输出要求由运行器自动加入，不需要在提示词里写 JSON。"
+                    : "对象包含下面这些字段。结构化输出要求由运行器自动加入，不需要在提示词里写 JSON。"}
+                </div>
                 <div className="grid gap-2">
                   {outputSchemaFields.map((field, fieldIndex) => (
                     <div key={`${workflowStringValue(field.id || field.key || field.name) || "field"}-${fieldIndex}`} className="grid gap-2 rounded border border-white/[0.06] bg-white/[0.025] p-2">
@@ -7492,7 +6954,7 @@ function WorkflowStepInspector({
                           disabled={readOnly}
                           onChange={(event) => {
                             const id = workflowUniqueFieldId(event.target.value, outputSchemaFields, fieldIndex)
-                            onUpdateStep(step.id, { output_schema: workflowPatchOutputSchemaField(step, fieldIndex, { id }) })
+                            onUpdateStep(step.id, { output: { schema: workflowPatchOutputSchemaField(step, fieldIndex, { id }) } })
                           }}
                           placeholder={isCollectionOutput ? "字段标识" : "字段名"}
                           className={cn(textFieldClass, "h-7 font-mono")}
@@ -7501,7 +6963,7 @@ function WorkflowStepInspector({
                           value={workflowStringValue(field.type) || "string"}
                           disabled={readOnly}
                           onChange={(event) => onUpdateStep(step.id, {
-                            output_schema: workflowPatchOutputSchemaField(step, fieldIndex, { type: event.target.value }),
+                            output: { schema: workflowPatchOutputSchemaField(step, fieldIndex, { type: event.target.value }) },
                           })}
                           className={cn(textFieldClass, "h-7")}
                         >
@@ -7515,7 +6977,7 @@ function WorkflowStepInspector({
                             checked={field.required === true}
                             disabled={readOnly}
                             onChange={(event) => onUpdateStep(step.id, {
-                              output_schema: workflowPatchOutputSchemaField(step, fieldIndex, { required: event.target.checked }),
+                              output: { schema: workflowPatchOutputSchemaField(step, fieldIndex, { required: event.target.checked }) },
                             })}
                           />
                           必填
@@ -7525,7 +6987,7 @@ function WorkflowStepInspector({
                         value={workflowStringValue(field.label || field.title)}
                         disabled={readOnly}
                         onChange={(event) => onUpdateStep(step.id, {
-                          output_schema: workflowPatchOutputSchemaField(step, fieldIndex, { label: event.target.value }),
+                          output: { schema: workflowPatchOutputSchemaField(step, fieldIndex, { label: event.target.value }) },
                         })}
                         placeholder={isCollectionOutput ? "给用户看的列名" : "显示名"}
                         className={cn(textFieldClass, "h-7")}
@@ -7535,7 +6997,7 @@ function WorkflowStepInspector({
                           value={workflowStringValue(field.description)}
                           disabled={readOnly}
                           onChange={(event) => onUpdateStep(step.id, {
-                            output_schema: workflowPatchOutputSchemaField(step, fieldIndex, { description: event.target.value }),
+                            output: { schema: workflowPatchOutputSchemaField(step, fieldIndex, { description: event.target.value }) },
                           })}
                           placeholder="说明"
                           className={cn(textFieldClass, "h-7")}
@@ -7543,7 +7005,7 @@ function WorkflowStepInspector({
                         {!readOnly && (
                           <button
                             type="button"
-                            onClick={() => onUpdateStep(step.id, { output_schema: workflowRemoveOutputSchemaField(step, fieldIndex) })}
+                            onClick={() => onUpdateStep(step.id, { output: { schema: workflowRemoveOutputSchemaField(step, fieldIndex) } })}
                             className="h-7 rounded border border-red-300/20 px-2 text-[10px] text-red-100 transition hover:bg-red-500/12"
                           >
                             删除
@@ -7569,7 +7031,7 @@ function WorkflowStepInspector({
                 {!readOnly && (
                   <button
                     type="button"
-                    onClick={() => onUpdateStep(step.id, { references: workflowAddReferenceRow(step, referenceCandidates) })}
+                    onClick={() => onUpdateStep(step.id, { uses: workflowAddReferenceRow(step, referenceCandidates) })}
                     disabled={referenceCandidates.length === 0}
                     className="h-6 rounded border border-cyan-200/20 bg-cyan-300/10 px-2 text-[10px] font-semibold text-cyan-100 transition hover:bg-cyan-300/16 disabled:cursor-not-allowed disabled:opacity-45"
                   >
@@ -7590,7 +7052,7 @@ function WorkflowStepInspector({
                             value={sourceValue}
                             disabled={readOnly}
                             onChange={(event) => onUpdateStep(step.id, {
-                              references: workflowPatchReferenceRow(step, rowIndex, { source_step: event.target.value }),
+                              uses: workflowPatchReferenceRow(step, rowIndex, { source_step: event.target.value }),
                             })}
                             className={cn(textFieldClass, "mt-1 h-7")}
                           >
@@ -7606,10 +7068,10 @@ function WorkflowStepInspector({
                         <label className="block text-[10px] font-medium text-zinc-500">
                           参考用途
                           <select
-                            value={workflowStringValue(row.role) || "visual_reference"}
+                            value={workflowStringValue(row.role) || "reference"}
                             disabled={readOnly}
                             onChange={(event) => onUpdateStep(step.id, {
-                              references: workflowPatchReferenceRow(step, rowIndex, { role: event.target.value }),
+                              uses: workflowPatchReferenceRow(step, rowIndex, { role: event.target.value }),
                             })}
                             className={cn(textFieldClass, "mt-1 h-7")}
                           >
@@ -7619,29 +7081,24 @@ function WorkflowStepInspector({
                           </select>
                         </label>
                       </div>
-                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2">
+                      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                         <input
-                          value={workflowStringValue(row.name)}
+                          value={workflowStringValue(asWorkflowObject(row.select)?.values)}
                           disabled={readOnly}
                           onChange={(event) => onUpdateStep(step.id, {
-                            references: workflowPatchReferenceRow(step, rowIndex, { name: workflowSanitizeStepId(event.target.value || `reference_${rowIndex + 1}`, `reference_${rowIndex + 1}`) }),
+                            uses: workflowPatchReferenceRow(step, rowIndex, {
+                              select: event.target.value
+                                ? { values: event.target.value, by: asWorkflowObject(row.select)?.by || ["id"] }
+                                : undefined,
+                            }),
                           })}
-                          placeholder="引用名"
-                          className={cn(textFieldClass, "h-7 font-mono")}
-                        />
-                        <input
-                          value={workflowStringValue(row.source_path)}
-                          disabled={readOnly}
-                          onChange={(event) => onUpdateStep(step.id, {
-                            references: workflowPatchReferenceRow(step, rowIndex, { source_path: event.target.value }),
-                          })}
-                          placeholder="输出路径"
+                          placeholder="动态选择路径（可留空）"
                           className={cn(textFieldClass, "h-7")}
                         />
                         {!readOnly && (
                           <button
                             type="button"
-                            onClick={() => onUpdateStep(step.id, { references: workflowRemoveReferenceRow(step, rowIndex) })}
+                            onClick={() => onUpdateStep(step.id, { uses: workflowRemoveReferenceRow(step, rowIndex) })}
                             className="h-7 rounded border border-red-300/20 px-2 text-[10px] text-red-100 transition hover:bg-red-500/12"
                           >
                             删除
@@ -7654,73 +7111,6 @@ function WorkflowStepInspector({
                 {referenceRows.length === 0 && (
                   <div className="rounded border border-white/[0.06] bg-white/[0.025] px-2 py-2 text-[11px] text-zinc-500">
                     暂无引用
-                  </div>
-                )}
-              </div>
-            </section>
-          )}
-
-          {activeTab === "io" && !isInputStep && kind !== "loop" && (
-            <section className="rounded-md border border-sky-200/12 bg-sky-300/[0.035] p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="text-[11px] font-semibold text-sky-100/80">读取上下文</div>
-                {!readOnly && (
-                  <button
-                    type="button"
-                    onClick={() => onUpdateStep(step.id, { context_refs: workflowAddContextRefRow(step, referenceCandidates) })}
-                    disabled={referenceCandidates.length === 0}
-                    className="h-6 rounded border border-sky-200/20 bg-sky-300/10 px-2 text-[10px] font-semibold text-sky-100 transition hover:bg-sky-300/16 disabled:cursor-not-allowed disabled:opacity-45"
-                  >
-                    新增上下文
-                  </button>
-                )}
-              </div>
-              <div className="grid gap-2">
-                {contextRefRows.map((row, rowIndex) => {
-                  const rowSource = workflowContextRefSource(row)
-                  const sourceValue = referenceCandidates.some((candidate) => candidate.id === rowSource) ? rowSource : ""
-                  return (
-                    <div key={`${rowSource || "context"}-${rowIndex}`} className="grid grid-cols-[minmax(0,1fr)_104px_auto] gap-2 rounded border border-white/[0.06] bg-white/[0.025] p-2">
-                      <select
-                        value={sourceValue}
-                        disabled={readOnly}
-                        onChange={(event) => onUpdateStep(step.id, {
-                          context_refs: workflowPatchContextRefRow(step, rowIndex, { step: event.target.value }),
-                        })}
-                        className={cn(textFieldClass, "h-7")}
-                      >
-                        <option value="">选择上游步骤</option>
-                        {referenceCandidates.map((candidate) => (
-                          <option key={candidate.id} value={candidate.id}>{candidate.title || candidate.id}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={workflowStringValue(row.role) || "context"}
-                        disabled={readOnly}
-                        onChange={(event) => onUpdateStep(step.id, {
-                          context_refs: workflowPatchContextRefRow(step, rowIndex, { role: event.target.value }),
-                        })}
-                        className={cn(textFieldClass, "h-7")}
-                      >
-                        {WORKFLOW_REFERENCE_ROLE_OPTIONS.map((item) => (
-                          <option key={item.value} value={item.value}>{item.label}</option>
-                        ))}
-                      </select>
-                      {!readOnly && (
-                        <button
-                          type="button"
-                          onClick={() => onUpdateStep(step.id, { context_refs: workflowRemoveContextRefRow(step, rowIndex) })}
-                          className="h-7 rounded border border-red-300/20 px-2 text-[10px] text-red-100 transition hover:bg-red-500/12"
-                        >
-                          删除
-                        </button>
-                      )}
-                    </div>
-                  )
-                })}
-                {contextRefRows.length === 0 && (
-                  <div className="rounded border border-white/[0.06] bg-white/[0.025] px-2 py-2 text-[11px] text-zinc-500">
-                    暂无读取上下文
                   </div>
                 )}
               </div>
@@ -7742,7 +7132,7 @@ function WorkflowStepInspector({
                     {!readOnly && pluginInputSpecs.length === 0 && (
                       <button
                         type="button"
-                        onClick={() => onUpdateStep(step.id, { plugin_inputs: workflowAddObjectEntry(pluginInputs, "input") })}
+                        onClick={() => onUpdateStep(step.id, { plugin: { ...pluginConfig, inputs: workflowAddObjectEntry(pluginInputs, "input") } })}
                         className="h-6 rounded border border-violet-200/20 px-2 text-[10px] text-violet-100 transition hover:bg-violet-300/10"
                       >
                         新增
@@ -7756,7 +7146,7 @@ function WorkflowStepInspector({
                         {workflowDefinitionFieldLabel(field, key)}
                         <div className="mt-1">
                           {renderPluginFieldInput(field, pluginInputs[key], (value) => onUpdateStep(step.id, {
-                            plugin_inputs: { ...pluginInputs, [key]: value },
+                            plugin: { ...pluginConfig, inputs: { ...pluginInputs, [key]: value } },
                           }))}
                         </div>
                       </label>
@@ -7767,7 +7157,7 @@ function WorkflowStepInspector({
                         value={key}
                         disabled={readOnly}
                         onChange={(event) => onUpdateStep(step.id, {
-                          plugin_inputs: workflowRenameObjectEntry(pluginInputs, key, event.target.value),
+                          plugin: { ...pluginConfig, inputs: workflowRenameObjectEntry(pluginInputs, key, event.target.value) },
                         })}
                         className={cn(textFieldClass, "h-7 font-mono")}
                       />
@@ -7775,14 +7165,14 @@ function WorkflowStepInspector({
                         value={workflowJsonScalar(value)}
                         disabled={readOnly}
                         onChange={(event) => onUpdateStep(step.id, {
-                          plugin_inputs: workflowSetObjectEntry(pluginInputs, key, event.target.value),
+                          plugin: { ...pluginConfig, inputs: workflowSetObjectEntry(pluginInputs, key, event.target.value) },
                         })}
                         className={cn(textFieldClass, "h-7")}
                       />
                       {!readOnly && (
                         <button
                           type="button"
-                          onClick={() => onUpdateStep(step.id, { plugin_inputs: workflowRemoveObjectEntry(pluginInputs, key) })}
+                          onClick={() => onUpdateStep(step.id, { plugin: { ...pluginConfig, inputs: workflowRemoveObjectEntry(pluginInputs, key) } })}
                           className="h-7 rounded border border-red-300/20 px-2 text-[10px] text-red-100 transition hover:bg-red-500/12"
                         >
                           删除
@@ -7803,7 +7193,7 @@ function WorkflowStepInspector({
                     {!readOnly && pluginSettingSpecs.length === 0 && (
                       <button
                         type="button"
-                        onClick={() => onUpdateStep(step.id, { plugin_settings: workflowAddObjectEntry(pluginSettings, "setting") })}
+                        onClick={() => onUpdateStep(step.id, { plugin: { ...pluginConfig, settings: workflowAddObjectEntry(pluginSettings, "setting") } })}
                         className="h-6 rounded border border-violet-200/20 px-2 text-[10px] text-violet-100 transition hover:bg-violet-300/10"
                       >
                         新增
@@ -7817,7 +7207,7 @@ function WorkflowStepInspector({
                         {workflowDefinitionFieldLabel(field, key)}
                         <div className="mt-1">
                           {renderPluginFieldInput(field, pluginSettings[key], (value) => onUpdateStep(step.id, {
-                            plugin_settings: { ...pluginSettings, [key]: value },
+                            plugin: { ...pluginConfig, settings: { ...pluginSettings, [key]: value } },
                           }))}
                         </div>
                       </label>
@@ -7828,7 +7218,7 @@ function WorkflowStepInspector({
                         value={key}
                         disabled={readOnly}
                         onChange={(event) => onUpdateStep(step.id, {
-                          plugin_settings: workflowRenameObjectEntry(pluginSettings, key, event.target.value),
+                          plugin: { ...pluginConfig, settings: workflowRenameObjectEntry(pluginSettings, key, event.target.value) },
                         })}
                         className={cn(textFieldClass, "h-7 font-mono")}
                       />
@@ -7836,14 +7226,14 @@ function WorkflowStepInspector({
                         value={workflowJsonScalar(value)}
                         disabled={readOnly}
                         onChange={(event) => onUpdateStep(step.id, {
-                          plugin_settings: workflowSetObjectEntry(pluginSettings, key, event.target.value),
+                          plugin: { ...pluginConfig, settings: workflowSetObjectEntry(pluginSettings, key, event.target.value) },
                         })}
                         className={cn(textFieldClass, "h-7")}
                       />
                       {!readOnly && (
                         <button
                           type="button"
-                          onClick={() => onUpdateStep(step.id, { plugin_settings: workflowRemoveObjectEntry(pluginSettings, key) })}
+                          onClick={() => onUpdateStep(step.id, { plugin: { ...pluginConfig, settings: workflowRemoveObjectEntry(pluginSettings, key) } })}
                           className="h-7 rounded border border-red-300/20 px-2 text-[10px] text-red-100 transition hover:bg-red-500/12"
                         >
                           删除
@@ -7861,7 +7251,7 @@ function WorkflowStepInspector({
             </section>
           )}
 
-          {activeTab === "prompt" && !isInputStep && !isCanvasProduct && (
+          {activeTab === "prompt" && !isInputStep && kind !== "loop" && kind !== "plugin" && (
             <section className="rounded-md border border-cyan-200/12 bg-cyan-300/[0.04] p-3">
               <div className="mb-2">
                 <div className="text-[11px] font-semibold text-cyan-100/80">提示词</div>
@@ -7905,7 +7295,7 @@ function WorkflowStepInspector({
               )}
               <textarea
                 value={promptValue}
-                onChange={(event) => onUpdateStep(step.id, { prompt_template: event.target.value })}
+                onChange={(event) => onUpdateStep(step.id, { prompt: { ...promptObject, task: event.target.value } })}
                 placeholder="例如：根据上一步的剧情内容，拆成多个 15 秒片段。每段写清楚剧情、画面重点、出场人物。"
                 rows={10}
                 readOnly={readOnly}
@@ -7917,199 +7307,6 @@ function WorkflowStepInspector({
           {activeTab === "prompt" && isInputStep && (
             <section className="rounded-md border border-white/[0.08] bg-black/18 px-3 py-2 text-[12px] text-zinc-500">
               输入节点不需要提示词。
-            </section>
-          )}
-
-          {activeTab === "advanced" && (
-            <section className="rounded-md border border-white/[0.08] bg-black/18 p-3">
-              <div className="mb-2 text-[11px] font-semibold text-zinc-300">高级字段</div>
-              <div className="grid gap-2">
-                <div className="grid gap-2 rounded-md border border-indigo-200/12 bg-indigo-300/[0.035] p-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-indigo-100/70">bindings</div>
-                    {!readOnly && (
-                      <button
-                        type="button"
-                        onClick={() => onUpdateStep(step.id, { bindings: workflowAddBindingRow(step, inputIds, referenceCandidates) })}
-                        className="h-6 rounded border border-indigo-200/20 bg-indigo-300/10 px-2 text-[10px] font-semibold text-indigo-100 transition hover:bg-indigo-300/16"
-                      >
-                        新增绑定
-                      </button>
-                    )}
-                  </div>
-                  {bindingRows.map((row, rowIndex) => {
-                    const sourceType = workflowStringValue(row.source_type) || "raw"
-                    return (
-                      <div key={`${workflowStringValue(row.key) || "binding"}-${rowIndex}`} className="grid gap-2 rounded border border-white/[0.06] bg-white/[0.025] p-2">
-                        <div className="grid grid-cols-[minmax(0,0.8fr)_104px] gap-2">
-                          <input
-                            value={workflowStringValue(row.key)}
-                            disabled={readOnly}
-                            onChange={(event) => onUpdateStep(step.id, {
-                              bindings: workflowPatchBindingRow(step, rowIndex, { key: event.target.value }),
-                            })}
-                            placeholder="参数名"
-                            className={cn(textFieldClass, "h-7 font-mono")}
-                          />
-                          <select
-                            value={sourceType}
-                            disabled={readOnly}
-                            onChange={(event) => {
-                              const nextType = event.target.value
-                              onUpdateStep(step.id, {
-                                bindings: workflowPatchBindingRow(step, rowIndex, {
-                                  source_type: nextType,
-                                  source: nextType === "input" ? inputIds[0] || "" : nextType === "step" ? referenceCandidates[0]?.id || "" : "",
-                                  path: "",
-                                  raw: nextType === "raw" ? workflowStringValue(row.raw) : "",
-                                }),
-                              })
-                            }}
-                            className={cn(textFieldClass, "h-7")}
-                          >
-                            <option value="input">工作流输入</option>
-                            <option value="step">上游步骤</option>
-                            <option value="raw">固定值</option>
-                          </select>
-                        </div>
-                        {sourceType === "raw" ? (
-                          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-                            <input
-                              value={workflowStringValue(row.raw)}
-                              disabled={readOnly}
-                              onChange={(event) => onUpdateStep(step.id, {
-                                bindings: workflowPatchBindingRow(step, rowIndex, { raw: event.target.value }),
-                              })}
-                              placeholder="固定值或 JSON"
-                              className={cn(textFieldClass, "h-7")}
-                            />
-                            {!readOnly && (
-                              <button
-                                type="button"
-                                onClick={() => onUpdateStep(step.id, { bindings: workflowRemoveBindingRow(step, rowIndex) })}
-                                className="h-7 rounded border border-red-300/20 px-2 text-[10px] text-red-100 transition hover:bg-red-500/12"
-                              >
-                                删除
-                              </button>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2">
-                            <select
-                              value={workflowStringValue(row.source)}
-                              disabled={readOnly}
-                              onChange={(event) => onUpdateStep(step.id, {
-                                bindings: workflowPatchBindingRow(step, rowIndex, { source: event.target.value }),
-                              })}
-                              className={cn(textFieldClass, "h-7")}
-                            >
-                              <option value="">选择来源</option>
-                              {workflowStringValue(row.source) && (
-                                sourceType === "input"
-                                  ? !inputIds.includes(workflowStringValue(row.source))
-                                  : !referenceCandidates.some((candidate) => candidate.id === workflowStringValue(row.source))
-                              ) && (
-                                <option value={workflowStringValue(row.source)}>
-                                  {sourceType === "input"
-                                    ? workflowStringValue(row.source)
-                                    : workflowStepTitleById(steps, workflowStringValue(row.source))}
-                                </option>
-                              )}
-                              {(sourceType === "input" ? inputIds : referenceCandidates.map((candidate) => candidate.id)).map((source) => (
-                                <option key={source} value={source}>
-                                  {sourceType === "input" ? workflowInputDisplayName(source, inputSpecs) : workflowStepTitleById(steps, source)}
-                                </option>
-                              ))}
-                            </select>
-                            <input
-                              value={workflowStringValue(row.path)}
-                              disabled={readOnly}
-                              onChange={(event) => onUpdateStep(step.id, {
-                                bindings: workflowPatchBindingRow(step, rowIndex, { path: event.target.value }),
-                              })}
-                              placeholder="路径"
-                              className={cn(textFieldClass, "h-7")}
-                            />
-                            {!readOnly && (
-                              <button
-                                type="button"
-                                onClick={() => onUpdateStep(step.id, { bindings: workflowRemoveBindingRow(step, rowIndex) })}
-                                className="h-7 rounded border border-red-300/20 px-2 text-[10px] text-red-100 transition hover:bg-red-500/12"
-                              >
-                                删除
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                  {bindingRows.length === 0 && (
-                    <div className="rounded border border-white/[0.06] bg-white/[0.025] px-2 py-2 text-[11px] text-zinc-500">
-                      暂无绑定
-                    </div>
-                  )}
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="block text-[10px] font-medium text-zinc-500">
-                    expand_when
-                    <input
-                      value={step.expand_when || ""}
-                      disabled={readOnly}
-                      onChange={(event) => onUpdateStep(step.id, { expand_when: event.target.value || undefined })}
-                      className={cn(textFieldClass, "mt-1 h-8 font-mono")}
-                    />
-                  </label>
-                  <label className="block text-[10px] font-medium text-zinc-500">
-                    capability
-                    <input
-                      value={step.capability || ""}
-                      disabled={readOnly}
-                      onChange={(event) => onUpdateStep(step.id, { capability: event.target.value || undefined })}
-                      className={cn(textFieldClass, "mt-1 h-8 font-mono")}
-                    />
-                  </label>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="block text-[10px] font-medium text-zinc-500">
-                    item_source
-                    <input
-                      value={step.item_source || ""}
-                      disabled={readOnly}
-                      onChange={(event) => onUpdateStep(step.id, { item_source: event.target.value || undefined })}
-                      className={cn(textFieldClass, "mt-1 h-8 font-mono")}
-                    />
-                  </label>
-                  <label className="block text-[10px] font-medium text-zinc-500">
-                    branch
-                    <input
-                      value={step.branch || ""}
-                      disabled={readOnly}
-                      onChange={(event) => onUpdateStep(step.id, { branch: event.target.value || undefined })}
-                      className={cn(textFieldClass, "mt-1 h-8 font-mono")}
-                    />
-                  </label>
-                </div>
-                <label className="flex items-center gap-2 rounded border border-white/[0.06] bg-white/[0.025] px-2 py-2 text-[11px] text-zinc-300">
-                  <input
-                    type="checkbox"
-                    checked={step.runtime_hidden === true}
-                    disabled={readOnly}
-                    onChange={(event) => onUpdateStep(step.id, { runtime_hidden: event.target.checked })}
-                  />
-                  runtime_hidden
-                </label>
-                {WORKFLOW_STEP_ADVANCED_JSON_KEYS.map((item) => (
-                  <WorkflowJsonEditorField
-                    key={item.key}
-                    label={item.label}
-                    value={(step as unknown as Record<string, unknown>)[item.key]}
-                    onChange={(value) => onUpdateStep(step.id, { [item.key]: value } as Partial<WorkflowTemplateStepSummary>)}
-                    readOnly={readOnly}
-                    rows={item.rows}
-                  />
-                ))}
-              </div>
             </section>
           )}
 
@@ -8131,25 +7328,6 @@ function WorkflowStepInspector({
           {activeTab === "run" && !(nodeState?.lastRunSummary || nodeState?.lastRunDetail || nodeState?.outputPreview) && (
             <section className="rounded-md border border-white/[0.08] bg-black/18 px-3 py-2 text-[12px] text-zinc-500">
               这个节点还没有运行结果。
-            </section>
-          )}
-
-          {activeTab === "help" && (
-            <section className="rounded-md border border-white/[0.08] bg-black/18 p-3">
-              <div className="mb-2 text-[11px] font-semibold text-zinc-300">节点说明</div>
-              <div className="whitespace-pre-wrap break-words text-[12px] leading-5 text-zinc-300">
-                {step.purpose || "暂无说明。"}
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <div className="rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-1.5">
-                  <div className="text-[10px] text-zinc-500">节点类型</div>
-                  <div className="mt-0.5 truncate text-[11px] text-zinc-200">{WORKFLOW_AUTHORING_KIND_OPTIONS.find((item) => item.value === kind)?.label || kind}</div>
-                </div>
-                <div className="rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-1.5">
-                  <div className="text-[10px] text-zinc-500">产物位置</div>
-                  <div className="mt-0.5 truncate text-[11px] text-zinc-200">{workflowStepOutputLabel(step)}</div>
-                </div>
-              </div>
             </section>
           )}
 
@@ -8308,7 +7486,7 @@ function WorkflowTemplatePanel({
     const nextSteps = sourceSteps
     const nextName = selectedName
     const nextDescription = selectedDescription
-    const sourceWorkflowForAdvanced = artifactPreview?.workflow || (selected as unknown as Record<string, unknown> | undefined)
+    const sourceWorkflowForAdvanced = artifactPreview?.workflow || workflowSourceFromTemplateSummary(selected)
     setCollapsedTemplateScopeIds(new Set())
     setDraftSteps(nextSteps)
     setDraftInputIds(inputs)
@@ -8335,7 +7513,7 @@ function WorkflowTemplatePanel({
     const nextSteps = sourceSteps
     const nextName = selectedName
     const nextDescription = selectedDescription
-    const sourceWorkflowForAdvanced = artifactPreview?.workflow || (selected as unknown as Record<string, unknown> | undefined)
+    const sourceWorkflowForAdvanced = artifactPreview?.workflow || workflowSourceFromTemplateSummary(selected)
     const nextRequiredInputIds = requiredInputIds.filter((input) => inputs.includes(input))
     const nextInputSpecs = workflowInputDraftSpecsFromWorkflow(inputs, sourceWorkflowForAdvanced)
     const nextAdvanced = workflowAdvancedDraftFromWorkflow(sourceWorkflowForAdvanced)
@@ -8403,17 +7581,15 @@ function WorkflowTemplatePanel({
     return Array.from(groups.entries()).slice(0, 5)
   }, [nodeTypes])
   const processNodeTypes = useMemo<WorkflowNodeTypeDefinition[]>(() => [
-    { id: "core-input", type: "text", kind: "input", title: "输入", category: "core", description: "运行前输入剧情、时长、风格等" },
-    { id: "core-text", type: "text", kind: "text", title: "生成文本", category: "core", description: "生成、改写或整理正文" },
-    { id: "core-collection", type: "text", kind: "collection", title: "提取集合", category: "core", description: "提取人物、场景、段落等多项对象" },
-    { id: "core-plan", type: "text", kind: "plan", title: "分段拆分", category: "core", description: "按时长或规则拆成多段" },
-    { id: "core-loop", type: "text", kind: "loop", title: "遍历执行", category: "core", description: "对集合里的每一项重复执行" },
+    { id: "core-text", type: "text", kind: "text", title: "文本", category: "core", description: "生成、改写或整理文本" },
+    { id: "core-object", type: "text", kind: "object", title: "结构化对象", category: "core", description: "输出一组有明确字段的数据" },
+    { id: "core-collection", type: "text", kind: "collection", title: "结构化列表", category: "core", description: "输出人物、场景、段落等多项数据" },
+    { id: "core-loop", type: "text", kind: "loop", title: "循环", category: "core", description: "对列表里的每一项执行内部步骤" },
   ], [])
   const productNodeTypes = useMemo<WorkflowNodeTypeDefinition[]>(() => [
-    { id: "core-canvas-text", type: "text", kind: "canvas_text", title: "文本节点", category: "core", description: "把上游文本显示到画布" },
-    { id: "core-image", type: "image", kind: "image", title: "图片节点", category: "core", description: "把上游内容按属性生成或承接图片" },
-    { id: "core-video", type: "video", kind: "video", title: "视频节点", category: "core", description: "把上游内容按属性生成或承接视频" },
-    { id: "core-audio", type: "audio", kind: "audio", title: "音频节点", category: "core", description: "把上游内容按属性生成或承接音频" },
+    { id: "core-image", type: "image", kind: "image", title: "图片", category: "core", description: "生成图片或采用已有图片" },
+    { id: "core-video", type: "video", kind: "video", title: "视频", category: "core", description: "生成视频或采用已有视频" },
+    { id: "core-audio", type: "audio", kind: "audio", title: "音频", category: "core", description: "生成音频或采用已有音频" },
   ], [])
   const coreNodeTypes = useMemo(() => [...processNodeTypes, ...productNodeTypes], [processNodeTypes, productNodeTypes])
   const paletteQuery = paletteSearch.trim().toLowerCase()
@@ -8608,20 +7784,14 @@ function WorkflowTemplatePanel({
       const kind = (
         plugin
           ? "plugin"
-          : kindText === "plan"
-          ? "plan"
+          : kindText === "object"
+          ? "object"
           : kindText === "collection"
           ? "collection"
-          : kindText === "canvas_text" || kindText === "canvas-text"
-          ? "canvas_text"
           : kindText === "loop"
           ? "loop"
-          : kindText === "review"
-          ? "review"
           : item.type === "image" || item.type === "video" || item.type === "audio"
           ? item.type
-          : kindText === "input"
-          ? "input"
           : "text"
       ) as WorkflowAuthoringKind
       const nodeType = workflowNodeType(plugin ? "text" : item.type)
@@ -8646,41 +7816,36 @@ function WorkflowTemplatePanel({
         : explicitChildScopeId
         ? sameScopeSteps[sameScopeSteps.length - 1]
         : explicitAfterStep || selectedInSameScope || sameScopeSteps[sameScopeSteps.length - 1]
-      const productKind = kind === "canvas_text" || kind === "image" || kind === "video" || kind === "audio"
+      const productKind = kind === "image" || kind === "video" || kind === "audio"
       const step: WorkflowTemplateStepSummary = {
         id,
         title: item.title || item.name || id,
         node_type: kind === "loop" ? "text" : nodeType,
         kind,
         depends_on: previousStep ? [previousStep.id] : [],
-        purpose: item.description || "",
-        runner: kind === "input" ? "workflow_input" : plugin ? "workflow_plugin" : productKind ? "workflow_canvas_output" : "node.run",
-        output: { type: kind === "loop" ? "text" : nodeType },
-        authoring: plugin
-          ? { kind: "plugin", plugin: item.plugin_id, plugin_node_type: item.type }
-          : { kind },
+        description: item.description || "",
+        runner: plugin ? "workflow_plugin" : productKind ? "workflow_canvas_output" : "node.run",
+        execution: "auto",
+        on_error: "stop",
       }
+      if (plugin) step.plugin = { id: item.plugin_id || "", action: item.type }
       if (productKind) {
-        step.fields = workflowDefaultCanvasProductFields(kind, previousStep?.id || "")
+        step.fields = workflowDefaultCanvasProductFields(kind)
       }
       if (kind === "loop") {
         step.role = "repeat_group"
         step.shape = "loop"
         step.child_scope_id = id
         step.has_children = true
-        step.repeat = { foreach: { from: "" } }
+        step.foreach = { items: "", as: "item" }
       }
-      if (kind === "collection") {
-        step.output = { canvas: false, type: "text", mode: "json" }
-        step.output_mode = "json"
-        step.output_schema = {
-          type: "collection",
-          items_key: "items",
+      if (kind === "collection" || kind === "object") {
+        const schema = {
           fields: [
             { id: "value", label: "内容", type: "string", required: true },
           ],
         }
-        step.collection = { kind: "llm_extracted_items" }
+        step.output = { schema }
       }
       if (targetScopeId) {
         step.repeat_group_id = targetScopeId

@@ -123,7 +123,7 @@ _GUIDANCE = {
         "没有匹配时用 skill.get 读取内置 `video_production` markdown skill，再创建或更新轻量任务和 "
         "text/image/video/audio 节点。默认成片骨架是剧本/规划 text、人物图、场景图、分镜图、video。"
         "主 Agent 规划节点图和依赖；每个节点是独立任务。可复用 workflow 编译时，workflow_spec 在隔离上下文读取相关独立 prompt skill，"
-        "把稳定写法编译进每步 prompt_template；物化后主 Agent 用 workflow.run_step/run_next/run_all 填 inputs 并启动运行，内部 runner 按模板调用 node.run。长任务先批量查询 prompt skill 形成 skill_plan，后续同类节点复用。"
+        "把稳定写法写进 V2 逻辑步骤的 prompt；物化后主 Agent 用 workflow.run_step/run_next/run_all 填 inputs 并启动运行，内部 runner 编译私有提示词阶段并调用 node.run。长任务先批量查询 prompt skill 形成 skill_plan，后续同类节点复用。"
         "用 task blocked_by 表达执行依赖，用 parent_node_id 和 fields.references "
         "自动连线表达分组与依赖；references 可用 role 区分 context、visual_reference 和 source_image。复杂阶段产出用 agent.review 做只读检查。只补问阻塞事实，用 interaction.request_input；用户继续自定义时先修订确认；15秒短视频通常不问分集分段，"
         "但仍按剧本、人物图、场景图和分镜图准备。泛化短视频只给时长时，模型可以自行选择一个具体简单概念并写入剧本/规划 text 节点。"

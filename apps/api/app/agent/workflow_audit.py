@@ -58,6 +58,59 @@ def _visible_output_ids(steps: list[dict[str, Any]]) -> list[str]:
     return [item for item in result if item]
 
 
+def _leaf_visible_output_ids(steps: list[dict[str, Any]]) -> list[str]:
+    flattened = _flatten_plan_steps(steps)
+    visible = _visible_output_ids(steps)
+    visible_set = set(visible)
+    dependencies = {
+        str(step.get("id") or ""): {str(item) for item in step.get("depends_on") or [] if str(item)}
+        for step in flattened
+        if str(step.get("id") or "")
+    }
+    loop_outputs = {
+        str(step.get("id") or ""): {
+            child_id
+            for child_id in _visible_output_ids(step.get("steps") or [])
+        }
+        for step in flattened
+        if step.get("kind") == "loop" and str(step.get("id") or "")
+    }
+    child_parent: dict[str, str] = {}
+
+    def map_parents(items: list[dict[str, Any]], parent_loop: str = "") -> None:
+        for item in items:
+            item_id = str(item.get("id") or "")
+            if item_id and parent_loop:
+                child_parent[item_id] = parent_loop
+            next_parent = item_id if item.get("kind") == "loop" else parent_loop
+            map_parents(item.get("steps") or [], next_parent)
+
+    map_parents(steps)
+
+    def ancestors(step_id: str) -> set[str]:
+        found: set[str] = set()
+        pending = list(dependencies.get(step_id) or [])
+        while pending:
+            dependency = pending.pop()
+            expanded = loop_outputs.get(dependency) if child_parent.get(step_id) != dependency else None
+            if expanded:
+                for child_id in expanded:
+                    if child_id not in found:
+                        found.add(child_id)
+                pending.extend(dependencies.get(dependency) or [])
+                continue
+            if dependency in found:
+                continue
+            found.add(dependency)
+            pending.extend(dependencies.get(dependency) or [])
+        return found
+
+    consumed: set[str] = set()
+    for step_id in visible:
+        consumed.update(ancestors(step_id) & visible_set)
+    return [step_id for step_id in visible if step_id not in consumed]
+
+
 def _repeat_groups(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for step in _flatten_plan_steps(steps):
@@ -135,7 +188,8 @@ def audit_workflow_spec(
         ], spec.id)
 
     flattened = _flatten_plan_steps(plan["steps"])
-    final_output_ids = _visible_output_ids(plan["steps"])
+    visible_output_ids = _visible_output_ids(plan["steps"])
+    final_output_ids = _leaf_visible_output_ids(plan["steps"])
     batches = _execution_batches(plan["steps"])
     deferred = private.get("deferred_groups") if isinstance(private.get("deferred_groups"), list) else []
     dry_run = {
@@ -153,6 +207,8 @@ def audit_workflow_spec(
         "repeat_groups": _repeat_groups(plan["steps"]),
         "deferred_group_ids": [str(item.get("id") or "") for item in deferred if isinstance(item, dict)],
         "executable_batches": batches,
+        "visible_output_ids": visible_output_ids,
+        "leaf_visible_output_ids": final_output_ids,
         "final_output_ids": final_output_ids,
         "reachable_final_output_ids": final_output_ids,
         "plan_hash": plan.get("plan_hash"),
@@ -168,7 +224,7 @@ def audit_workflow_spec(
         "summary": "Workflow Spec v2 audit passed.",
         "workflow_id": spec.id,
         "step_count": len(flattened),
-        "visible_output_count": len(final_output_ids),
+        "visible_output_count": len(visible_output_ids),
         "protocol": {
             "protocol_version": diagnostics.get("protocol_version"),
             "execution_plan_version": diagnostics.get("execution_plan_version"),
