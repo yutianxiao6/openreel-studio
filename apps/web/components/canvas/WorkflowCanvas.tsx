@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent, type TouchEvent as ReactTouchEvent } from "react"
 import ReactFlow, {
+  Background,
   ConnectionLineType,
   ConnectionMode,
   Controls,
@@ -4798,10 +4799,10 @@ function WorkflowSpecGraph({
   )
 }
 
-const WORKFLOW_GRAPH_NODE_WIDTH = 248
-const WORKFLOW_GRAPH_NODE_HEIGHT = 118
-const WORKFLOW_GRAPH_COLUMN_GAP = 330
-const WORKFLOW_GRAPH_LEVEL_GAP = 172
+const WORKFLOW_GRAPH_NODE_WIDTH = 272
+const WORKFLOW_GRAPH_NODE_HEIGHT = 132
+const WORKFLOW_GRAPH_COLUMN_GAP = 360
+const WORKFLOW_GRAPH_LEVEL_GAP = 190
 const WORKFLOW_GRAPH_SNAP_DISTANCE = 14
 const WORKFLOW_GRAPH_DRAG_COMMIT_DISTANCE = 10
 
@@ -5105,43 +5106,47 @@ function WorkflowEditorGraph({
       : "border-white/[0.08] bg-white/[0.035] text-zinc-300"
     const productSourceId = isProductStep ? workflowProductSourceStep(step) : ""
     const productSourceTitle = productSourceId ? workflowStepTitleById(steps, productSourceId) : ""
+    const dependencyCount = workflowCleanIdList(step.depends_on).length
     const footerText = isProductStep
       ? productSourceTitle
         ? `来自 ${productSourceTitle}`
         : "选择上游输出"
       : step.description || workflowStepKindLabel(step)
     const cardBackground = selected
-      ? "linear-gradient(135deg, rgba(8,145,178,0.22), rgba(7,11,18,0.96))"
+      ? "linear-gradient(145deg, rgba(8,145,178,0.24), rgba(9,16,25,0.98) 58%, rgba(5,9,15,0.99))"
       : isProductStep
-      ? "linear-gradient(135deg, rgba(8,47,73,0.76), rgba(6,78,59,0.38), rgba(7,11,18,0.96))"
+      ? "linear-gradient(145deg, rgba(8,47,73,0.82), rgba(6,55,60,0.42) 48%, rgba(7,11,18,0.98))"
       : childScopeId
-      ? "linear-gradient(135deg, rgba(88,28,135,0.34), rgba(7,11,18,0.94))"
-      : "linear-gradient(135deg, rgba(24,24,27,0.72), rgba(7,11,18,0.96))"
+      ? "linear-gradient(145deg, rgba(88,28,135,0.38), rgba(12,13,22,0.98) 64%)"
+      : "linear-gradient(145deg, rgba(25,31,40,0.88), rgba(7,11,18,0.98) 68%)"
     const cardShadow = selected
-      ? "0 0 0 1px rgba(103,232,249,0.28), 0 18px 34px rgba(0,0,0,0.28)"
+      ? "0 0 0 1px rgba(103,232,249,0.34), 0 20px 42px rgba(0,0,0,0.38), 0 0 30px rgba(34,211,238,0.08)"
       : isProductStep
-      ? "inset 3px 0 0 rgba(34,211,238,0.62), 0 16px 28px rgba(0,0,0,0.24)"
-      : "0 12px 24px rgba(0,0,0,0.18)"
+      ? "inset 3px 0 0 rgba(34,211,238,0.7), 0 18px 34px rgba(0,0,0,0.3)"
+      : "0 16px 30px rgba(0,0,0,0.24)"
     return {
       id: step.id,
       position,
       data: {
         label: (
           <div className="relative min-w-0">
-            <div className={cn("mb-2 inline-flex max-w-full items-center rounded border px-1.5 py-0.5 text-[9px] font-semibold", categoryClass)}>
-              <span className="truncate">{categoryLabel}</span>
+            <div className="mb-2.5 flex items-center justify-between gap-2">
+              <div className={cn("inline-flex max-w-full items-center rounded-md border px-1.5 py-0.5 text-[9px] font-semibold", categoryClass)}>
+                <span className="truncate">{categoryLabel}</span>
+              </div>
+              <span className="max-w-[112px] truncate font-mono text-[8px] tracking-wide text-zinc-600" title={step.id}>{step.id}</span>
             </div>
-            <div className="mb-2 flex items-start gap-2">
+            <div className="mb-2.5 flex items-start gap-2.5">
               <div className={cn(
-                "flex h-8 w-8 shrink-0 items-center justify-center border text-[12px] font-semibold",
-                isProductStep ? "rounded-lg shadow-[0_0_18px_rgba(34,211,238,0.12)]" : "rounded-md",
+                "flex h-9 w-9 shrink-0 items-center justify-center border text-[12px] font-semibold",
+                isProductStep ? "rounded-xl shadow-[0_0_20px_rgba(34,211,238,0.14)]" : "rounded-lg",
                 workflowStepToneClass(step),
               )}>
                 {workflowStepGraphIcon(step)}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="truncate text-[12px] font-semibold text-zinc-50">{step.title || step.id}</div>
-                <div className="mt-0.5 flex items-center gap-1.5 text-[9px] text-zinc-500">
+                <div className="truncate text-[13px] font-semibold tracking-[0.01em] text-zinc-50">{step.title || step.id}</div>
+                <div className="mt-1 flex items-center gap-1.5 text-[9px] text-zinc-500">
                   <span className="truncate">{kindLabel}</span>
                   <span className="text-zinc-700">/</span>
                   <span className="truncate">{workflowStepOutputLabel(step)}</span>
@@ -5198,9 +5203,14 @@ function WorkflowEditorGraph({
                 )}
               </div>
             </div>
-            <div className="flex min-h-5 items-center justify-between gap-2 text-[9px] text-zinc-500">
+            <div className="flex min-h-6 items-center justify-between gap-2 border-t border-white/[0.055] pt-2 text-[9px] text-zinc-500">
               <span className={cn("min-w-0 truncate", isProductStep ? "text-cyan-100/68" : "text-zinc-500")}>{footerText}</span>
               <div className="flex shrink-0 items-center gap-1">
+                {dependencyCount > 0 && (
+                  <span className="rounded-md border border-white/[0.07] bg-black/18 px-1.5 py-0.5 text-zinc-500">
+                    上游 {dependencyCount}
+                  </span>
+                )}
                 {scopeChildCount > 0 && (
                   <span className="rounded border border-violet-200/18 bg-violet-300/10 px-1.5 py-0.5 text-violet-100">
                     {scopeExpanded ? `显示 ${scopeChildCount}` : `收起 ${scopeChildCount}`}
@@ -5222,7 +5232,7 @@ function WorkflowEditorGraph({
                   {childScopeId ? "添加到循环里" : "添加下一步"}
                 </div>
                 <div className="grid gap-1 p-1.5">
-                  {insertNodeTypes.slice(0, 6).map((item) => (
+                  {insertNodeTypes.slice(0, 8).map((item) => (
                     <button
                       key={item.id}
                       type="button"
@@ -5251,11 +5261,11 @@ function WorkflowEditorGraph({
         width: WORKFLOW_GRAPH_NODE_WIDTH,
         minHeight: WORKFLOW_GRAPH_NODE_HEIGHT,
         border: `1px solid ${tone}`,
-        borderRadius: 8,
+        borderRadius: 12,
         background: cardBackground,
         boxShadow: cardShadow,
         color: "#f4f4f5",
-        padding: 10,
+        padding: 12,
         overflow: "visible",
       },
     }
@@ -5508,9 +5518,9 @@ function WorkflowEditorGraph({
       zoomOnScroll
       zoomOnPinch
       deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
-      minZoom={0.2}
+      minZoom={0.28}
       maxZoom={1.8}
-      defaultViewport={{ x: 54, y: 104, zoom: 0.82 }}
+      defaultViewport={{ x: 48, y: 96, zoom: 0.86 }}
       onInit={setFlowInstance}
       onNodesChange={handleNodesChange}
       onEdgesChange={handleEdgesChange}
@@ -5536,9 +5546,10 @@ function WorkflowEditorGraph({
         setCreateMenu(null)
         onSelectStep(null)
       }}
-      className="bg-[#080d14]"
+      className="bg-[#070b11]"
       proOptions={{ hideAttribution: true }}
     >
+      <Background color="rgba(148,163,184,0.13)" gap={22} size={1} />
       <MiniMap
         pannable
         zoomable
@@ -5557,7 +5568,7 @@ function WorkflowEditorGraph({
           <div className="border-b border-white/[0.08] px-3 py-2 text-[10px] font-semibold text-cyan-100/80">
             {createMenu.sourceStepId ? "接在这个节点后" : "在这里创建节点"}
           </div>
-          {insertNodeTypes.slice(0, 7).map((item) => (
+          {insertNodeTypes.slice(0, 8).map((item) => (
             <button
               key={item.id}
               type="button"
@@ -5859,7 +5870,7 @@ function WorkflowStepInspector({
   }, [activeTab, readOnly])
   if (!step) {
     return (
-      <aside className="flex h-full w-[380px] shrink-0 flex-col border-l border-white/10 bg-[#10151d]">
+      <aside className="flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
         <div className="border-b border-white/10 px-4 py-3">
           <div className="text-sm font-semibold text-zinc-100">运行输入与流程设置</div>
           <div className="mt-1 text-[11px] text-zinc-500">
@@ -5974,7 +5985,7 @@ function WorkflowStepInspector({
     ].filter((item) => item.value)
 
     return (
-      <aside className="flex h-full w-[380px] shrink-0 flex-col border-l border-white/10 bg-[#10151d]">
+      <aside className="flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
         <div className="flex shrink-0 items-start gap-3 border-b border-white/10 px-4 py-3">
           <div className={cn("mt-0.5 flex h-8 w-8 items-center justify-center rounded-md border text-[11px] font-semibold", workflowStepToneClass(step))}>
             {WORKFLOW_NODE_TYPE_LABEL[step.node_type]?.slice(0, 1) || "节"}
@@ -6065,7 +6076,7 @@ function WorkflowStepInspector({
 
   if (isInputStep) {
     return (
-      <aside className="flex h-full w-[380px] shrink-0 flex-col border-l border-white/10 bg-[#10151d]">
+      <aside className="flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
         <div className="flex shrink-0 items-start gap-3 border-b border-white/10 px-4 py-3">
           <div className={cn("mt-0.5 flex h-8 w-8 items-center justify-center rounded-md border text-[11px] font-semibold", workflowStepToneClass(step))}>
             入
@@ -6303,13 +6314,14 @@ function WorkflowStepInspector({
   }
 
   return (
-    <aside className="flex h-full w-[380px] shrink-0 flex-col border-l border-white/10 bg-[#10151d]">
-      <div className="flex shrink-0 items-start gap-3 border-b border-white/10 px-4 py-3">
-        <div className={cn("mt-0.5 flex h-8 w-8 items-center justify-center rounded-md border text-[11px] font-semibold", workflowStepToneClass(step))}>
+    <aside className="flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
+      <div className="flex shrink-0 items-start gap-3 border-b border-white/[0.08] bg-gradient-to-b from-white/[0.025] to-transparent px-4 py-3.5">
+        <div className={cn("mt-0.5 flex h-10 w-10 items-center justify-center rounded-xl border text-[12px] font-semibold shadow-lg shadow-black/20", workflowStepToneClass(step))}>
           {WORKFLOW_NODE_TYPE_LABEL[step.node_type]?.slice(0, 1) || "节"}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold text-zinc-50">{step.title || step.id}</div>
+          <div className="truncate text-[15px] font-semibold tracking-[0.01em] text-zinc-50">{step.title || step.id}</div>
+          <div className="mt-0.5 truncate font-mono text-[9px] tracking-wide text-zinc-600" title={step.id}>{step.id}</div>
           <div className="mt-1 flex flex-wrap gap-1.5">
             <span className={cn("rounded border px-1.5 py-0.5 text-[10px]", workflowStepToneClass(step))}>
               {WORKFLOW_AUTHORING_KIND_OPTIONS.find((item) => item.value === kind)?.label || kind}
@@ -6332,17 +6344,17 @@ function WorkflowStepInspector({
           </button>
         )}
       </div>
-      <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-white/10 bg-black/18 px-3 py-2">
+      <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-white/[0.08] bg-black/16 px-3 py-1.5">
         {templateTabs.map((tab) => (
           <button
             key={tab.value}
             type="button"
             onClick={() => setActiveTab(tab.value)}
             className={cn(
-              "h-7 shrink-0 rounded px-2.5 text-[11px] font-medium transition-colors",
+              "h-8 shrink-0 border-b-2 px-2.5 text-[11px] font-medium transition-colors",
               activeTab === tab.value
-                ? "bg-zinc-100 text-zinc-950"
-                : "text-zinc-500 hover:bg-white/[0.06] hover:text-zinc-200",
+                ? "border-cyan-300 text-cyan-50"
+                : "border-transparent text-zinc-500 hover:border-white/15 hover:text-zinc-200",
             )}
           >
             {tab.label}
@@ -6352,7 +6364,30 @@ function WorkflowStepInspector({
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         <div className="grid gap-3">
           {activeTab === "properties" && (
-          <section className="rounded-md border border-white/[0.08] bg-black/18 p-3">
+            <section className="grid grid-cols-3 gap-2">
+              {[
+                {
+                  label: "步骤角色",
+                  value: workflowStepIsCanvasProduct(step) ? "画布产物" : kind === "loop" ? "流程控制" : "处理步骤",
+                },
+                {
+                  label: "所在范围",
+                  value: currentScopeId === WORKFLOW_TEMPLATE_ROOT_SCOPE_ID ? "主流程" : workflowTemplateScopeTitle(currentScopeId, steps, undefined),
+                },
+                {
+                  label: "上游依赖",
+                  value: cleanStepDependencies.length > 0 ? `${cleanStepDependencies.length} 个步骤` : "流程起点",
+                },
+              ].map((item) => (
+                <div key={item.label} className="rounded-lg border border-white/[0.07] bg-black/18 px-2.5 py-2">
+                  <div className="text-[9px] font-semibold tracking-wide text-zinc-600">{item.label}</div>
+                  <div className="mt-1 truncate text-[11px] font-medium text-zinc-200" title={item.value}>{item.value}</div>
+                </div>
+              ))}
+            </section>
+          )}
+          {activeTab === "properties" && (
+          <section className="rounded-xl border border-white/[0.08] bg-black/18 p-3.5">
             <div className="mb-2 text-[11px] font-semibold text-zinc-300">这一步做什么</div>
             <div className="grid gap-2">
               <label className="block text-[10px] font-medium text-zinc-500">
@@ -7471,6 +7506,8 @@ function WorkflowTemplatePanel({
   const [draftRequiredInputIds, setDraftRequiredInputIds] = useState<string[]>([])
   const [draftInputSpecs, setDraftInputSpecs] = useState<Record<string, WorkflowInputDraftSpec>>({})
   const [paletteSearch, setPaletteSearch] = useState("")
+  const [toolboxOpen, setToolboxOpen] = useState(true)
+  const [inspectorOpen, setInspectorOpen] = useState(true)
   const [collapsedTemplateScopeIds, setCollapsedTemplateScopeIds] = useState<Set<string>>(() => new Set())
   const [workflowMediaProviders, setWorkflowMediaProviders] = useState<MediaProviderSummary[]>([])
   const [workflowVideoProtocols, setWorkflowVideoProtocols] = useState<VideoProtocolSummary[]>([])
@@ -7632,6 +7669,7 @@ function WorkflowTemplatePanel({
     { id: "core-loop", type: "text", kind: "loop", title: "循环", category: "core", description: "对列表里的每一项执行内部步骤" },
   ], [])
   const productNodeTypes = useMemo<WorkflowNodeTypeDefinition[]>(() => [
+    { id: "core-canvas-text", type: "text", kind: "text", title: "文本", category: "core", description: "生成画布上可见的文本节点" },
     { id: "core-image", type: "image", kind: "image", title: "图片", category: "core", description: "生成图片或采用已有图片" },
     { id: "core-video", type: "video", kind: "video", title: "视频", category: "core", description: "生成视频或采用已有视频" },
     { id: "core-audio", type: "audio", kind: "audio", title: "音频", category: "core", description: "生成音频或采用已有音频" },
@@ -7861,7 +7899,8 @@ function WorkflowTemplatePanel({
         : explicitChildScopeId
         ? sameScopeSteps[sameScopeSteps.length - 1]
         : explicitAfterStep || selectedInSameScope || sameScopeSteps[sameScopeSteps.length - 1]
-      const productKind = kind === "image" || kind === "video" || kind === "audio"
+      const canvasTextProduct = item.id === "core-canvas-text"
+      const productKind = canvasTextProduct || kind === "image" || kind === "video" || kind === "audio"
       const step: WorkflowTemplateStepSummary = {
         id,
         title: item.title || item.name || id,
@@ -7869,13 +7908,18 @@ function WorkflowTemplatePanel({
         kind,
         depends_on: previousStep ? [previousStep.id] : [],
         description: item.description || "",
-        runner: plugin ? "workflow_plugin" : productKind ? "workflow_canvas_output" : "node.run",
+        runner: plugin ? "workflow_plugin" : kind === "image" || kind === "video" || kind === "audio" ? "workflow_canvas_output" : "node.run",
         execution: "auto",
         on_error: "stop",
       }
       if (plugin) step.plugin = { id: item.plugin_id || "", action: item.type }
+      if (canvasTextProduct) {
+        step.output = { canvas: true }
+      }
       if (productKind) {
-        step.fields = workflowDefaultCanvasProductFields(kind)
+        if (kind === "image" || kind === "video" || kind === "audio") {
+          step.fields = workflowDefaultCanvasProductFields(kind)
+        }
       }
       if (kind === "loop") {
         step.role = "repeat_group"
@@ -8467,55 +8511,67 @@ function WorkflowTemplatePanel({
       )}
 
       <div className="flex min-h-0 flex-1 border-t border-white/[0.08]">
-        <aside className="flex w-[268px] shrink-0 flex-col border-r border-white/10 bg-[#0d1219]">
-          <div className="border-b border-white/10 px-3 py-2">
-            <div>
-              <div className="text-xs font-semibold text-zinc-100">工具箱</div>
-              <div className="mt-0.5 text-[10px] text-zinc-600">点这里添加，或点节点右侧 + 接下一步</div>
+        {toolboxOpen && (
+        <aside className="flex w-[260px] shrink-0 flex-col border-r border-white/[0.08] bg-[#0b1017]">
+          <div className="border-b border-white/[0.08] px-3 py-3">
+            <div className="flex items-end justify-between gap-2">
+              <div>
+                <div className="text-xs font-semibold tracking-wide text-zinc-100">步骤库</div>
+                <div className="mt-0.5 text-[10px] text-zinc-600">点选添加，或用节点右侧 + 接下一步</div>
+              </div>
+              <span className="rounded-full border border-white/[0.07] bg-white/[0.035] px-2 py-0.5 text-[9px] text-zinc-500">
+                {visibleProcessNodeTypes.length + visibleProductNodeTypes.length}
+              </span>
             </div>
             <input
               value={paletteSearch}
               onChange={(event) => setPaletteSearch(event.target.value)}
               placeholder="搜索步骤"
-              className="mt-2 h-8 w-full rounded-md border border-white/10 bg-black/28 px-2 text-xs text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-cyan-200/45"
+              className="mt-2.5 h-8 w-full rounded-lg border border-white/[0.08] bg-black/30 px-2.5 text-xs text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-cyan-200/45 focus:bg-black/45"
             />
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            <div className="grid gap-2">
-              <div className="rounded-md border border-white/[0.06] bg-white/[0.025] p-2">
-                <div className="mb-1.5 flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-semibold text-zinc-500">处理动作</span>
-                  <span className="rounded border border-white/[0.06] bg-black/20 px-1.5 py-0.5 text-[9px] text-zinc-600">仅流程内部</span>
+          <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
+            <div className="grid gap-2.5">
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.018] p-2.5">
+                <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
+                  <span className="text-[10px] font-semibold tracking-wide text-zinc-400">处理步骤</span>
+                  <span className="text-[9px] text-zinc-600">中间计算</span>
                 </div>
-                <div className="grid gap-1.5">
+                <div className="grid grid-cols-2 gap-1.5">
                   {visibleProcessNodeTypes.map((item) => (
                     <button
                       key={item.id}
                       type="button"
                       onClick={() => addDraftStep(item)}
-                      className="group min-h-12 rounded-md border border-white/[0.075] bg-black/26 px-2 py-1.5 text-left shadow-[inset_2px_0_0_rgba(148,163,184,0.20)] transition hover:border-sky-200/25 hover:bg-sky-300/[0.045] hover:shadow-[inset_2px_0_0_rgba(125,211,252,0.48)]"
+                      className="group min-h-[66px] rounded-lg border border-white/[0.07] bg-[#10161f] px-2 py-2 text-left transition hover:-translate-y-px hover:border-sky-200/25 hover:bg-sky-300/[0.05] hover:shadow-[0_8px_20px_rgba(0,0,0,0.22)]"
                     >
+                      <span className="mb-1 flex h-5 w-5 items-center justify-center rounded-md border border-sky-200/10 bg-sky-300/[0.06] text-[9px] font-bold text-sky-100/75">
+                        {String(item.title || "步").slice(0, 1)}
+                      </span>
                       <span className="block truncate text-[11px] font-semibold text-zinc-100 group-hover:text-sky-50">{item.title}</span>
-                      <span className="mt-0.5 block truncate text-[9px] text-zinc-500">{item.description}</span>
+                      <span className="mt-0.5 block truncate text-[9px] text-zinc-600">{item.description}</span>
                     </button>
                   ))}
                 </div>
               </div>
-              <div className="rounded-md border border-cyan-200/[0.14] bg-cyan-300/[0.04] p-2 shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]">
-                <div className="mb-1.5 flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-semibold text-cyan-100/70">画布产物</span>
-                  <span className="rounded border border-cyan-200/16 bg-cyan-300/[0.08] px-1.5 py-0.5 text-[9px] text-cyan-100/60">生成画布节点</span>
+              <div className="rounded-xl border border-cyan-200/[0.12] bg-gradient-to-b from-cyan-300/[0.045] to-cyan-300/[0.015] p-2.5 shadow-[inset_0_1px_0_rgba(103,232,249,0.08)]">
+                <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
+                  <span className="text-[10px] font-semibold tracking-wide text-cyan-100/80">画布产物</span>
+                  <span className="text-[9px] text-cyan-100/45">用户可见节点</span>
                 </div>
-                <div className="grid gap-1.5">
+                <div className="grid grid-cols-2 gap-1.5">
                   {visibleProductNodeTypes.map((item) => (
                     <button
                       key={item.id}
                       type="button"
                       onClick={() => addDraftStep(item)}
-                      className="group min-h-12 rounded-md border border-cyan-200/[0.14] bg-[#06151d]/75 px-2 py-1.5 text-left shadow-[inset_3px_0_0_rgba(34,211,238,0.45)] transition hover:border-cyan-200/45 hover:bg-cyan-300/[0.075] hover:shadow-[inset_3px_0_0_rgba(103,232,249,0.86)]"
+                      className="group min-h-[66px] rounded-lg border border-cyan-200/[0.13] bg-[#07151d]/88 px-2 py-2 text-left transition hover:-translate-y-px hover:border-cyan-200/40 hover:bg-cyan-300/[0.08] hover:shadow-[0_9px_22px_rgba(6,182,212,0.08)]"
                     >
+                      <span className="mb-1 flex h-5 w-5 items-center justify-center rounded-md border border-cyan-200/18 bg-cyan-300/[0.11] text-[9px] font-bold text-cyan-50">
+                        {String(item.title || "产").slice(0, 1)}
+                      </span>
                       <span className="block truncate text-[11px] font-semibold text-cyan-50">{item.title}</span>
-                      <span className="mt-0.5 block truncate text-[9px] text-cyan-100/48">{item.description}</span>
+                      <span className="mt-0.5 block truncate text-[9px] text-cyan-100/42">{item.description}</span>
                     </button>
                   ))}
                 </div>
@@ -8559,6 +8615,7 @@ function WorkflowTemplatePanel({
             </div>
           </div>
         </aside>
+        )}
         <main className="relative min-w-0 flex-1 bg-[#080d14]">
           <div className="absolute left-3 top-3 z-20 flex max-w-[calc(100%-24px)] items-center gap-2 rounded-md border border-white/10 bg-[#10151d]/88 px-2 py-1.5 text-[10px] text-zinc-500 shadow-xl shadow-black/25 backdrop-blur">
             <span className="flex min-w-0 shrink-0 items-center gap-1 text-zinc-300">
@@ -8569,7 +8626,10 @@ function WorkflowTemplatePanel({
             <span>步骤 {displayedSteps.length}</span>
             <button
               type="button"
-              onClick={() => setDetailStepId(null)}
+              onClick={() => {
+                setDetailStepId(null)
+                setInspectorOpen(true)
+              }}
               className={cn(
                 "flex h-6 items-center gap-1.5 rounded border px-2 text-[10px] font-semibold transition",
                 detailStepId === null
@@ -8593,13 +8653,43 @@ function WorkflowTemplatePanel({
                 自动对齐
               </button>
             )}
+            <span className="h-4 w-px bg-white/[0.08]" />
+            <button
+              type="button"
+              onClick={() => setToolboxOpen((current) => !current)}
+              className={cn(
+                "h-6 rounded border px-2 text-[10px] font-semibold transition",
+                toolboxOpen
+                  ? "border-white/[0.09] bg-white/[0.055] text-zinc-300"
+                  : "border-cyan-200/22 bg-cyan-300/[0.08] text-cyan-100",
+              )}
+              title={toolboxOpen ? "收起步骤库，扩大流程画布" : "打开步骤库"}
+            >
+              步骤库
+            </button>
+            <button
+              type="button"
+              onClick={() => setInspectorOpen((current) => !current)}
+              className={cn(
+                "h-6 rounded border px-2 text-[10px] font-semibold transition",
+                inspectorOpen
+                  ? "border-white/[0.09] bg-white/[0.055] text-zinc-300"
+                  : "border-cyan-200/22 bg-cyan-300/[0.08] text-cyan-100",
+              )}
+              title={inspectorOpen ? "收起详情栏，扩大流程画布" : "打开详情栏"}
+            >
+              详情
+            </button>
           </div>
           {displayedSteps.length > 0 ? (
             <WorkflowEditorGraph
               steps={displayedSteps}
               nodeStates={nodeStates}
               selectedStepId={detailStepId || ""}
-              onSelectStep={setDetailStepId}
+              onSelectStep={(stepId) => {
+                setDetailStepId(stepId)
+                if (stepId) setInspectorOpen(true)
+              }}
               onRunStep={onRunStep}
               onMoveStep={moveDraftStep}
               onConnectSteps={connectDraftSteps}
@@ -8621,7 +8711,8 @@ function WorkflowTemplatePanel({
             </div>
           )}
         </main>
-        <WorkflowStepInspector
+        {inspectorOpen && (
+          <WorkflowStepInspector
             step={detailStep}
             steps={draftSteps}
             nodeState={undefined}
@@ -8660,6 +8751,7 @@ function WorkflowTemplatePanel({
             onMoveStepScope={moveDraftStepScope}
             onDeleteStep={deleteDraftStep}
           />
+        )}
       </div>
     </section>
   )
