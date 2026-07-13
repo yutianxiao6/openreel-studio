@@ -3343,16 +3343,17 @@ function WorkflowRunDock({
       )}
       <div
         data-openreel-workflow-ui="true"
+        data-openreel-workflow-dock="true"
         className={cn(
-          "absolute bottom-5 z-40 rounded-2xl border border-white/[0.10] bg-[#0e141d]/96 shadow-2xl shadow-black/50 backdrop-blur-xl",
+          "absolute bottom-5 z-40 flex max-h-[min(72vh,680px)] flex-col overflow-hidden rounded-2xl border border-white/[0.10] bg-[#0e141d]/96 shadow-2xl shadow-black/50 backdrop-blur-xl",
           showSideDrawer
-            ? "left-4 right-[456px] max-lg:right-[432px] max-md:left-3 max-md:right-3"
+            ? "left-[calc(50%-220px)] w-[min(760px,calc(100%-472px))] -translate-x-1/2 max-lg:left-[calc(50%-208px)] max-lg:w-[min(760px,calc(100%-448px))] max-md:left-3 max-md:right-3 max-md:w-auto max-md:translate-x-0"
             : "left-[43%] w-[min(760px,calc(100%-440px))] -translate-x-1/2 max-md:left-3 max-md:right-3 max-md:w-auto max-md:translate-x-0",
         )}
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center gap-2 border-b border-white/[0.08] px-3 py-2">
+        <div data-openreel-workflow-dock-header="true" className="flex shrink-0 items-center gap-2 border-b border-white/[0.08] bg-[#0e141d]/98 px-3 py-2">
         <div className="min-w-0">
           <div className="text-xs font-semibold text-zinc-100">流程运行</div>
           <div className="text-[10px] text-zinc-500">可添加多个流程，并行运行；编辑仍在流程面板</div>
@@ -3386,7 +3387,7 @@ function WorkflowRunDock({
           </button>
         </div>
       </div>
-        <div className="max-h-[48vh] overflow-y-auto p-2">
+        <div data-openreel-workflow-runtime-list="true" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">
         {runtimes.length === 0 ? (
           <div className="flex min-h-16 items-center justify-center rounded-xl border border-dashed border-white/[0.10] bg-white/[0.025] text-xs text-zinc-500">
             添加一个流程后，可以在这里运行并查看每一步状态。
@@ -3424,8 +3425,8 @@ function WorkflowRunDock({
               const runningAllActive = runningAll || (hasRunningSteps && !pausing && !paused && !deleting && !done)
               const error = errors[runtimeId]
               return (
-                <div key={runtimeId} className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-2 shadow-xl shadow-black/20">
-                  <div className="flex items-center gap-2">
+                <div key={runtimeId} data-openreel-workflow-runtime-card="true" className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.035] p-2 shadow-xl shadow-black/20">
+                  <div data-openreel-workflow-runtime-actions="true" className="sticky top-0 z-20 flex shrink-0 items-center gap-2 rounded-lg bg-[#121923]/98 py-0.5 shadow-[0_6px_16px_rgba(0,0,0,0.22)]">
                     <button
                       type="button"
                       onClick={() => onToggleExpanded(runtimeId)}
@@ -3518,7 +3519,7 @@ function WorkflowRunDock({
                     </button>
                   </div>
                   {inputPanelOpen && (
-                    <section className="mt-2 rounded-xl border border-amber-200/16 bg-amber-300/[0.045] p-3">
+                    <section data-openreel-workflow-runtime-inputs="true" className="mt-2 max-h-[min(34vh,360px)] shrink-0 overflow-y-auto overscroll-contain rounded-xl border border-amber-200/16 bg-amber-300/[0.045] p-3">
                       <div className="mb-2 flex items-start justify-between gap-3">
                         <div>
                           <div className="text-xs font-semibold text-amber-100">本次运行输入</div>
@@ -3543,7 +3544,7 @@ function WorkflowRunDock({
                       />
                     </section>
                   )}
-                  <div className="mt-2 overflow-x-auto pb-1">
+                  <div data-openreel-workflow-runtime-steps="true" className="mt-2 max-h-[min(24vh,220px)] min-h-0 overflow-auto overscroll-contain pb-1">
                     <div className="flex min-w-max items-start gap-3">
                       {treeColumns.map((column, columnIndex) => (
                         <div key={`${runtimeId}:column:${columnIndex}`} className="relative flex min-w-[136px] flex-col gap-1.5">
