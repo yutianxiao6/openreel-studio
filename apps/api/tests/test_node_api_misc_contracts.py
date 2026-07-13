@@ -35,6 +35,27 @@ def test_public_node_types_are_generic_only():
     assert set(node_universal._NODE_FIELD_SCHEMA) == {"text", "image", "video", "audio"}
 
 
+def test_image_render_freshness_ignores_duplicate_prompt_storage() -> None:
+    assert routes_projects._image_render_inputs_changed(
+        {"resolution": "1024x1792"},
+        {"prompt": "同一提示词", "resolution": "1024x1792"},
+        "同一提示词",
+        "同一提示词",
+    ) is False
+    assert routes_projects._image_render_inputs_changed(
+        {"resolution": "1024x1792"},
+        {"prompt": "新提示词", "resolution": "1024x1792"},
+        "原提示词",
+        "新提示词",
+    ) is True
+    assert routes_projects._image_render_inputs_changed(
+        {"resolution": "1024x1792"},
+        {"resolution": "1792x1024"},
+        "同一提示词",
+        "同一提示词",
+    ) is True
+
+
 @pytest.mark.asyncio
 async def test_media_provider_falls_back_to_first_enabled_when_no_active_provider(
     monkeypatch: pytest.MonkeyPatch,

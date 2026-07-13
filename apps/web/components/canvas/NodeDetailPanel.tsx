@@ -3281,13 +3281,14 @@ function concreteDraftStateFromNode(
   const draft = draftWithConcreteMediaProvider(node, raw, providers, llmProviders, modelDefaults)
   return {
     draft,
-    dirty: !editableDraftEquals(raw, draft),
+    dirty: false,
   }
 }
 
 function payloadFromDraft(
   node: NodeFull,
   draft: EditableNodeDraft,
+  baselineDraft: EditableNodeDraft | null,
   audioMode: AudioProviderMode = "unknown",
   referenceMentionCandidates: ReferenceMentionCandidate[] = [],
   referenceImageLimit?: number,
@@ -3298,18 +3299,21 @@ function payloadFromDraft(
   output?: unknown
 } {
   const currentRaw = rawNodeInput(node.input)
-  const output = asObj(parseJson(node.output)) || {}
   const nextInput: Record<string, unknown> = { ...currentRaw }
   const title = draft.title.trim() || node.title || "未命名节点"
   const prompt = draft.prompt.trim()
+  const promptChanged = !baselineDraft || draft.prompt !== baselineDraft.prompt
+  const draftFieldChanged = <K extends keyof EditableNodeDraft>(key: K) => (
+    !baselineDraft || JSON.stringify(baselineDraft[key]) !== JSON.stringify(draft[key])
+  )
+  const shouldPersistField = (key: keyof EditableNodeDraft, ...inputKeys: string[]) => (
+    inputKeys.some((inputKey) => hasOwnKey(currentRaw, inputKey)) || draftFieldChanged(key)
+  )
 
   nextInput.title = title
   const currentFields = asObj(currentRaw.fields)
   const currentFieldsHasReferenceImages = currentFields ? hasOwnKey(currentFields, "reference_images") : false
-  const currentHasReferenceFields = ["depends_on", "reference_images", "references"].some((key) =>
-    hasOwnKey(currentRaw, key) || Boolean(currentFields && hasOwnKey(currentFields, key)),
-  )
-  const outputHasReferenceImages = hasOwnKey(output, "reference_images") || stringArrayFromUnknown(output.reference_images).length > 0
+  const referenceImagesChanged = draftFieldChanged("reference_images")
   const rawReferenceImages = node.type === "video"
     ? Array.from(new Set([
       ...draft.reference_images,
@@ -3320,18 +3324,14 @@ function payloadFromDraft(
   const effectiveReferenceImages = referenceImageLimit !== undefined
     ? rawReferenceImages.slice(0, Math.max(0, referenceImageLimit))
     : rawReferenceImages
-  const hadPersistableReferenceImages = [
-    ...stringArrayFromUnknown(currentRaw.reference_images),
-    ...(currentFields ? stringArrayFromUnknown(currentFields.reference_images) : []),
-  ].some(isPersistableReferenceImageValue)
   const referenceMentions = referenceImageMentionsFromPrompt(prompt, referenceMentionCandidates, effectiveReferenceImages)
-  if (hadPersistableReferenceImages || outputHasReferenceImages || referenceImages.length > 0) {
+  if (referenceImagesChanged) {
     nextInput.reference_images = referenceImages
-  } else {
-    delete nextInput.reference_images
   }
-  if (referenceMentions.length > 0) nextInput.reference_image_mentions = referenceMentions
-  else delete nextInput.reference_image_mentions
+  if (hasOwnKey(currentRaw, "reference_image_mentions") || referenceImagesChanged || promptChanged) {
+    if (referenceMentions.length > 0) nextInput.reference_image_mentions = referenceMentions
+    else delete nextInput.reference_image_mentions
+  }
   const previousEditableRefs = Array.from(new Set([
     ...stringArrayFromUnknown(currentRaw.reference_images),
     ...stringArrayFromUnknown(currentRaw.references),
@@ -3352,17 +3352,17 @@ function payloadFromDraft(
   }
   if (currentFields) {
     const nextFields = { ...currentFields }
-    if (currentFieldsHasReferenceImages) {
+    if (currentFieldsHasReferenceImages && referenceImagesChanged) {
       nextFields.reference_images = referenceImages
     }
-    if (hasOwnKey(currentFields, "reference_image_mentions") || referenceMentions.length > 0) {
+    if ((referenceImagesChanged || promptChanged) && (hasOwnKey(currentFields, "reference_image_mentions") || referenceMentions.length > 0)) {
       if (referenceMentions.length > 0) nextFields.reference_image_mentions = referenceMentions
       else delete nextFields.reference_image_mentions
     }
     const cleanedFields = removedReferenceNodeIds.size > 0
       ? removeNodeReferencesFromContainer(nextFields, removedReferenceNodeIds)
       : { next: nextFields, changed: false }
-    if (currentFieldsHasReferenceImages || hasOwnKey(currentFields, "reference_image_mentions") || referenceMentions.length > 0 || cleanedFields.changed) {
+    if ((currentFieldsHasReferenceImages && referenceImagesChanged) || ((referenceImagesChanged || promptChanged) && (hasOwnKey(currentFields, "reference_image_mentions") || referenceMentions.length > 0)) || cleanedFields.changed) {
       nextInput.fields = cleanedFields.next
     }
   }
@@ -3375,20 +3375,32 @@ function payloadFromDraft(
     nextInput.content = textContent
     if (prompt) nextInput.prompt = prompt
     else delete nextInput.prompt
-  } else {
+  } else if (node.type !== "image" || hasOwnKey(currentRaw, "prompt") || promptChanged) {
     nextInput.prompt = prompt
+  } else {
+    delete nextInput.prompt
   }
 
   if (node.type === "image") {
     const model = draft.model.trim()
-    if (model) nextInput.model = model
-    else delete nextInput.model
-    nextInput.aspect_ratio = draft.aspect_ratio.trim()
-    nextInput.resolution = draft.resolution.trim()
-    nextInput.quality = draft.quality.trim()
-    const clarity = draft.clarity.trim()
-    if (clarity) nextInput.clarity = clarity
-    else delete nextInput.clarity
+    if (shouldPersistField("model", "model")) {
+      if (model) nextInput.model = model
+      else delete nextInput.model
+    }
+    if (shouldPersistField("aspect_ratio", "aspect_ratio")) {
+      nextInput.aspect_ratio = draft.aspect_ratio.trim()
+    }
+    if (shouldPersistField("resolution", "resolution", "size")) {
+      nextInput.resolution = draft.resolution.trim()
+    }
+    if (shouldPersistField("quality", "quality")) {
+      nextInput.quality = draft.quality.trim()
+    }
+    if (shouldPersistField("clarity", "clarity")) {
+      const clarity = draft.clarity.trim()
+      if (clarity) nextInput.clarity = clarity
+      else delete nextInput.clarity
+    }
   }
 
   if (node.type === "video") {
@@ -7339,6 +7351,7 @@ export default function NodeDetailPanel({
   const mountedRef = useRef(false)
   const dataRef = useRef<NodeFull | null>(null)
   const draftRef = useRef<EditableNodeDraft>(EMPTY_DRAFT)
+  const draftBaselineRef = useRef<EditableNodeDraft>(EMPTY_DRAFT)
   const draftDirtyRef = useRef(false)
   const currentProjectIdRef = useRef<string | null | undefined>(currentProjectId)
   const selectedAudioModeRef = useRef<AudioProviderMode>("unknown")
@@ -7434,6 +7447,7 @@ export default function NodeDetailPanel({
   useEffect(() => {
     setDraft(EMPTY_DRAFT)
     draftRef.current = EMPTY_DRAFT
+    draftBaselineRef.current = EMPTY_DRAFT
     setDraftDirty(false)
     draftDirtyRef.current = false
     setSaving(false)
@@ -7450,6 +7464,7 @@ export default function NodeDetailPanel({
       const next = concreteDraftStateFromNode(data, mediaProviders, llmProviders, modelDefaults)
       setDraft(next.draft)
       draftRef.current = next.draft
+      draftBaselineRef.current = next.draft
       setDraftDirty(next.dirty)
       draftDirtyRef.current = next.dirty
     }
@@ -7460,6 +7475,7 @@ export default function NodeDetailPanel({
     const next = concreteDraftStateFromNode(data, mediaProviders, llmProviders, modelDefaults)
     setDraft(next.draft)
     draftRef.current = next.draft
+    draftBaselineRef.current = next.draft
     setDraftDirty(next.dirty)
     draftDirtyRef.current = next.dirty
   }, [data, editRequestKey, mediaProviders, llmProviders, modelDefaults])
@@ -7574,10 +7590,9 @@ export default function NodeDetailPanel({
     setDraft((current) => {
       const next = { ...current, ...patch }
       draftRef.current = next
-      if (!editableDraftEquals(current, next)) {
-        draftDirtyRef.current = true
-        setDraftDirty(true)
-      }
+      const nextDirty = !editableDraftEquals(draftBaselineRef.current, next)
+      draftDirtyRef.current = nextDirty
+      setDraftDirty(nextDirty)
       return next
     })
   }
@@ -7605,11 +7620,11 @@ export default function NodeDetailPanel({
       const refs = uploaded
         .map((item) => item.rel_path || item.url || item.mention || "")
         .filter(Boolean)
-      setDraft((current) => ({
-        ...current,
-        reference_images: Array.from(new Set([...current.reference_images, ...refs])),
-      }))
-      if (refs.length > 0) setDraftDirty(true)
+      if (refs.length > 0) {
+        updateDraft({
+          reference_images: Array.from(new Set([...draftRef.current.reference_images, ...refs])),
+        })
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -7627,7 +7642,10 @@ export default function NodeDetailPanel({
       setData(result)
       const next = concreteDraftStateFromNode(result, mediaProviders, llmProviders, modelDefaults)
       setDraft(next.draft)
+      draftRef.current = next.draft
+      draftBaselineRef.current = next.draft
       setDraftDirty(next.dirty)
+      draftDirtyRef.current = next.dirty
       updateCanvasNode(result.id, canvasPatchFromNode(result))
       setDetailReloadTick((tick) => tick + 1)
     } catch (err) {
@@ -7653,6 +7671,7 @@ export default function NodeDetailPanel({
         payloadFromDraft(
           node,
           draftRef.current,
+          draftBaselineRef.current,
           selectedAudioModeRef.current,
           referenceMentionCandidatesRef.current,
           node.type === "video"
@@ -7669,6 +7688,7 @@ export default function NodeDetailPanel({
       )
       dataRef.current = result
       draftRef.current = next.draft
+      draftBaselineRef.current = next.draft
       draftDirtyRef.current = next.dirty
       if (updateState && mountedRef.current) {
         setData(result)
@@ -7727,7 +7747,10 @@ export default function NodeDetailPanel({
       setData(result)
       const next = concreteDraftStateFromNode(result, mediaProviders, llmProviders, modelDefaults)
       setDraft(next.draft)
+      draftRef.current = next.draft
+      draftBaselineRef.current = next.draft
       setDraftDirty(next.dirty)
+      draftDirtyRef.current = next.dirty
       updateCanvasNode(result.id, canvasPatchFromNode(result))
       setDetailReloadTick((tick) => tick + 1)
     } catch (err) {

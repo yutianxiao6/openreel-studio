@@ -654,7 +654,6 @@ def _has_dependency_fields(data: dict[str, Any]) -> bool:
 
 
 _IMAGE_RENDER_FRESHNESS_KEYS = {
-    "prompt",
     "image_prompt",
     "visual_prompt",
     "negative_prompt",
@@ -684,7 +683,9 @@ def _image_render_inputs_changed(
     old_prompt: str,
     new_prompt: str,
 ) -> bool:
-    if old_prompt.strip() != new_prompt.strip():
+    old_effective_prompt = old_prompt.strip() or str(old_input.get("prompt") or "").strip()
+    new_effective_prompt = new_prompt.strip() or str(new_input.get("prompt") or "").strip()
+    if old_effective_prompt != new_effective_prompt:
         return True
     for key in _IMAGE_RENDER_FRESHNESS_KEYS:
         if _stable_json(old_input.get(key)) != _stable_json(new_input.get(key)):
