@@ -3347,7 +3347,7 @@ function WorkflowRunDock({
         className={cn(
           "absolute bottom-5 z-40 flex max-h-[min(72vh,680px)] flex-col overflow-hidden rounded-2xl border border-white/[0.10] bg-[#0e141d]/96 shadow-2xl shadow-black/50 backdrop-blur-xl",
           showSideDrawer
-            ? "left-[calc(50%-220px)] w-[min(760px,calc(100%-472px))] -translate-x-1/2 max-lg:left-[calc(50%-208px)] max-lg:w-[min(760px,calc(100%-448px))] max-md:left-3 max-md:right-3 max-md:w-auto max-md:translate-x-0"
+            ? "left-[calc(50%-220px)] w-[min(760px,calc(100%-440px))] -translate-x-1/2 max-md:left-3 max-md:right-3 max-md:w-auto max-md:translate-x-0"
             : "left-[43%] w-[min(760px,calc(100%-440px))] -translate-x-1/2 max-md:left-3 max-md:right-3 max-md:w-auto max-md:translate-x-0",
         )}
         onClick={(event) => event.stopPropagation()}
