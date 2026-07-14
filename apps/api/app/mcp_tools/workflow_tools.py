@@ -7615,6 +7615,7 @@ async def _emit_canvas_action(project_id: str, action: str, payload: dict[str, A
     ),
     usage_hints=[
         "workflow 统一使用 schema='openreel.workflow.v2'。",
+        "通用有界反馈循环使用固定 foreach.count(1..10)、foreach.until 和 {{ previous }}；门控来源必须是每轮必跑的终点子步骤。",
         "需要看图写提示词使用 uses.as=['vision']；媒体生成参考使用 reference。",
         "第三方步骤使用 namespaced plugin.id；插件不可用时保存和运行前报错。",
         "可移植 spec 不写 provider、model、tier 或私有运行字段。",

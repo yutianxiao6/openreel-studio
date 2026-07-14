@@ -393,7 +393,72 @@ def _field_refs(step: dict[str, Any]) -> list[str]:
         ref = _relation_id(value)
         if ref and ref not in refs:
             refs.append(ref)
+    for value in _coerce_list(step.get("context_refs")):
+        ref = _relation_id(value)
+        if ref and ref not in refs:
+            refs.append(ref)
     return refs
+
+
+def _projected_ref_id(
+    ref: str,
+    *,
+    target: dict[str, Any],
+    steps: list[dict[str, Any]],
+) -> str:
+    step_ids = {
+        str(step.get("id") or "").strip()
+        for step in steps
+        if str(step.get("id") or "").strip()
+    }
+    if ref in step_ids:
+        return ref
+    candidates = [
+        step
+        for step in steps
+        if str(step.get("template_step_id") or "").strip() == ref
+    ]
+    if not candidates:
+        return ref
+
+    target_group = str(target.get("repeat_group_id") or "").strip()
+    target_index = target.get("repeat_group_index")
+    same_attempt = [
+        step
+        for step in candidates
+        if target_group
+        and str(step.get("repeat_group_id") or "").strip() == target_group
+        and step.get("repeat_group_index") == target_index
+    ]
+    if same_attempt:
+        candidates = same_attempt
+
+    target_id = str(target.get("id") or "")
+
+    def candidate_key(item: dict[str, Any]) -> tuple[int, int, int]:
+        candidate_id = str(item.get("id") or "")
+        prefix_length = 0
+        for left, right in zip(target_id, candidate_id):
+            if left != right:
+                break
+            prefix_length += 1
+        repeat_index = item.get("repeat_group_index")
+        return (
+            prefix_length,
+            int(repeat_index) if isinstance(repeat_index, int) else 0,
+            steps.index(item),
+        )
+
+    return str(max(candidates, key=candidate_key).get("id") or ref).strip() or ref
+
+
+def _projected_refs(step: dict[str, Any], steps: list[dict[str, Any]]) -> list[str]:
+    result: list[str] = []
+    for ref in _field_refs(step):
+        resolved = _projected_ref_id(ref, target=step, steps=steps)
+        if resolved and resolved not in result:
+            result.append(resolved)
+    return result
 
 
 def _source_step(step: dict[str, Any]) -> str:
@@ -426,7 +491,7 @@ def _prompt_summary(step: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
-def _step_node(step: dict[str, Any]) -> dict[str, Any]:
+def _step_node(step: dict[str, Any], steps: list[dict[str, Any]]) -> dict[str, Any]:
     step_id = str(step.get("id") or "").strip()
     fields = step.get("fields") if isinstance(step.get("fields"), dict) else {}
     result = {
@@ -439,7 +504,7 @@ def _step_node(step: dict[str, Any]) -> dict[str, Any]:
         "phase": str(step.get("phase") or "").strip(),
         "group": str(step.get("group") or "").strip(),
         "depends_on": _step_deps(step),
-        "references": _field_refs(step),
+        "references": _projected_refs(step, steps),
         "repeat_group_id": str(step.get("repeat_group_id") or "").strip(),
         "repeat_group_label": str(step.get("repeat_group_label") or "").strip(),
         "repeat_group_index": step.get("repeat_group_index"),
@@ -469,7 +534,7 @@ def _step_node(step: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in result.items() if value not in (None, "", [], {})}
 
 
-def _canvas_node(step: dict[str, Any]) -> dict[str, Any]:
+def _canvas_node(step: dict[str, Any], steps: list[dict[str, Any]]) -> dict[str, Any]:
     step_id = str(step.get("id") or "").strip()
     fields = step.get("fields") if isinstance(step.get("fields"), dict) else {}
     node_type = _canvas_node_type(step)
@@ -480,7 +545,7 @@ def _canvas_node(step: dict[str, Any]) -> dict[str, Any]:
         "title": str(step.get("title") or step_id).strip(),
         "type": node_type,
         "depends_on": _step_deps(step),
-        "references": _field_refs(step),
+        "references": _projected_refs(step, steps),
         "source_step": source_step,
         "source_path": _source_path(step),
         "generated_by_node_run": bool(fields.get("workflow_generate", node_type in {"image", "video", "audio"})),
@@ -516,7 +581,7 @@ def _edges(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if key not in seen:
                 seen.add(key)
                 result.append({"source": dep, "target": target, "kind": "depends_on"})
-        for ref in _field_refs(step):
+        for ref in _projected_refs(step, steps):
             if ref not in step_ids:
                 continue
             key = (ref, target, "reference")
@@ -571,9 +636,9 @@ def project_workflow_canvas(
     )
     audit = audit_workflow_spec(raw_workflow, normalized=normalized, sample_inputs=input_values)
     steps = [step for step in normalized.get("steps") or [] if isinstance(step, dict)]
-    flow_nodes = [_step_node(step) for step in steps]
+    flow_nodes = [_step_node(step, steps) for step in steps]
     canvas_nodes = [
-        _canvas_node(step)
+        _canvas_node(step, steps)
         for step in steps
         if _step_surface(step) == "draft_canvas" and not _is_virtual_step(step)
     ]

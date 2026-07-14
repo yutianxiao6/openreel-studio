@@ -350,10 +350,16 @@ def test_v2_protocol_info_exposes_generic_bounded_feedback_loop_contract() -> No
         "count_min": 1,
         "count_max": 10,
         "path": "steps.<child>.output...",
+        "gate_source": "direct_terminal_child",
+        "gate_source_must_run_each_attempt": True,
+        "gate_source_on_error": "stop",
+        "gate_source_when": "unsupported",
         "operators": [
             "eq", "ne", "lt", "lte", "gt", "gte", "empty", "not_empty",
         ],
         "previous_context": "{{ previous }}",
+        "feedback_wiring": "forward_only_runtime_dependency",
+        "downstream_dependency": "loop_step",
         "exhaustion": "stop_downstream",
     }
 
@@ -929,6 +935,62 @@ def test_v2_feedback_loop_downstream_selects_latest_completed_attempt() -> None:
     }
 
 
+def test_v2_feedback_loop_projection_maps_context_refs_to_latest_attempt() -> None:
+    payload = _bounded_feedback_loop_spec()
+    loop = payload["steps"][0]
+    loop["steps"][0] = {
+        "id": "generate",
+        "title": "生成图片",
+        "kind": "image",
+        "prompt": {"task": "生成候选图片；上一轮审核：{{ previous }}"},
+    }
+    loop["steps"][1]["uses"] = [{"from": "generate", "as": ["vision"]}]
+    payload["steps"][1] = {
+        "id": "result",
+        "title": "最终视频",
+        "kind": "video",
+        "needs": ["quality_loop"],
+        "uses": [{"from": "generate", "as": ["vision", "reference"]}],
+        "prompt": {"task": "查看通过审核的图片并生成视频。"},
+    }
+
+    first = workflow_canvas_projection.project_workflow_canvas(
+        project_id="feedback-projection",
+        workflow=payload,
+    )
+    first_final = next(node for node in first["canvas"]["nodes"] if node["id"] == "result")
+
+    assert first["ok"] is True
+    assert first_final["references"] == ["quality_loop_i1_generate"]
+    assert {
+        (edge["source"], edge["target"], edge["kind"])
+        for edge in first["canvas"]["edges"]
+    } >= {("quality_loop_i1_generate", "result", "reference")}
+
+    second = workflow_canvas_projection.project_workflow_canvas(
+        project_id="feedback-projection",
+        workflow=payload,
+        context={
+            "quality_loop_i1_quality_review": {
+                "status": "completed",
+                "output": {
+                    "score": 60,
+                    "summary": "需要修订",
+                    "regeneration_instruction": "重做",
+                },
+            }
+        },
+    )
+    second_final = next(node for node in second["canvas"]["nodes"] if node["id"] == "result")
+
+    assert second["ok"] is True
+    assert second_final["references"] == ["quality_loop_i2_generate"]
+    assert {
+        (edge["source"], edge["target"], edge["kind"])
+        for edge in second["canvas"]["edges"]
+    } >= {("quality_loop_i2_generate", "result", "reference")}
+
+
 def test_v2_feedback_loop_direct_downstream_requires_a_matched_gate() -> None:
     payload = _bounded_feedback_loop_spec()
     context = {
@@ -1483,6 +1545,7 @@ def test_workflow_build_guide_documents_v2_high_frequency_errors() -> None:
     assert "openreel.workflow.v2" in WORKFLOW_SPEC_V2_GUIDE
     assert "Use `text`, never `string`" in WORKFLOW_SPEC_V2_GUIDE
     assert "Input types are exactly" in WORKFLOW_SPEC_V2_GUIDE
+    assert "`inputs` is an object map keyed by input id, never an array" in WORKFLOW_SPEC_V2_GUIDE
     assert "vision" in WORKFLOW_SPEC_V2_GUIDE
     assert "reference" in WORKFLOW_SPEC_V2_GUIDE
     assert "select.values" in WORKFLOW_SPEC_V2_GUIDE
@@ -1491,6 +1554,12 @@ def test_workflow_build_guide_documents_v2_high_frequency_errors() -> None:
     assert "Direct media adoption" in WORKFLOW_SPEC_V2_GUIDE
     assert "Do not create prompt sibling steps" in WORKFLOW_SPEC_V2_GUIDE
     assert "provider/model routing" in WORKFLOW_SPEC_V2_GUIDE
+    assert "foreach.until" in WORKFLOW_SPEC_V2_GUIDE
+    assert "{{ previous }}" in WORKFLOW_SPEC_V2_GUIDE
+    assert "terminal: no sibling may depend on it" in WORKFLOW_SPEC_V2_GUIDE
+    assert 'uses:[{"from":"candidate","as":["vision"]}]' in WORKFLOW_SPEC_V2_GUIDE
+    assert "workflow_loop_until_exhausted" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Downstream steps depend on `quality_loop`" in WORKFLOW_SPEC_V2_GUIDE
     assert "openreel.workflow.authoring.v1" not in WORKFLOW_SPEC_V2_GUIDE
 
 

@@ -35,7 +35,7 @@ input -> episode_plan? -> script -> plan_characters_scenes -> main_characters ->
 每集每段流程：
 
 ```text
-segment_script -> segment_script_canvas -> minor_characters -> scene -> scene_reference -> plan_frames -> storyboard -> video_prompt -> final_video
+segment_script -> segment_script_canvas -> minor_characters -> scene -> scene_reference -> plan_frames -> (storyboard -> storyboard_review) feedback loop -> video_prompt -> final_video
 ```
 
 `episode_plan` 只在多集时运行。分段数量由 `durationSeconds / segmentSeconds` 向上取整得到。`script` 生成完整剧本正文；每个 `segment_script` 再把当前段剧本拆成独立正文，并由 `segment_script_canvas` 同步到画布。分镜格数由 `plan_frames` 提示词根据当前段动作复杂度决定，普通段落默认四宫格，复杂段落可增加。`minor_characters` 没有配角时可跳过。
@@ -62,3 +62,13 @@ segment_script -> segment_script_canvas -> minor_characters -> scene -> scene_re
 - 视频提示词：`video_prompt`
 
 节点运行阶段以模板公开步骤里的 `prompt` 为准，运行器会生成私有提示词阶段。需要局部改提示词时，修改对应步骤的 `prompt`，再重跑该步骤及受影响下游。
+
+## 分镜审核反馈循环
+
+默认模板把分镜生成与分镜审核放进通用 V2 有界反馈循环。循环不是分镜专属协议：任何候选产物和结构化审核都可以使用同一合同。
+
+- 循环使用固定整数 `foreach.count` 限制最大尝试次数，并用 `foreach.until` 读取本轮终点审核步骤的声明输出字段；默认分镜审核读取 `steps.storyboard_review.output.score >= 80`。
+- `storyboard_review` 依赖 `storyboard`，并通过 `uses: [{"from":"storyboard","as":["vision"]}]` 接收真实图片像素。审核输出声明 `score`、`reason`、`issues` 和 `regeneration_instruction`；协议本身不固定这些业务字段。
+- `storyboard` 的提示词包含 `{{ previous }}`。首轮该值为空对象；后续轮次收到上一轮完整审核对象，并逐项落实原因、问题和修改要求后重写完整图片提示词。
+- 依赖保持正向：候选产物到审核步骤，不添加审核到候选产物的公共反向边。运行器负责逐轮串行、反馈注入和选择最后一轮通过产物。
+- 达标后下游 `video_prompt` 和 `final_video` 依赖整个循环并使用通过轮次。最大次数仍未达标、门控字段缺失或类型无效时停止下游，不把无效结果当成普通低分继续运行。

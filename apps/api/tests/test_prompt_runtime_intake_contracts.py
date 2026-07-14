@@ -66,6 +66,9 @@ def test_workflow_build_prompt_loads_only_in_workflow_build_mode() -> None:
     assert "workflow_build_mode" in workflow_triggers
     assert "Workflow Build Mode" not in default_result.system
     assert "Workflow Build Mode" in workflow_result.system
+    assert "Read `workflow.protocol_info` before writing" in workflow_result.system
+    assert "foreach.until" in workflow_result.system
+    assert "{{ previous }}" in workflow_result.system
     assert workflow_result.tool_profile == "workflow_build"
     assert workflow_result.tool_namespaces == ("project", "interaction", "skill", "workflow")
     assert "node.*" not in workflow_result.system
@@ -93,7 +96,7 @@ def test_workflow_build_prompt_uses_dedicated_cached_prefix() -> None:
     assert result.diagnostics()["tool_profile"] == "workflow_build"
     assert len(result.system) < 6000
     assert "`openreel.workflow.v2`" in result.system
-    assert "Canonical example" in result.system
+    assert "Generic bounded review pattern" in result.system
     assert "Media is one logical step" in result.system
     assert "`uses` is the only reference contract" in result.system
     assert "Dynamic references add `select.values`" in result.system
