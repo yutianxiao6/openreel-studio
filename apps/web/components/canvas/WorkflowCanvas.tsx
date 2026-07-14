@@ -513,6 +513,7 @@ const WORKFLOW_FORM_INPUT_PRESETS: WorkflowInputPreset[] = [
 const WORKFLOW_FIELD_TYPE_OPTIONS = [
   { value: "string", label: "文本" },
   { value: "number", label: "数字" },
+  { value: "integer", label: "整数" },
   { value: "boolean", label: "布尔" },
   { value: "object", label: "对象" },
   { value: "array", label: "数组" },
@@ -2626,6 +2627,232 @@ function workflowFormatCondition(
   }
 }
 
+interface WorkflowLoopUntilDraft {
+  enabled: boolean
+  sourceStepId: string
+  outputPath: string
+  operator: string
+  value: unknown
+}
+
+interface WorkflowLoopUntilFieldOption {
+  path: string
+  label: string
+  type: string
+}
+
+const WORKFLOW_LOOP_UNTIL_NUMERIC_OPERATORS = new Set(["lt", "lte", "gt", "gte"])
+
+function workflowParseLoopUntil(foreach: Record<string, unknown>): WorkflowLoopUntilDraft {
+  const until = asWorkflowObject(foreach.until)
+  const path = workflowStringValue(until?.path)
+  const match = path.match(/^steps\.([A-Za-z][A-Za-z0-9_-]*)\.output(?:\.([A-Za-z][A-Za-z0-9_.-]*))?$/)
+  return {
+    enabled: Boolean(until && Object.keys(until).length > 0),
+    sourceStepId: match?.[1] || "",
+    outputPath: match?.[2] || "",
+    operator: workflowStringValue(until?.op),
+    value: until?.value,
+  }
+}
+
+function workflowForeachWithRenamedStepReference(
+  value: WorkflowTemplateStepSummary["foreach"],
+  currentStepId: string,
+  nextStepId: string,
+): WorkflowTemplateStepSummary["foreach"] {
+  const foreach = asWorkflowObject(value)
+  if (!foreach) return value
+  const next = workflowCloneValue(foreach)
+  const items = workflowStringValue(next.items)
+  if (items.startsWith(`steps.${currentStepId}.`)) {
+    next.items = `steps.${nextStepId}.${items.slice(`steps.${currentStepId}.`.length)}`
+  }
+  const until = asWorkflowObject(next.until)
+  const untilPath = workflowStringValue(until?.path)
+  if (until && untilPath.startsWith(`steps.${currentStepId}.output`)) {
+    next.until = {
+      ...until,
+      path: `steps.${nextStepId}.output${untilPath.slice(`steps.${currentStepId}.output`.length)}`,
+    }
+  }
+  return next
+}
+
+function workflowForeachWithoutUntilSource(
+  value: WorkflowTemplateStepSummary["foreach"],
+  deletedStepIds: Set<string>,
+): WorkflowTemplateStepSummary["foreach"] {
+  const foreach = asWorkflowObject(value)
+  if (!foreach) return value
+  const until = workflowParseLoopUntil(foreach)
+  if (!until.enabled || !deletedStepIds.has(until.sourceStepId)) return value
+  const next = workflowCloneValue(foreach)
+  delete next.until
+  return next
+}
+
+function workflowForeachWithRenamedUntilOutputField(
+  value: WorkflowTemplateStepSummary["foreach"],
+  sourceStepId: string,
+  currentFieldId: string,
+  nextFieldId: string,
+): WorkflowTemplateStepSummary["foreach"] {
+  const foreach = asWorkflowObject(value)
+  if (!foreach || !currentFieldId || !nextFieldId) return value
+  const until = workflowParseLoopUntil(foreach)
+  if (
+    !until.enabled
+    || until.sourceStepId !== sourceStepId
+    || (until.outputPath !== currentFieldId && !until.outputPath.startsWith(`${currentFieldId}.`))
+  ) {
+    return value
+  }
+  const next = workflowCloneValue(foreach)
+  const nextUntil = asWorkflowObject(next.until) || {}
+  const suffix = until.outputPath.slice(currentFieldId.length)
+  next.until = {
+    ...nextUntil,
+    path: `steps.${sourceStepId}.output.${nextFieldId}${suffix}`,
+  }
+  return next
+}
+
+function workflowEditorLoopUntilValidationError(steps: WorkflowTemplateStepSummary[]): string {
+  for (const loop of steps.filter((step) => workflowStepAuthoringKind(step) === "loop")) {
+    const foreach = asWorkflowObject(loop.foreach)
+    if (!foreach) continue
+    const until = workflowParseLoopUntil(foreach)
+    if (!until.enabled) continue
+    const count = foreach.count
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > 10) {
+      return `“${loop.title || loop.id}”启用结果确认后，最大轮次必须是 1 到 10 的固定整数。`
+    }
+    const childScopeId = workflowStepChildScopeId(loop) || loop.id
+    const children = steps.filter((step) => workflowStringValue(step.repeat_group_id) === childScopeId)
+    const source = children.find((step) => step.id === until.sourceStepId)
+    if (!source) return `“${loop.title || loop.id}”的确认来源必须是当前循环内的步骤。`
+    if (
+      workflowStepAuthoringKind(source) === "loop"
+      || source.on_error === "continue"
+      || workflowHasValue(source.when)
+      || children.some((child) => workflowCleanIdList(child.depends_on).includes(source.id))
+    ) {
+      return `“${source.title || source.id}”必须是每轮都会运行的末端步骤，并在失败时停止。`
+    }
+    if (!until.operator) return `“${loop.title || loop.id}”还没有选择通过条件。`
+    if (!["empty", "not_empty"].includes(until.operator) && until.value == null) {
+      return `“${loop.title || loop.id}”的通过条件还没有比较值。`
+    }
+    if (
+      WORKFLOW_LOOP_UNTIL_NUMERIC_OPERATORS.has(until.operator)
+      && (typeof until.value !== "number" || !Number.isFinite(until.value))
+    ) {
+      return `“${loop.title || loop.id}”的数值通过条件必须填写有效数字。`
+    }
+    if (
+      until.outputPath
+      && !workflowLoopUntilFieldOptions(source).some((field) => field.path === until.outputPath)
+    ) {
+      return `“${source.title || source.id}”的输出格式中没有字段“${until.outputPath}”。`
+    }
+  }
+  return ""
+}
+
+function workflowLoopUntilFieldOptions(step: WorkflowTemplateStepSummary | undefined): WorkflowLoopUntilFieldOption[] {
+  if (!step) return []
+  const result: WorkflowLoopUntilFieldOption[] = []
+  const visit = (fields: Array<Record<string, unknown>>, prefix = "") => {
+    for (const field of fields) {
+      const id = workflowStringValue(field.id || field.key || field.name)
+      if (!id) continue
+      const path = prefix ? `${prefix}.${id}` : id
+      const type = workflowStringValue(field.type) || "string"
+      const label = workflowStringValue(field.label || field.title) || id
+      result.push({ path, label: prefix ? `${prefix} · ${label}` : label, type })
+      if (type === "object" && Array.isArray(field.fields)) {
+        visit(
+          field.fields
+            .map((item) => asWorkflowObject(item))
+            .filter((item): item is Record<string, unknown> => Boolean(item)),
+          path,
+        )
+      }
+    }
+  }
+  visit(workflowOutputSchemaFields(step))
+  return result
+}
+
+function workflowLoopUntilRootOutputType(step: WorkflowTemplateStepSummary | undefined): string {
+  if (!step) return ""
+  const kind = workflowStepAuthoringKind(step)
+  if (kind === "object") return "object"
+  if (kind === "collection") return "array"
+  if (kind === "text") return "string"
+  return "object"
+}
+
+function workflowLoopUntilFieldType(
+  step: WorkflowTemplateStepSummary | undefined,
+  outputPath: string,
+): string {
+  if (!outputPath) return workflowLoopUntilRootOutputType(step)
+  return workflowLoopUntilFieldOptions(step).find((item) => item.path === outputPath)?.type || ""
+}
+
+function workflowLoopUntilOperatorOptions(fieldType: string): typeof WORKFLOW_CONDITION_OPERATOR_OPTIONS {
+  if (!fieldType) return WORKFLOW_CONDITION_OPERATOR_OPTIONS.filter((item) => item.value)
+  return workflowConditionOperatorOptionsForInputType(fieldType).filter((item) => item.value)
+}
+
+function workflowLoopUntilDefaultOperator(fieldType: string): string {
+  if (workflowInputTypeCategory(fieldType) === "number") return "gte"
+  if (workflowInputTypeCategory(fieldType) === "boolean") return "eq"
+  return "not_empty"
+}
+
+function workflowLoopUntilDefaultValue(fieldType: string, operator: string): unknown {
+  if (operator === "empty" || operator === "not_empty") return undefined
+  if (WORKFLOW_LOOP_UNTIL_NUMERIC_OPERATORS.has(operator) || workflowInputTypeCategory(fieldType) === "number") return 0
+  if (workflowInputTypeCategory(fieldType) === "boolean") return true
+  return ""
+}
+
+function workflowLoopUntilValueFromInput(rawValue: string, fieldType: string, operator: string): unknown {
+  if (WORKFLOW_LOOP_UNTIL_NUMERIC_OPERATORS.has(operator) || workflowInputTypeCategory(fieldType) === "number") {
+    const parsed = Number(rawValue)
+    return Number.isFinite(parsed) ? parsed : rawValue
+  }
+  if (workflowInputTypeCategory(fieldType) === "boolean") return rawValue === "true"
+  return rawValue
+}
+
+function workflowFormatLoopUntil(
+  sourceStepId: string,
+  outputPath: string,
+  operator: string,
+  value: unknown,
+): Record<string, unknown> {
+  const path = `steps.${sourceStepId}.output${outputPath.trim() ? `.${outputPath.trim()}` : ""}`
+  if (operator === "empty" || operator === "not_empty") return { path, op: operator }
+  return { path, op: operator, value }
+}
+
+function workflowStepPromptUsesPrevious(step: WorkflowTemplateStepSummary): boolean {
+  const prompt = workflowStepPromptObject(step)
+  return workflowStringValue(prompt?.task).includes("{{ previous }}")
+}
+
+function workflowStepPromptWithPrevious(step: WorkflowTemplateStepSummary): Record<string, unknown> {
+  const prompt = workflowStepPromptObject(step) || {}
+  const task = workflowStringValue(prompt.task).trim()
+  if (task.includes("{{ previous }}")) return prompt
+  const feedbackLine = "上一轮反馈（首轮为空）：{{ previous }}"
+  return { ...prompt, task: task ? `${task}\n\n${feedbackLine}` : feedbackLine }
+}
+
 function workflowPromptInputReference(inputId: string, label: string): string {
   const normalizedInput = workflowSanitizeStepId(inputId, "")
   if (!normalizedInput) return ""
@@ -4232,8 +4459,9 @@ function workflowCollectionSummary(value: unknown, steps: WorkflowTemplateStepSu
 
 function workflowRepeatSummary(step: WorkflowTemplateStepSummary): string {
   const foreach = asWorkflowObject(step.foreach)
-  if (workflowHasValue(foreach?.items)) return `逐项处理 ${workflowStringValue(foreach?.items)}`
-  if (workflowHasValue(foreach?.count)) return `重复 ${workflowStringValue(foreach?.count)} 次`
+  const untilLabel = foreach && workflowParseLoopUntil(foreach).enabled ? " · 条件确认" : ""
+  if (workflowHasValue(foreach?.items)) return `逐项处理 ${workflowStringValue(foreach?.items)}${untilLabel}`
+  if (workflowHasValue(foreach?.count)) return `重复 ${workflowStringValue(foreach?.count)} 次${untilLabel}`
   if (workflowStringValue(step.repeat_group_label)) return workflowReadableLabel(step.repeat_group_label)
   return ""
 }
@@ -6223,6 +6451,31 @@ function WorkflowStepInspector({
   const loopChildSteps = loopChildScopeId
     ? steps.filter((item) => workflowStringValue(item.repeat_group_id) === loopChildScopeId)
     : []
+  const loopUntil = workflowParseLoopUntil(loopForeach)
+  const loopConsumedChildIds = new Set(loopChildSteps.flatMap((child) => workflowCleanIdList(child.depends_on)))
+  const loopUntilEligibleSourceSteps = loopChildSteps.filter((child) => (
+    workflowStepAuthoringKind(child) !== "loop" &&
+    child.on_error !== "continue" &&
+    !workflowHasValue(child.when) &&
+    !loopConsumedChildIds.has(child.id)
+  ))
+  const loopUntilCurrentSourceStep = loopChildSteps.find((child) => child.id === loopUntil.sourceStepId)
+  const loopUntilSourceIsEligible = loopUntilEligibleSourceSteps.some((child) => child.id === loopUntil.sourceStepId)
+  const loopUntilSourceSteps = loopUntilCurrentSourceStep && !loopUntilEligibleSourceSteps.some((child) => child.id === loopUntilCurrentSourceStep.id)
+    ? [loopUntilCurrentSourceStep, ...loopUntilEligibleSourceSteps]
+    : loopUntilEligibleSourceSteps
+  const loopUntilFieldOptions = workflowLoopUntilFieldOptions(loopUntilCurrentSourceStep)
+  const loopUntilFieldPathIsDeclared = !loopUntil.outputPath
+    || loopUntilFieldOptions.some((field) => field.path === loopUntil.outputPath)
+  const loopUntilFieldType = workflowLoopUntilFieldType(loopUntilCurrentSourceStep, loopUntil.outputPath)
+  const loopUntilOperatorOptions = workflowLoopUntilOperatorOptions(loopUntilFieldType)
+  const loopUntilNeedsValue = Boolean(loopUntil.operator && !["empty", "not_empty"].includes(loopUntil.operator))
+  const loopUntilUsesNumericValue = WORKFLOW_LOOP_UNTIL_NUMERIC_OPERATORS.has(loopUntil.operator)
+    || workflowInputTypeCategory(loopUntilFieldType) === "number"
+  const loopUntilFeedbackSteps = loopChildSteps.filter((child) => (
+    child.id !== loopUntil.sourceStepId &&
+    !["loop", "plugin"].includes(workflowStepAuthoringKind(child))
+  ))
   const loopMoveCandidateSteps = loopChildScopeId
     ? steps.filter((candidate) => (
       candidate.id !== step.id &&
@@ -6335,6 +6588,83 @@ function WorkflowStepInspector({
     if (!value || readOnly) return
     const separator = promptValue.trim() ? "\n\n" : ""
     onUpdateStep(step.id, { prompt: { ...promptObject, task: `${promptValue}${separator}${value}` } })
+  }
+  const enableLoopUntil = () => {
+    const sourceStep = [...loopUntilEligibleSourceSteps]
+      .reverse()
+      .find((child) => workflowStepAuthoringKind(child) === "object")
+      || loopUntilEligibleSourceSteps[loopUntilEligibleSourceSteps.length - 1]
+    if (!sourceStep) return
+    const nextForeach: Record<string, unknown> = {
+      ...loopForeach,
+      count: Math.min(10, workflowPositiveIntegerValue(loopForeach.count) || 3),
+      as: workflowStringValue(loopForeach.as) || "attempt",
+      until: workflowFormatLoopUntil(sourceStep.id, "", "not_empty", undefined),
+    }
+    delete nextForeach.items
+    onUpdateStep(step.id, { foreach: nextForeach })
+  }
+  const disableLoopUntil = () => {
+    const nextForeach = { ...loopForeach }
+    delete nextForeach.until
+    onUpdateStep(step.id, { foreach: nextForeach })
+  }
+  const updateLoopUntil = (
+    sourceStepId: string,
+    outputPath: string,
+    operator: string,
+    value: unknown,
+  ) => {
+    onUpdateStep(step.id, {
+      foreach: {
+        ...loopForeach,
+        until: workflowFormatLoopUntil(sourceStepId, outputPath, operator, value),
+      },
+    })
+  }
+  const updateLoopUntilSource = (sourceStepId: string) => {
+    updateLoopUntil(sourceStepId, "", "not_empty", undefined)
+  }
+  const updateLoopUntilOutputPath = (outputPath: string) => {
+    const fieldType = workflowLoopUntilFieldType(loopUntilCurrentSourceStep, outputPath)
+    const allowedOperators = workflowLoopUntilOperatorOptions(fieldType)
+    const operator = allowedOperators.some((item) => item.value === loopUntil.operator)
+      ? loopUntil.operator
+      : workflowLoopUntilDefaultOperator(fieldType)
+    const value = operator === loopUntil.operator
+      ? loopUntil.value
+      : workflowLoopUntilDefaultValue(fieldType, operator)
+    updateLoopUntil(loopUntil.sourceStepId, outputPath, operator, value)
+  }
+  const updateLoopUntilOperator = (operator: string) => {
+    const unary = operator === "empty" || operator === "not_empty"
+    const fieldKind = workflowInputTypeCategory(loopUntilFieldType)
+    const numeric = WORKFLOW_LOOP_UNTIL_NUMERIC_OPERATORS.has(operator) || fieldKind === "number"
+    const currentValueIsUsable = numeric
+      ? typeof loopUntil.value === "number" && Number.isFinite(loopUntil.value)
+      : fieldKind === "boolean"
+      ? typeof loopUntil.value === "boolean"
+      : loopUntil.value !== undefined
+    const value = unary
+      ? undefined
+      : currentValueIsUsable
+      ? loopUntil.value
+      : workflowLoopUntilDefaultValue(loopUntilFieldType, operator)
+    updateLoopUntil(loopUntil.sourceStepId, loopUntil.outputPath, operator, value)
+  }
+  const updateLoopUntilValue = (rawValue: string) => {
+    updateLoopUntil(
+      loopUntil.sourceStepId,
+      loopUntil.outputPath,
+      loopUntil.operator,
+      workflowLoopUntilValueFromInput(rawValue, loopUntilFieldType, loopUntil.operator),
+    )
+  }
+  const updateLoopUntilAttempts = (rawValue: string) => {
+    const attempts = Math.min(10, Math.max(1, Number.parseInt(rawValue || "1", 10) || 1))
+    const nextForeach: Record<string, unknown> = { ...loopForeach, count: attempts }
+    delete nextForeach.items
+    onUpdateStep(step.id, { foreach: nextForeach })
   }
   const renderPluginFieldInput = (
     field: Record<string, unknown>,
@@ -6583,7 +6913,7 @@ function WorkflowStepInspector({
                           foreach: nextForeach,
                         })
                       }}
-                      disabled={readOnly}
+                      disabled={readOnly || loopUntil.enabled}
                       className={cn(textFieldClass, "mt-1 h-8")}
                     >
                       <option value="">选择分段列表或上一步列表</option>
@@ -6620,7 +6950,7 @@ function WorkflowStepInspector({
                       />
                     </label>
                   )}
-                  {loopSourceSelectValue === "fixed" && (
+                  {loopSourceSelectValue === "fixed" && !loopUntil.enabled && (
                     <label className="block text-[10px] font-medium text-zinc-500">
                       循环次数
                       <input
@@ -6723,6 +7053,173 @@ function WorkflowStepInspector({
                   </div>
                 )}
               </div>
+            </section>
+          )}
+
+          {activeTab === "properties" && kind === "loop" && (
+            <section className="rounded-md border border-amber-200/14 bg-amber-300/[0.035] p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold text-amber-100/90">结果确认与自动重试</div>
+                  <div className="mt-1 text-[10px] leading-4 text-amber-100/55">
+                    每轮读取一个子步骤的输出；条件成立就通过，否则把完整结果交给下一轮。
+                  </div>
+                </div>
+                <label className="flex shrink-0 items-center gap-1.5 text-[10px] text-amber-50/80">
+                  <input
+                    type="checkbox"
+                    checked={loopUntil.enabled}
+                    disabled={readOnly || (!loopUntil.enabled && loopUntilEligibleSourceSteps.length === 0)}
+                    onChange={(event) => event.target.checked ? enableLoopUntil() : disableLoopUntil()}
+                  />
+                  启用
+                </label>
+              </div>
+
+              {!loopUntil.enabled && loopUntilEligibleSourceSteps.length === 0 && (
+                <div className="mt-2 rounded border border-amber-200/12 bg-black/16 px-2 py-2 text-[10px] leading-4 text-amber-50/65">
+                  先把至少一个会输出结果的末端步骤加入循环。该步骤需要每轮运行，且失败时停止。
+                </div>
+              )}
+
+              {loopUntil.enabled && (
+                <div className="mt-3 grid gap-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="block text-[10px] font-medium text-zinc-500">
+                      最大轮次
+                      <input
+                        type="number"
+                        min={1}
+                        max={10}
+                        step={1}
+                        value={typeof loopForeach.count === "number" ? loopForeach.count : 3}
+                        disabled={readOnly}
+                        onChange={(event) => updateLoopUntilAttempts(event.target.value)}
+                        className={cn(textFieldClass, "mt-1 h-8")}
+                      />
+                    </label>
+                    <label className="block text-[10px] font-medium text-zinc-500">
+                      确认来源步骤
+                      <select
+                        value={loopUntil.sourceStepId}
+                        disabled={readOnly}
+                        onChange={(event) => updateLoopUntilSource(event.target.value)}
+                        className={cn(textFieldClass, "mt-1 h-8")}
+                      >
+                        {loopUntilSourceSteps.map((child) => (
+                          <option key={child.id} value={child.id}>
+                            {child.title || child.id}{loopUntilEligibleSourceSteps.some((item) => item.id === child.id) ? "" : "（当前不可用）"}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  {!loopUntilSourceIsEligible && (
+                    <div className="rounded border border-red-300/14 bg-red-400/[0.045] px-2 py-2 text-[10px] leading-4 text-red-100/75">
+                      当前来源必须是循环内的末端步骤，不能被条件跳过，并且失败策略必须为停止。请选择其他步骤后再保存。
+                    </div>
+                  )}
+
+                  <label className="block text-[10px] font-medium text-zinc-500">
+                    判断字段
+                    <input
+                      list={`workflow-loop-until-fields-${step.id}`}
+                      value={loopUntil.outputPath}
+                      disabled={readOnly}
+                      onChange={(event) => updateLoopUntilOutputPath(event.target.value)}
+                      placeholder="留空表示整个输出，例如 score"
+                      className={cn(textFieldClass, "mt-1 h-8 font-mono")}
+                    />
+                    <datalist id={`workflow-loop-until-fields-${step.id}`}>
+                      {loopUntilFieldOptions.map((field) => (
+                        <option key={field.path} value={field.path}>{field.label} · {field.type}</option>
+                      ))}
+                    </datalist>
+                    {!loopUntilFieldPathIsDeclared && (
+                      <span className="mt-1 block text-[10px] text-red-200/75">
+                        当前字段没有在来源步骤的输出格式中声明。
+                      </span>
+                    )}
+                  </label>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="block text-[10px] font-medium text-zinc-500">
+                      通过条件
+                      <select
+                        value={loopUntil.operator}
+                        disabled={readOnly}
+                        onChange={(event) => updateLoopUntilOperator(event.target.value)}
+                        className={cn(textFieldClass, "mt-1 h-8")}
+                      >
+                        {loopUntilOperatorOptions.map((item) => (
+                          <option key={item.value} value={item.value}>{item.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    {loopUntilNeedsValue && (
+                      <label className="block text-[10px] font-medium text-zinc-500">
+                        比较值
+                        {workflowInputTypeCategory(loopUntilFieldType) === "boolean" && !loopUntilUsesNumericValue ? (
+                          <select
+                            value={workflowJsonScalar(loopUntil.value)}
+                            disabled={readOnly}
+                            onChange={(event) => updateLoopUntilValue(event.target.value)}
+                            className={cn(textFieldClass, "mt-1 h-8")}
+                          >
+                            <option value="true">是</option>
+                            <option value="false">否</option>
+                          </select>
+                        ) : (
+                          <input
+                            type={loopUntilUsesNumericValue ? "number" : "text"}
+                            step={loopUntilFieldType === "integer" ? 1 : "any"}
+                            value={workflowJsonScalar(loopUntil.value)}
+                            disabled={readOnly}
+                            onChange={(event) => updateLoopUntilValue(event.target.value)}
+                            className={cn(textFieldClass, "mt-1 h-8")}
+                          />
+                        )}
+                      </label>
+                    )}
+                  </div>
+
+                  <div className="rounded border border-white/[0.07] bg-black/16 p-2">
+                    <div className="text-[10px] font-semibold text-zinc-300">让重试步骤读取完整反馈</div>
+                    <div className="mt-1 text-[10px] leading-4 text-zinc-500">
+                      选择需要根据失败原因重新生成的步骤，把上一轮完整结果加入它的提示词。
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {loopUntilFeedbackSteps.map((child) => {
+                        const usesPrevious = workflowStepPromptUsesPrevious(child)
+                        return (
+                          <button
+                            key={child.id}
+                            type="button"
+                            disabled={readOnly || usesPrevious}
+                            onClick={() => onUpdateStep(child.id, { prompt: workflowStepPromptWithPrevious(child) })}
+                            className={cn(
+                              "h-7 rounded border px-2 text-[10px] transition disabled:cursor-default",
+                              usesPrevious
+                                ? "border-emerald-200/18 bg-emerald-300/[0.06] text-emerald-100/75"
+                                : "border-amber-200/18 bg-amber-300/[0.06] text-amber-50 hover:bg-amber-300/12",
+                            )}
+                          >
+                            {usesPrevious ? "已接收 · " : "加入反馈 · "}{child.title || child.id}
+                          </button>
+                        )
+                      })}
+                      {loopUntilFeedbackSteps.length === 0 && (
+                        <span className="text-[10px] text-zinc-600">当前没有可接收反馈的其他子步骤</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded border border-amber-200/10 bg-black/14 px-2 py-2 text-[10px] leading-4 text-amber-50/60">
+                    不合格原因、问题和修改建议继续在来源步骤的“上下游 → 输出格式”中定义；字段名称不受限制。
+                  </div>
+                </div>
+              )}
             </section>
           )}
 
@@ -7113,8 +7610,19 @@ function WorkflowStepInspector({
                           value={workflowStringValue(field.id || field.key || field.name)}
                           disabled={readOnly}
                           onChange={(event) => {
+                            const currentId = workflowStringValue(field.id || field.key || field.name)
                             const id = workflowUniqueFieldId(event.target.value, outputSchemaFields, fieldIndex)
                             onUpdateStep(step.id, { output: { schema: workflowPatchOutputSchemaField(step, fieldIndex, { id }) } })
+                            const parentLoop = steps.find((candidate) => candidate.id === workflowStringValue(step.repeat_group_id))
+                            if (parentLoop) {
+                              const foreach = workflowForeachWithRenamedUntilOutputField(
+                                parentLoop.foreach,
+                                step.id,
+                                currentId,
+                                id,
+                              )
+                              if (foreach !== parentLoop.foreach) onUpdateStep(parentLoop.id, { foreach })
+                            }
                           }}
                           placeholder={isCollectionOutput ? "字段标识" : "字段名"}
                           className={cn(textFieldClass, "h-7 font-mono")}
@@ -7968,6 +8476,7 @@ function WorkflowTemplatePanel({
             ...step,
             id: nextId,
             child_scope_id: workflowStringValue(step.child_scope_id) === stepId ? nextId : step.child_scope_id,
+            foreach: workflowForeachWithRenamedStepReference(step.foreach, stepId, nextId),
           })
         }
         return workflowCloneEditorStep({
@@ -7975,6 +8484,7 @@ function WorkflowTemplatePanel({
           depends_on: workflowCleanIdList(step.depends_on).map((dep) => dep === stepId ? nextId : dep),
           layout_after: workflowCleanIdList(step.layout_after).map((dep) => dep === stepId ? nextId : dep),
           repeat_group_id: workflowStringValue(step.repeat_group_id) === stepId ? nextId : step.repeat_group_id,
+          foreach: workflowForeachWithRenamedStepReference(step.foreach, stepId, nextId),
         })
       })
     })
@@ -8161,6 +8671,7 @@ function WorkflowTemplatePanel({
           ...step,
           depends_on: workflowCleanIdList(step.depends_on).filter((dep) => !deleteIds.has(dep)),
           layout_after: workflowCleanIdList(step.layout_after).filter((dep) => !deleteIds.has(dep)),
+          foreach: workflowForeachWithoutUntilSource(step.foreach, deleteIds),
         }))
       setDetailStepId((currentSelected) => currentSelected && deleteIds.has(currentSelected) ? null : currentSelected)
       return next
@@ -8182,6 +8693,7 @@ function WorkflowTemplatePanel({
     setDraftSteps((current) => {
       const step = current.find((item) => item.id === stepId)
       if (!step) return current
+      const currentScopeId = workflowStringValue(step.repeat_group_id)
       const nextScopeId = scopeId === WORKFLOW_TEMPLATE_ROOT_SCOPE_ID ? "" : scopeId
       const descendants = workflowDescendantStepIds(current, stepId)
       if (nextScopeId && (nextScopeId === stepId || descendants.has(nextScopeId))) return current
@@ -8189,6 +8701,13 @@ function WorkflowTemplatePanel({
       const scopeLabel = scopeStep?.title || nextScopeId
       let changed = false
       const next = current.map((item) => {
+        if (currentScopeId && currentScopeId !== nextScopeId && item.id === currentScopeId) {
+          const foreach = workflowForeachWithoutUntilSource(item.foreach, new Set([stepId]))
+          if (foreach !== item.foreach) {
+            changed = true
+            return workflowCloneEditorStep({ ...item, foreach })
+          }
+        }
         if (item.id !== stepId) return item
         if (workflowStringValue(item.repeat_group_id) === nextScopeId) return item
         changed = true
@@ -8322,6 +8841,11 @@ function WorkflowTemplatePanel({
 
   const saveDraftWorkflow = useCallback(async () => {
     if (draftSteps.length === 0 || savingDraft) return
+    const loopUntilError = workflowEditorLoopUntilValidationError(draftSteps)
+    if (loopUntilError) {
+      setDraftError(loopUntilError)
+      return
+    }
     setSavingDraft(true)
     setDraftError(null)
     try {
@@ -8400,6 +8924,11 @@ function WorkflowTemplatePanel({
 
   const saveDraftWorkflowAsTemplate = useCallback(async () => {
     if (draftSteps.length === 0 || savingTemplate) return
+    const loopUntilError = workflowEditorLoopUntilValidationError(draftSteps)
+    if (loopUntilError) {
+      setDraftError(loopUntilError)
+      return
+    }
     setSavingTemplate(true)
     setDraftError(null)
     try {
@@ -8417,7 +8946,7 @@ function WorkflowTemplatePanel({
   }, [
     buildDraftWorkflowForSave,
     draftSignature,
-    draftSteps.length,
+    draftSteps,
     onSaveWorkflowTemplate,
     savingTemplate,
   ])
