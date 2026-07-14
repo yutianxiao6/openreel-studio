@@ -4479,30 +4479,37 @@ function workflowPromptTemplateSections(value: unknown): Array<{ key: string; la
   const text = workflowStringValue(value)
   if (!text) return []
   const labels: Record<string, string> = {
-    SYSTEM: "步骤角色",
-    USER: "输入组织",
-    OUTPUT: "输出格式",
+    ROLE: "步骤角色",
+    TASK: "任务内容",
+    OUTPUT: "输出要求",
     CHECK: "检查标准",
   }
+  const aliases: Record<string, string> = {
+    SYSTEM: "ROLE",
+    USER: "TASK",
+  }
   const sections: Array<{ key: string; label: string; text: string }> = []
-  let currentKey = "SYSTEM"
+  let currentKey = "ROLE"
   let lines: string[] = []
+  let sawHeading = false
   const flush = () => {
     const sectionText = lines.join("\n").trim()
     if (sectionText) sections.push({ key: currentKey, label: labels[currentKey] || currentKey, text: sectionText })
   }
   for (const rawLine of text.split(/\r?\n/)) {
-    const match = rawLine.match(/^\s*(SYSTEM|USER|OUTPUT|CHECK)\s*:\s*(.*)$/i)
+    const match = rawLine.match(/^\s*(ROLE|TASK|OUTPUT|CHECK|SYSTEM|USER)\s*:\s*(.*)$/i)
     if (match) {
       flush()
-      currentKey = match[1].toUpperCase()
+      const heading = match[1].toUpperCase()
+      currentKey = aliases[heading] || heading
       lines = [match[2] || ""]
+      sawHeading = true
       continue
     }
     lines.push(rawLine)
   }
   flush()
-  return sections.length > 0 ? sections : [{ key: "PROMPT", label: "提示词", text }]
+  return sawHeading && sections.length > 0 ? sections : [{ key: "PROMPT", label: "提示词", text }]
 }
 
 function workflowExecutionDetailRows(
@@ -6581,13 +6588,43 @@ function WorkflowStepInspector({
     ? pluginDefinition.settings.map((item) => asWorkflowObject(item)).filter((item): item is Record<string, unknown> => Boolean(item))
     : []
   const promptObject = asWorkflowObject(step.prompt) || {}
-  const promptValue = workflowStringValue(promptObject.task)
+  const promptTaskValue = workflowStringValue(promptObject.task)
+  const promptFields = [
+    {
+      key: "role",
+      label: "步骤角色",
+      description: "定义模型在这一步扮演的身份和专业视角。",
+      placeholder: "例如：你是一位资深电影分镜师与镜头语言导演。",
+      rows: 3,
+    },
+    {
+      key: "task",
+      label: "任务内容",
+      description: "写清本步要完成的工作，并通过变量引用用户输入或上游结果。",
+      placeholder: "例如：根据上一步的剧情内容，拆成多个 15 秒片段。",
+      rows: 8,
+    },
+    {
+      key: "output",
+      label: "输出要求",
+      description: "完整规定输出内容、格式、结构、布局和禁止出现的内容。",
+      placeholder: "例如：只输出纯文本 image prompt，不输出 JSON；写清画面布局、主体、光线和风格。",
+      rows: 7,
+    },
+    {
+      key: "check",
+      label: "检查标准",
+      description: "列出生成结果必须满足的一致性、完整性和质量条件。",
+      placeholder: "例如：人物外貌与服装保持一致；不得出现无关人物、字幕或水印。",
+      rows: 5,
+    },
+  ] as const
   const templateTabs = WORKFLOW_INSPECTOR_TABS.filter((tab) => tab.value !== "run")
   const appendPromptText = (text: string) => {
     const value = text.trim()
     if (!value || readOnly) return
-    const separator = promptValue.trim() ? "\n\n" : ""
-    onUpdateStep(step.id, { prompt: { ...promptObject, task: `${promptValue}${separator}${value}` } })
+    const separator = promptTaskValue.trim() ? "\n\n" : ""
+    onUpdateStep(step.id, { prompt: { ...promptObject, task: `${promptTaskValue}${separator}${value}` } })
   }
   const enableLoopUntil = () => {
     const sourceStep = [...loopUntilEligibleSourceSteps]
@@ -7922,12 +7959,14 @@ function WorkflowStepInspector({
           {activeTab === "prompt" && !isInputStep && kind !== "loop" && kind !== "plugin" && (
             <section className="rounded-md border border-cyan-200/12 bg-cyan-300/[0.04] p-3">
               <div className="mb-2">
-                <div className="text-[11px] font-semibold text-cyan-100/80">提示词</div>
-                <div className="mt-1 text-[10px] leading-4 text-cyan-100/45">直接写自然语言，不需要 JSON。需要带入上一步结果时，从下方插入可用内容。</div>
+                <div className="text-[11px] font-semibold text-cyan-100/80">完整提示词</div>
+                <div className="mt-1 text-[10px] leading-4 text-cyan-100/45">
+                  运行时按“步骤角色 → 任务内容 → 输出要求 → 检查标准”组合。四段都会保存并交给模型。
+                </div>
               </div>
               {!readOnly && (inputIds.length > 0 || referenceCandidates.length > 0) && (
                 <div className="mb-2 rounded-md border border-cyan-200/10 bg-black/18 p-2">
-                  <div className="mb-1.5 text-[10px] font-semibold text-cyan-100/65">插入可用内容</div>
+                  <div className="mb-1.5 text-[10px] font-semibold text-cyan-100/65">向任务内容插入可用变量</div>
                   <div className="flex flex-wrap gap-1.5">
                     {inputIds.map((input) => {
                       const label = workflowInputDisplayName(input, inputSpecs)
@@ -7961,14 +8000,27 @@ function WorkflowStepInspector({
                   </div>
                 </div>
               )}
-              <textarea
-                value={promptValue}
-                onChange={(event) => onUpdateStep(step.id, { prompt: { ...promptObject, task: event.target.value } })}
-                placeholder="例如：根据上一步的剧情内容，拆成多个 15 秒片段。每段写清楚剧情、画面重点、出场人物。"
-                rows={10}
-                readOnly={readOnly}
-                className="min-h-52 w-full resize-none rounded-md border border-cyan-200/14 bg-[#071019] px-3 py-2 text-xs leading-5 text-cyan-50 outline-none placeholder:text-cyan-100/25 focus:border-cyan-200/45 read-only:cursor-default read-only:opacity-70"
-              />
+              <div className="grid gap-3">
+                {promptFields.map((field) => (
+                  <label key={field.key} className="block">
+                    <span className="flex items-baseline justify-between gap-2">
+                      <span className="text-[10px] font-semibold text-cyan-100/75">{field.label}</span>
+                      <span className="text-[9px] text-cyan-100/35">prompt.{field.key}</span>
+                    </span>
+                    <span className="mt-1 block text-[10px] leading-4 text-cyan-100/45">{field.description}</span>
+                    <textarea
+                      value={workflowStringValue(promptObject[field.key])}
+                      onChange={(event) => onUpdateStep(step.id, {
+                        prompt: { ...promptObject, [field.key]: event.target.value },
+                      })}
+                      placeholder={field.placeholder}
+                      rows={field.rows}
+                      readOnly={readOnly}
+                      className="mt-1.5 min-h-20 w-full resize-y rounded-md border border-cyan-200/14 bg-[#071019] px-3 py-2 text-xs leading-5 text-cyan-50 outline-none placeholder:text-cyan-100/25 focus:border-cyan-200/45 read-only:cursor-default read-only:opacity-70"
+                    />
+                  </label>
+                ))}
+              </div>
             </section>
           )}
 
