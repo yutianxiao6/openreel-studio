@@ -2090,6 +2090,136 @@ async def test_manual_media_step_completion_rejects_missing_usable_output(
     assert state["workflow_runtime"]["instances"]["wf_manual"]["steps"]["image"]["status"] == "failed"
 
 
+@pytest.mark.asyncio
+async def test_manual_media_step_completion_restores_latest_successful_history_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = {
+        "id": "manual-flow",
+        "steps": [
+            {
+                "id": "image",
+                "title": "图片",
+                "node_type": "image",
+                "surface": "draft_canvas",
+                "depends_on": [],
+            }
+        ],
+    }
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_manual": {
+                    "template_id": "manual-flow",
+                    "status": "failed",
+                    "steps": {
+                        "image": {
+                            "status": "failed",
+                            "type": "image",
+                            "surface": "draft_canvas",
+                            "node_id": "node-image",
+                            "input": {"workflow": {"step_id": "image"}},
+                            "workflow": {"step_id": "image"},
+                        }
+                    },
+                }
+            }
+        }
+    }
+    successful_output = {
+        "type": "fusion",
+        "stages": [
+            {
+                "name": "图片",
+                "status": "completed",
+                "url": "/api/media/project-1/success.png",
+            }
+        ],
+    }
+    failed_output = {
+        "type": "fusion",
+        "stages": [
+            {
+                "name": "图片",
+                "status": "failed",
+                "url": "/api/media/project-1/success.png",
+                "error": "provider failed",
+            }
+        ],
+        "history": [
+            {
+                "id": "hist-success",
+                "created_at": "2026-07-14T12:00:00Z",
+                "type": "image",
+                "output": successful_output,
+            }
+        ],
+    }
+    failed_node = {
+        "id": "node-image",
+        "project_id": "project-1",
+        "type": "image",
+        "title": "人物图",
+        "status": "failed",
+        "error_message": "provider failed",
+        "input": {
+            "workflow": {
+                "template_id": "manual-flow",
+                "instance_id": "wf_manual",
+                "step_id": "image",
+                "surface": "draft_canvas",
+            }
+        },
+        "output": failed_output,
+    }
+    node_patches: list[dict] = []
+
+    async def read_state(_project_id: str) -> dict:
+        return state
+
+    async def write_patch(_project_id: str, patch: dict) -> None:
+        state.update(patch)
+
+    def load_template(_state: dict, *, template_id: str, instance_id: str) -> tuple[dict, dict]:
+        return template, {}
+
+    async def get_node(_node_id: str) -> dict:
+        return deepcopy(failed_node)
+
+    async def update_node(_node_id: str, patch: dict) -> dict:
+        node_patches.append(deepcopy(patch))
+        return {"id": "node-image", "status": patch.get("status")}
+
+    async def no_emit(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(workflow_tools, "_read_project_state", read_state)
+    monkeypatch.setattr(workflow_tools, "_write_project_state_patch", write_patch)
+    monkeypatch.setattr(workflow_tools, "_workflow_runtime_template_for_state", load_template)
+    monkeypatch.setattr(workflow_tools.canvas_tools, "get_node", get_node)
+    monkeypatch.setattr(workflow_tools.canvas_tools, "update_node", update_node)
+    monkeypatch.setattr(workflow_tools, "_emit_canvas_action", no_emit)
+    monkeypatch.setattr(workflow_tools, "_emit_workflow_runtime_update", no_emit)
+
+    result = await workflow_tools.workflow_runtime_complete_step_manually(
+        "project-1",
+        "wf_manual",
+        "image",
+        template_id="manual-flow",
+        node_id="node-image",
+    )
+
+    assert result["ok"] is True
+    assert result["manual_completion"]["activated_history"] is True
+    assert result["manual_completion"]["history_id"] == "hist-success"
+    assert node_patches[-1]["status"] == "completed"
+    assert node_patches[-1]["error_message"] is None
+    assert node_patches[-1]["output_data"]["stages"][0]["status"] == "completed"
+    runtime_output = state["workflow_runtime"]["instances"]["wf_manual"]["steps"]["image"]["output"]
+    assert runtime_output["stages"][0]["url"] == "/api/media/project-1/success.png"
+    assert workflow_tools.media_history.is_successful_media_output(runtime_output) is True
+
+
 def test_runtime_public_payload_never_exposes_builtin_prompt_phase() -> None:
     state = {
         "workflow_input_values": {

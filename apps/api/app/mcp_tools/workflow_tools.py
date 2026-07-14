@@ -2161,16 +2161,45 @@ async def workflow_runtime_complete_step_manually(
         None,
     )
     evidence_node: dict[str, Any] | None = None
+    evidence_output: Any = None
+    activated_history_entry: dict[str, Any] | None = None
     if canvas_media_step is not None:
-        evidence_node = next(
-            (
-                candidate
-                for candidate in candidate_nodes
-                if str(candidate.get("type") or "").strip() in {"image", "video", "audio"}
-                and media_history.is_successful_media_output(candidate.get("output"))
-            ),
-            None,
-        )
+        for candidate in candidate_nodes:
+            if str(candidate.get("type") or "").strip() not in {"image", "video", "audio"}:
+                continue
+            candidate_output = candidate.get("output")
+            if media_history.is_successful_media_output(candidate_output):
+                evidence_node = candidate
+                evidence_output = candidate_output
+                break
+        if evidence_node is None:
+            for candidate in candidate_nodes:
+                if str(candidate.get("type") or "").strip() not in {"image", "video", "audio"}:
+                    continue
+                history = media_history.media_history_from_output(candidate.get("output"))
+                if not history:
+                    continue
+                selected = history[0]
+                try:
+                    restored_output, selected = media_history.switch_media_history_version(
+                        candidate.get("output"),
+                        history_id=str(selected.get("id") or ""),
+                        node_type=str(candidate.get("type") or ""),
+                        prompt=str(candidate.get("prompt") or ""),
+                        input_data=(
+                            candidate.get("input")
+                            if isinstance(candidate.get("input"), dict)
+                            else None
+                        ),
+                    )
+                except ValueError:
+                    continue
+                if not media_history.is_successful_media_output(restored_output):
+                    continue
+                evidence_node = candidate
+                evidence_output = restored_output
+                activated_history_entry = selected
+                break
     else:
         evidence_node = next(
             (
@@ -2200,6 +2229,11 @@ async def workflow_runtime_complete_step_manually(
         "reason": str(reason or "").strip() or "accepted_existing_output",
         "node_id": str((evidence_node or {}).get("id") or ""),
     }
+    if activated_history_entry is not None:
+        marker.update({
+            "activated_history": True,
+            "history_id": str(activated_history_entry.get("id") or ""),
+        })
     if evidence_node is not None:
         evidence_fields = dict(evidence_node.get("input") if isinstance(evidence_node.get("input"), dict) else {})
         evidence_workflow = dict(evidence_fields.get("workflow") if isinstance(evidence_fields.get("workflow"), dict) else {})
@@ -2219,18 +2253,28 @@ async def workflow_runtime_complete_step_manually(
         evidence_workflow["last_step_run"] = manual_history
         evidence_workflow["step_run_history"] = [*history, manual_history][-12:]
         evidence_fields["workflow"] = evidence_workflow
+        node_patch: dict[str, Any] = {
+            "input_data": evidence_fields,
+            "status": "completed",
+            "error_message": None,
+        }
+        if activated_history_entry is not None:
+            node_patch["output_data"] = evidence_output
         await canvas_tools.update_node(
             str(evidence_node.get("id") or ""),
-            {"input_data": evidence_fields, "status": "completed", "error_message": None},
+            node_patch,
         )
         evidence_node["input"] = evidence_fields
         evidence_node["workflow"] = evidence_workflow
         evidence_node["status"] = "completed"
         evidence_node["error_message"] = None
+        if activated_history_entry is not None:
+            evidence_node["output"] = evidence_output
         await _emit_canvas_action(project_id, "update_node", {
             "id": evidence_node.get("id"),
             "status": "completed",
             "input": evidence_fields,
+            "output": evidence_node.get("output"),
             "error_message": None,
         })
 
