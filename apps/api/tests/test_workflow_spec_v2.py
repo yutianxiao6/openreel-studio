@@ -268,6 +268,648 @@ def test_v2_loop_has_one_explicit_source_and_no_implicit_repeat_aliases() -> Non
         parse_workflow_spec(payload)
 
 
+def _bounded_feedback_loop_spec() -> dict:
+    payload = _base_spec()
+    payload["inputs"] = {}
+    payload["steps"] = [
+        {
+            "id": "quality_loop",
+            "title": "质量反馈循环",
+            "kind": "loop",
+            "foreach": {
+                "count": 3,
+                "as": "attempt",
+                "until": {
+                    "path": "steps.quality_review.output.score",
+                    "op": "gte",
+                    "value": 80,
+                },
+            },
+            "steps": [
+                {
+                    "id": "generate",
+                    "title": "生成结果",
+                    "kind": "text",
+                    "prompt": {
+                        "task": "根据原始要求生成；上一轮审核反馈：{{ previous }}。",
+                    },
+                },
+                {
+                    "id": "quality_review",
+                    "title": "质量审核",
+                    "kind": "object",
+                    "needs": ["generate"],
+                    "prompt": {
+                        "task": "审核 {{ steps.generate.output }} 并给出结构化结果。",
+                    },
+                    "output": {
+                        "schema": {
+                            "fields": [
+                                {"id": "score", "type": "integer", "required": True},
+                                {"id": "summary", "type": "string", "required": True},
+                                {"id": "regeneration_instruction", "type": "string"},
+                            ]
+                        }
+                    },
+                },
+            ],
+        },
+        {
+            "id": "result",
+            "title": "最终结果",
+            "kind": "text",
+            "needs": ["quality_loop"],
+            "prompt": {"task": "输出最终通过的结果。"},
+        },
+    ]
+    return payload
+
+
+def test_v2_bounded_feedback_loop_compiles_until_without_creating_a_dependency_cycle() -> None:
+    payload = _bounded_feedback_loop_spec()
+
+    public_plan = compile_workflow_spec(payload)
+    public_loop = public_plan["steps"][0]
+    private = compile_private_execution_template(payload)
+    private_loop = private["steps"][0]
+
+    assert public_loop["depends_on"] == []
+    assert public_loop["foreach"]["until"] == {
+        "path": "steps.quality_review.output.score",
+        "op": "gte",
+        "value": 80,
+    }
+    assert private_loop["foreach"]["until"] == public_loop["foreach"]["until"]
+
+
+def test_v2_protocol_info_exposes_generic_bounded_feedback_loop_contract() -> None:
+    contract = canvas_workflow_templates.workflow_protocol_info()["loop_until"]
+
+    assert contract == {
+        "source": "foreach.count",
+        "count_min": 1,
+        "count_max": 10,
+        "path": "steps.<child>.output...",
+        "operators": [
+            "eq", "ne", "lt", "lte", "gt", "gte", "empty", "not_empty",
+        ],
+        "previous_context": "{{ previous }}",
+        "exhaustion": "stop_downstream",
+    }
+
+
+@pytest.mark.parametrize(
+    ("foreach_patch", "message"),
+    [
+        ({"items": "steps.generate.output", "count": None}, "fixed integer count"),
+        ({"count": "inputs.episode_count"}, "fixed integer count"),
+        ({"count": True}, "fixed integer count"),
+        ({"count": 3.0}, "fixed integer count"),
+        ({"count": 11}, "at most 10"),
+        (
+            {"until": {"path": "steps.missing.output.score", "op": "gte", "value": 80}},
+            "current loop child",
+        ),
+    ],
+)
+def test_v2_bounded_feedback_loop_rejects_unsafe_until_contracts(
+    foreach_patch: dict,
+    message: str,
+) -> None:
+    payload = _bounded_feedback_loop_spec()
+    foreach = payload["steps"][0]["foreach"]
+    for key, value in foreach_patch.items():
+        if value is None:
+            foreach.pop(key, None)
+        else:
+            foreach[key] = value
+
+    with pytest.raises(WorkflowSpecError, match=message):
+        parse_workflow_spec(payload)
+
+
+def test_v2_bounded_feedback_loop_requires_the_gate_source_to_be_terminal() -> None:
+    payload = _bounded_feedback_loop_spec()
+    payload["steps"][0]["steps"].append(
+        {
+            "id": "after_review",
+            "title": "审核后处理",
+            "kind": "text",
+            "needs": ["quality_review"],
+            "prompt": {"task": "继续处理。"},
+        }
+    )
+
+    with pytest.raises(WorkflowSpecError, match="must be a terminal child"):
+        compile_workflow_spec(payload)
+
+
+@pytest.mark.parametrize(
+    "source_patch",
+    [
+        {"on_error": "continue"},
+        {"when": {"path": "inputs.episode_count", "op": "gte", "value": 1}},
+    ],
+)
+def test_v2_bounded_feedback_loop_gate_source_must_run_each_attempt(source_patch: dict) -> None:
+    payload = _bounded_feedback_loop_spec()
+    payload["inputs"]["episode_count"] = {
+        "type": "integer",
+        "label": "集数",
+        "default": 1,
+    }
+    payload["steps"][0]["steps"][1].update(source_patch)
+
+    with pytest.raises(WorkflowSpecError, match="must run and produce an output"):
+        compile_workflow_spec(payload)
+
+
+def test_v2_bounded_feedback_loop_expands_one_attempt_at_a_time_and_chains_feedback() -> None:
+    payload = _bounded_feedback_loop_spec()
+
+    first = canvas_workflow_templates.normalize_inline_workflow(payload)
+    first_ids = [step["id"] for step in first["steps"]]
+    assert first_ids == [
+        "quality_loop_i1_generate",
+        "quality_loop_i1_quality_review",
+        "result",
+    ]
+
+    failed_review = {
+        "quality_loop_i1_quality_review": {
+            "status": "completed",
+            "output": {
+                "score": 60,
+                "summary": "结果未达到要求",
+                "regeneration_instruction": "修复审核发现的问题",
+            },
+        }
+    }
+    second = canvas_workflow_templates.normalize_inline_workflow(
+        payload,
+        input_values={"context": failed_review},
+    )
+    second_ids = [step["id"] for step in second["steps"]]
+    assert second_ids == [
+        "quality_loop_i1_generate",
+        "quality_loop_i1_quality_review",
+        "quality_loop_i2_generate",
+        "quality_loop_i2_quality_review",
+        "result",
+    ]
+    second_generate = next(step for step in second["steps"] if step["id"] == "quality_loop_i2_generate")
+    assert "quality_loop_i1_quality_review" in second_generate["depends_on"]
+
+    passed_review = deepcopy(failed_review)
+    passed_review["quality_loop_i1_quality_review"]["output"]["score"] = 86
+    passed = canvas_workflow_templates.normalize_inline_workflow(
+        payload,
+        input_values={"context": passed_review},
+    )
+    assert [step["id"] for step in passed["steps"]] == first_ids
+
+
+def test_v2_bounded_feedback_loop_does_not_advance_from_a_stale_review() -> None:
+    payload = _bounded_feedback_loop_spec()
+    stale_context = {
+        "quality_loop_i1_quality_review": {
+            "status": "completed",
+            "stale": True,
+            "output": {"score": 60, "summary": "过期审核结果"},
+        }
+    }
+
+    normalized = canvas_workflow_templates.normalize_inline_workflow(
+        payload,
+        input_values={"context": stale_context},
+    )
+
+    assert "quality_loop_i2_generate" not in {step["id"] for step in normalized["steps"]}
+
+
+def test_v2_bounded_feedback_loop_blocks_downstream_when_attempts_are_exhausted() -> None:
+    payload = _bounded_feedback_loop_spec()
+    context = {
+        f"quality_loop_i{attempt}_quality_review": {
+            "status": "completed",
+            "output": {
+                "score": 50 + attempt,
+                "summary": f"第 {attempt} 次仍未达标",
+                "regeneration_instruction": "继续修订",
+            },
+        }
+        for attempt in range(1, 4)
+    }
+    normalized = canvas_workflow_templates.normalize_inline_workflow(
+        payload,
+        input_values={"context": context},
+    )
+
+    error = workflow_tools._workflow_repeat_until_error(normalized["steps"], context)
+
+    assert error is not None
+    assert error["error_kind"] == "workflow_loop_until_exhausted"
+    assert error["group_id"] == "quality_loop"
+    assert error["attempt"] == 3
+    assert error["last_output"]["summary"] == "第 3 次仍未达标"
+
+
+def test_v2_bounded_feedback_loop_rejects_invalid_completed_condition_output() -> None:
+    payload = _bounded_feedback_loop_spec()
+    context = {
+        "quality_loop_i1_quality_review": {
+            "status": "completed",
+            "output": {"score": "not-a-number", "summary": "输出错误"},
+        }
+    }
+
+    with pytest.raises(
+        canvas_workflow_templates.WorkflowTemplateError,
+        match="requires finite numeric values",
+    ):
+        canvas_workflow_templates.normalize_inline_workflow(
+            payload,
+            input_values={"context": context},
+        )
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        {"summary": "缺少评分"},
+        {"score": "86", "summary": "评分类型错误"},
+        {"score": float("nan"), "summary": "评分不是有限数值"},
+        {"score": float("inf"), "summary": "评分不是有限数值"},
+        {"score": 10**1000, "summary": "评分数值溢出"},
+    ],
+)
+def test_v2_bounded_feedback_loop_rejects_missing_or_non_numeric_gate_values(output: dict) -> None:
+    payload = _bounded_feedback_loop_spec()
+    context = {
+        "quality_loop_i1_quality_review": {
+            "status": "completed",
+            "output": output,
+        }
+    }
+
+    with pytest.raises(canvas_workflow_templates.WorkflowLoopUntilError):
+        canvas_workflow_templates.normalize_inline_workflow(
+            payload,
+            input_values={"context": context},
+        )
+
+
+@pytest.mark.asyncio
+async def test_v2_bounded_feedback_loop_reports_a_stable_invalid_gate_error() -> None:
+    payload = _bounded_feedback_loop_spec()
+    context = {
+        "quality_loop_i1_quality_review": {
+            "status": "completed",
+            "output": {"score": "not-a-number", "summary": "输出错误"},
+        }
+    }
+
+    template, error = await workflow_tools._workflow_template_from_spec(
+        project_id="project-1",
+        workflow=payload,
+        context=context,
+    )
+
+    assert template is None
+    assert error is not None
+    assert error["error_kind"] == "workflow_loop_until_invalid"
+
+
+def test_v2_bounded_feedback_loop_injects_full_previous_review_into_next_prompt() -> None:
+    payload = _bounded_feedback_loop_spec()
+    review_output = {
+        "score": 61,
+        "summary": "存在多项质量问题",
+        "regeneration_instruction": "逐项修复后重新生成",
+    }
+    normalized = canvas_workflow_templates.normalize_inline_workflow(
+        payload,
+        input_values={
+            "context": {
+                "quality_loop_i1_quality_review": {
+                    "status": "completed",
+                    "output": review_output,
+                }
+            }
+        },
+    )
+    target_step = next(step for step in normalized["steps"] if step["id"] == "quality_loop_i2_generate")
+    previous_record = {
+        "id": "workflow-runtime:wf_feedback:quality_loop_i1_quality_review",
+        "type": "text",
+        "title": "质量审核",
+        "status": "completed",
+        "output": review_output,
+        "input": {
+            "workflow": {
+                "template_id": "video_flow",
+                "instance_id": "wf_feedback",
+                "step_id": "quality_loop_i1_quality_review",
+                "template_step_id": "quality_review",
+                "repeat_group_id": "quality_loop",
+                "repeat_group_index": 1,
+            }
+        },
+    }
+    selected = workflow_tools._workflow_records_for_prompt_context(
+        [previous_record],
+        template_id="video_flow",
+        instance_id="wf_feedback",
+        target_step_id="quality_loop_i2_generate",
+        target_step=target_step,
+    )
+    compact = [node_universal._compact_workflow_text_node(record) for record in selected]
+    rendered = node_universal._workflow_render_prompt_template(
+        target_step["prompt_template"],
+        workflow={
+            "repeat_group_id": "quality_loop",
+            "repeat_group_index": 2,
+            "input_facts": {},
+        },
+        target={"id": "quality_loop_i2_generate"},
+        upstream_nodes=compact,
+    )
+
+    assert rendered["unresolved_template_paths"] == []
+    assert json.dumps(review_output, ensure_ascii=False) in rendered["rendered_prompt_template"]
+
+
+def test_v2_bounded_feedback_loop_keeps_nested_parent_scopes_isolated() -> None:
+    inner = deepcopy(_bounded_feedback_loop_spec()["steps"][0])
+    inner["id"] = "quality_loop"
+    payload = _base_spec()
+    payload["inputs"] = {}
+    payload["steps"] = [
+        {
+            "id": "parent_loop",
+            "title": "父循环",
+            "kind": "loop",
+            "foreach": {"count": 2, "as": "parent"},
+            "steps": [inner],
+        }
+    ]
+    context = {
+        "parent_loop_i1_quality_loop_i1_quality_review": {
+            "status": "completed",
+            "output": {"score": 90, "summary": "父实例一已通过"},
+        },
+        "parent_loop_i2_quality_loop_i1_quality_review": {
+            "status": "completed",
+            "output": {"score": 60, "summary": "父实例二未通过"},
+        },
+    }
+
+    normalized = canvas_workflow_templates.normalize_inline_workflow(
+        payload,
+        input_values={"context": context},
+    )
+    ids = [step["id"] for step in normalized["steps"]]
+
+    assert "parent_loop_i1_quality_loop_i2_generate" not in ids
+    assert "parent_loop_i2_quality_loop_i2_generate" in ids
+    second_parent_retry = next(
+        step for step in normalized["steps"]
+        if step["id"] == "parent_loop_i2_quality_loop_i2_generate"
+    )
+    assert "parent_loop_i2_quality_loop_i1_quality_review" in second_parent_retry["depends_on"]
+    assert "parent_loop_i1_quality_loop_i1_quality_review" not in second_parent_retry["depends_on"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("score", "expected_ready"),
+    [
+        (60, ["quality_loop_i2_generate"]),
+        (86, ["result"]),
+    ],
+)
+async def test_v2_ready_batch_uses_review_result_to_retry_or_continue(
+    monkeypatch: pytest.MonkeyPatch,
+    score: int,
+    expected_ready: list[str],
+) -> None:
+    payload = _bounded_feedback_loop_spec()
+    first = canvas_workflow_templates.normalize_inline_workflow(payload)
+    review_output = {
+        "score": score,
+        "summary": "通过" if score >= 80 else "需要修订",
+        "regeneration_instruction": "修订后重试" if score < 80 else "",
+    }
+    context = {
+        "quality_loop_i1_quality_review": {
+            "status": "completed",
+            "output": review_output,
+        }
+    }
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_feedback": {
+                    "instance_id": "wf_feedback",
+                    "template_id": "video_flow",
+                    "steps": {
+                        "quality_loop_i1_generate": {
+                            "status": "completed",
+                            "output": {"content": "第一版"},
+                            "workflow": {"surface": "workflow_runtime"},
+                        },
+                        "quality_loop_i1_quality_review": {
+                            "status": "completed",
+                            "output": review_output,
+                            "workflow": {"surface": "workflow_runtime"},
+                        },
+                    },
+                }
+            }
+        }
+    }
+
+    async def read_state(_project_id: str) -> dict:
+        return state
+
+    async def runtime_context(*_args: object, **_kwargs: object) -> dict:
+        return context
+
+    async def no_settle(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(workflow_tools, "_read_project_state", read_state)
+    monkeypatch.setattr(workflow_tools, "_workflow_runtime_context_from_project", runtime_context)
+    monkeypatch.setattr(workflow_tools, "_workflow_runtime_settle_terminal_running_steps_for_run", no_settle)
+
+    batch = await workflow_tools._workflow_ready_step_batch(
+        project_id="project-1",
+        template=first,
+        workflow=payload,
+        instance_id="wf_feedback",
+    )
+
+    assert batch["ok"] is True
+    assert batch["ready_step_ids"] == expected_ready
+
+
+@pytest.mark.asyncio
+async def test_v2_ready_batch_returns_exhausted_error_before_downstream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _bounded_feedback_loop_spec()
+    context: dict[str, dict] = {}
+    runtime_steps: dict[str, dict] = {}
+    for attempt in range(1, 4):
+        generate_id = f"quality_loop_i{attempt}_generate"
+        review_id = f"quality_loop_i{attempt}_quality_review"
+        review_output = {
+            "score": 50 + attempt,
+            "summary": f"第 {attempt} 次仍需修改",
+            "regeneration_instruction": "继续修订",
+        }
+        context[review_id] = {"status": "completed", "output": review_output}
+        runtime_steps[generate_id] = {
+            "status": "completed",
+            "output": {"content": f"版本 {attempt}"},
+            "workflow": {"surface": "workflow_runtime"},
+        }
+        runtime_steps[review_id] = {
+            "status": "completed",
+            "output": review_output,
+            "workflow": {"surface": "workflow_runtime"},
+        }
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_feedback": {
+                    "instance_id": "wf_feedback",
+                    "template_id": "video_flow",
+                    "steps": runtime_steps,
+                }
+            }
+        }
+    }
+
+    async def read_state(_project_id: str) -> dict:
+        return state
+
+    async def runtime_context(*_args: object, **_kwargs: object) -> dict:
+        return context
+
+    async def no_settle(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(workflow_tools, "_read_project_state", read_state)
+    monkeypatch.setattr(workflow_tools, "_workflow_runtime_context_from_project", runtime_context)
+    monkeypatch.setattr(workflow_tools, "_workflow_runtime_settle_terminal_running_steps_for_run", no_settle)
+
+    batch = await workflow_tools._workflow_ready_step_batch(
+        project_id="project-1",
+        template=canvas_workflow_templates.normalize_inline_workflow(payload),
+        workflow=payload,
+        instance_id="wf_feedback",
+    )
+
+    assert batch["ok"] is False
+    assert batch["error_kind"] == "workflow_loop_until_exhausted"
+    assert batch["attempt"] == 3
+    assert batch["last_output"]["summary"] == "第 3 次仍需修改"
+    assert batch["ready_step_ids"] == []
+
+
+def test_v2_feedback_loop_downstream_selects_latest_completed_attempt() -> None:
+    nodes = []
+    for attempt in (1, 2):
+        for child in ("generate", "quality_review"):
+            nodes.append(
+                {
+                    "id": f"node-{attempt}-{child}",
+                    "status": "completed",
+                    "updated_at": f"2026-07-14T00:00:0{attempt}Z",
+                    "output": {"content": f"版本 {attempt} {child}"},
+                    "input": {
+                        "workflow": {
+                            "template_id": "video_flow",
+                            "instance_id": "wf_feedback",
+                            "step_id": f"quality_loop_i{attempt}_{child}",
+                            "template_step_id": child,
+                            "repeat_group_id": "quality_loop",
+                            "repeat_group_index": attempt,
+                            "repeat_until": {
+                                "path": "steps.quality_review.output.score",
+                                "op": "gte",
+                                "value": 80,
+                            },
+                        }
+                    },
+                }
+            )
+    by_id = workflow_tools._workflow_step_nodes_by_id(nodes, "video_flow", "wf_feedback")
+    by_alias = workflow_tools._workflow_step_nodes_by_alias(nodes, "video_flow", "wf_feedback")
+
+    selected = workflow_tools._workflow_dependency_nodes(
+        "generate",
+        created_by_step=by_id,
+        nodes_by_alias=by_alias,
+        target_step={"id": "result"},
+    )
+
+    assert [node["id"] for node in selected] == ["node-2-generate"]
+
+    selected_group = workflow_tools._workflow_dependency_nodes(
+        "quality_loop",
+        created_by_step=by_id,
+        nodes_by_alias=by_alias,
+        target_step={"id": "result"},
+    )
+
+    assert {node["id"] for node in selected_group} == {
+        "node-2-generate",
+        "node-2-quality_review",
+    }
+
+
+def test_v2_feedback_loop_direct_downstream_requires_a_matched_gate() -> None:
+    payload = _bounded_feedback_loop_spec()
+    context = {
+        "quality_loop_i1_quality_review": {
+            "status": "completed",
+            "output": {"score": 60, "summary": "需要修订"},
+        }
+    }
+    normalized = canvas_workflow_templates.normalize_inline_workflow(
+        payload,
+        input_values={"context": context},
+    )
+
+    error = workflow_tools._workflow_repeat_until_error(
+        normalized["steps"],
+        context,
+        dependency_ids={"quality_loop"},
+        require_matched=True,
+    )
+
+    assert error is not None
+    assert error["error_kind"] == "workflow_loop_until_pending"
+
+
+def test_v2_feedback_loop_failed_gate_cannot_be_treated_as_optional_completion() -> None:
+    payload = _bounded_feedback_loop_spec()
+    normalized = canvas_workflow_templates.normalize_inline_workflow(payload)
+    context = {
+        "quality_loop_i1_quality_review": {
+            "status": "failed",
+            "output": {"error": "审核模型调用失败"},
+        }
+    }
+
+    error = workflow_tools._workflow_repeat_until_error(normalized["steps"], context)
+
+    assert error is not None
+    assert error["error_kind"] == "workflow_loop_until_invalid"
+
+
 def test_v2_direct_source_media_is_unambiguous() -> None:
     payload = _base_spec()
     payload["inputs"]["image"] = {"type": "image", "label": "源图", "required": True}

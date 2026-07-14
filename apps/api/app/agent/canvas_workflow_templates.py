@@ -7,6 +7,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from app.agent.workflow_condition_eval import (
+    NUMERIC_OPERATORS,
+    condition_matches,
+    finite_condition_number,
+)
 from app.agent.workflow_execution_plan import compile_private_execution_template
 from app.agent.workflow_spec import (
     WORKFLOW_PLAN_VERSION,
@@ -26,10 +31,17 @@ _VALID_NODE_TYPES = {"text", "image", "video", "audio"}
 _TEMPLATE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,100}$")
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _INSTANCE_TOKEN_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+_LOOP_UNTIL_PATH_RE = re.compile(
+    r"^steps\.([A-Za-z][A-Za-z0-9_-]*)\.output(?:\.([A-Za-z][A-Za-z0-9_.-]*))?$"
+)
 
 
 class WorkflowTemplateError(ValueError):
     """Raised when a v2 workflow cannot be loaded or compiled."""
+
+
+class WorkflowLoopUntilError(WorkflowTemplateError):
+    """Raised when a completed feedback-loop gate cannot be evaluated."""
 
 
 def _read_template_file(path: Path) -> dict[str, Any]:
@@ -83,6 +95,17 @@ def workflow_protocol_info() -> dict[str, Any]:
         "reference_roles": ["vision", "reference", "source"],
         "execution_modes": ["auto", "manual"],
         "error_policies": ["stop", "continue"],
+        "loop_until": {
+            "source": "foreach.count",
+            "count_min": 1,
+            "count_max": 10,
+            "path": "steps.<child>.output...",
+            "operators": [
+                "eq", "ne", "lt", "lte", "gt", "gte", "empty", "not_empty",
+            ],
+            "previous_context": "{{ previous }}",
+            "exhaustion": "stop_downstream",
+        },
         "available_plugin_nodes": _plugin_protocol_nodes(plugin_nodes),
         "plugin_errors": workflow_plugins.plugin_errors(),
     }
@@ -189,6 +212,80 @@ def _instance_items(raw_items: list[Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _loop_until_spec(group: dict[str, Any]) -> dict[str, Any]:
+    foreach = group.get("foreach") if isinstance(group.get("foreach"), dict) else {}
+    until = foreach.get("until")
+    return dict(until) if isinstance(until, dict) else {}
+
+
+def _loop_until_source(until: dict[str, Any]) -> tuple[str, list[str]]:
+    path = str(until.get("path") or "").strip()
+    match = _LOOP_UNTIL_PATH_RE.fullmatch(path)
+    if not match:
+        raise WorkflowTemplateError("foreach.until path must reference a current loop child output")
+    nested = [part for part in str(match.group(2) or "").split(".") if part]
+    return match.group(1), nested
+
+
+def _loop_until_output_value(record: dict[str, Any], path: list[str]) -> tuple[bool, Any]:
+    value: Any = record.get("output")
+    for part in path:
+        if not isinstance(value, dict) or part not in value:
+            return False, None
+        value = value[part]
+    return True, value
+
+
+def _loop_until_matches(
+    *,
+    group_id: str,
+    until: dict[str, Any],
+    record: dict[str, Any],
+) -> bool:
+    source_step, output_path = _loop_until_source(until)
+    found, left = _loop_until_output_value(record, output_path)
+    if not found:
+        raise WorkflowLoopUntilError(
+            f"{group_id}.foreach.until output is missing at steps.{source_step}.output"
+        )
+    operator = str(until.get("op") or "").strip()
+    right = until.get("value")
+    if operator in NUMERIC_OPERATORS and (
+        isinstance(left, bool)
+        or not isinstance(left, (int, float))
+        or finite_condition_number(left) is None
+        or finite_condition_number(right) is None
+    ):
+        raise WorkflowLoopUntilError(f"{group_id}.foreach.until requires finite numeric values")
+    return condition_matches(left, operator, right)
+
+
+def _bounded_loop_instances(
+    group: dict[str, Any],
+    values: dict[str, Any],
+    instances: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    until = _loop_until_spec(group)
+    if not until:
+        return instances
+    group_id = str(group.get("id") or "loop").strip() or "loop"
+    source_step, _output_path = _loop_until_source(until)
+    key = str((group.get("foreach") or {}).get("key") or "").strip()
+    for instance_index, instance in enumerate(instances, start=1):
+        suffix = _instance_suffix(instance, instance_index, key)
+        source_id = f"{group_id}_{suffix}_{source_step}"
+        record = _context_value(values, source_id)
+        if (
+            not isinstance(record, dict)
+            or str(record.get("status") or "").strip() != "completed"
+            or bool(record.get("stale"))
+        ):
+            return instances[:instance_index]
+        if _loop_until_matches(group_id=group_id, until=until, record=record):
+            return instances[:instance_index]
+    return instances
+
+
 def _loop_instances(group: dict[str, Any], values: dict[str, Any]) -> list[dict[str, Any]] | None:
     foreach = group.get("foreach") if isinstance(group.get("foreach"), dict) else {}
     count = foreach.get("count")
@@ -205,7 +302,8 @@ def _loop_instances(group: dict[str, Any], values: dict[str, Any]) -> list[dict[
         if total < 1:
             raise WorkflowTemplateError(f"{group.get('id')}.foreach.count must be positive")
         scope_key = str(foreach.get("scope_key") or "index")
-        return _instance_items([{scope_key: index} for index in range(1, total + 1)])
+        instances = _instance_items([{scope_key: index} for index in range(1, total + 1)])
+        return _bounded_loop_instances(group, values, instances)
 
     source_step = str(foreach.get("from_step") or "").strip()
     path = str(foreach.get("path") or "").strip()
@@ -299,6 +397,8 @@ def _expand_private_loops(
         foreach = group.get("foreach") if isinstance(group.get("foreach"), dict) else {}
         item_name = str(foreach.get("scope_key") or "item").strip() or "item"
         key = str(foreach.get("key") or "").strip()
+        until = _loop_until_spec(group)
+        until_source_step = _loop_until_source(until)[0] if until else ""
         child_ids = {
             str(child.get("id") or "").strip()
             for child in children
@@ -307,6 +407,11 @@ def _expand_private_loops(
         for instance_index, instance in enumerate(instances, start=1):
             suffix = _instance_suffix(instance, instance_index, key)
             local_ids = {child_id: f"{group_id}_{suffix}_{child_id}" for child_id in child_ids}
+            previous_source_id = ""
+            if until_source_step and instance_index > 1:
+                previous_instance = instances[instance_index - 2]
+                previous_suffix = _instance_suffix(previous_instance, instance_index - 1, key)
+                previous_source_id = f"{group_id}_{previous_suffix}_{until_source_step}"
             parent_scope = group.get("instance_scope") if isinstance(group.get("instance_scope"), dict) else {}
             for child in children:
                 if not isinstance(child, dict):
@@ -320,6 +425,7 @@ def _expand_private_loops(
                 rendered["depends_on"] = list(dict.fromkeys([
                     *[str(item) for item in group.get("depends_on") or [] if str(item)],
                     *[local_ids.get(item, item) for item in child_dependencies],
+                    *([previous_source_id] if previous_source_id else []),
                 ]))
                 rendered["template_step_id"] = template_child_id
                 rendered["repeat_group_id"] = group_id
@@ -334,6 +440,11 @@ def _expand_private_loops(
                     },
                 }
                 rendered["item_name"] = item_name
+                if until:
+                    rendered["repeat_until"] = deepcopy(until)
+                    rendered["repeat_until_source_step"] = until_source_step
+                    rendered["repeat_until_source_id"] = local_ids.get(until_source_step, "")
+                    rendered["repeat_until_max_attempts"] = int(foreach.get("count") or 0)
                 if isinstance(rendered.get("steps"), list):
                     nested_values = {**values, item_name: deepcopy(instance)}
                     expanded.extend(_expand_private_loops(

@@ -87,6 +87,10 @@ _WORKFLOW_STEP_METADATA_KEYS = (
     "repeat_group_id",
     "repeat_group_label",
     "repeat_group_index",
+    "repeat_until",
+    "repeat_until_source_step",
+    "repeat_until_source_id",
+    "repeat_until_max_attempts",
     "prompt_ref",
     "prompt_spec",
     "prompt_template",
@@ -3195,6 +3199,47 @@ def _workflow_step_nodes_by_alias(
     return result
 
 
+def _workflow_preferred_feedback_attempts(
+    nodes: list[dict[str, Any]],
+    target_step: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    target_workflow = _workflow_metadata_from_node(target_step or {})
+    target_group = str(
+        (target_step or {}).get("repeat_group_id")
+        or target_workflow.get("repeat_group_id")
+        or ""
+    ).strip()
+    ordinary: list[dict[str, Any]] = []
+    candidates: dict[str, list[dict[str, Any]]] = {}
+    for node in nodes:
+        workflow = _workflow_metadata_from_node(node)
+        until = workflow.get("repeat_until")
+        group_id = str(workflow.get("repeat_group_id") or "").strip()
+        if not isinstance(until, dict) or not until or not group_id or group_id == target_group:
+            ordinary.append(node)
+            continue
+        candidates.setdefault(group_id, []).append(node)
+
+    selected = list(ordinary)
+
+    def repeat_index(node: dict[str, Any]) -> int:
+        workflow = _workflow_metadata_from_node(node)
+        try:
+            return int(workflow.get("repeat_group_index") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    for group_nodes in candidates.values():
+        completed_attempts = [
+            repeat_index(node)
+            for node in group_nodes
+            if str(node.get("status") or "").strip() == "completed" and not bool(node.get("stale"))
+        ]
+        latest_attempt = max(completed_attempts or [repeat_index(node) for node in group_nodes])
+        selected.extend(node for node in group_nodes if repeat_index(node) == latest_attempt)
+    return selected
+
+
 def _workflow_dependency_nodes(
     dep_key: str,
     *,
@@ -3229,7 +3274,7 @@ def _workflow_dependency_nodes(
             add_if_scoped(node)
     for node in nodes_by_alias.get(dep) or []:
         add_if_scoped(node)
-    return result
+    return _workflow_preferred_feedback_attempts(result, target_step)
 
 
 def _workflow_item_workflow_meta(item: dict[str, Any] | None) -> dict[str, Any]:
@@ -3626,6 +3671,7 @@ def _workflow_node_context_payload(node: dict[str, Any]) -> dict[str, Any]:
         "title": node.get("title"),
         "type": node.get("type"),
         "status": node.get("status"),
+        "stale": bool(node.get("stale")),
         "output": output,
         "outputs": outputs,
     }
@@ -3782,6 +3828,12 @@ async def _workflow_template_from_spec(
             )
     except FileNotFoundError as exc:
         return None, {"ok": False, "error": str(exc), "error_kind": "workflow_spec_artifact_not_found"}
+    except canvas_workflow_templates.WorkflowLoopUntilError as exc:
+        return None, {
+            "ok": False,
+            "error": str(exc),
+            "error_kind": "workflow_loop_until_invalid",
+        }
     except (ValueError, json.JSONDecodeError) as exc:
         return None, {"ok": False, "error": str(exc), "error_kind": "workflow_spec_artifact_error"}
     except canvas_workflow_templates.WorkflowTemplateError as exc:
@@ -4262,6 +4314,25 @@ async def _materialize_workflow_step(
         for item in steps
         if str(item.get("id") or "").strip()
     }
+    dependency_ids = {
+        str(item or "").strip()
+        for item in step.get("depends_on") or []
+        if str(item or "").strip()
+    }
+    loop_error = _workflow_repeat_until_error(
+        steps,
+        created_by_step,
+        dependency_ids=dependency_ids,
+        require_matched=True,
+    )
+    if loop_error:
+        return {
+            **loop_error,
+            "project_id": project_id,
+            "template_id": template_id,
+            "instance_id": instance_id,
+            "step_id": target_id,
+        }
     virtual_step_ids = _virtual_workflow_step_ids(steps, inputs)
     deleted_virtual_ids = await _delete_virtual_workflow_nodes(
         project_id=project_id,
@@ -6083,6 +6154,15 @@ async def workflow_run_next_step(
         if str(step.get("id") or "").strip()
     }
     virtual_step_ids = _virtual_workflow_step_ids(steps, inputs)
+    loop_error = _workflow_repeat_until_error(steps, records_by_step)
+    if loop_error:
+        return {
+            **loop_error,
+            "project_id": project_id,
+            "template_id": resolved_template_id,
+            "instance_id": selected_instance_id,
+            "runtime": runtime_payload,
+        }
 
     def usable_record_for_step(step: dict[str, Any]) -> dict[str, Any] | None:
         candidate_id = str(step.get("id") or "").strip()
@@ -6448,6 +6528,105 @@ def _workflow_step_needs_run_for_batch(
     return status in {"", "idle", "draft", "failed"}
 
 
+def _workflow_repeat_until_error(
+    steps: list[dict[str, Any]],
+    records_by_step: dict[str, dict[str, Any]],
+    *,
+    dependency_ids: set[str] | None = None,
+    require_matched: bool = False,
+) -> dict[str, Any] | None:
+    groups: dict[str, dict[str, Any]] = {}
+    for step in steps:
+        group_id = str(step.get("repeat_group_id") or "").strip()
+        until = step.get("repeat_until") if isinstance(step.get("repeat_until"), dict) else {}
+        source_id = str(step.get("repeat_until_source_id") or "").strip()
+        if not group_id or not until or not source_id:
+            continue
+        if dependency_ids is not None and group_id not in dependency_ids:
+            continue
+        try:
+            attempt = int(step.get("repeat_group_index") or 0)
+            max_attempts = int(step.get("repeat_until_max_attempts") or 0)
+        except (TypeError, ValueError):
+            continue
+        current = groups.get(group_id)
+        if current is None or attempt > int(current.get("attempt") or 0):
+            groups[group_id] = {
+                "group_id": group_id,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "until": deepcopy(until),
+                "source_id": source_id,
+                "source_step": str(step.get("repeat_until_source_step") or "").strip(),
+            }
+
+    for group in groups.values():
+        source_id = str(group["source_id"])
+        record = records_by_step.get(source_id)
+        if not isinstance(record, dict):
+            if require_matched:
+                return {
+                    "ok": False,
+                    "error": "Workflow feedback loop has not completed its current review step",
+                    "error_kind": "workflow_loop_until_pending",
+                    **group,
+                }
+            continue
+        record_status = str(record.get("status") or "").strip()
+        if record_status == "failed":
+            return {
+                "ok": False,
+                "error": "Workflow feedback loop review step failed before producing a gate result",
+                "error_kind": "workflow_loop_until_invalid",
+                **group,
+                "last_output": deepcopy(record.get("output")),
+            }
+        if record_status != "completed" or bool(record.get("stale")):
+            if require_matched:
+                return {
+                    "ok": False,
+                    "error": "Workflow feedback loop has not completed its current review step",
+                    "error_kind": "workflow_loop_until_pending",
+                    **group,
+                    "last_output": deepcopy(record.get("output")),
+                }
+            continue
+        try:
+            matched = canvas_workflow_templates._loop_until_matches(
+                group_id=str(group["group_id"]),
+                until=group["until"],
+                record=record,
+            )
+        except canvas_workflow_templates.WorkflowTemplateError as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "error_kind": "workflow_loop_until_invalid",
+                **group,
+                "last_output": deepcopy(record.get("output")),
+            }
+        if matched:
+            continue
+        if int(group["attempt"] or 0) < int(group["max_attempts"] or 0):
+            if require_matched:
+                return {
+                    "ok": False,
+                    "error": "Workflow feedback loop requires another attempt before downstream steps can run",
+                    "error_kind": "workflow_loop_until_pending",
+                    **group,
+                    "last_output": deepcopy(record.get("output")),
+                }
+            continue
+        return {
+            "ok": False,
+            "error": "Workflow feedback loop reached its attempt limit before the until condition matched",
+            "error_kind": "workflow_loop_until_exhausted",
+            **group,
+            "last_output": deepcopy(record.get("output")),
+        }
+    return None
+
+
 async def _workflow_ready_step_batch(
     *,
     project_id: str,
@@ -6513,6 +6692,17 @@ async def _workflow_ready_step_batch(
         if isinstance(record, dict) and str(step_id).strip()
     }
     virtual_step_ids = _virtual_workflow_step_ids(steps, inputs)
+    loop_error = _workflow_repeat_until_error(steps, records_by_step)
+    if loop_error:
+        return {
+            **loop_error,
+            "project_id": project_id,
+            "template_id": resolved_template_id,
+            "instance_id": selected_instance_id,
+            "runtime": runtime_payload,
+            "template": active_template,
+            "ready_step_ids": [],
+        }
 
     for step in steps:
         record = _workflow_runtime_usable_record(step, records_by_step)

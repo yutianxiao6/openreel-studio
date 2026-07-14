@@ -32,3 +32,10 @@ def test_missing_or_unknown_conditions_do_not_skip() -> None:
     assert workflow_step_condition_skipped(
         {"when": {"path": "unknown.count", "op": "lt", "value": 2}}, {"count": 1}
     ) is False
+
+
+def test_existing_conditions_keep_numeric_string_comparison_behavior() -> None:
+    assert workflow_step_condition_skipped(
+        {"when": {"path": "inputs.score", "op": "gte", "value": 80}},
+        {"score": "86"},
+    ) is False

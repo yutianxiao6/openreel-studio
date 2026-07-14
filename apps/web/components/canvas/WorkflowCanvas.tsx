@@ -6563,10 +6563,13 @@ function WorkflowStepInspector({
                       value={loopSourceSelectValue}
                       onChange={(event) => {
                         const selected = event.target.value
-                        const base = {
+                        const base: Record<string, unknown> = {
+                          ...loopForeach,
                           as: workflowStringValue(loopForeach.as) || "item",
                           ...(workflowStringValue(loopForeach.key) ? { key: workflowStringValue(loopForeach.key) } : {}),
                         }
+                        delete base.items
+                        delete base.count
                         const nextForeach = selected.startsWith("input:")
                           ? { ...base, items: `inputs.${selected.slice("input:".length)}` }
                           : selected.startsWith("step:")

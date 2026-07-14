@@ -14,6 +14,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from app.agent.workflow_condition_eval import finite_condition_number
+
 
 WORKFLOW_SPEC_VERSION = "openreel.workflow.v2"
 WORKFLOW_PLAN_VERSION = "openreel.workflow.execution-plan.v2"
@@ -24,6 +26,9 @@ _STEP_PATH_RE = re.compile(
 )
 _INPUT_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9_])inputs\.([A-Za-z][A-Za-z0-9_-]*)(?:\.[A-Za-z0-9_-]+|\[\])*(?![A-Za-z0-9_])"
+)
+_LOOP_UNTIL_PATH_RE = re.compile(
+    r"^steps\.([A-Za-z][A-Za-z0-9_-]*)\.output(?:\.[A-Za-z][A-Za-z0-9_-]*)*$"
 )
 _FORBIDDEN_ROUTING_KEYS = {
     "api_base",
@@ -195,11 +200,51 @@ class WorkflowCondition(_StrictModel):
         return self
 
 
+class WorkflowLoopUntil(_StrictModel):
+    path: str
+    op: WorkflowConditionOperator
+    value: Any | None = None
+
+    @model_validator(mode="after")
+    def _validate_value(self) -> "WorkflowLoopUntil":
+        self.path = self.path.strip()
+        if not _LOOP_UNTIL_PATH_RE.fullmatch(self.path):
+            raise ValueError("loop until path must reference one current loop child output")
+        if self.op in {"empty", "not_empty"} and self.value is not None:
+            raise ValueError(f"loop until operator {self.op} does not accept value")
+        if self.op not in {"empty", "not_empty"} and self.value is None:
+            raise ValueError(f"loop until operator {self.op} requires value")
+        if self.op in {"lt", "lte", "gt", "gte"} and (
+            isinstance(self.value, bool)
+            or not isinstance(self.value, (int, float))
+            or finite_condition_number(self.value) is None
+        ):
+            raise ValueError(f"loop until operator {self.op} requires a finite numeric value")
+        return self
+
+    @property
+    def source_step_id(self) -> str:
+        match = _LOOP_UNTIL_PATH_RE.fullmatch(self.path)
+        return match.group(1) if match else ""
+
+
 class WorkflowForeach(_StrictModel):
     items: str | None = None
     count: str | int | None = None
     as_: str = Field(alias="as", pattern=_ID_PATTERN)
     key: str | None = None
+    until: WorkflowLoopUntil | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_until_count_literal(cls, value: Any) -> Any:
+        if (
+            isinstance(value, dict)
+            and value.get("until") is not None
+            and type(value.get("count")) is not int
+        ):
+            raise ValueError("foreach.until requires a fixed integer count")
+        return value
 
     @model_validator(mode="after")
     def _validate_source(self) -> "WorkflowForeach":
@@ -211,6 +256,11 @@ class WorkflowForeach(_StrictModel):
             raise ValueError("foreach.count cannot be empty")
         if isinstance(self.count, int) and self.count < 1:
             raise ValueError("foreach.count must be positive")
+        if self.until is not None:
+            if not isinstance(self.count, int):
+                raise ValueError("foreach.until requires a fixed integer count")
+            if self.count > 10:
+                raise ValueError("foreach.until count must be at most 10")
         return self
 
 
@@ -262,6 +312,10 @@ class WorkflowStep(_StrictModel):
                 raise ValueError("loop step requires foreach and nested steps")
             if self.prompt or self.uses or self.plugin or self.fields or self.output:
                 raise ValueError("loop step accepts only control fields and nested steps")
+            if self.foreach.until is not None:
+                child_ids = {child.id for child in self.steps}
+                if self.foreach.until.source_step_id not in child_ids:
+                    raise ValueError("loop until path must reference one current loop child output")
             return self
 
         if self.foreach is not None or self.steps:
@@ -407,6 +461,8 @@ def _step_dependency_payload(step: WorkflowStep) -> dict[str, Any]:
     payload = step.model_dump(by_alias=True, exclude_none=True)
     for key in ("id", "title", "description", "kind", "needs", "output", "execution", "on_error", "ui", "steps"):
         payload.pop(key, None)
+    if step.kind == "loop" and isinstance(payload.get("foreach"), dict):
+        payload["foreach"].pop("until", None)
     return payload
 
 
@@ -441,6 +497,26 @@ def _validate_and_derive_dependencies(spec: WorkflowSpec) -> dict[str, list[str]
         if step.id in resolved:
             raise WorkflowSpecError(f"step {step.id!r} cannot depend on itself")
         dependencies[step.id] = resolved
+
+    for step in flattened:
+        if step.kind != "loop" or step.foreach is None or step.foreach.until is None:
+            continue
+        source_step_id = step.foreach.until.source_step_id
+        source_step = next(child for child in step.steps if child.id == source_step_id)
+        if source_step.kind == "loop" or source_step.when is not None or source_step.on_error != "stop":
+            raise WorkflowSpecError(
+                f"loop until source {source_step_id!r} must run and produce an output in every attempt"
+            )
+        consumers = [
+            child.id
+            for child in step.steps
+            if source_step_id in dependencies.get(child.id, [])
+        ]
+        if consumers:
+            raise WorkflowSpecError(
+                f"loop until source {source_step_id!r} must be a terminal child; "
+                f"used by: {', '.join(consumers)}"
+            )
 
     visiting: set[str] = set()
     visited: set[str] = set()

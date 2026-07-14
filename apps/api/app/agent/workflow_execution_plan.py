@@ -184,6 +184,8 @@ def _compile_private_step(
         private_foreach: dict[str, Any] = {"scope_key": foreach.get("as")}
         if foreach.get("key"):
             private_foreach["key"] = foreach["key"]
+        if isinstance(foreach.get("until"), dict):
+            private_foreach["until"] = deepcopy(foreach["until"])
         if foreach.get("items"):
             from_step, path = _source_path(str(foreach["items"]))
             if from_step:

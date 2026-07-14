@@ -177,7 +177,7 @@ def _workflow_framework_content_error(workflow: dict[str, Any]) -> dict[str, Any
 def _workflow_spec_error_hint(message: str) -> str:
     text = str(message or "")
     if "foreach" in text:
-        return "循环使用 kind='loop'，foreach 只写 items 或 count 其中一个，并写 as；items 使用 steps.<id>.output... 路径。"
+        return "循环使用 kind='loop'，foreach 只写 items 或 count 其中一个，并写 as；items 使用 steps.<id>.output... 路径；until 只配固定整数 count，并读取当前循环子步骤输出。"
     if "kind" in text:
         return "步骤 kind 只能是 text、object、collection、image、video、audio、loop、plugin。"
     return "修订后的 workflow 未通过最终校验；调整 patch 后重试。"
