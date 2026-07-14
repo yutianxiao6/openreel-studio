@@ -1,6 +1,6 @@
 {
   "name": "desktop",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "description": "OpenReel Studio desktop shell",
   "homepage": "https://github.com/yutianxiao6/openreel-studio",
@@ -11,6 +11,7 @@
   "main": "src/main.cjs",
   "scripts": {
     "dev": "electron .",
+    "test": "node --test src/*.test.cjs",
     "package:win": "electron-builder --win nsis --x64 --publish never",
     "package:linux": "electron-builder --linux AppImage deb --x64 --publish never",
     "package:mac": "electron-builder --mac dmg zip --publish never"

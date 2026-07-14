@@ -730,10 +730,13 @@ function previewMediaCrossOrigin(sourceUrl: string): "anonymous" | undefined {
   }
 }
 
-function requiresCanvasVideoPreview(): boolean {
-  if (typeof navigator === "undefined") return false
-  const userAgent = navigator.userAgent || ""
-  return /Windows/i.test(userAgent) && /Electron/i.test(userAgent)
+function previewVideoErrorMessage(error: MediaError | null): string {
+  if (!error) return "未知媒体错误"
+  if (error.code === MediaError.MEDIA_ERR_ABORTED) return "媒体加载被中止"
+  if (error.code === MediaError.MEDIA_ERR_NETWORK) return "媒体网络读取失败"
+  if (error.code === MediaError.MEDIA_ERR_DECODE) return "当前视频编码无法解码"
+  if (error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) return "视频地址或编码不受支持"
+  return error.message || `媒体错误 ${error.code}`
 }
 
 function timeFromPointer(
@@ -1499,7 +1502,6 @@ export default function VideoEditPanel({
   const [pxPerSecond, setPxPerSecond] = useState(DEFAULT_PX_PER_SECOND)
   const [previewScale, setPreviewScale] = useState<PreviewScale>("fit")
   const [playbackResolution, setPlaybackResolution] = useState<PlaybackResolution>("full")
-  const canvasVideoPreview = useMemo(requiresCanvasVideoPreview, [])
   const [loopEnabled, setLoopEnabled] = useState(false)
   const [loopRange, setLoopRange] = useState({ inFrame: 0, outFrame: 0 })
   const [tracks, setTracks] = useState<TimelineTrackState[]>(defaultTimelineTracks)
@@ -1525,6 +1527,23 @@ export default function VideoEditPanel({
   const [videoClips, setVideoClips] = useState<TimelineClipState[]>([])
   const [audioClips, setAudioClips] = useState<TimelineClipState[]>([])
   const [historyDepth, setHistoryDepth] = useState({ undo: 0, redo: 0 })
+  const reportPreviewVideoError = useCallback((media: HTMLVideoElement) => {
+    setPlaying(false)
+    setError(`视频预览失败：${previewVideoErrorMessage(media.error)}`)
+  }, [])
+  const reportPreviewPlaybackFailure = useCallback((reason: unknown) => {
+    if (reason instanceof Error && reason.name === "AbortError") return
+    const detail = reason instanceof Error && reason.message ? reason.message : "浏览器拒绝播放媒体"
+    setPlaying(false)
+    setError(`媒体预览播放失败：${detail}`)
+  }, [])
+  const clearPreviewVideoError = useCallback(() => {
+    setError((current) => (
+      current?.startsWith("视频预览失败：") || current?.startsWith("媒体预览播放失败：")
+        ? null
+        : current
+    ))
+  }, [])
   currentTimeRef.current = currentTime
   videoClipsRef.current = videoClips
   audioClipsRef.current = audioClips
@@ -2062,7 +2081,6 @@ export default function VideoEditPanel({
       previewAudioContextRef.current = context
     }
     const elements: Array<HTMLMediaElement | null> = [
-      videoRef.current,
       audioRef.current,
       transitionOutgoingAudioRef.current,
       transitionIncomingAudioRef.current,
@@ -2552,13 +2570,13 @@ export default function VideoEditPanel({
     if (playing && playbackDirection > 0) {
       if (video.paused) {
         if (Math.abs((video.currentTime || 0) - localTime) > 0.15) video.currentTime = localTime
-        void video.play().catch(() => undefined)
+        void video.play().catch(reportPreviewPlaybackFailure)
       }
     } else {
       if (Math.abs((video.currentTime || 0) - localTime) > 0.04) video.currentTime = localTime
       video.pause()
     }
-  }, [currentFrame, framesPerSecond, playbackDirection, playing, sourceFrameCountForClip, transitionVideoClip, transitionVideoItem])
+  }, [currentFrame, framesPerSecond, playbackDirection, playing, reportPreviewPlaybackFailure, sourceFrameCountForClip, transitionVideoClip, transitionVideoItem])
 
   useEffect(() => {
     if (!currentAudioClip) return
@@ -2681,8 +2699,8 @@ export default function VideoEditPanel({
       if (Math.abs((audio.currentTime || 0) - localTime) > 0.15) audio.currentTime = localTime
       mediaStarts.push(audio.play())
     }
-    void Promise.all(mediaStarts).catch(() => undefined)
-  }, [currentAudioClip, currentAudioItem, currentVideoClip, currentVideoItem, framesPerSecond, playbackDirection, playAudioThroughVideo, playing])
+    void Promise.all(mediaStarts).catch(reportPreviewPlaybackFailure)
+  }, [currentAudioClip, currentAudioItem, currentVideoClip, currentVideoItem, framesPerSecond, playbackDirection, playAudioThroughVideo, playing, reportPreviewPlaybackFailure])
 
   useEffect(() => {
     const video = videoRef.current
@@ -2706,8 +2724,8 @@ export default function VideoEditPanel({
   useEffect(() => {
     const video = videoRef.current
     const canvas = programCanvasRef.current
-    if (!video || !canvas || currentVideoItem?.type !== "video" || (playbackResolution === "full" && !canvasVideoPreview)) return
-    const factor = playbackResolution === "full" ? 1 : playbackResolution === "half" ? 0.5 : 0.25
+    if (!video || !canvas || currentVideoItem?.type !== "video" || playbackResolution === "full") return
+    const factor = playbackResolution === "half" ? 0.5 : 0.25
     const width = Math.max(16, Math.round(sequenceSpec.settings.width * factor))
     const height = Math.max(16, Math.round(sequenceSpec.settings.height * factor))
     canvas.width = width
@@ -2754,13 +2772,13 @@ export default function VideoEditPanel({
       if (callbackId) video.cancelVideoFrameCallback(callbackId)
       if (animationFrame) window.cancelAnimationFrame(animationFrame)
     }
-  }, [canvasVideoPreview, currentVideoClip?.clipId, currentVideoItem, currentVisualTransform, playbackResolution, sequenceSpec.settings.height, sequenceSpec.settings.width])
+  }, [currentVideoClip?.clipId, currentVideoItem, currentVisualTransform, playbackResolution, sequenceSpec.settings.height, sequenceSpec.settings.width])
 
   useEffect(() => {
     const video = transitionVideoRef.current
     const canvas = transitionProgramCanvasRef.current
-    if (!video || !canvas || transitionVideoItem?.type !== "video" || (playbackResolution === "full" && !canvasVideoPreview)) return
-    const factor = playbackResolution === "full" ? 1 : playbackResolution === "half" ? 0.5 : 0.25
+    if (!video || !canvas || transitionVideoItem?.type !== "video" || playbackResolution === "full") return
+    const factor = playbackResolution === "half" ? 0.5 : 0.25
     const width = Math.max(16, Math.round(sequenceSpec.settings.width * factor))
     const height = Math.max(16, Math.round(sequenceSpec.settings.height * factor))
     canvas.width = width
@@ -2795,7 +2813,7 @@ export default function VideoEditPanel({
       if (callbackId) video.cancelVideoFrameCallback(callbackId)
       if (animationFrame) window.cancelAnimationFrame(animationFrame)
     }
-  }, [canvasVideoPreview, playbackResolution, sequenceSpec.settings.height, sequenceSpec.settings.width, transitionVideoClip?.clipId, transitionVideoItem, transitionVisualTransform])
+  }, [playbackResolution, sequenceSpec.settings.height, sequenceSpec.settings.width, transitionVideoClip?.clipId, transitionVideoItem, transitionVisualTransform])
 
   const timeToFrame = useCallback((time: number) => (
     Math.max(0, Math.round(time * framesPerSecond))
@@ -3020,7 +3038,7 @@ export default function VideoEditPanel({
           loopRange.inFrame < clipEndFrame(currentVideoClip)
         ) {
           video.currentTime = currentVideoClip.sourceInFrame / framesPerSecond + loopInTime - currentVideoClip.startFrame / framesPerSecond
-          void video.play().catch(() => undefined)
+          void video.play().catch(reportPreviewPlaybackFailure)
         } else {
           video?.pause()
         }
@@ -3081,7 +3099,7 @@ export default function VideoEditPanel({
     }
     frame = window.requestAnimationFrame(tick)
     return () => window.cancelAnimationFrame(frame)
-  }, [activeTransitionAudioClockClip, currentAudioClip, currentVideoClip, effectiveLoopOutFrame, framesPerSecond, loopEnabled, loopRange.inFrame, playAudioThroughVideo, playbackClockSource, playbackDirection, playbackEnd, playing, pxPerSecond])
+  }, [activeTransitionAudioClockClip, currentAudioClip, currentVideoClip, effectiveLoopOutFrame, framesPerSecond, loopEnabled, loopRange.inFrame, playAudioThroughVideo, playbackClockSource, playbackDirection, playbackEnd, playing, pxPerSecond, reportPreviewPlaybackFailure])
 
   const runOperation = async (action: BusyAction, input: Parameters<typeof runProjectMediaOperation>[1]) => {
     if (!action || busy) return
@@ -4335,7 +4353,12 @@ export default function VideoEditPanel({
             </div>
           </aside>
 
-          <main data-openreel-preview-pane="true" data-playback-clock={playbackClockSource} className="flex min-h-0 min-w-0 flex-col bg-[#111316]">
+          <main
+            data-openreel-preview-pane="true"
+            data-playback-clock={playbackClockSource}
+            data-video-preview-engine={playbackResolution === "full" ? "native" : "canvas"}
+            className="flex min-h-0 min-w-0 flex-col bg-[#111316]"
+          >
             <div className="flex h-7 shrink-0 items-center justify-between border-b border-[#2f3339] bg-[#1d2024] px-2.5">
               <span className="text-[9px] font-medium text-[#aeb3ba]">时间线监看器</span>
               <span className="font-mono text-[8px] text-[#656b73]">{programVideoGap ? "BLACK" : programAudioGap ? "SILENCE" : `PROGRAM · ${playbackClockSource.toUpperCase()}`}</span>
@@ -4388,18 +4411,18 @@ export default function VideoEditPanel({
                       data-openreel-preview-video="true"
                       data-openreel-preview-visual="true"
                       src={currentVideoItem.src || videoUrl}
-                      crossOrigin={previewMediaCrossOrigin(currentVideoItem.src || videoUrl)}
                       muted={audioTransitionThroughVideo
                         ? false
                         : Boolean(activeAudioTransition) || !playAudioThroughVideo || Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)}
+                      playsInline
                       preload="metadata"
                       className={cn(
                         "object-contain [color-scheme:dark]",
-                        playbackResolution === "full" && !canvasVideoPreview
+                        playbackResolution === "full"
                           ? cn("h-full w-full", activeVideoTransition && "absolute inset-0")
                           : "pointer-events-none absolute h-px w-px opacity-0",
                       )}
-                      style={playbackResolution === "full" && !canvasVideoPreview
+                      style={playbackResolution === "full"
                         ? {
                             ...currentVisualTransformStyle,
                             zIndex: currentVisualLayerZ,
@@ -4410,6 +4433,8 @@ export default function VideoEditPanel({
                         const nextDuration = Number(event.currentTarget.duration || 0)
                         registerSourceDuration(currentVideoItem.src, nextDuration)
                       }}
+                      onLoadedData={clearPreviewVideoError}
+                      onError={(event) => reportPreviewVideoError(event.currentTarget)}
                     />
                   )
                 ) : (
@@ -4435,14 +4460,15 @@ export default function VideoEditPanel({
                       ref={transitionVideoRef}
                       src={transitionVideoItem.src}
                       muted
+                      playsInline
                       preload="metadata"
                       className={cn(
                         "object-contain [color-scheme:dark]",
-                        playbackResolution === "full" && !canvasVideoPreview
+                        playbackResolution === "full"
                           ? "absolute inset-0 h-full w-full"
                           : "pointer-events-none absolute h-px w-px opacity-0",
                       )}
-                      style={playbackResolution === "full" && !canvasVideoPreview
+                      style={playbackResolution === "full"
                         ? {
                             ...visualTransformStyle(transitionVisualTransform),
                             zIndex: transitionVisualLayerZ,
@@ -4452,10 +4478,12 @@ export default function VideoEditPanel({
                       data-openreel-transition-video="true"
                       data-transition-layer={transitionVisualIsIncoming ? "incoming" : "outgoing"}
                       data-transition-layer-opacity={transitionVisualLayerOpacity.toFixed(4)}
+                      onLoadedData={clearPreviewVideoError}
+                      onError={(event) => reportPreviewVideoError(event.currentTarget)}
                     />
                   )
                 )}
-                {currentVideoItem?.type === "video" && (playbackResolution !== "full" || canvasVideoPreview) && (
+                {currentVideoItem?.type === "video" && playbackResolution !== "full" && (
                   <canvas
                     ref={programCanvasRef}
                     data-openreel-program-canvas="true"
@@ -4464,7 +4492,7 @@ export default function VideoEditPanel({
                     style={{ zIndex: currentVisualLayerZ, opacity: currentVisualLayerOpacity }}
                   />
                 )}
-                {transitionVideoItem?.type === "video" && (playbackResolution !== "full" || canvasVideoPreview) && (
+                {transitionVideoItem?.type === "video" && playbackResolution !== "full" && (
                   <canvas
                     ref={transitionProgramCanvasRef}
                     data-openreel-transition-program-canvas="true"

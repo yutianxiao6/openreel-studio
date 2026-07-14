@@ -1,6 +1,6 @@
 !include LogicLib.nsh
 
-Var openReelPreserveDir
+Var openReelInPlaceInstall
 
 !macro OpenReelTaskKill IMAGE_NAME
   nsExec::ExecToLog `"$SYSDIR\cmd.exe" /C taskkill /F /T /IM "${IMAGE_NAME}"`
@@ -22,85 +22,53 @@ Var openReelPreserveDir
   Delete "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
   Delete "$INSTDIR\${UNINSTALL_FILENAME}"
   Delete "$INSTDIR\uninstallerIcon.ico"
-  Delete "$INSTDIR\*.bin"
-  Delete "$INSTDIR\*.dat"
-  Delete "$INSTDIR\*.dll"
-  Delete "$INSTDIR\*.json"
-  Delete "$INSTDIR\*.pak"
-  Delete "$INSTDIR\*.xml"
-  Delete "$INSTDIR\LICENSE*"
+  Delete "$INSTDIR\chrome_100_percent.pak"
+  Delete "$INSTDIR\chrome_200_percent.pak"
+  Delete "$INSTDIR\d3dcompiler_47.dll"
+  Delete "$INSTDIR\dxcompiler.dll"
+  Delete "$INSTDIR\dxil.dll"
+  Delete "$INSTDIR\ffmpeg.dll"
+  Delete "$INSTDIR\icudtl.dat"
+  Delete "$INSTDIR\libEGL.dll"
+  Delete "$INSTDIR\libGLESv2.dll"
+  Delete "$INSTDIR\resources.pak"
+  Delete "$INSTDIR\snapshot_blob.bin"
+  Delete "$INSTDIR\v8_context_snapshot.bin"
+  Delete "$INSTDIR\vk_swiftshader.dll"
+  Delete "$INSTDIR\vk_swiftshader_icd.json"
+  Delete "$INSTDIR\vulkan-1.dll"
+  Delete "$INSTDIR\LICENSE.electron.txt"
+  Delete "$INSTDIR\LICENSES.chromium.html"
 
   RMDir /r "$INSTDIR\resources"
   RMDir /r "$INSTDIR\locales"
   RMDir /r "$INSTDIR\swiftshader"
 !macroend
 
-!macro OpenReelBypassLegacyUninstaller
-  ${If} ${isUpdated}
-    DetailPrint "Bypassing legacy uninstaller; installer will overwrite application files in place."
+!macro OpenReelDetectInPlaceInstall
+  StrCpy $openReelInPlaceInstall "0"
+  ${If} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+  ${OrIf} ${FileExists} "$INSTDIR\${UNINSTALL_FILENAME}"
+  ${OrIf} ${FileExists} "$INSTDIR\data\*.*"
+  ${OrIf} ${FileExists} "$INSTDIR\storage\*.*"
+  ${OrIf} ${FileExists} "$INSTDIR\assets\*.*"
+  ${OrIf} ${FileExists} "$INSTDIR\config\*.*"
+  ${OrIf} ${FileExists} "$INSTDIR\logs\*.*"
+  ${OrIf} ${FileExists} "$INSTDIR\plugins\*.*"
+  ${OrIf} ${FileExists} "$INSTDIR\skills\*.*"
+  ${OrIf} ${FileExists} "$INSTDIR\workflow_templates\*.*"
+    StrCpy $openReelInPlaceInstall "1"
+  ${EndIf}
+!macroend
+
+!macro OpenReelBypassOldUninstallerForInPlaceInstall
+  ${If} "$openReelInPlaceInstall" == "1"
+    DetailPrint "Keeping runtime data in place and overwriting only application files."
     DeleteRegKey SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}"
     !ifdef UNINSTALL_REGISTRY_KEY_2
       DeleteRegKey SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY_2}"
     !endif
     DeleteRegKey SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}"
-  ${EndIf}
-!macroend
-
-!macro OpenReelMoveRuntimeDir DIR_NAME
-  ${If} ${FileExists} "$INSTDIR\${DIR_NAME}\*.*"
-    DetailPrint "Preserving ${DIR_NAME}"
-    ClearErrors
-    Rename "$INSTDIR\${DIR_NAME}" "$openReelPreserveDir\${DIR_NAME}"
-    ${If} ${Errors}
-      DetailPrint "Could not preserve $INSTDIR\${DIR_NAME}."
-      Abort "Could not preserve OpenReel Studio runtime data. Close the app and run the installer again."
-    ${EndIf}
-  ${EndIf}
-!macroend
-
-!macro OpenReelRestoreRuntimeDir DIR_NAME
-  ${If} ${FileExists} "$openReelPreserveDir\${DIR_NAME}\*.*"
-    DetailPrint "Restoring ${DIR_NAME}"
-    ClearErrors
-    Rename "$openReelPreserveDir\${DIR_NAME}" "$INSTDIR\${DIR_NAME}"
-    ${If} ${Errors}
-      DetailPrint "Could not restore $openReelPreserveDir\${DIR_NAME}; preserved copy remains beside the install directory."
-      ClearErrors
-    ${EndIf}
-  ${EndIf}
-!macroend
-
-!macro OpenReelPreserveRuntimeDataBeforeUpgrade
-  ${If} ${isUpdated}
-    StrCpy $openReelPreserveDir "$INSTDIR.openreel-upgrade-backup"
-    ${If} ${FileExists} "$openReelPreserveDir\*.*"
-      StrCpy $openReelPreserveDir "$PLUGINSDIR\openreel-upgrade-backup"
-    ${EndIf}
-
-    CreateDirectory "$openReelPreserveDir"
-    !insertmacro OpenReelMoveRuntimeDir "data"
-    !insertmacro OpenReelMoveRuntimeDir "storage"
-    !insertmacro OpenReelMoveRuntimeDir "assets"
-    !insertmacro OpenReelMoveRuntimeDir "config"
-    !insertmacro OpenReelMoveRuntimeDir "logs"
-    !insertmacro OpenReelMoveRuntimeDir "plugins"
-    !insertmacro OpenReelMoveRuntimeDir "skills"
-    !insertmacro OpenReelMoveRuntimeDir "workflow_templates"
-  ${EndIf}
-!macroend
-
-!macro OpenReelRestoreRuntimeDataAfterUpgrade
-  ${If} "$openReelPreserveDir" != ""
-  ${AndIf} ${FileExists} "$openReelPreserveDir\*.*"
-    !insertmacro OpenReelRestoreRuntimeDir "data"
-    !insertmacro OpenReelRestoreRuntimeDir "storage"
-    !insertmacro OpenReelRestoreRuntimeDir "assets"
-    !insertmacro OpenReelRestoreRuntimeDir "config"
-    !insertmacro OpenReelRestoreRuntimeDir "logs"
-    !insertmacro OpenReelRestoreRuntimeDir "plugins"
-    !insertmacro OpenReelRestoreRuntimeDir "skills"
-    !insertmacro OpenReelRestoreRuntimeDir "workflow_templates"
-    RMDir "$openReelPreserveDir"
   ${EndIf}
 !macroend
 
@@ -118,9 +86,9 @@ Var openReelPreserveDir
 
 !macro customCheckAppRunning
   !insertmacro OpenReelStopRuntimeProcesses
-  !insertmacro OpenReelPreserveRuntimeDataBeforeUpgrade
+  !insertmacro OpenReelDetectInPlaceInstall
   !insertmacro OpenReelRemoveApplicationFiles
-  !insertmacro OpenReelBypassLegacyUninstaller
+  !insertmacro OpenReelBypassOldUninstallerForInPlaceInstall
 !macroend
 
 !macro customUnInstallCheck
@@ -135,8 +103,4 @@ Var openReelPreserveDir
   !insertmacro OpenReelStopRuntimeProcesses
   !insertmacro OpenReelRemoveApplicationFiles
   RMDir "$INSTDIR"
-!macroend
-
-!macro customInstall
-  !insertmacro OpenReelRestoreRuntimeDataAfterUpgrade
 !macroend

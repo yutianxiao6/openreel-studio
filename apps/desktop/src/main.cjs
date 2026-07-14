@@ -5,6 +5,7 @@ const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { migrateAppDataBackToInstall } = require("./runtime_data.cjs");
 
 const isWindows = process.platform === "win32";
 const isPackaged = app.isPackaged;
@@ -43,44 +44,11 @@ function desktopDataRoot() {
   if (process.env.OPENREEL_DATA_DIR) {
     return path.resolve(process.env.OPENREEL_DATA_DIR);
   }
+  const installRoot = packagedInstallRoot();
+  if (installRoot) {
+    return installRoot;
+  }
   return fixedUserDataDir();
-}
-
-const LEGACY_DATA_DIR_NAMES = [
-  "data",
-  "storage",
-  "assets",
-  "config",
-  "plugins",
-  "skills",
-  "workflow_templates",
-];
-
-function migrateLegacyInstallData(targetRoot) {
-  const legacyRoot = packagedInstallRoot();
-  if (!legacyRoot || path.resolve(legacyRoot) === path.resolve(targetRoot)) {
-    return;
-  }
-  const marker = path.join(targetRoot, ".legacy-install-migration-v1.json");
-  if (fs.existsSync(marker)) {
-    return;
-  }
-  mkdirp(targetRoot);
-  const migrated = [];
-  for (const name of LEGACY_DATA_DIR_NAMES) {
-    const source = path.join(legacyRoot, name);
-    if (!fs.existsSync(source) || !fs.statSync(source).isDirectory()) {
-      continue;
-    }
-    copyMissingDirectoryEntries(source, path.join(targetRoot, name));
-    migrated.push(name);
-  }
-  fs.writeFileSync(marker, JSON.stringify({
-    schema_version: "openreel.desktop_legacy_migration.v1",
-    source: legacyRoot,
-    migrated,
-    completed_at: new Date().toISOString(),
-  }, null, 2));
 }
 
 function mkdirp(dir) {
@@ -329,8 +297,15 @@ function trayIcon() {
 
 function desktopDirs() {
   const root = desktopDataRoot();
-  if (isPackaged) {
-    migrateLegacyInstallData(root);
+  if (isPackaged && !process.env.OPENREEL_DATA_DIR) {
+    const migration = migrateAppDataBackToInstall(fixedUserDataDir(), root);
+    if (migration.status === "completed") {
+      writeStartupLog(
+        `returned AppData runtime files to install root; copied=${migration.stats.copied} ` +
+        `replaced=${migration.stats.replaced} kept=${migration.stats.kept} ` +
+        `backup=${migration.recovery_root || "none"}`,
+      );
+    }
   }
   const skills = desktopSkillsRoot(root);
   const dirs = {
