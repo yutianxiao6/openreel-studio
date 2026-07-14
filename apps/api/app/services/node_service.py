@@ -11,6 +11,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.db.models import WorkflowNode, WorkflowEdge
 from app.services.node_ids import next_node_display_id, node_display_id_allocation
+from app.services.node_placement import resolve_canvas_node_position
 from app.services.reference_mentions import refresh_node_reference_mentions
 
 
@@ -219,6 +220,15 @@ class NodeService:
         version = int(payload.get("version", 1))
         model_config = _with_ui_creator(payload.get("model_config_json"))
         surface = model_config.get("surface") or model_config.get("_surface")
+        has_explicit_position = "position_x" in payload and "position_y" in payload
+        position_x, position_y = await resolve_canvas_node_position(
+            self.db,
+            project_id,
+            position_x=payload.get("position_x") if has_explicit_position else None,
+            position_y=payload.get("position_y") if has_explicit_position else None,
+            avoid_overlap=bool(payload.get("avoid_position_overlap", False)),
+            surface=str(surface or "draft_canvas"),
+        )
         if supersedes_id:
             prev = await self.db.get(WorkflowNode, supersedes_id)
             if prev is not None:
@@ -231,8 +241,8 @@ class NodeService:
             type=payload.get("type", "script_generation"),
             title=payload.get("title", ""),
             status=payload.get("status", "idle"),
-            position_x=float(payload.get("position_x", 0.0)),
-            position_y=float(payload.get("position_y", 0.0)),
+            position_x=position_x,
+            position_y=position_y,
             input_json=_as_json_str(payload.get("input_json")),
             output_json=_as_json_str(payload.get("output_json")),
             model_config_json=_as_json_str(model_config),

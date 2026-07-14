@@ -4645,7 +4645,11 @@ async def _materialize_workflow_step(
             "workflow_instance_id": instance_id,
         },
         prompt=str(fields.get("prompt") or "") or None,
+        avoid_position_overlap=True,
     )
+    resolved_position = node.get("position") if isinstance(node.get("position"), dict) else {}
+    x = _number(resolved_position.get("x"), x)
+    y = _number(resolved_position.get("y"), y)
     node["input"] = fields
     node["input_json"] = fields
     node["position_x"] = x
@@ -7451,7 +7455,11 @@ async def _materialize_template(
                 "workflow_instance_id": instance_id,
             },
             prompt=str(fields.get("prompt") or "") or None,
+            avoid_position_overlap=True,
         )
+        resolved_position = node.get("position") if isinstance(node.get("position"), dict) else {}
+        x = _number(resolved_position.get("x"), x)
+        y = _number(resolved_position.get("y"), y)
         node["input"] = fields
         node["input_json"] = fields
         node["position_x"] = x

@@ -3116,6 +3116,9 @@ class AgentOrchestrator:
                             "type": node.type,
                             "title": node.title,
                             "status": "running",
+                            "position": {"x": node.position_x, "y": node.position_y},
+                            "position_x": node.position_x,
+                            "position_y": node.position_y,
                         },
                     }
                     yield {"type": "step_start", "step_index": step_index, "total": 0, "tool": tool_name, "title": step_title}

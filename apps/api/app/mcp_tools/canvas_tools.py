@@ -13,6 +13,7 @@ from app.config import settings
 from app.db.models import Asset, WorkflowEdge, WorkflowNode
 from app.db.session import session_scope
 from app.services import project_media_history
+from app.services.node_placement import resolve_canvas_node_position
 from app.services.reference_mentions import (
     refresh_node_reference_mentions,
 )
@@ -245,11 +246,12 @@ async def create_node(
     project_id: str,
     node_type: str,
     title: str,
-    position_x: float = 0,
-    position_y: float = 0,
+    position_x: float | None = None,
+    position_y: float | None = None,
     input_data: dict | None = None,
     model_config: dict | None = None,
     prompt: str | None = None,
+    avoid_position_overlap: bool = False,
 ) -> dict:
     async with node_display_id_allocation(project_id):
         async with session_scope() as session:
@@ -257,6 +259,14 @@ async def create_node(
             model_config = dict(model_config or {})
             model_config.setdefault("_ui_creator", "agent")
             surface = model_config.get("surface") or model_config.get("_surface")
+            resolved_x, resolved_y = await resolve_canvas_node_position(
+                session,
+                project_id,
+                position_x=position_x,
+                position_y=position_y,
+                avoid_overlap=avoid_position_overlap,
+                surface=str(surface or "draft_canvas"),
+            )
             node = WorkflowNode(
                 id=str(uuid.uuid4()),
                 project_id=project_id,
@@ -264,8 +274,8 @@ async def create_node(
                 type=node_type,
                 title=title,
                 status="idle",
-                position_x=position_x,
-                position_y=position_y,
+                position_x=resolved_x,
+                position_y=resolved_y,
                 input_json=_as_json_str(input_data),
                 model_config_json=_as_json_str(model_config),
                 prompt=prompt,
