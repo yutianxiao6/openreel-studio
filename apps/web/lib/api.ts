@@ -381,6 +381,12 @@ export interface ProjectWorkflowRuntimeStep {
   artifact_count?: number
   artifact_node_ids?: string[]
   virtual?: boolean
+  manual_completion?: {
+    source?: string
+    at?: string
+    reason?: string
+    node_id?: string
+  }
 }
 
 export interface ProjectWorkflowRuntime {
@@ -449,6 +455,14 @@ export interface RunProjectWorkflowAllInput extends RunProjectWorkflowNextInput 
 export interface PauseProjectWorkflowRunInput {
   instance_id: string
   template_id?: string
+  reason?: string
+}
+
+export interface CompleteProjectWorkflowStepInput {
+  instance_id: string
+  step_id: string
+  template_id?: string
+  node_id?: string
   reason?: string
 }
 
@@ -656,6 +670,53 @@ export async function pauseProjectWorkflowRun(
     active_workflow_runtime?: ProjectWorkflowRuntime | null
     active_workflow_runtimes?: ProjectWorkflowRuntime[]
   }>(res)
+  requestWorkflowRefresh({ projectId })
+  return result
+}
+
+export async function completeProjectWorkflowStep(
+  projectId: string,
+  input: CompleteProjectWorkflowStepInput,
+): Promise<{
+  ok: boolean
+  project_id: string
+  instance_id: string
+  template_id?: string
+  step_id: string
+  completed_step_ids?: string[]
+  node_id?: string
+  manual_completion?: Record<string, unknown>
+  runtime?: ProjectWorkflowRuntime | null
+  active_workflow_runtime?: ProjectWorkflowRuntime | null
+  active_workflow_runtimes?: ProjectWorkflowRuntime[]
+}> {
+  const base = await getApiBase()
+  const res = await fetch(
+    `${base}/api/projects/${projectId}/workflow/runtime/${encodeURIComponent(input.instance_id)}/steps/${encodeURIComponent(input.step_id)}/complete`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        template_id: input.template_id || '',
+        node_id: input.node_id || '',
+        reason: input.reason || 'accepted_existing_output',
+      }),
+    },
+  )
+  const result = await asJson<{
+    ok: boolean
+    project_id: string
+    instance_id: string
+    template_id?: string
+    step_id: string
+    completed_step_ids?: string[]
+    node_id?: string
+    manual_completion?: Record<string, unknown>
+    runtime?: ProjectWorkflowRuntime | null
+    active_workflow_runtime?: ProjectWorkflowRuntime | null
+    active_workflow_runtimes?: ProjectWorkflowRuntime[]
+  }>(res)
+  requestCanvasRefresh({ projectId, preserveOnEmpty: true, preserveLayout: true })
   requestWorkflowRefresh({ projectId })
   return result
 }

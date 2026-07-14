@@ -1884,6 +1884,212 @@ async def test_single_step_run_updates_capsule_status_and_clears_invalidation(
     assert instance["steps"]["image"]["last_error"] == "provider failed"
 
 
+@pytest.mark.asyncio
+async def test_manual_step_completion_accepts_uploaded_media_and_completes_private_phases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = {
+        "id": "manual-flow",
+        "name": "人工验收流程",
+        "steps": [
+            {
+                "id": "image__prompt",
+                "title": "图片 · 提示词",
+                "node_type": "text",
+                "surface": "workflow_runtime",
+                "logical_step_id": "image",
+                "depends_on": [],
+            },
+            {
+                "id": "image",
+                "title": "图片",
+                "node_type": "image",
+                "surface": "draft_canvas",
+                "logical_step_id": "image",
+                "depends_on": ["image__prompt"],
+            },
+        ],
+    }
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_manual": {
+                    "instance_id": "wf_manual",
+                    "template_id": "manual-flow",
+                    "template_name": "人工验收流程",
+                    "status": "failed",
+                    "steps": {
+                        "image__prompt": {
+                            "status": "failed",
+                            "type": "text",
+                            "surface": "workflow_runtime",
+                            "run_count": 1,
+                            "error": "prompt failed",
+                            "output": {"error": "prompt failed"},
+                            "input": {"workflow": {"step_id": "image__prompt", "logical_step_id": "image"}},
+                            "workflow": {"step_id": "image__prompt", "logical_step_id": "image"},
+                        },
+                        "image": {
+                            "status": "failed",
+                            "type": "image",
+                            "surface": "draft_canvas",
+                            "run_count": 1,
+                            "error": "provider failed",
+                            "node_id": "node-image",
+                            "artifacts": [{"node_id": "node-image", "type": "image"}],
+                            "input": {"workflow": {"step_id": "image", "logical_step_id": "image"}},
+                            "workflow": {"step_id": "image", "logical_step_id": "image"},
+                        },
+                    },
+                }
+            }
+        }
+    }
+    uploaded_node = {
+        "id": "node-image",
+        "project_id": "project-1",
+        "type": "image",
+        "title": "人物图",
+        "status": "completed",
+        "input": {
+            "workflow": {
+                "template_id": "manual-flow",
+                "instance_id": "wf_manual",
+                "step_id": "image",
+                "logical_step_id": "image",
+                "surface": "draft_canvas",
+            }
+        },
+        "output": {
+            "status": "completed",
+            "image": {"url": "/api/media/project-1/generated_images/uploads/manual.png"},
+        },
+    }
+    node_patches: list[dict] = []
+
+    async def read_state(_project_id: str) -> dict:
+        return state
+
+    async def write_patch(_project_id: str, patch: dict) -> None:
+        state.update(patch)
+
+    def load_template(_state: dict, *, template_id: str, instance_id: str) -> tuple[dict, dict]:
+        assert template_id == "manual-flow"
+        assert instance_id == "wf_manual"
+        return template, {}
+
+    async def get_node(node_id: str) -> dict:
+        assert node_id == "node-image"
+        return deepcopy(uploaded_node)
+
+    async def update_node(node_id: str, patch: dict) -> dict:
+        assert node_id == "node-image"
+        node_patches.append(deepcopy(patch))
+        return {"id": node_id, "status": patch.get("status")}
+
+    async def no_emit(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(workflow_tools, "_read_project_state", read_state)
+    monkeypatch.setattr(workflow_tools, "_write_project_state_patch", write_patch)
+    monkeypatch.setattr(workflow_tools, "_workflow_runtime_template_for_state", load_template)
+    monkeypatch.setattr(workflow_tools.canvas_tools, "get_node", get_node)
+    monkeypatch.setattr(workflow_tools.canvas_tools, "update_node", update_node)
+    monkeypatch.setattr(workflow_tools, "_emit_canvas_action", no_emit)
+    monkeypatch.setattr(workflow_tools, "_emit_workflow_runtime_update", no_emit)
+
+    result = await workflow_tools.workflow_runtime_complete_step_manually(
+        "project-1",
+        "wf_manual",
+        "image",
+        template_id="manual-flow",
+        node_id="node-image",
+    )
+
+    assert result["ok"] is True
+    assert result["completed_step_ids"] == ["image__prompt", "image"]
+    instance = state["workflow_runtime"]["instances"]["wf_manual"]
+    assert "status" not in instance
+    assert instance["steps"]["image__prompt"]["status"] == "completed"
+    assert instance["steps"]["image__prompt"].get("output") in (None, {})
+    assert instance["steps"]["image"]["status"] == "completed"
+    assert instance["steps"]["image"]["output"] == uploaded_node["output"]
+    assert instance["steps"]["image"]["workflow"]["manual_completion"]["source"] == "user"
+    assert result["runtime"]["steps"][0]["status"] == "completed"
+    assert result["runtime"]["steps"][0]["manual_completion"]["source"] == "user"
+    assert node_patches[-1]["status"] == "completed"
+    assert node_patches[-1]["error_message"] is None
+
+
+@pytest.mark.asyncio
+async def test_manual_media_step_completion_rejects_missing_usable_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = {
+        "id": "manual-flow",
+        "steps": [
+            {
+                "id": "image",
+                "title": "图片",
+                "node_type": "image",
+                "surface": "draft_canvas",
+                "depends_on": [],
+            }
+        ],
+    }
+    state = {
+        "workflow_runtime": {
+            "instances": {
+                "wf_manual": {
+                    "template_id": "manual-flow",
+                    "status": "failed",
+                    "steps": {
+                        "image": {
+                            "status": "failed",
+                            "type": "image",
+                            "surface": "draft_canvas",
+                            "node_id": "node-image",
+                            "input": {"workflow": {"step_id": "image"}},
+                            "workflow": {"step_id": "image"},
+                        }
+                    },
+                }
+            }
+        }
+    }
+
+    async def read_state(_project_id: str) -> dict:
+        return state
+
+    def load_template(_state: dict, *, template_id: str, instance_id: str) -> tuple[dict, dict]:
+        return template, {}
+
+    async def get_node(_node_id: str) -> dict:
+        return {
+            "id": "node-image",
+            "project_id": "project-1",
+            "type": "image",
+            "status": "failed",
+            "input": {"workflow": {"template_id": "manual-flow", "instance_id": "wf_manual", "step_id": "image"}},
+            "output": {"status": "failed", "error": "provider failed"},
+        }
+
+    monkeypatch.setattr(workflow_tools, "_read_project_state", read_state)
+    monkeypatch.setattr(workflow_tools, "_workflow_runtime_template_for_state", load_template)
+    monkeypatch.setattr(workflow_tools.canvas_tools, "get_node", get_node)
+
+    result = await workflow_tools.workflow_runtime_complete_step_manually(
+        "project-1",
+        "wf_manual",
+        "image",
+        template_id="manual-flow",
+    )
+
+    assert result["ok"] is False
+    assert result["error_kind"] == "workflow_manual_completion_requires_output"
+    assert state["workflow_runtime"]["instances"]["wf_manual"]["steps"]["image"]["status"] == "failed"
+
+
 def test_runtime_public_payload_never_exposes_builtin_prompt_phase() -> None:
     state = {
         "workflow_input_values": {

@@ -33,6 +33,7 @@ import {
   CANVAS_REFRESH_EVENT,
   WORKFLOW_REFRESH_EVENT,
   callTool,
+  completeProjectWorkflowStep,
   createPanoramaCapture,
   createProjectEdge,
   createProjectNode,
@@ -3340,6 +3341,7 @@ function WorkflowRunDock({
   onRunAll,
   onPauseRun,
   onRunStep,
+  onCompleteStep,
   onDeleteRun,
   onInspectStep,
   onCloseDetail,
@@ -3367,6 +3369,7 @@ function WorkflowRunDock({
   onRunAll: (runtime: ProjectWorkflowRuntime) => void
   onPauseRun: (runtime: ProjectWorkflowRuntime) => void
   onRunStep: (runtime: ProjectWorkflowRuntime, stepId: string) => void
+  onCompleteStep: (runtime: ProjectWorkflowRuntime, stepId: string) => void
   onDeleteRun: (runtime: ProjectWorkflowRuntime) => void
   onInspectStep: (
     runtime: ProjectWorkflowRuntime,
@@ -3427,6 +3430,15 @@ function WorkflowRunDock({
     !activeDetailRunning &&
     !activeDetailVirtual &&
     activeDetailWaitingOn.length === 0,
+  )
+  const activeDetailCanComplete = Boolean(
+    activeDetailRuntime &&
+    activeDetailStep &&
+    workflowStringValue(activeDetailStep.role) !== "repeat_group" &&
+    !activeDetailBusy &&
+    !activeDetailRunning &&
+    !activeDetailCompleted &&
+    !activeDetailVirtual,
   )
   const activeDetailNodeIds = workflowRuntimeStepNodeIds(activeDetailRawStep, activeDetailState)
   const activeDetailOutputs = workflowRuntimeStepOutputItems(activeDetailRawStep)
@@ -3528,15 +3540,31 @@ function WorkflowRunDock({
               </section>
             )}
             {!activeDetailVirtual && (
-              <button
-                type="button"
-                onClick={() => activeDetailRunnable && onRunStep(activeDetailRuntime, activeDetailStep.id)}
-                disabled={!activeDetailRunnable}
-                className="mt-3 h-8 w-full rounded-md border border-cyan-200/25 bg-cyan-300/10 px-2 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-300/16 disabled:cursor-not-allowed disabled:opacity-40"
-                title={activeDetailMissingInputIds.length > 0 ? `先输入：${activeDetailMissingInputIds.map(workflowInputLabel).join("、")}` : activeDetailWaitingOn.length > 0 ? `等待：${activeDetailWaitingOn.join("、")}` : activeDetailCompleted ? "重新运行此步" : "运行此步"}
-              >
-                {activeDetailRunning ? "运行中" : activeDetailMissingInputIds.length > 0 ? "先输入" : activeDetailCompleted ? "重新运行此步" : "运行此步"}
-              </button>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => activeDetailCanComplete && onCompleteStep(activeDetailRuntime, activeDetailStep.id)}
+                  disabled={!activeDetailCanComplete}
+                  className="h-8 rounded-md border border-emerald-200/25 bg-emerald-300/10 px-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-300/16 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={activeDetailCompleted ? "该步骤已经成功" : "使用已上传或已有产物，将此步骤人工验收为成功"}
+                >
+                  {activeDetailCompleted ? "已经成功" : "标记成功"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => activeDetailRunnable && onRunStep(activeDetailRuntime, activeDetailStep.id)}
+                  disabled={!activeDetailRunnable}
+                  className="h-8 rounded-md border border-cyan-200/25 bg-cyan-300/10 px-2 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-300/16 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={activeDetailMissingInputIds.length > 0 ? `先输入：${activeDetailMissingInputIds.map(workflowInputLabel).join("、")}` : activeDetailWaitingOn.length > 0 ? `等待：${activeDetailWaitingOn.join("、")}` : activeDetailCompleted ? "重新运行此步" : "运行此步"}
+                >
+                  {activeDetailRunning ? "运行中" : activeDetailMissingInputIds.length > 0 ? "先输入" : activeDetailCompleted ? "重新运行此步" : "运行此步"}
+                </button>
+              </div>
+            )}
+            {activeDetailRawStep?.manual_completion && (
+              <div className="mt-2 rounded border border-emerald-200/16 bg-emerald-300/[0.055] px-2 py-1.5 text-[10px] leading-4 text-emerald-100/75">
+                此步骤已由用户使用现有产物验收为成功。
+              </div>
             )}
             {!activeDetailVirtual && (
               <div className="mt-3">
@@ -11968,6 +11996,50 @@ export default function WorkflowCanvas({
     workflowMissingInputsForTemplateId,
   ])
 
+  const completeWorkflowInstanceStep = useCallback(async (runtime: ProjectWorkflowRuntime, stepId: string) => {
+    if (!currentProject?.id || !stepId) return
+    const instanceId = workflowRuntimeId(runtime)
+    const templateId = workflowRuntimeTemplateId(runtime)
+    if (!instanceId || !templateId) return
+    const rawStep = (runtime.steps || []).find((step) => step.id === stepId)
+    const nodeId = workflowRuntimeStepNodeIds(rawStep)[0]
+    setWorkflowInstanceRunning(instanceId, true)
+    setWorkflowInstanceErrors((current) => ({ ...current, [instanceId]: "" }))
+    try {
+      const result = await completeProjectWorkflowStep(currentProject.id, {
+        instance_id: instanceId,
+        template_id: templateId,
+        step_id: stepId,
+        node_id: nodeId,
+        reason: "accepted_existing_output",
+      })
+      if (result?.runtime) upsertWorkflowRuntimePayload(result.runtime)
+      if (result?.active_workflow_runtimes) {
+        replaceWorkflowRuntimePayloads(result.active_workflow_runtimes, result.runtime || undefined)
+      }
+      if (result?.ok === false) throw new Error("标记成功失败")
+      await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+      await refreshWorkflowTemplates()
+    } catch (error) {
+      setWorkflowInstanceErrors((current) => ({ ...current, [instanceId]: workflowErrorMessage(error) }))
+      try {
+        await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
+        await refreshWorkflowTemplates()
+      } catch {
+        // Keep the workflow completion error visible.
+      }
+    } finally {
+      setWorkflowInstanceRunning(instanceId, false)
+    }
+  }, [
+    currentProject?.id,
+    refreshCanvas,
+    refreshWorkflowTemplates,
+    replaceWorkflowRuntimePayloads,
+    setWorkflowInstanceRunning,
+    upsertWorkflowRuntimePayload,
+  ])
+
   const runWorkflowInstanceNext = useCallback(async (runtime: ProjectWorkflowRuntime) => {
     if (!currentProject?.id) return
     const instanceId = workflowRuntimeId(runtime)
@@ -13757,6 +13829,7 @@ export default function WorkflowCanvas({
         onRunAll={(runtime) => void runWorkflowInstanceAll(runtime)}
         onPauseRun={(runtime) => void pauseWorkflowInstanceRun(runtime)}
         onRunStep={(runtime, stepId) => void runWorkflowInstanceStep(runtime, stepId)}
+        onCompleteStep={(runtime, stepId) => void completeWorkflowInstanceStep(runtime, stepId)}
         onDeleteRun={(runtime) => void deleteWorkflowRun(runtime)}
         onInspectStep={inspectWorkflowRunStep}
         onCloseDetail={() => setWorkflowDockDetail(null)}

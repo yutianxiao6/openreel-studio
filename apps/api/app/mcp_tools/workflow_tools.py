@@ -869,6 +869,7 @@ async def _upsert_workflow_runtime_step(
     stale: bool | None = None,
     increment_run: bool = False,
     error: str = "",
+    invalidate_completed_downstream: bool = True,
 ) -> dict[str, Any]:
     state = await _read_project_state(project_id)
     runtime = _workflow_runtime_state(state)
@@ -935,7 +936,7 @@ async def _upsert_workflow_runtime_step(
     if status in {"running", "completed"}:
         record.pop("invalidated_by", None)
         record.pop("invalidated_at", None)
-    if status == "completed" and run_count > 1:
+    if status == "completed" and run_count > 1 and invalidate_completed_downstream:
         for downstream_step_id in _workflow_downstream_step_ids(template, step_id):
             downstream = steps.get(downstream_step_id)
             if not isinstance(downstream, dict):
@@ -2019,6 +2020,290 @@ async def workflow_runtime_delete_instance(project_id: str, instance_id: str) ->
     }
 
 
+def _workflow_manual_completion_has_output(value: Any) -> bool:
+    cleaned = _workflow_runtime_clean_output_value(value, drop_internal_keys=True)
+    if cleaned in (None, "", [], {}):
+        return False
+    if not isinstance(cleaned, dict):
+        return True
+    if cleaned.get("ok") is False or cleaned.get("error") or cleaned.get("error_message"):
+        return False
+    status = str(cleaned.get("status") or "").strip().lower()
+    return status not in {"failed", "error", "cancelled", "canceled", "queued", "running"}
+
+
+def _workflow_manual_completion_node_ids(records: list[dict[str, Any]], explicit_node_id: str = "") -> list[str]:
+    result: list[str] = []
+
+    def append(value: Any) -> None:
+        node_id = str(value or "").strip()
+        if node_id and node_id not in result:
+            result.append(node_id)
+
+    append(explicit_node_id)
+    for record in records:
+        append(record.get("node_id"))
+        for artifact in record.get("artifacts") or []:
+            if isinstance(artifact, dict):
+                append(artifact.get("node_id"))
+    return result
+
+
+async def workflow_runtime_complete_step_manually(
+    project_id: str,
+    instance_id: str,
+    step_id: str,
+    *,
+    template_id: str = "",
+    node_id: str = "",
+    reason: str = "",
+) -> dict[str, Any]:
+    """Accept an existing step output and unblock the workflow without rerunning it."""
+    target_instance_id = str(instance_id or "").strip()
+    target_step_id = str(step_id or "").strip()
+    if not project_id:
+        return {"ok": False, "error": "project_id is required", "error_kind": "missing_project_id"}
+    if not target_instance_id:
+        return {"ok": False, "error": "instance_id is required", "error_kind": "missing_instance_id"}
+    if not target_step_id:
+        return {"ok": False, "error": "step_id is required", "error_kind": "missing_step_id"}
+
+    state = await _read_project_state(project_id)
+    runtime = _workflow_runtime_state(state)
+    instances = runtime.get("instances") if isinstance(runtime.get("instances"), dict) else {}
+    instance = instances.get(target_instance_id)
+    if not isinstance(instance, dict):
+        return {
+            "ok": False,
+            "error": "Workflow runtime instance not found",
+            "error_kind": "workflow_instance_not_found",
+            "instance_id": target_instance_id,
+        }
+    if _workflow_runtime_run_all_active(instance):
+        return {
+            "ok": False,
+            "error": "当前流程仍在运行，请先暂停后再标记成功。",
+            "error_kind": "workflow_step_manual_completion_while_running",
+        }
+    selected_template_id = str(instance.get("template_id") or template_id or "").strip()
+    if template_id and selected_template_id != str(template_id).strip():
+        return {
+            "ok": False,
+            "error": "Workflow instance does not belong to the requested template",
+            "error_kind": "workflow_instance_template_mismatch",
+        }
+    template, _inputs = _workflow_runtime_template_for_state(
+        state,
+        template_id=selected_template_id,
+        instance_id=target_instance_id,
+    )
+    if not isinstance(template, dict):
+        return {
+            "ok": False,
+            "error": "Workflow template is unavailable for this runtime instance",
+            "error_kind": "workflow_template_not_found",
+        }
+    target_steps = _resolve_workflow_target_steps(template, target_step_id)
+    if not target_steps or any(str(step.get("role") or "").strip() == "repeat_group" for step in target_steps):
+        return {
+            "ok": False,
+            "error": "Workflow step not found or cannot be completed as a group",
+            "error_kind": "workflow_step_not_found",
+            "step_id": target_step_id,
+        }
+    target_step_ids = {
+        str(step.get("id") or "").strip()
+        for step in target_steps
+        if str(step.get("id") or "").strip()
+    }
+    records_by_id = instance.get("steps") if isinstance(instance.get("steps"), dict) else {}
+    target_records = [
+        records_by_id[candidate_id]
+        for candidate_id in target_step_ids
+        if isinstance(records_by_id.get(candidate_id), dict)
+    ]
+    if any(str(record.get("status") or "").strip() == "running" for record in target_records):
+        return {
+            "ok": False,
+            "error": "当前步骤仍在运行，请先暂停后再标记成功。",
+            "error_kind": "workflow_step_manual_completion_while_running",
+        }
+
+    explicit_node_id = str(node_id or "").strip()
+    candidate_node_ids = _workflow_manual_completion_node_ids(target_records, explicit_node_id)
+    candidate_nodes: list[dict[str, Any]] = []
+    for candidate_node_id in candidate_node_ids:
+        candidate = await canvas_tools.get_node(candidate_node_id)
+        if candidate.get("error") or str(candidate.get("project_id") or "") != project_id:
+            continue
+        workflow = _workflow_metadata_from_node(candidate)
+        if str(workflow.get("instance_id") or "").strip() != target_instance_id:
+            continue
+        if selected_template_id and str(workflow.get("template_id") or "").strip() != selected_template_id:
+            continue
+        if str(workflow.get("step_id") or workflow.get("template_step_id") or "").strip() not in target_step_ids:
+            continue
+        candidate_nodes.append(candidate)
+    if explicit_node_id and not any(str(item.get("id") or "") == explicit_node_id for item in candidate_nodes):
+        return {
+            "ok": False,
+            "error": "Selected node is not an output of this workflow step",
+            "error_kind": "workflow_manual_completion_node_mismatch",
+        }
+
+    canvas_media_step = next(
+        (
+            step
+            for step in target_steps
+            if _workflow_step_surface(step) != "workflow_runtime"
+            and str(step.get("node_type") or step.get("type") or "").strip() in {"image", "video", "audio"}
+        ),
+        None,
+    )
+    evidence_node: dict[str, Any] | None = None
+    if canvas_media_step is not None:
+        evidence_node = next(
+            (
+                candidate
+                for candidate in candidate_nodes
+                if str(candidate.get("type") or "").strip() in {"image", "video", "audio"}
+                and media_history.is_successful_media_output(candidate.get("output"))
+            ),
+            None,
+        )
+    else:
+        evidence_node = next(
+            (
+                candidate
+                for candidate in candidate_nodes
+                if str(candidate.get("status") or "").strip() == "completed"
+                and (
+                    _workflow_manual_completion_has_output(candidate.get("output"))
+                    or str((candidate.get("input") or {}).get("content") or "").strip()
+                )
+            ),
+            None,
+        )
+    runtime_has_output = any(_workflow_manual_completion_has_output(record.get("output")) for record in target_records)
+    if evidence_node is None and (canvas_media_step is not None or not runtime_has_output):
+        return {
+            "ok": False,
+            "error": "请先为该步骤上传或补齐可用产物，再标记成功。",
+            "error_kind": "workflow_manual_completion_requires_output",
+            "step_id": target_step_id,
+        }
+
+    now = _utc_now_iso()
+    marker = {
+        "source": "user",
+        "at": now,
+        "reason": str(reason or "").strip() or "accepted_existing_output",
+        "node_id": str((evidence_node or {}).get("id") or ""),
+    }
+    if evidence_node is not None:
+        evidence_fields = dict(evidence_node.get("input") if isinstance(evidence_node.get("input"), dict) else {})
+        evidence_workflow = dict(evidence_fields.get("workflow") if isinstance(evidence_fields.get("workflow"), dict) else {})
+        evidence_workflow.update({
+            "step_status": "completed",
+            "last_completed_at": now,
+            "manual_completion": marker,
+        })
+        evidence_workflow.pop("last_error", None)
+        history = evidence_workflow.get("step_run_history") if isinstance(evidence_workflow.get("step_run_history"), list) else []
+        manual_history = {
+            "status": "completed",
+            "at": now,
+            "node_id": evidence_node.get("id"),
+            "manual": True,
+        }
+        evidence_workflow["last_step_run"] = manual_history
+        evidence_workflow["step_run_history"] = [*history, manual_history][-12:]
+        evidence_fields["workflow"] = evidence_workflow
+        await canvas_tools.update_node(
+            str(evidence_node.get("id") or ""),
+            {"input_data": evidence_fields, "status": "completed", "error_message": None},
+        )
+        evidence_node["input"] = evidence_fields
+        evidence_node["workflow"] = evidence_workflow
+        evidence_node["status"] = "completed"
+        evidence_node["error_message"] = None
+        await _emit_canvas_action(project_id, "update_node", {
+            "id": evidence_node.get("id"),
+            "status": "completed",
+            "input": evidence_fields,
+            "error_message": None,
+        })
+
+    completed_step_ids: list[str] = []
+    evidence_step_id = str(_workflow_metadata_from_node(evidence_node or {}).get("step_id") or "").strip()
+    for target_step in target_steps:
+        phase_id = str(target_step.get("id") or "").strip()
+        if not phase_id:
+            continue
+        existing = records_by_id.get(phase_id) if isinstance(records_by_id.get(phase_id), dict) else {}
+        fields = dict(existing.get("input") if isinstance(existing.get("input"), dict) else {})
+        workflow = dict(existing.get("workflow") if isinstance(existing.get("workflow"), dict) else {})
+        if not workflow and isinstance(fields.get("workflow"), dict):
+            workflow = dict(fields["workflow"])
+        workflow.update({
+            **_step_workflow_metadata(target_step),
+            "template_id": selected_template_id,
+            "template_name": template.get("name") or instance.get("template_name") or "",
+            "instance_id": target_instance_id,
+            "step_id": phase_id,
+            "step_status": "completed",
+            "last_completed_at": now,
+            "manual_completion": marker,
+        })
+        workflow.pop("last_error", None)
+        fields["workflow"] = workflow
+        use_evidence = evidence_node is not None and phase_id == evidence_step_id
+        phase_output = evidence_node.get("output") if use_evidence else existing.get("output")
+        if not use_evidence and not _workflow_manual_completion_has_output(phase_output):
+            phase_output = {}
+        phase_artifacts = existing.get("artifacts") if isinstance(existing.get("artifacts"), list) else []
+        phase_node_id = str(existing.get("node_id") or "").strip()
+        if use_evidence:
+            phase_node_id = str(evidence_node.get("id") or "").strip()
+            phase_artifacts = [_workflow_runtime_artifact_from_node(evidence_node, phase_output)]
+        await _upsert_workflow_runtime_step(
+            project_id=project_id,
+            template=template,
+            instance_id=target_instance_id,
+            step_id=phase_id,
+            node_type=str(target_step.get("node_type") or existing.get("type") or "text"),
+            title=str(existing.get("title") or target_step.get("title") or phase_id),
+            fields=fields,
+            status="completed",
+            output=phase_output,
+            artifacts=phase_artifacts,
+            node_id=phase_node_id,
+            surface=str(target_step.get("surface") or existing.get("surface") or "workflow_runtime"),
+            error="",
+            invalidate_completed_downstream=False,
+        )
+        completed_step_ids.append(phase_id)
+
+    refreshed_state = await _read_project_state(project_id)
+    runtime_payload = _workflow_runtime_public_payload(
+        refreshed_state,
+        template_id=selected_template_id,
+        instance_id=target_instance_id,
+    )
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "template_id": selected_template_id,
+        "instance_id": target_instance_id,
+        "step_id": target_step_id,
+        "completed_step_ids": completed_step_ids,
+        "node_id": str((evidence_node or {}).get("id") or ""),
+        "manual_completion": marker,
+        "runtime": runtime_payload,
+        "active_workflow_runtimes": workflow_runtime_public_payloads(refreshed_state),
+    }
+
+
 def workflow_runtime_step_public_payload(
     step_id: str,
     record: dict[str, Any],
@@ -2071,6 +2356,11 @@ def workflow_runtime_step_public_payload(
             if isinstance(item, dict) and item.get("node_id")
         ],
     }
+    manual_completion = record.get("manual_completion")
+    if not isinstance(manual_completion, dict):
+        manual_completion = workflow.get("manual_completion")
+    if isinstance(manual_completion, dict) and manual_completion:
+        payload["manual_completion"] = deepcopy(manual_completion)
     for key in (
         "logical_step_id",
         "template_step_id",

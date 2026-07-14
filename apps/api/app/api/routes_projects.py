@@ -198,6 +198,12 @@ class ProjectWorkflowRuntimePauseRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class ProjectWorkflowRuntimeStepCompleteRequest(BaseModel):
+    template_id: Optional[str] = None
+    node_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
 class ProjectWorkflowActiveRequest(BaseModel):
     kind: Literal["template", "artifact", "imported"]
     template_id: Optional[str] = None
@@ -1458,6 +1464,38 @@ async def pause_project_workflow_runtime(
         project_id,
         instance_id,
         template_id=req.template_id or "",
+        reason=req.reason or "",
+    )
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result)
+    refreshed_state = await svc.get_project_state(project_id) or {}
+    active_workflow = _project_active_workflow_payload(project_id, refreshed_state)
+    workflow_id = _workflow_id_from_active_payload(active_workflow)
+    return {
+        **result,
+        "active_workflow_runtime": _project_workflow_runtime_payload(refreshed_state, workflow_id),
+        "active_workflow_runtimes": _project_workflow_runtime_payloads(refreshed_state),
+    }
+
+
+@router.post("/{project_id}/workflow/runtime/{instance_id}/steps/{step_id}/complete")
+async def complete_project_workflow_runtime_step(
+    project_id: str,
+    instance_id: str,
+    step_id: str,
+    req: ProjectWorkflowRuntimeStepCompleteRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    svc = ProjectService(db)
+    state = await svc.get_project_state(project_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    result = await workflow_tools.workflow_runtime_complete_step_manually(
+        project_id,
+        instance_id,
+        step_id,
+        template_id=req.template_id or "",
+        node_id=req.node_id or "",
         reason=req.reason or "",
     )
     if result.get("ok") is False:
