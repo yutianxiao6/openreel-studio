@@ -987,7 +987,18 @@ def test_builtin_template_is_native_v2_and_has_logical_media_steps() -> None:
         "segment_production",
     ]
     segment_loop = summary["steps"][-1]
-    assert [step["id"] for step in segment_loop["steps"]][-2:] == ["storyboard", "final_video"]
+    assert [step["id"] for step in segment_loop["steps"]][-2:] == ["storyboard_review_loop", "final_video"]
+    review_loop = next(step for step in segment_loop["steps"] if step["id"] == "storyboard_review_loop")
+    assert [step["id"] for step in review_loop["steps"]] == ["storyboard", "storyboard_review"]
+    assert review_loop["foreach"] == {
+        "count": 3,
+        "as": "attempt",
+        "until": {
+            "path": "steps.storyboard_review.output.score",
+            "op": "gte",
+            "value": 80,
+        },
+    }
     assert not any(step["id"].endswith("_prompt") for step in segment_loop["steps"])
 
     public = canvas_workflow_templates.get_builtin_template(
@@ -1022,13 +1033,27 @@ def test_builtin_template_preserves_artifact_prompt_writing_methods() -> None:
     segment_steps = {
         step["id"]: step for step in top_level["segment_production"]["steps"]
     }
+    review_steps = {
+        step["id"]: step for step in segment_steps["storyboard_review_loop"]["steps"]
+    }
 
     assert "官方设定集角色视觉参考表" in character_image["prompt"]["output"]
     assert "正面/侧面/背面全身三面图" in character_image["prompt"]["output"]
     assert "2x2 四机位全景图网格" in segment_steps["scene_reference"]["prompt"]["output"]
-    assert "宫格分镜图，电影分镜，每格一个镜头" in segment_steps["storyboard"]["prompt"]["output"]
+    assert "宫格分镜图，电影分镜，每格一个镜头" in review_steps["storyboard"]["prompt"]["output"]
+    assert "{{ previous }}" in review_steps["storyboard"]["prompt"]["task"]
+    assert review_steps["storyboard_review"]["uses"] == [
+        {"from": "storyboard", "as": ["vision"]}
+    ]
+    review_fields = {
+        field["id"]: field
+        for field in review_steps["storyboard_review"]["output"]["schema"]["fields"]
+    }
+    assert set(review_fields) == {"score", "reason", "issues", "regeneration_instruction"}
+    assert review_fields["score"]["type"] == "integer"
     assert "参考图片的用途声明" in segment_steps["final_video"]["prompt"]["output"]
     assert "画面概述→动作变化" in segment_steps["final_video"]["prompt"]["output"]
+    assert segment_steps["final_video"]["needs"] == ["storyboard_review_loop"]
 
     frame_schema = {
         field["id"]: field
@@ -1047,15 +1072,19 @@ def test_builtin_template_preserves_artifact_prompt_writing_methods() -> None:
     private_segment_steps = {
         step["id"]: step for step in private_top_level["segment_production"]["steps"]
     }
+    private_review_steps = {
+        step["id"]: step for step in private_segment_steps["storyboard_review_loop"]["steps"]
+    }
     assert "官方设定集角色视觉参考表" in private_character_steps[
         "character_image__prompt"
     ]["prompt_template"]
     assert "2x2 四机位全景图网格" in private_segment_steps[
         "scene_reference__prompt"
     ]["prompt_template"]
-    assert "每格一个镜头" in private_segment_steps["storyboard__prompt"][
+    assert "每格一个镜头" in private_review_steps["storyboard__prompt"][
         "prompt_template"
     ]
+    assert "{{ previous }}" in private_review_steps["storyboard__prompt"]["prompt_template"]
     assert "画面概述→动作变化" in private_segment_steps["final_video__prompt"][
         "prompt_template"
     ]
@@ -1074,10 +1103,15 @@ def test_builtin_v2_compiles_private_phases_without_persisting_them() -> None:
 
     segment_loop = next(step for step in private["steps"] if step["id"] == "segment_production")
     private_child_ids = [step["id"] for step in segment_loop["steps"]]
-    assert "storyboard__prompt" in private_child_ids
-    assert "storyboard" in private_child_ids
+    assert "storyboard_review_loop" in private_child_ids
     assert "final_video__prompt" in private_child_ids
     assert "final_video" in private_child_ids
+    review_loop = next(step for step in segment_loop["steps"] if step["id"] == "storyboard_review_loop")
+    assert [step["id"] for step in review_loop["steps"]] == [
+        "storyboard__prompt",
+        "storyboard",
+        "storyboard_review",
+    ]
     assert all("runtime_hidden" not in step for step in segment_loop["steps"])
 
 
@@ -1088,6 +1122,9 @@ def test_builtin_scene_chain_does_not_depend_on_character_images() -> None:
     private = compile_private_execution_template(public)
     segment_loop = next(step for step in private["steps"] if step["id"] == "segment_production")
     children = {step["id"]: step for step in segment_loop["steps"]}
+    review_children = {
+        step["id"]: step for step in children["storyboard_review_loop"]["steps"]
+    }
 
     assert segment_loop["depends_on"] == ["production_plan"]
     for step_id in (
@@ -1098,7 +1135,8 @@ def test_builtin_scene_chain_does_not_depend_on_character_images() -> None:
         "frame_plan",
     ):
         assert "character_images" not in children[step_id].get("depends_on", [])
-    assert "character_images" in children["storyboard__prompt"]["depends_on"]
+    assert "character_images" in review_children["storyboard__prompt"]["depends_on"]
+    assert "character_images" not in review_children["storyboard_review"].get("depends_on", [])
     assert "character_images" in children["final_video__prompt"]["depends_on"]
 
 
@@ -1109,21 +1147,27 @@ def test_builtin_vision_is_only_declared_for_steps_that_must_see_images() -> Non
     private = compile_private_execution_template(public)
     segment_loop = next(step for step in private["steps"] if step["id"] == "segment_production")
     children = {step["id"]: step for step in segment_loop["steps"]}
+    review_children = {
+        step["id"]: step for step in children["storyboard_review_loop"]["steps"]
+    }
 
     assert children["scene_reference__prompt"].get("context_refs") in (None, [])
     assert children["frame_plan"]["context_refs"] == [
         {"ref": "scene_reference", "role": "vision_context"}
     ]
-    assert children["storyboard__prompt"]["context_refs"] == [
+    assert review_children["storyboard__prompt"]["context_refs"] == [
         {"ref": "scene_reference", "role": "vision_context"}
     ]
-    assert children["storyboard__prompt"]["reference_selectors"][0]["role"] == "vision_context"
+    assert review_children["storyboard__prompt"]["reference_selectors"][0]["role"] == "vision_context"
+    assert review_children["storyboard_review"]["context_refs"] == [
+        {"ref": "storyboard", "role": "vision_context"}
+    ]
     assert children["final_video__prompt"]["context_refs"] == [
         {"ref": "storyboard", "role": "vision_context"},
         {"ref": "scene_reference", "role": "vision_context"},
     ]
     assert children["final_video__prompt"]["reference_selectors"][0]["role"] == "vision_context"
-    assert children["storyboard"]["context_refs"] == [
+    assert review_children["storyboard"]["context_refs"] == [
         {"ref": "scene_reference", "role": "visual_reference"}
     ]
     assert children["final_video"]["context_refs"] == [

@@ -318,39 +318,81 @@
           }
         },
         {
-          "id": "storyboard",
-          "title": "宫格分镜图",
-          "kind": "image",
+          "id": "storyboard_review_loop",
+          "title": "分镜质量循环",
+          "kind": "loop",
           "needs": ["frame_plan"],
-          "uses": [
-            {"from": "scene_reference", "as": ["vision", "reference"]},
+          "foreach": {
+            "count": 3,
+            "as": "attempt",
+            "until": {
+              "path": "steps.storyboard_review.output.score",
+              "op": "gte",
+              "value": 80
+            }
+          },
+          "steps": [
             {
-              "from": "character_image",
-              "as": ["vision", "reference"],
-              "select": {
-                "values": "steps.frame_plan.output.selected_character_ids",
-                "by": ["character_id"]
+              "id": "storyboard",
+              "title": "宫格分镜图",
+              "kind": "image",
+              "needs": ["frame_plan"],
+              "uses": [
+                {"from": "scene_reference", "as": ["vision", "reference"]},
+                {
+                  "from": "character_image",
+                  "as": ["vision", "reference"],
+                  "select": {
+                    "values": "steps.frame_plan.output.selected_character_ids",
+                    "by": ["character_id"]
+                  }
+                }
+              ],
+              "prompt": {
+                "role": "你是分镜图提示词编写者，必须看人物定妆图和场景图，把每格规划组织成一张宫格分镜图 image prompt。",
+                "task": "看全部指定参考图，基于当前段剧本 {{ steps.segment_script.output }}、宫格数量 {{ steps.frame_plan.output.grid_count }}、逐格规划 {{ steps.frame_plan.output.frames }}、场景与配角 {{ steps.scene_plan.output }} 和统一风格 {{ steps.production_plan.output.style_template }}，生成一张按时间顺序阅读的宫格分镜图提示词。上一轮审核反馈（首轮为空）：{{ previous }}",
+                "output": "只输出纯文本 image prompt，不输出 JSON。采用“宫格分镜图，电影分镜，每格一个镜头，清晰格线分隔，每格内容不同”的写法。明确 grid_count 对应的布局，先规定统一角色、场景、光线和色彩，再按左到右、上到下逐格描述镜头景别、角度、人物动作、表情、站位构图、环境氛围和前后连续关系。收到上一轮审核反馈时，逐项落实 reason、issues 和 regeneration_instruction 后重新组织完整提示词。",
+                "check": "每格严格对应一个 frame，不生成普通人物图鉴；人物外貌服装继承定妆参考图；空间、道具和光线继承当前段场景图；格子边界清晰且每格内容不同；不出现字幕、标号、水印、宣传文案或无关人物；每格足以支撑最终视频提示词的时间段描述。"
+              },
+              "fields": {
+                "purpose": "storyboard",
+                "stage": "storyboard",
+                "aspect_ratio": "{{ inputs.aspect_ratio }}",
+                "quality": "high"
+              }
+            },
+            {
+              "id": "storyboard_review",
+              "title": "分镜审核",
+              "kind": "object",
+              "needs": ["storyboard"],
+              "uses": [
+                {"from": "storyboard", "as": ["vision"]}
+              ],
+              "prompt": {
+                "role": "你是严格、独立的分镜质量审核员，依据当前段剧本、分镜规划和真实生成的宫格分镜图判断结果是否可用于后续视频制作。",
+                "task": "查看本轮宫格分镜图，结合当前段剧本 {{ steps.segment_script.output }}、宫格数量 {{ steps.frame_plan.output.grid_count }}、逐格规划 {{ steps.frame_plan.output.frames }}、场景与配角 {{ steps.scene_plan.output }} 和统一风格 {{ steps.production_plan.output.style_template }}，审核图片的叙事对应关系、宫格布局、角色与场景一致性、镜头连续性和可用性。",
+                "output": "只输出结构化审核结果，包含 score、reason、issues 和 regeneration_instruction。score 是 0 到 100 的整数；reason 总结通过或不通过的核心依据；issues 列出每个具体问题；regeneration_instruction 给出下一轮提示词可以直接执行的完整修改要求。",
+                "check": "只有图片与逐格规划一致、宫格数量和阅读顺序正确、角色场景连续且没有明显畸形、错位、重复画格、字幕、水印或无关内容时才可评分 80 以上；低于 80 分时必须给出明确原因、问题位置和可执行修改建议。"
+              },
+              "output": {
+                "schema": {
+                  "fields": [
+                    {"id": "score", "type": "integer", "required": true},
+                    {"id": "reason", "type": "string", "required": true},
+                    {"id": "issues", "type": "array", "required": true},
+                    {"id": "regeneration_instruction", "type": "string", "required": true}
+                  ]
+                }
               }
             }
-          ],
-          "prompt": {
-            "role": "你是分镜图提示词编写者，必须看人物定妆图和场景图，把每格规划组织成一张宫格分镜图 image prompt。",
-            "task": "看全部指定参考图，基于当前段剧本 {{ steps.segment_script.output }}、宫格数量 {{ steps.frame_plan.output.grid_count }}、逐格规划 {{ steps.frame_plan.output.frames }}、场景与配角 {{ steps.scene_plan.output }} 和统一风格 {{ steps.production_plan.output.style_template }}，生成一张按时间顺序阅读的宫格分镜图提示词。",
-            "output": "只输出纯文本 image prompt，不输出 JSON。采用“宫格分镜图，电影分镜，每格一个镜头，清晰格线分隔，每格内容不同”的写法。明确 grid_count 对应的布局，先规定统一角色、场景、光线和色彩，再按左到右、上到下逐格描述镜头景别、角度、人物动作、表情、站位构图、环境氛围和前后连续关系。",
-            "check": "每格严格对应一个 frame，不生成普通人物图鉴；人物外貌服装继承定妆参考图；空间、道具和光线继承当前段场景图；格子边界清晰且每格内容不同；不出现字幕、标号、水印、宣传文案或无关人物；每格足以支撑最终视频提示词的时间段描述。"
-          },
-          "fields": {
-            "purpose": "storyboard",
-            "stage": "storyboard",
-            "aspect_ratio": "{{ inputs.aspect_ratio }}",
-            "quality": "high"
-          }
+          ]
         },
         {
           "id": "final_video",
           "title": "最终视频",
           "kind": "video",
-          "needs": ["storyboard"],
+          "needs": ["storyboard_review_loop"],
           "uses": [
             {"from": "storyboard", "as": ["vision", "reference"]},
             {"from": "scene_reference", "as": ["vision", "reference"]},
