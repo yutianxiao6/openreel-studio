@@ -680,6 +680,65 @@ def test_v2_bounded_feedback_loop_keeps_nested_parent_scopes_isolated() -> None:
     assert "parent_loop_i1_quality_loop_i1_quality_review" not in second_parent_retry["depends_on"]
 
 
+def test_v2_nested_loop_strips_structural_ancestor_dependencies() -> None:
+    inner = deepcopy(_bounded_feedback_loop_spec()["steps"][0])
+    inner["needs"] = ["frame_plan", "segment_production"]
+    inner["steps"][0]["needs"] = [
+        "frame_plan",
+        "segment_production",
+        "quality_loop",
+    ]
+    inner["steps"][1]["needs"] = [
+        "frame_plan",
+        "generate",
+        "segment_production",
+        "quality_loop",
+    ]
+    payload = _base_spec()
+    payload["inputs"] = {}
+    payload["steps"] = [
+        {
+            "id": "segment_production",
+            "title": "分段制作",
+            "kind": "loop",
+            "foreach": {"count": 1, "as": "segment"},
+            "steps": [
+                {
+                    "id": "frame_plan",
+                    "title": "分镜规划",
+                    "kind": "text",
+                    "needs": ["segment_production"],
+                    "prompt": {"task": "输出分镜规划。"},
+                },
+                inner,
+            ],
+        }
+    ]
+
+    normalized = canvas_workflow_templates.normalize_inline_workflow(payload)
+    generate = next(
+        step for step in normalized["steps"]
+        if step["id"] == "segment_production_i1_quality_loop_i1_generate"
+    )
+    review = next(
+        step for step in normalized["steps"]
+        if step["id"] == "segment_production_i1_quality_loop_i1_quality_review"
+    )
+
+    assert generate["depends_on"] == ["segment_production_i1_frame_plan"]
+    assert review["depends_on"] == [
+        "segment_production_i1_frame_plan",
+        "segment_production_i1_quality_loop_i1_generate",
+    ]
+    dependencies = {
+        dependency
+        for step in normalized["steps"]
+        for dependency in step.get("depends_on") or []
+    }
+    assert "segment_production" not in dependencies
+    assert "segment_production_i1_quality_loop" not in dependencies
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("score", "expected_ready"),

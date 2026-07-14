@@ -60,6 +60,15 @@ def _step_paths_by_id(spec: WorkflowSpec) -> tuple[dict[str, WorkflowStep], dict
     return steps, parents
 
 
+def _ancestor_loop_ids(step_id: str, parent_by_id: dict[str, str | None]) -> set[str]:
+    ancestors: set[str] = set()
+    current = parent_by_id.get(step_id)
+    while current and current not in ancestors:
+        ancestors.add(current)
+        current = parent_by_id.get(current)
+    return ancestors
+
+
 def _source_path(value: str) -> tuple[str, str]:
     match = _STEP_PATH_RE.fullmatch(str(value or "").strip())
     if not match:
@@ -168,14 +177,18 @@ def _compile_private_step(
 ) -> list[dict[str, Any]]:
     compiled = plan_steps[step.id]
     parent_loop_id = parent_by_id.get(step.id)
+    ancestor_loop_ids = _ancestor_loop_ids(step.id, parent_by_id)
     dependencies: list[str] = []
     for dependency in compiled.get("depends_on") or []:
         dependency = str(dependency)
+        if dependency in ancestor_loop_ids:
+            continue
         dependency_parent = parent_by_id.get(dependency)
-        if dependency == parent_loop_id:
-            resolved = dependency
-        else:
-            resolved = dependency_parent if dependency_parent and dependency_parent != parent_loop_id else dependency
+        resolved = (
+            dependency_parent
+            if dependency_parent and dependency_parent not in ancestor_loop_ids
+            else dependency
+        )
         if resolved not in dependencies:
             dependencies.append(resolved)
 

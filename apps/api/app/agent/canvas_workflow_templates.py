@@ -378,8 +378,10 @@ def _expand_private_loops(
     *,
     values: dict[str, Any],
     deferred: list[dict[str, Any]],
+    inherited_local_ids: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     expanded: list[dict[str, Any]] = []
+    ancestor_ids = dict(inherited_local_ids or {})
     for index, raw in enumerate(steps, start=1):
         if not isinstance(raw, dict):
             raise WorkflowTemplateError(f"Execution step #{index} must be an object")
@@ -407,6 +409,7 @@ def _expand_private_loops(
         for instance_index, instance in enumerate(instances, start=1):
             suffix = _instance_suffix(instance, instance_index, key)
             local_ids = {child_id: f"{group_id}_{suffix}_{child_id}" for child_id in child_ids}
+            scoped_ids = {**ancestor_ids, **local_ids}
             previous_source_id = ""
             if until_source_step and instance_index > 1:
                 previous_instance = instances[instance_index - 2]
@@ -424,7 +427,7 @@ def _expand_private_loops(
                 child_dependencies = [str(item) for item in rendered.get("depends_on") or [] if str(item)]
                 rendered["depends_on"] = list(dict.fromkeys([
                     *[str(item) for item in group.get("depends_on") or [] if str(item)],
-                    *[local_ids.get(item, item) for item in child_dependencies],
+                    *[scoped_ids.get(item, item) for item in child_dependencies],
                     *([previous_source_id] if previous_source_id else []),
                 ]))
                 rendered["template_step_id"] = template_child_id
@@ -451,6 +454,7 @@ def _expand_private_loops(
                         [rendered],
                         values=nested_values,
                         deferred=deferred,
+                        inherited_local_ids=scoped_ids,
                     ))
                 else:
                     expanded.append(rendered)
