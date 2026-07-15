@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent, type TouchEvent as ReactTouchEvent } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent, type TouchEvent as ReactTouchEvent, type WheelEvent as ReactWheelEvent } from "react"
 import ReactFlow, {
   Background,
   ConnectionLineType,
@@ -1000,7 +1000,9 @@ function workflowAuthoringInputSpecs(
       else delete spec.label
       if (draft.description) spec.description = draft.description
       else delete spec.description
-      if (draft.default != null && draft.default !== "") spec.default = draft.default
+      if (draft.default != null && draft.default !== "") {
+        spec.default = workflowValueFromFieldInput(draft.default, draft.type || "text")
+      }
       else delete spec.default
       if (workflowInputTypeUsesOptions(draft.type) && draft.options && draft.options.length > 0) {
         spec.options = draft.options.map((option) => ({ ...option }))
@@ -2376,8 +2378,32 @@ const WORKFLOW_IMAGE_RESOLUTION_SHORT_EDGE: Record<WorkflowImageResolutionTier, 
 const WORKFLOW_IMAGE_ASPECT_OPTIONS = ["9:16", "16:9", "1:1", "1:2", "2:1", "3:4", "4:3", "2:3", "3:2", "4:5", "5:4", "21:9", "9:21"]
 const WORKFLOW_MAX_IMAGE_PIXEL_AREA = 3840 * 2160
 
+function workflowExactInputBindingId(value: unknown): string {
+  const match = workflowStringValue(value).trim().match(/^\{\{\s*inputs\.([A-Za-z][A-Za-z0-9_-]*)\s*\}\}$/)
+  return match?.[1] || ""
+}
+
+function workflowInputBindingToken(inputId: string): string {
+  return `{{ inputs.${inputId} }}`
+}
+
+function workflowAspectRatioInputId(
+  inputIds: string[],
+  inputSpecs: Record<string, WorkflowInputDraftSpec>,
+): string {
+  if (inputIds.includes("aspect_ratio")) return "aspect_ratio"
+  return inputIds.find((inputId) => {
+    const label = workflowNormalizeInputDisplayLabel(inputSpecs[inputId]?.label || workflowInputLabel(inputId))
+    return label === "画面比例" || /(?:^|_)(?:aspect_ratio|aspectratio|ratio)(?:_|$)/i.test(inputId)
+  }) || ""
+}
+
 function workflowPreventInvalidPositiveIntegerKey(event: ReactKeyboardEvent<HTMLInputElement>) {
   if (["e", "E", "+", "-", "."].includes(event.key)) event.preventDefault()
+}
+
+function workflowPreventNumberWheel(event: ReactWheelEvent<HTMLInputElement>) {
+  event.currentTarget.blur()
 }
 
 function workflowPositiveIntegerValue(value: unknown): number | undefined {
@@ -2491,6 +2517,19 @@ function workflowPatchProductAspectRatioFields(step: WorkflowTemplateStepSummary
     aspect_width: parsed?.width,
     aspect_height: parsed?.height,
     aspect_ratio: parsed?.value || aspectRatio,
+  })
+}
+
+function workflowPatchProductAspectInputBindingFields(
+  step: WorkflowTemplateStepSummary,
+  inputId: string,
+  clearResolution: boolean,
+): Record<string, unknown> | undefined {
+  return workflowPatchStepFields(step, {
+    aspect_width: undefined,
+    aspect_height: undefined,
+    aspect_ratio: workflowInputBindingToken(inputId),
+    ...(clearResolution ? { width: undefined, height: undefined, resolution: undefined } : {}),
   })
 }
 
@@ -3275,6 +3314,7 @@ function WorkflowRunInputFields({
               <input
                 type={type === "number" || type === "integer" ? "number" : "text"}
                 value={value}
+                onWheel={type === "number" || type === "integer" ? workflowPreventNumberWheel : undefined}
                 onChange={(event) => onInputValueChange(input, event.target.value)}
                 placeholder={spec.description || workflowInputPlaceholder(input)}
                 className={cn(fieldClassName, "h-8")}
@@ -6553,8 +6593,29 @@ function WorkflowStepInspector({
     ? `未指定时使用当前模型：${workflowMediaProviderLabel(defaultProductProvider)}`
     : "未配置可用模型"
   const productProviderForSpecs = selectedProductProvider || defaultProductProvider
-  const productAspectRatio = isCanvasProduct ? workflowProductAspectRatio(step) : "9:16"
-  const productResolutionDimensions = isCanvasProduct ? workflowProductResolutionDimensions(step) : WORKFLOW_DEFAULT_MEDIA_RESOLUTION
+  const availableAspectInputId = isCanvasProduct ? workflowAspectRatioInputId(inputIds, inputSpecs) : ""
+  const productBoundAspectInputId = isCanvasProduct
+    ? workflowExactInputBindingId(productFields.aspect_ratio || productFields.ratio)
+    : ""
+  const productAspectBindingValue = productBoundAspectInputId
+    ? workflowInputValueForId(productBoundAspectInputId, inputValues, inputSpecs)
+    : ""
+  const productAspectRatio = isCanvasProduct
+    ? workflowParseAspectRatio(productAspectBindingValue)?.value || workflowProductAspectRatio(step)
+    : "9:16"
+  const productAspectSelection = productBoundAspectInputId
+    ? workflowInputBindingToken(productBoundAspectInputId)
+    : productAspectRatio
+  const productHasExplicitResolution = Boolean(
+    workflowDimensionPairFromText(productFields.resolution || productFields.size || productFields.dimensions)
+    || workflowPositiveIntegerValue(productFields.width || productFields.resolution_width || productFields.pixel_width || productFields.image_width || productFields.video_width)
+    || workflowPositiveIntegerValue(productFields.height || productFields.resolution_height || productFields.pixel_height || productFields.image_height || productFields.video_height),
+  )
+  const productResolutionDimensions = kind === "image" && productBoundAspectInputId && !productHasExplicitResolution
+    ? workflowImageResolutionForAspectTier(productAspectRatio, "2k")
+    : isCanvasProduct
+    ? workflowProductResolutionDimensions(step)
+    : WORKFLOW_DEFAULT_MEDIA_RESOLUTION
   const productImageResolutionTier = workflowImageResolutionTierFromDimensions(productResolutionDimensions)
   const productImageResolutionValue = `${productResolutionDimensions.width}x${productResolutionDimensions.height}`
   const productImageResolutionByTier = WORKFLOW_IMAGE_RESOLUTION_TIERS.map((item) => {
@@ -6568,6 +6629,13 @@ function WorkflowStepInspector({
   })
   const productImageSelectedResolution = productImageResolutionByTier.find((item) => item.value === productImageResolutionValue)?.value
     || `${workflowImageResolutionForAspectTier(productAspectRatio, productImageResolutionTier).width}x${workflowImageResolutionForAspectTier(productAspectRatio, productImageResolutionTier).height}`
+  const productAspectBindingOption = availableAspectInputId
+    ? {
+      label: `跟随输入 · ${workflowInputDisplayName(availableAspectInputId, inputSpecs)}`,
+      value: workflowInputBindingToken(availableAspectInputId),
+      hint: `本次运行值：${workflowInputValueForId(availableAspectInputId, inputValues, inputSpecs) || "待填写"}`,
+    }
+    : undefined
   const productVideoMode = workflowStringValue(productFields.video_mode || productFields.mode)
   const productVideoSupportedRatios = kind === "video"
     ? videoSupportedRatiosForProvider(productProviderForSpecs, videoProtocols, productVideoMode)
@@ -6583,7 +6651,8 @@ function WorkflowStepInspector({
     : ""
   const productVideoAspectOptions = kind === "video"
     ? [
-      ...(productAspectRatio && !productVideoSupportedRatios.includes(productAspectRatio)
+      ...(productAspectBindingOption ? [productAspectBindingOption] : []),
+      ...(!productBoundAspectInputId && productAspectRatio && !productVideoSupportedRatios.includes(productAspectRatio)
         ? [{ label: `当前 ${productAspectRatio}`, value: productAspectRatio, disabled: true }]
         : []),
       ...productVideoSupportedRatios.map((value) => ({ label: value, value })),
@@ -7023,6 +7092,7 @@ function WorkflowStepInspector({
                         min={1}
                         step={1}
                         value={typeof loopForeach.count === "number" ? loopForeach.count : 1}
+                        onWheel={workflowPreventNumberWheel}
                         onChange={(event) => onUpdateStep(step.id, {
                           foreach: {
                             ...loopForeach,
@@ -7159,6 +7229,7 @@ function WorkflowStepInspector({
                         step={1}
                         value={typeof loopForeach.count === "number" ? loopForeach.count : 3}
                         disabled={readOnly}
+                        onWheel={workflowPreventNumberWheel}
                         onChange={(event) => updateLoopUntilAttempts(event.target.value)}
                         className={cn(textFieldClass, "mt-1 h-8")}
                       />
@@ -7338,14 +7409,16 @@ function WorkflowStepInspector({
                   <WorkflowMediaOptionGrid
                     label="清晰度"
                     value={productImageSelectedResolution}
-                    disabled={readOnly}
+                    disabled={readOnly || Boolean(productBoundAspectInputId)}
                     columns="grid-cols-3"
                     options={productImageResolutionByTier.map((item) => ({
                       label: item.label,
                       value: item.value,
                       hint: item.hint,
                     }))}
-                    hint={`保存值：${productResolutionDimensions.width}x${productResolutionDimensions.height}`}
+                    hint={productBoundAspectInputId
+                      ? `跟随画面比例输入，运行时自动使用 2K：${productResolutionDimensions.width}x${productResolutionDimensions.height}`
+                      : `保存值：${productResolutionDimensions.width}x${productResolutionDimensions.height}`}
                     onChange={(resolution) => {
                       const dimensions = workflowDimensionPairFromText(resolution) || WORKFLOW_DEFAULT_MEDIA_RESOLUTION
                       onUpdateStep(step.id, {
@@ -7357,11 +7430,21 @@ function WorkflowStepInspector({
                 {kind === "image" && (
                   <WorkflowMediaOptionGrid
                     label="比例"
-                    value={productAspectRatio}
+                    value={productAspectSelection}
                     disabled={readOnly}
                     columns="grid-cols-3"
-                    options={WORKFLOW_IMAGE_ASPECT_OPTIONS.map((value) => ({ label: value, value }))}
+                    options={[
+                      ...(productAspectBindingOption ? [productAspectBindingOption] : []),
+                      ...WORKFLOW_IMAGE_ASPECT_OPTIONS.map((value) => ({ label: value, value })),
+                    ]}
                     onChange={(aspectRatio) => {
+                      const boundInputId = workflowExactInputBindingId(aspectRatio)
+                      if (boundInputId) {
+                        onUpdateStep(step.id, {
+                          fields: workflowPatchProductAspectInputBindingFields(step, boundInputId, true),
+                        })
+                        return
+                      }
                       const tier = workflowImageResolutionTierFromDimensions(productResolutionDimensions)
                       const dimensions = workflowImageResolutionForAspectTier(aspectRatio, tier)
                       onUpdateStep(step.id, {
@@ -7373,13 +7456,18 @@ function WorkflowStepInspector({
                 {kind === "video" && (
                   <WorkflowMediaOptionGrid
                     label="比例"
-                    value={productAspectRatio}
+                    value={productAspectSelection}
                     disabled={readOnly}
                     columns="grid-cols-3"
                     options={productVideoAspectOptions}
-                    onChange={(aspectRatio) => onUpdateStep(step.id, {
-                      fields: workflowPatchProductAspectRatioFields(step, aspectRatio),
-                    })}
+                    onChange={(aspectRatio) => {
+                      const boundInputId = workflowExactInputBindingId(aspectRatio)
+                      onUpdateStep(step.id, {
+                        fields: boundInputId
+                          ? workflowPatchProductAspectInputBindingFields(step, boundInputId, false)
+                          : workflowPatchProductAspectRatioFields(step, aspectRatio),
+                      })
+                    }}
                   />
                 )}
                 {kind === "video" && (
@@ -7411,6 +7499,7 @@ function WorkflowStepInspector({
                       value={productDurationSeconds || ""}
                       disabled={readOnly}
                       onKeyDown={workflowPreventInvalidPositiveIntegerKey}
+                      onWheel={workflowPreventNumberWheel}
                       onChange={(event) => {
                         const seconds = workflowPositiveIntegerValue(event.target.value)
                         onUpdateStep(step.id, {

@@ -374,6 +374,45 @@ def _render_instance_tokens(value: Any, instance: dict[str, Any], item_name: str
     return value
 
 
+def _render_input_tokens(value: Any, input_values: dict[str, Any]) -> Any:
+    """Resolve root workflow inputs in executable fields without touching prompts."""
+    if isinstance(value, str):
+        matches = list(_INSTANCE_TOKEN_RE.finditer(value))
+        if not matches:
+            return value
+
+        def resolved_value(match: re.Match[str]) -> tuple[bool, Any]:
+            expression = str(match.group(1) or "").strip()
+            parts = [part for part in expression.split(".") if part]
+            if len(parts) < 2 or parts[0] != "inputs":
+                return False, None
+            current: Any = input_values
+            for part in parts[1:]:
+                if not isinstance(current, dict) or part not in current:
+                    return False, None
+                current = current[part]
+            return True, current
+
+        if len(matches) == 1 and matches[0].span() == (0, len(value)):
+            found, resolved = resolved_value(matches[0])
+            return deepcopy(resolved) if found else value
+
+        def replace(match: re.Match[str]) -> str:
+            found, resolved = resolved_value(match)
+            if not found:
+                return match.group(0)
+            if isinstance(resolved, (dict, list)):
+                return json.dumps(resolved, ensure_ascii=False, sort_keys=True)
+            return str(resolved)
+
+        return _INSTANCE_TOKEN_RE.sub(replace, value)
+    if isinstance(value, list):
+        return [_render_input_tokens(item, input_values) for item in value]
+    if isinstance(value, dict):
+        return {key: _render_input_tokens(item, input_values) for key, item in value.items()}
+    return value
+
+
 def _deferred_group(group: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": group.get("id"),
@@ -526,7 +565,7 @@ def _normalize_private_execution_template(
             **deepcopy(item),
             "node_type": node_type,
             "depends_on": list(dict.fromkeys(dependencies)),
-            "fields": deepcopy(item.get("fields") or {}),
+            "fields": _render_input_tokens(item.get("fields") or {}, values),
             "position": deepcopy(item.get("position") or {}),
         })
     return {

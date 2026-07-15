@@ -15,6 +15,7 @@ applies_to: 视频制作 视频工作流 默认视频流程 workflow template ge
 - 默认视频运行模式只使用现有模板引用、补齐输入并运行 workflow。
 - 用户主动要求查询或选择模板时，优先委派 `workflow_spec` 选择器；只在需要展示列表时读取 workflow 模板目录。
 - 运行前补齐阻塞输入：剧情/主题 `plot`、单集总时长 `duration_seconds`；可选输入是视觉风格 `style`、视频类型 `video_type`、集数 `episode_count`、每段时长 `segment_seconds` 和画幅 `aspect_ratio`。
+- workflow 图片/视频 step 可在 `fields.aspect_ratio` 写完整输入绑定 `{{ inputs.aspect_ratio }}`，运行器按本次流程输入解析；总时长和分段时长必须连续核算，末段终点精确等于 `duration_seconds`。
 - 模板里的 V2 逻辑步骤已经带 `prompt`；运行期编译成私有提示词阶段执行，不把完整 prompt skill 原文塞进主 Agent。
 - prompt 模块索引用于模板维护、局部改提示词或 standalone 节点：剧本 `script_writing`，人物图 `character_prompt`，场景图 `scene_prompt`，宫格分镜 `shot_grid_prompt`，视频提示词 `video_prompt`，故事模板图 `story_template_method`。
 - 每个节点都是独立任务单元；`task` 只记录进度；生产依赖写节点 `fields.references`，图片引用用 `role:"visual_reference"`，文字上下文用 `role:"context"`，直接采用已有图片用 `role:"source_image"`。
@@ -72,6 +73,8 @@ workflow.runtime_status
 - 开始完整流程：`workflow.run_all(template_id="general_short_drama_workflow", inputs=...)`
 - 继续下一步：`workflow.run_next(template_id="general_short_drama_workflow", instance_id=...)`
 - 指定步骤：`workflow.run_step(template_id="general_short_drama_workflow", step_id=..., inputs=..., instance_id=...)`
+
+视频 step 的 `execution=auto` 表示流程运行时继续生成视频；`execution=manual` 表示只准备提示词和视频节点，等待用户在该节点上点击生成。以流程编辑器“手动运行”保存的选择为准。
 
 遇到失败、阻塞或依赖未完成时，以工具返回的 `runtime`、`progress`、`waiting_on`、`error_kind` 为准。
 

@@ -141,6 +141,29 @@ def test_v2_compiler_is_deterministic_and_has_no_provider_routing() -> None:
     assert "provider" not in str(first)
 
 
+def test_video_execution_setting_controls_automatic_media_generation() -> None:
+    payload = _base_spec()
+    payload["steps"].append({
+        "id": "final_video",
+        "title": "最终视频",
+        "kind": "video",
+        "execution": "manual",
+        "prompt": {"task": "根据 {{ steps.script.output }} 生成视频。"},
+    })
+
+    private = compile_private_execution_template(payload)
+    by_id = {step["id"]: step for step in private["steps"]}
+    assert by_id["final_video__prompt"]["manual_only"] is False
+    assert by_id["final_video"]["manual_only"] is True
+    assert by_id["final_video"]["fields"]["workflow_generate"] is False
+
+    payload["steps"][-1]["execution"] = "auto"
+    auto_private = compile_private_execution_template(payload)
+    auto_video = next(step for step in auto_private["steps"] if step["id"] == "final_video")
+    assert auto_video["manual_only"] is False
+    assert auto_video["fields"]["workflow_generate"] is True
+
+
 def test_v2_derives_dependencies_from_prompt_media_and_loop_paths() -> None:
     payload = _base_spec()
     payload["inputs"]["aspect_ratio"] = {"type": "text", "label": "比例", "default": "16:9"}
@@ -1341,10 +1364,40 @@ def test_builtin_template_preserves_artifact_prompt_writing_methods() -> None:
         field["id"]: field
         for field in review_steps["storyboard_review"]["output"]["schema"]["fields"]
     }
-    assert set(review_fields) == {"score", "reason", "issues", "regeneration_instruction"}
+    assert set(review_fields) == {
+        "score",
+        "dimension_scores",
+        "reason",
+        "issues",
+        "regeneration_instruction",
+    }
     assert review_fields["score"]["type"] == "integer"
+    assert {field["id"] for field in review_fields["dimension_scores"]["fields"]} == {
+        "story_theme",
+        "visual_expression",
+        "shot_language",
+        "spatial_continuity",
+        "composition",
+        "action_rhythm",
+        "continuity",
+        "technical_usability",
+    }
+    assert {field["id"] for field in review_fields["issues"]["fields"]} == {
+        "category",
+        "frame",
+        "severity",
+        "problem",
+        "evidence",
+        "correction",
+    }
+    review_prompt = review_steps["storyboard_review"]["prompt"]
+    for criterion in ("剧情主题", "画面表达", "镜头语言", "180 度轴线", "构图", "动作节奏"):
+        assert criterion in str(review_prompt)
+    assert "任一重大问题都必须压到 80 分以下" in review_prompt["check"]
+    assert "dimension_scores" in review_steps["storyboard"]["prompt"]["output"]
     assert "参考图片的用途声明" in segment_steps["final_video"]["prompt"]["output"]
     assert "画面概述→动作变化" in segment_steps["final_video"]["prompt"]["output"]
+    assert "最后一段精确结束于" in segment_steps["final_video"]["prompt"]["output"]
     assert segment_steps["final_video"]["needs"] == ["storyboard_review_loop"]
 
     frame_schema = {
@@ -1526,6 +1579,7 @@ def test_private_loop_expansion_resolves_item_fields_but_keeps_workflow_paths() 
     normalized = canvas_workflow_templates.normalize_inline_workflow(
         public,
         input_values={
+            "aspect_ratio": "9:16",
             "production_plan": {
                 "output": {
                     "main_characters": [
@@ -1539,11 +1593,55 @@ def test_private_loop_expansion_resolves_item_fields_but_keeps_workflow_paths() 
         },
     )
     character_prompt = next(step for step in normalized["steps"] if step["id"].endswith("character_image__prompt"))
+    character_image = next(
+        step
+        for step in normalized["steps"]
+        if step["id"].endswith("character_image") and step["node_type"] == "image"
+    )
     final_video = next(step for step in normalized["steps"] if step["id"].endswith("final_video"))
 
     assert "阿澈" in character_prompt["prompt_template"]
     assert "{{ steps.production_plan.output.style_template }}" in character_prompt["prompt_template"]
+    assert character_image["fields"]["aspect_ratio"] == "9:16"
     assert final_video["fields"]["duration_seconds"] == "9"
+    assert final_video["fields"]["aspect_ratio"] == "9:16"
+
+
+def test_workflow_root_input_tokens_render_only_in_executable_fields() -> None:
+    payload = _base_spec()
+    payload["inputs"].update({
+        "aspect_ratio": {"type": "text", "label": "画面比例", "default": "16:9"},
+        "duration_seconds": {"type": "integer", "label": "时长", "default": 30},
+        "missing": {"type": "text", "label": "缺省输入"},
+    })
+    payload["steps"].append({
+        "id": "poster",
+        "title": "海报",
+        "kind": "image",
+        "prompt": {"task": "按 {{ inputs.aspect_ratio }} 制作 {{ inputs.duration_seconds }} 秒海报。"},
+        "fields": {
+            "aspect_ratio": "{{ inputs.aspect_ratio }}",
+            "duration_seconds": "{{ inputs.duration_seconds }}",
+            "note": "ratio={{ inputs.aspect_ratio }}",
+            "unresolved": "{{ inputs.missing }}",
+        },
+    })
+
+    normalized = canvas_workflow_templates.normalize_inline_workflow(
+        payload,
+        input_values={"aspect_ratio": "1:1", "duration_seconds": 30},
+    )
+    by_id = {step["id"]: step for step in normalized["steps"]}
+    assert by_id["poster"]["fields"] == {
+        "aspect_ratio": "1:1",
+        "duration_seconds": 30,
+        "note": "ratio=1:1",
+        "unresolved": "{{ inputs.missing }}",
+        "workflow_source_step": "poster__prompt",
+        "workflow_source_path": "output",
+        "workflow_generate": True,
+    }
+    assert "{{ inputs.aspect_ratio }}" in by_id["poster__prompt"]["prompt_template"]
 
 
 def test_private_llm_phases_execute_even_though_they_are_not_public_nodes() -> None:
