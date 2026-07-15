@@ -19,8 +19,9 @@
     "desktop:package:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/desktop/build-windows.ps1",
     "desktop:package:linux": "bash scripts/desktop/build-unix.sh linux",
     "desktop:package:mac": "bash scripts/desktop/build-unix.sh mac",
-    "promo:studio": "pnpm --filter web promo:studio",
-    "promo:render": "pnpm --filter web promo:render"
+    "promo:dev": "pnpm --filter openreel-promo dev",
+    "promo:studio": "pnpm --filter openreel-promo studio",
+    "promo:render": "pnpm --filter openreel-promo render"
   },
   "engines": {
     "node": ">=20",

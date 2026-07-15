@@ -23,6 +23,13 @@
 		reverse_proxy web:3000
 	}
 
+	handle /promo {
+		reverse_proxy promo:3001
+	}
+	handle /promo/* {
+		reverse_proxy promo:3001
+	}
+
 	handle /apple-icon.png {
 		header Cache-Control "public, max-age=300"
 		rewrite * /studio/apple-icon.png
@@ -136,6 +143,13 @@ https://:3000 {
 	handle /studio/icon.png {
 		header Cache-Control "public, max-age=300"
 		reverse_proxy web:3000
+	}
+
+	handle /promo {
+		reverse_proxy promo:3001
+	}
+	handle /promo/* {
+		reverse_proxy promo:3001
 	}
 
 	handle /apple-icon.png {

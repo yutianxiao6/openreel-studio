@@ -7,9 +7,7 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit",
-    "promo:studio": "remotion studio remotion/index.ts",
-    "promo:render": "remotion render remotion/index.ts OpenReelPromo ../../dist/openreel-promo-v0.1.11.mp4 --codec=h264"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@drama/shared": "workspace:*",
@@ -21,12 +19,10 @@
     "react-markdown": "^10.1.0",
     "reactflow": "^11.11.4",
     "remark-gfm": "^4.0.1",
-    "remotion": "4.0.488",
     "three": "^0.184.0",
     "zustand": "^5.0.1"
   },
   "devDependencies": {
-    "@remotion/cli": "4.0.488",
     "@types/node": "^20.16.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",

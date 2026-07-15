@@ -2,3 +2,4 @@ packages:
   - "apps/desktop"
   - "apps/web"
   - "packages/*"
+  - "promo"

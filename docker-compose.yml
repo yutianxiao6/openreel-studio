@@ -35,3 +35,17 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+
+  promo:
+    build:
+      context: .
+      dockerfile: promo/Dockerfile
+      args:
+        NEXT_PUBLIC_BASE_PATH: /promo
+    container_name: openreel-promo
+    environment:
+      - HOSTNAME=0.0.0.0
+      - PORT=3001
+    ports:
+      - "3001:3001"
+    restart: unless-stopped

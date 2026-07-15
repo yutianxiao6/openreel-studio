@@ -1,5 +1,5 @@
 import {Composition} from "remotion"
-import {OpenReelPromo} from "../components/promo/OpenReelPromo"
+import {OpenReelPromo} from "../components/OpenReelPromo"
 
 export const PROMO_FPS = 30
 export const PROMO_DURATION_IN_FRAMES = 24 * PROMO_FPS
