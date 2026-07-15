@@ -12,6 +12,7 @@ from typing import Any
 
 from app.agent import canvas_workflow_templates, workflow_spec_artifacts, workflow_template_store
 from app.agent.workflow_audit import audit_workflow_spec
+from app.agent.workflow_repeat_scope import workflow_repeat_index, workflow_same_repeat_scope
 
 
 _VALID_CANVAS_TYPES = {"text", "image", "video", "audio"}
@@ -417,21 +418,10 @@ def _projected_ref_id(
         step
         for step in steps
         if str(step.get("template_step_id") or "").strip() == ref
+        and workflow_same_repeat_scope(target, step)
     ]
     if not candidates:
         return ref
-
-    target_group = str(target.get("repeat_group_id") or "").strip()
-    target_index = target.get("repeat_group_index")
-    same_attempt = [
-        step
-        for step in candidates
-        if target_group
-        and str(step.get("repeat_group_id") or "").strip() == target_group
-        and step.get("repeat_group_index") == target_index
-    ]
-    if same_attempt:
-        candidates = same_attempt
 
     target_id = str(target.get("id") or "")
 
@@ -442,10 +432,10 @@ def _projected_ref_id(
             if left != right:
                 break
             prefix_length += 1
-        repeat_index = item.get("repeat_group_index")
+        repeat_index = workflow_repeat_index(item)
         return (
             prefix_length,
-            int(repeat_index) if isinstance(repeat_index, int) else 0,
+            repeat_index or 0,
             steps.index(item),
         )
 

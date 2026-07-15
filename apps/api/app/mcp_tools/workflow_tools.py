@@ -24,6 +24,13 @@ from app.agent.workflow_structured_output import (
 )
 from app.agent.workflow_audit import WorkflowAuditError, audit_workflow_spec
 from app.agent.workflow_review import build_workflow_semantic_review_evidence
+from app.agent.workflow_repeat_scope import (
+    workflow_instance_scope,
+    workflow_item_metadata,
+    workflow_repeat_group_id,
+    workflow_repeat_index,
+    workflow_same_repeat_scope,
+)
 from app.db.session import session_scope
 from app.mcp_tools import canvas_tools
 from app.mcp_tools.registry import register
@@ -3612,20 +3619,15 @@ def _workflow_dependency_nodes(
 
 
 def _workflow_item_workflow_meta(item: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(item, dict):
-        return {}
-    workflow = _workflow_metadata_from_node(item)
-    return workflow if workflow else item
+    return workflow_item_metadata(item)
 
 
 def _workflow_item_scope(item: dict[str, Any] | None) -> dict[str, Any]:
-    meta = _workflow_item_workflow_meta(item)
-    scope = meta.get("instance_scope") if isinstance(meta.get("instance_scope"), dict) else {}
-    return scope
+    return workflow_instance_scope(item)
 
 
 def _workflow_item_repeat_group(item: dict[str, Any] | None) -> str:
-    return str(_workflow_item_workflow_meta(item).get("repeat_group_id") or "").strip()
+    return workflow_repeat_group_id(item)
 
 
 def _workflow_scope_index_key(item: dict[str, Any] | None) -> str:
@@ -3644,34 +3646,11 @@ def _workflow_scope_index_key(item: dict[str, Any] | None) -> str:
 
 
 def _workflow_same_current_repeat_scope(target: dict[str, Any] | None, candidate: dict[str, Any] | None) -> bool:
-    target_group = _workflow_item_repeat_group(target)
-    candidate_group = _workflow_item_repeat_group(candidate)
-    if not target_group or not candidate_group or target_group != candidate_group:
-        return True
-    target_index = _workflow_scope_index_key(target)
-    candidate_index = _workflow_scope_index_key(candidate)
-    if target_index and candidate_index:
-        return target_index == candidate_index
-    target_scope = _workflow_item_scope(target)
-    candidate_scope = _workflow_item_scope(candidate)
-    compared = False
-    for key in ("episode", "segment", "index", "episode_index", "segment_index", "start_second", "end_second"):
-        target_value = str(target_scope.get(key) or "").strip()
-        candidate_value = str(candidate_scope.get(key) or "").strip()
-        if not target_value or not candidate_value:
-            continue
-        compared = True
-        if target_value != candidate_value:
-            return False
-    return True
+    return workflow_same_repeat_scope(target, candidate)
 
 
 def _workflow_repeat_index_int(item: dict[str, Any] | None) -> int | None:
-    text = _workflow_scope_index_key(item)
-    try:
-        return int(text) if text else None
-    except ValueError:
-        return None
+    return workflow_repeat_index(item)
 
 
 def _workflow_same_or_previous_prompt_scope(target: dict[str, Any] | None, candidate: dict[str, Any] | None) -> bool:
@@ -3693,10 +3672,6 @@ def _workflow_dependency_node_matches_scope(
 ) -> bool:
     if not isinstance(target_step, dict) or not isinstance(node, dict):
         return isinstance(node, dict)
-    target_group = _workflow_item_repeat_group(target_step)
-    candidate_group = _workflow_item_repeat_group(node)
-    if not target_group or not candidate_group or target_group != candidate_group:
-        return True
     dep = str(dep_key or "").strip()
     candidate_meta = _workflow_item_workflow_meta(node)
     candidate_step_id = str(candidate_meta.get("step_id") or "").strip()

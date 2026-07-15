@@ -935,6 +935,140 @@ def test_v2_feedback_loop_downstream_selects_latest_completed_attempt() -> None:
     }
 
 
+def test_v2_nested_feedback_dependencies_stay_inside_the_parent_segment() -> None:
+    def record(
+        node_id: str,
+        *,
+        template_step_id: str,
+        step_id: str,
+        group_id: str,
+        group_index: int,
+        segment_id: str,
+        feedback: bool = False,
+    ) -> dict:
+        workflow = {
+            "template_id": "nested_video_flow",
+            "instance_id": "wf_nested_feedback",
+            "step_id": step_id,
+            "template_step_id": template_step_id,
+            "repeat_group_id": group_id,
+            "repeat_group_index": group_index,
+            "instance_scope": {"segment_id": segment_id, "attempt": group_index},
+        }
+        if feedback:
+            workflow["repeat_until"] = {
+                "path": "steps.storyboard_review.output.score",
+                "op": "gte",
+                "value": 80,
+            }
+        return {
+            "id": node_id,
+            "status": "completed",
+            "input": {"workflow": workflow},
+        }
+
+    records = [
+        record(
+            "scene-s1",
+            template_step_id="scene_reference",
+            step_id="segment_production_s1_scene_reference",
+            group_id="segment_production",
+            group_index=1,
+            segment_id="s1",
+        ),
+        record(
+            "scene-s2",
+            template_step_id="scene_reference",
+            step_id="segment_production_s2_scene_reference",
+            group_id="segment_production",
+            group_index=2,
+            segment_id="s2",
+        ),
+    ]
+    for segment_id in ("s1", "s2"):
+        for attempt in (1, 2):
+            records.append(
+                record(
+                    f"storyboard-{segment_id}-{attempt}",
+                    template_step_id="storyboard",
+                    step_id=(
+                        f"segment_production_{segment_id}_storyboard_review_loop_"
+                        f"i{attempt}_storyboard"
+                    ),
+                    group_id=f"segment_production_{segment_id}_storyboard_review_loop",
+                    group_index=attempt,
+                    segment_id=segment_id,
+                    feedback=True,
+                )
+            )
+
+    by_id = workflow_tools._workflow_step_nodes_by_id(
+        records, "nested_video_flow", "wf_nested_feedback"
+    )
+    by_alias = workflow_tools._workflow_step_nodes_by_alias(
+        records, "nested_video_flow", "wf_nested_feedback"
+    )
+
+    first_storyboard = {
+        "repeat_group_id": "segment_production_s1_storyboard_review_loop",
+        "repeat_group_index": 1,
+        "instance_scope": {"segment_id": "s1", "attempt": 1},
+    }
+    assert [
+        node["id"]
+        for node in workflow_tools._workflow_dependency_nodes(
+            "scene_reference",
+            created_by_step=by_id,
+            nodes_by_alias=by_alias,
+            target_step=first_storyboard,
+        )
+    ] == ["scene-s1"]
+
+    second_review = {
+        "repeat_group_id": "segment_production_s1_storyboard_review_loop",
+        "repeat_group_index": 2,
+        "instance_scope": {"segment_id": "s1", "attempt": 2},
+    }
+    assert [
+        node["id"]
+        for node in workflow_tools._workflow_dependency_nodes(
+            "storyboard",
+            created_by_step=by_id,
+            nodes_by_alias=by_alias,
+            target_step=second_review,
+        )
+    ] == ["storyboard-s1-2"]
+
+    first_final_video = {
+        "repeat_group_id": "segment_production",
+        "repeat_group_index": 1,
+        "instance_scope": {"segment_id": "s1"},
+    }
+    second_final_video = {
+        "repeat_group_id": "segment_production",
+        "repeat_group_index": 2,
+        "instance_scope": {"segment_id": "s2"},
+    }
+    assert [
+        node["id"]
+        for node in workflow_tools._workflow_dependency_nodes(
+            "storyboard",
+            created_by_step=by_id,
+            nodes_by_alias=by_alias,
+            target_step=first_final_video,
+        )
+    ] == ["storyboard-s1-2"]
+    assert [
+        node["id"]
+        for node in workflow_tools._workflow_dependency_nodes(
+            "storyboard",
+            created_by_step=by_id,
+            nodes_by_alias=by_alias,
+            target_step=second_final_video,
+        )
+    ] == ["storyboard-s2-2"]
+
+
 def test_v2_feedback_loop_projection_maps_context_refs_to_latest_attempt() -> None:
     payload = _bounded_feedback_loop_spec()
     loop = payload["steps"][0]
@@ -989,6 +1123,35 @@ def test_v2_feedback_loop_projection_maps_context_refs_to_latest_attempt() -> No
         (edge["source"], edge["target"], edge["kind"])
         for edge in second["canvas"]["edges"]
     } >= {("quality_loop_i2_generate", "result", "reference")}
+
+
+def test_v2_projection_reference_resolution_uses_parent_scope_not_id_prefix() -> None:
+    target = {
+        "id": "target_prefers_wrong_prefix",
+        "repeat_group_id": "segments",
+        "repeat_group_index": 1,
+        "instance_scope": {"segment_id": "s1"},
+    }
+    wrong = {
+        "id": "target_prefers_wrong_prefix_storyboard",
+        "template_step_id": "storyboard",
+        "repeat_group_id": "segment_s2_review",
+        "repeat_group_index": 1,
+        "instance_scope": {"segment_id": "s2", "attempt": 1},
+    }
+    correct = {
+        "id": "unrelated_id_storyboard",
+        "template_step_id": "storyboard",
+        "repeat_group_id": "segment_s1_review",
+        "repeat_group_index": 1,
+        "instance_scope": {"segment_id": "s1", "attempt": 1},
+    }
+
+    assert workflow_canvas_projection._projected_ref_id(
+        "storyboard",
+        target=target,
+        steps=[wrong, correct, target],
+    ) == "unrelated_id_storyboard"
 
 
 def test_v2_feedback_loop_direct_downstream_requires_a_matched_gate() -> None:
@@ -1538,6 +1701,59 @@ def test_builtin_v2_canvas_projection_hides_private_phases_and_expands_final_vid
     assert [node["id"] for node in result["canvas"]["final_outputs"]] == [
         "segment_production_s1_final_video",
         "segment_production_s2_final_video",
+    ]
+    flow_by_id = {node["id"]: node for node in result["flow"]["nodes"]}
+    for segment_id, other_segment_id in (("s1", "s2"), ("s2", "s1")):
+        storyboard_id = (
+            f"segment_production_{segment_id}_storyboard_review_loop_i1_storyboard"
+        )
+        review_id = f"{storyboard_id}_review"
+        final_video_id = f"segment_production_{segment_id}_final_video"
+        own_scene_id = f"segment_production_{segment_id}_scene_reference"
+
+        assert own_scene_id in flow_by_id[storyboard_id]["references"]
+        assert not any(
+            f"segment_production_{other_segment_id}_" in ref
+            for ref in flow_by_id[storyboard_id]["references"]
+        )
+        assert flow_by_id[review_id]["references"] == [storyboard_id]
+        assert storyboard_id in flow_by_id[final_video_id]["references"]
+        assert own_scene_id in flow_by_id[final_video_id]["references"]
+        assert not any(
+            f"segment_production_{other_segment_id}_" in ref
+            for ref in flow_by_id[final_video_id]["references"]
+        )
+
+    retry = workflow_canvas_projection.project_workflow_canvas(
+        project_id="projection-test",
+        workflow=public,
+        inputs={"plot": "雨夜天台收到未来来信", "duration_seconds": 30, "segment_seconds": 15},
+        context={
+            "production_plan": {
+                "output": {
+                    "main_characters": [{"character_id": "hero", "name": "林岚"}],
+                    "segments": [
+                        {"segment_id": "s1", "duration_seconds": 15},
+                        {"segment_id": "s2", "duration_seconds": 15},
+                    ],
+                }
+            },
+            "segment_production_s1_storyboard_review_loop_i1_storyboard_review": {
+                "status": "completed",
+                "output": {"score": 60},
+            },
+        },
+    )
+    retry_flow = {node["id"]: node for node in retry["flow"]["nodes"]}
+    assert retry_flow["segment_production_s1_final_video"]["references"] == [
+        "segment_production_s1_frame_plan",
+        "segment_production_s1_storyboard_review_loop_i2_storyboard",
+        "segment_production_s1_scene_reference",
+    ]
+    assert retry_flow["segment_production_s2_final_video"]["references"] == [
+        "segment_production_s2_frame_plan",
+        "segment_production_s2_storyboard_review_loop_i1_storyboard",
+        "segment_production_s2_scene_reference",
     ]
 
 
