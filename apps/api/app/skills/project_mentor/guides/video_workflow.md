@@ -16,6 +16,10 @@ workflow skill；没有匹配项时通过 `skill.search` / `skill.get` 读取内
 物化后，主 Agent 用 deferred `workflow.run_step`、`workflow.run_next` 或
 `workflow.run_all` 传入 `inputs` 并启动流程；workflow runner 按依赖选择步骤，
 内部调用节点 runner 执行由公开 `step.prompt` 编译出的私有提示词阶段，完成节点内容、最终 prompt 和媒体运行。
+V2 数据项循环使用稳定 `foreach.key`。嵌套循环中的逻辑引用按共同父作用域
+和当前尝试解析；画布投影与运行器复用同一规则。排查跨段错误时同时核对
+`instance_scope`、真实节点 references、提示词阶段 vision refs 和投影边，不能
+只看画布线条。
 长项目在框架阶段批量查询所需 prompt skill，形成 `skill_plan`，由 workflow 编译阶段吸收进各步模板，后续同类
 节点复用这份计划。
 

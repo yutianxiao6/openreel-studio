@@ -140,6 +140,7 @@ WORKFLOW_SPEC_V2_GUIDE = """\
 - Media is one logical step with its own `prompt`; Do not create prompt sibling steps. Put media settings in `fields`.
 - Dependencies come from `needs` and referenced `inputs.<id>`/`steps.<id>.output...` paths, loop sources, plugin inputs, and `uses`.
 - Loop: exactly one `foreach.items|count`, plus `as` and nested `steps`; item paths end `[]`. Nested loops may use `episode.segments[]`. Use stable `key` for object items.
+- Nested scope: logical dependencies and `uses.from` bind the same shared parent item first, then the current repeat index; bounded-loop downstream selects the latest completed attempt in that parent scope. Use `uses.select` for unrelated collections. Projection and runtime must agree.
 - Bounded feedback loop: use a literal integer `foreach.count` from 1 through 10 and add `foreach.until={path,op,value}`. The path is `steps.<terminal_child>.output[.<declared_field>]`; ordered comparisons require a finite numeric value. The source is a direct child that runs every attempt, has `on_error:"stop"`, has no `when`, is not a loop, and is terminal: no sibling may depend on it.
 - Wire only producer -> review. Image review uses `uses:[{"from":"candidate","as":["vision"]}]` to receive pixels. Its `kind:"object"` schema declares the gate and all feedback fields.
 - Put exact `{{ previous }}` in each revising producer prompt: `{}` first, then the complete prior review. Runtime serializes attempts; never add a reverse dependency or second feedback field.

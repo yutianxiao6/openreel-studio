@@ -383,7 +383,12 @@ async def test_video_production_skill_guides_reference_driven_short_video_nodes(
     assert "稳定的图片节点 ID" in guide
     assert "默认模板" in guide
     assert "剧情/主题 `plot`" in guide
-    assert "durationSeconds" in guide
+    assert "duration_seconds" in guide
+    assert "episode_count" in guide
+    assert "segment_seconds" in guide
+    assert "video_type" in guide
+    assert "aspect_ratio" in guide
+    assert "durationSeconds" not in guide
     assert "final_video" not in guide
     assert "直接文生视频" in guide
     assert "task.create(items=" not in guide
@@ -398,7 +403,6 @@ async def test_video_production_skill_guides_reference_driven_short_video_nodes(
     assert "官方设定集角色视觉参考表" not in guide
     assert "毛孔级写实特写" not in guide
     assert "grok-imagine-video-1.5" not in guide
-    assert "duration_seconds" in guide
     assert "role:\"visual_reference\"" in guide
     assert "role:\"source_image\"" in guide
     assert "`path` 只做诊断来源" in guide

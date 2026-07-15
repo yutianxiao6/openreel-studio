@@ -112,6 +112,13 @@ def workflow_protocol_info() -> dict[str, Any]:
             "downstream_dependency": "loop_step",
             "exhaustion": "stop_downstream",
         },
+        "loop_scope": {
+            "stable_item_identity": "foreach.key",
+            "logical_reference_resolution": "shared_parent_scope_then_repeat_index",
+            "feedback_downstream": "latest_completed_attempt_in_same_parent_scope",
+            "cross_collection_reference": "uses.select",
+            "projection_matches_runtime": True,
+        },
         "available_plugin_nodes": _plugin_protocol_nodes(plugin_nodes),
         "plugin_errors": workflow_plugins.plugin_errors(),
     }

@@ -343,7 +343,8 @@ def test_v2_bounded_feedback_loop_compiles_until_without_creating_a_dependency_c
 
 
 def test_v2_protocol_info_exposes_generic_bounded_feedback_loop_contract() -> None:
-    contract = canvas_workflow_templates.workflow_protocol_info()["loop_until"]
+    protocol = canvas_workflow_templates.workflow_protocol_info()
+    contract = protocol["loop_until"]
 
     assert contract == {
         "source": "foreach.count",
@@ -361,6 +362,13 @@ def test_v2_protocol_info_exposes_generic_bounded_feedback_loop_contract() -> No
         "feedback_wiring": "forward_only_runtime_dependency",
         "downstream_dependency": "loop_step",
         "exhaustion": "stop_downstream",
+    }
+    assert protocol["loop_scope"] == {
+        "stable_item_identity": "foreach.key",
+        "logical_reference_resolution": "shared_parent_scope_then_repeat_index",
+        "feedback_downstream": "latest_completed_attempt_in_same_parent_scope",
+        "cross_collection_reference": "uses.select",
+        "projection_matches_runtime": True,
     }
 
 
@@ -1776,6 +1784,8 @@ def test_workflow_build_guide_documents_v2_high_frequency_errors() -> None:
     assert 'uses:[{"from":"candidate","as":["vision"]}]' in WORKFLOW_SPEC_V2_GUIDE
     assert "workflow_loop_until_exhausted" in WORKFLOW_SPEC_V2_GUIDE
     assert "Downstream steps depend on `quality_loop`" in WORKFLOW_SPEC_V2_GUIDE
+    assert "same shared parent item" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Projection and runtime must agree" in WORKFLOW_SPEC_V2_GUIDE
     assert "openreel.workflow.authoring.v1" not in WORKFLOW_SPEC_V2_GUIDE
 
 
