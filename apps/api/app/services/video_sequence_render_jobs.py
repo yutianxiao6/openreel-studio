@@ -152,8 +152,13 @@ async def _create_output_node(
         select(WorkflowNode).where(WorkflowNode.project_id == source_node.project_id)
     )).all())
     position_x, position_y = _render_output_position(source_node, existing_nodes)
-    source_refs = [
-        f"node:{node.display_id}" if node.display_id is not None else f"node:{node.id}"
+    timeline_sources = [
+        {
+            "node_id": node.id,
+            "display_id": node.display_id,
+            "type": node.type,
+            "title": node.title,
+        }
         for node in source_nodes
     ]
     output = media_operations.item_output(source_node.project_id, result)
@@ -171,10 +176,9 @@ async def _create_output_node(
                 "source_node_id": source_node.id,
                 "sequence_revision": sequence_revision,
             },
-            "depends_on": source_refs,
             "fields": {
                 "media_operation": result.metadata,
-                "source_node_refs": source_refs,
+                "timeline_sources": timeline_sources,
             },
         },
         "output_json": output,
@@ -186,22 +190,8 @@ async def _create_output_node(
         "prompt": None,
         "error_message": None,
     })
-    edges: list[WorkflowEdge] = []
-    for source in source_nodes:
-        edge = WorkflowEdge(
-            id=str(uuid.uuid4()),
-            project_id=source_node.project_id,
-            source_node_id=source.id,
-            target_node_id=rendered_node.id,
-            label="时间线导出",
-            created_at=_now(),
-        )
-        db.add(edge)
-        edges.append(edge)
-    await db.commit()
-    await db.refresh(rendered_node)
     project_media_history.register_node_outputs(source_node.project_id, rendered_node)
-    return rendered_node, edges
+    return rendered_node, []
 
 
 async def _set_terminal_job(

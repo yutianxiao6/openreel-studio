@@ -77,6 +77,20 @@ async def _setup_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
                 }),
             )
         )
+        session.add(
+            WorkflowNode(
+                id="image-source",
+                project_id="project-1",
+                display_id=2,
+                type="image",
+                title="时间线图片",
+                status="completed",
+                output_json=json.dumps({
+                    "type": "image",
+                    "local_url": "/api/media/project-1/generated_images/source.png",
+                }),
+            )
+        )
         await session.commit()
 
 
@@ -121,6 +135,15 @@ def _video_sequence_spec() -> video_edit_sequences.SequenceSpec:
                 "duration_frames": 48,
                 "source_in_frame": 0,
                 "source_frame_count": 48,
+            },
+            {
+                "id": "image-clip",
+                "track_id": "v1",
+                "media_id": "image-source",
+                "timeline_start_frame": 48,
+                "duration_frames": 24,
+                "source_in_frame": 0,
+                "source_frame_count": None,
             },
         ],
     })
@@ -217,7 +240,7 @@ async def test_video_split_tracks_creates_video_and_audio_nodes(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_video_sequence_render_creates_video_node_and_dependency_edge(monkeypatch, tmp_path) -> None:
+async def test_video_sequence_render_creates_independent_video_node_without_dependency_edges(monkeypatch, tmp_path) -> None:
     await _setup_db(monkeypatch, tmp_path)
     spec = _video_sequence_spec()
     async with db_session.session_scope() as session:
@@ -239,13 +262,13 @@ async def test_video_sequence_render_creates_video_node_and_dependency_edge(monk
             metadata={
                 "type": "video.render_sequence",
                 "sequence_revision": kwargs["revision"],
-                "duration_frames": 48,
+                "duration_frames": 72,
                 "frame_rate": {"numerator": 24, "denominator": 1},
                 "width": 1280,
                 "height": 720,
                 "audio_sample_rate": 48_000,
                 "audio_channels": 2,
-                "source_node_ids": ["video-source"],
+                "source_node_ids": ["video-source", "image-source"],
                 "transition_count": 0,
             },
         )
@@ -292,14 +315,22 @@ async def test_video_sequence_render_creates_video_node_and_dependency_edge(monk
         assert rendered_output["video"]["local_url"].endswith(
             "/generated_videos/video_ops/sequence.mp4"
         )
-        assert rendered["edges"][0]["source_node_id"] == "video-source"
-        assert rendered["edges"][0]["target_node_id"] == rendered["node"]["id"]
+        assert rendered["edges"] == []
 
         created = await session.get(WorkflowNode, rendered["node"]["id"])
         assert created is not None
         node_input = json.loads(created.input_json or "{}")
         assert node_input["source"]["sequence_revision"] == 1
-        assert node_input["depends_on"] == ["node:1"]
+        assert "depends_on" not in node_input
+        assert "references" not in node_input
+        assert [item["node_id"] for item in node_input["fields"]["timeline_sources"]] == [
+            "video-source",
+            "image-source",
+        ]
+        persisted_edges = list((await session.exec(select(WorkflowEdge).where(
+            WorkflowEdge.target_node_id == created.id,
+        ))).all())
+        assert persisted_edges == []
 
 
 @pytest.mark.asyncio
@@ -361,7 +392,7 @@ async def test_video_sequence_render_job_can_be_cancelled_without_creating_outpu
     assert terminal is not None
     assert terminal["status"] == "cancelled"
     assert terminal["output_node_id"] is None
-    assert [node.id for node in nodes] == ["video-source"]
+    assert {node.id for node in nodes} == {"video-source", "image-source"}
 
 
 @pytest.mark.asyncio
