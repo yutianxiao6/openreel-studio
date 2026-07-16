@@ -14,8 +14,8 @@ applies_to: 视频制作 视频工作流 默认视频流程 workflow template ge
 - 工作流请求通过 `workflow_spec` 选择器返回现有模板引用；默认路径返回 `general_short_drama_workflow`，不重新生成 spec。
 - 默认视频运行模式只使用现有模板引用、补齐输入并运行 workflow。
 - 用户主动要求查询或选择模板时，优先委派 `workflow_spec` 选择器；只在需要展示列表时读取 workflow 模板目录。
-- 运行前补齐阻塞输入：剧情/主题 `plot`、单集总时长 `duration_seconds`；可选输入是视觉风格 `style`、视频类型 `video_type`、集数 `episode_count`、每段时长 `segment_seconds` 和画幅 `aspect_ratio`。
-- workflow 图片/视频 step 可在 `fields.aspect_ratio` 写完整输入绑定 `{{ inputs.aspect_ratio }}`，运行器按本次流程输入解析；总时长和分段时长必须连续核算，末段终点精确等于 `duration_seconds`。
+- 运行前补齐阻塞输入：剧情/主题 `plot`、单集总时长 `duration_seconds`；可选输入是视觉风格 `style`、视频类型 `video_type`、集数 `episode_count` 和每段时长 `segment_seconds`。
+- workflow spec 保持可移植，只描述结构、提示词、依赖和业务字段。模型、画幅、清晰度、画质等媒体产物参数由前端运行配置提供；总时长和分段时长必须连续核算，末段终点精确等于 `duration_seconds`。
 - 模板里的 V2 逻辑步骤已经带 `prompt`；运行期编译成私有提示词阶段执行，不把完整 prompt skill 原文塞进主 Agent。
 - prompt 模块索引用于模板维护、局部改提示词或 standalone 节点：剧本 `script_writing`，人物图 `character_prompt`，场景图 `scene_prompt`，宫格分镜 `shot_grid_prompt`，视频提示词 `video_prompt`，故事模板图 `story_template_method`。
 - 每个节点都是独立任务单元；`task` 只记录进度；生产依赖写节点 `fields.references`，图片引用用 `role:"visual_reference"`，文字上下文用 `role:"context"`，直接采用已有图片用 `role:"source_image"`。
@@ -42,8 +42,7 @@ workflow.run_all(
     "episode_count": 1,
     "segment_seconds": 15,
     "style": "...",
-    "video_type": "短剧",
-    "aspect_ratio": "16:9"
+    "video_type": "短剧"
   }
 )
 ```

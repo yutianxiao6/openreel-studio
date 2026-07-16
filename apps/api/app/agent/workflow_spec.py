@@ -42,6 +42,44 @@ _FORBIDDEN_ROUTING_KEYS = {
     "provider_id",
     "task_type",
 }
+_MEDIA_RUNTIME_INPUT_KEYS = {
+    "model",
+    "provider",
+    "aspect_ratio",
+    "ratio",
+    "resolution",
+    "size",
+    "dimensions",
+    "width",
+    "height",
+    "quality",
+    "fps",
+}
+_MEDIA_RUNTIME_FIELD_KEYS = {
+    "aspect_ratio",
+    "ratio",
+    "aspect_width",
+    "aspect_height",
+    "ratio_width",
+    "ratio_height",
+    "width_ratio",
+    "height_ratio",
+    "resolution",
+    "size",
+    "dimensions",
+    "width",
+    "height",
+    "resolution_width",
+    "resolution_height",
+    "pixel_width",
+    "pixel_height",
+    "image_width",
+    "image_height",
+    "video_width",
+    "video_height",
+    "quality",
+    "fps",
+}
 
 WorkflowStepKind = Literal[
     "text",
@@ -297,6 +335,21 @@ class WorkflowStep(_StrictModel):
     plugin: WorkflowPlugin | None = None
     ui: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _discard_media_runtime_fields(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or value.get("kind") not in {"image", "video", "audio"}:
+            return value
+        fields = value.get("fields")
+        if not isinstance(fields, dict):
+            return value
+        cleaned_fields = {
+            key: item
+            for key, item in fields.items()
+            if str(key).strip().lower() not in _MEDIA_RUNTIME_FIELD_KEYS
+        }
+        return {**value, "fields": cleaned_fields}
+
     @model_validator(mode="after")
     def _validate_kind_contract(self) -> "WorkflowStep":
         if not self.title.strip():
@@ -359,6 +412,18 @@ class WorkflowSpec(_StrictModel):
     steps: list[WorkflowStep] = Field(min_length=1)
     ui: dict[str, Any] = Field(default_factory=dict)
     extensions: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _discard_media_runtime_inputs(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or not isinstance(value.get("inputs"), dict):
+            return value
+        cleaned_inputs = {
+            key: item
+            for key, item in value["inputs"].items()
+            if str(key).strip().lower() not in _MEDIA_RUNTIME_INPUT_KEYS
+        }
+        return {**value, "inputs": cleaned_inputs}
 
     @model_validator(mode="after")
     def _validate_root(self) -> "WorkflowSpec":

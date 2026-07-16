@@ -44,16 +44,6 @@
       "default": 15,
       "min": 1,
       "max": 60
-    },
-    "aspect_ratio": {
-      "type": "enum",
-      "label": "画面比例",
-      "default": "16:9",
-      "options": [
-        {"value": "16:9", "label": "横屏 16:9"},
-        {"value": "9:16", "label": "竖屏 9:16"},
-        {"value": "1:1", "label": "方形 1:1"}
-      ]
     }
   },
   "steps": [
@@ -184,9 +174,7 @@
           "fields": {
             "purpose": "character_reference",
             "stage": "character_reference",
-            "character_id": "{{ character.character_id }}",
-            "aspect_ratio": "16:9",
-            "quality": "high"
+            "character_id": "{{ character.character_id }}"
           }
         }
       ]
@@ -271,9 +259,7 @@
           },
           "fields": {
             "purpose": "scene_reference",
-            "stage": "scene_reference",
-            "aspect_ratio": "16:9",
-            "quality": "high"
+            "stage": "scene_reference"
           }
         },
         {
@@ -356,9 +342,7 @@
               },
               "fields": {
                 "purpose": "storyboard",
-                "stage": "storyboard",
-                "aspect_ratio": "16:9",
-                "quality": "high"
+                "stage": "storyboard"
               }
             },
             {
@@ -442,8 +426,7 @@
             "purpose": "final_video",
             "stage": "final_video",
             "production_path": "image_to_video",
-            "duration_seconds": "{{ segment.duration_seconds }}",
-            "aspect_ratio": "{{ inputs.aspect_ratio }}"
+            "duration_seconds": "{{ segment.duration_seconds }}"
           }
         }
       ]

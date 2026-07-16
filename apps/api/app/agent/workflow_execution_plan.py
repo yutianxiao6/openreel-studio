@@ -109,6 +109,43 @@ def _private_uses(
     return prompt_refs, prompt_selectors, media_refs, media_selectors
 
 
+_MEDIA_RUNTIME_FIELD_KEYS = {
+    "model",
+    "provider",
+    "aspect_ratio",
+    "ratio",
+    "aspect_width",
+    "aspect_height",
+    "ratio_width",
+    "ratio_height",
+    "width_ratio",
+    "height_ratio",
+    "resolution",
+    "size",
+    "dimensions",
+    "width",
+    "height",
+    "resolution_width",
+    "resolution_height",
+    "pixel_width",
+    "pixel_height",
+    "image_width",
+    "image_height",
+    "video_width",
+    "video_height",
+    "quality",
+    "fps",
+}
+
+
+def _private_step_fields(step: WorkflowStep) -> dict[str, Any]:
+    fields = deepcopy(step.fields)
+    if step.kind in {"image", "video", "audio"}:
+        for key in _MEDIA_RUNTIME_FIELD_KEYS:
+            fields.pop(key, None)
+    return fields
+
+
 def _base_private_step(
     step: WorkflowStep,
     *,
@@ -120,7 +157,7 @@ def _base_private_step(
         "id": step.id,
         "title": step.title,
         "depends_on": clean_dependencies,
-        "fields": deepcopy(step.fields),
+        "fields": _private_step_fields(step),
         "optional": step.on_error == "continue",
         "manual_only": step.execution == "manual",
         "logical_step_id": step.id,
@@ -265,7 +302,7 @@ def _compile_private_step(
             "surface": "draft_canvas",
             "visibility": "canvas",
             "fields": {
-                **deepcopy(step.fields),
+                **_private_step_fields(step),
                 "workflow_source_step": prompt_id,
                 "workflow_source_path": "output",
                 "workflow_generate": False,
@@ -298,7 +335,7 @@ def _compile_private_step(
         "surface": "draft_canvas",
         "visibility": "canvas",
         "fields": {
-            **deepcopy(step.fields),
+            **_private_step_fields(step),
             "workflow_source_step": f"{step.id}__prompt" if step.prompt is not None else "",
             "workflow_source_path": "output",
             "workflow_generate": step.execution == "auto" and step.prompt is not None,

@@ -166,7 +166,6 @@ def test_video_execution_setting_controls_automatic_media_generation() -> None:
 
 def test_v2_derives_dependencies_from_prompt_media_and_loop_paths() -> None:
     payload = _base_spec()
-    payload["inputs"]["aspect_ratio"] = {"type": "text", "label": "比例", "default": "16:9"}
     payload["steps"].extend(
         [
             {
@@ -194,7 +193,6 @@ def test_v2_derives_dependencies_from_prompt_media_and_loop_paths() -> None:
                         "title": "人物参考图",
                         "kind": "image",
                         "prompt": {"task": "为 {{ character.name }} 生成人物图。"},
-                        "fields": {"aspect_ratio": "{{ inputs.aspect_ratio }}"},
                     }
                 ],
             },
@@ -1287,6 +1285,39 @@ def test_v2_canonical_payload_contains_no_runtime_state() -> None:
     assert "runner" not in str(payload)
 
 
+def test_v2_canonical_payload_discards_frontend_media_runtime_settings() -> None:
+    payload = _base_spec()
+    payload["inputs"].update(
+        {
+            "aspect_ratio": {"type": "text", "label": "比例", "default": "9:16"},
+            "resolution": {"type": "text", "label": "清晰度", "default": "4k"},
+            "quality": {"type": "text", "label": "画质", "default": "high"},
+        }
+    )
+    payload["steps"].append(
+        {
+            "id": "image",
+            "title": "图片",
+            "kind": "image",
+            "prompt": {"task": "生成图片。"},
+            "fields": {
+                "purpose": "cover",
+                "aspect_ratio": "{{ inputs.aspect_ratio }}",
+                "resolution": "{{ inputs.resolution }}",
+                "quality": "{{ inputs.quality }}",
+                "width": 2160,
+                "height": 3840,
+                "fps": 24,
+            },
+        }
+    )
+
+    canonical = workflow_spec_payload(payload)
+
+    assert {"aspect_ratio", "resolution", "quality"}.isdisjoint(canonical["inputs"])
+    assert canonical["steps"][1]["fields"] == {"purpose": "cover"}
+
+
 def test_builtin_template_is_native_v2_and_has_logical_media_steps() -> None:
     summary = next(
         item
@@ -1321,22 +1352,43 @@ def test_builtin_template_is_native_v2_and_has_logical_media_steps() -> None:
     )["public_spec"]
     assert public["inputs"]["video_type"]["type"] == "text"
     assert public["inputs"]["video_type"]["options"] == []
+    assert "aspect_ratio" not in public["inputs"]
     assert "resolution" not in public["inputs"]
 
 
-@pytest.mark.parametrize(
-    ("aspect_ratio", "resolution"),
-    [
-        ("16:9", "2560x1440"),
-        ("9:16", "1440x2560"),
-        ("1:1", "2048x2048"),
-    ],
-)
-def test_workflow_image_resolution_follows_aspect_ratio(
-    aspect_ratio: str,
-    resolution: str,
-) -> None:
-    assert workflow_tools._workflow_default_image_resolution(aspect_ratio) == resolution
+def test_workflow_media_runtime_settings_come_from_ui_overrides() -> None:
+    step = {
+        "id": "character_images__hero__character_image",
+        "logical_step_id": "character_image",
+        "node_type": "image",
+    }
+    ui_overrides = {
+        "media_model_overrides": {"character_image": "image-model"},
+        "media_field_overrides": {
+            "character_image": {
+                "aspect_ratio": "9:16",
+                "resolution": "1440x2560",
+                "quality": "high",
+            }
+        },
+    }
+
+    assert workflow_tools._workflow_ui_node_run_extra_fields(step, ui_overrides) == {
+        "aspect_ratio": "9:16",
+        "resolution": "1440x2560",
+        "quality": "high",
+        "model": "image-model",
+    }
+    assert workflow_tools._workflow_strip_template_media_settings(
+        {
+            "purpose": "character_reference",
+            "aspect_ratio": "1:1",
+            "resolution": "2048x2048",
+            "quality": "low",
+            "model": "template-model",
+        },
+        "image",
+    ) == {"purpose": "character_reference"}
 
 
 def test_builtin_template_preserves_artifact_prompt_writing_methods() -> None:
@@ -1352,10 +1404,14 @@ def test_builtin_template_preserves_artifact_prompt_writing_methods() -> None:
         step["id"]: step for step in segment_steps["storyboard_review_loop"]["steps"]
     }
 
-    assert character_image["fields"]["aspect_ratio"] == "16:9"
-    assert segment_steps["scene_reference"]["fields"]["aspect_ratio"] == "16:9"
-    assert review_steps["storyboard"]["fields"]["aspect_ratio"] == "16:9"
-    assert segment_steps["final_video"]["fields"]["aspect_ratio"] == "{{ inputs.aspect_ratio }}"
+    media_runtime_keys = {"model", "aspect_ratio", "resolution", "quality", "width", "height", "fps"}
+    for media_step in (
+        character_image,
+        segment_steps["scene_reference"],
+        review_steps["storyboard"],
+        segment_steps["final_video"],
+    ):
+        assert media_runtime_keys.isdisjoint(media_step.get("fields", {}))
     assert "官方设定集角色视觉参考表" in character_image["prompt"]["output"]
     assert "正面/侧面/背面全身三面图" in character_image["prompt"]["output"]
     assert "2x2 四机位全景图网格" in segment_steps["scene_reference"]["prompt"]["output"]
@@ -1583,7 +1639,6 @@ def test_private_loop_expansion_resolves_item_fields_but_keeps_workflow_paths() 
     normalized = canvas_workflow_templates.normalize_inline_workflow(
         public,
         input_values={
-            "aspect_ratio": "9:16",
             "production_plan": {
                 "output": {
                     "main_characters": [
@@ -1606,15 +1661,14 @@ def test_private_loop_expansion_resolves_item_fields_but_keeps_workflow_paths() 
 
     assert "阿澈" in character_prompt["prompt_template"]
     assert "{{ steps.production_plan.output.style_template }}" in character_prompt["prompt_template"]
-    assert character_image["fields"]["aspect_ratio"] == "16:9"
+    assert "aspect_ratio" not in character_image["fields"]
     assert final_video["fields"]["duration_seconds"] == "9"
-    assert final_video["fields"]["aspect_ratio"] == "9:16"
+    assert "aspect_ratio" not in final_video["fields"]
 
 
 def test_workflow_root_input_tokens_render_only_in_executable_fields() -> None:
     payload = _base_spec()
     payload["inputs"].update({
-        "aspect_ratio": {"type": "text", "label": "画面比例", "default": "16:9"},
         "duration_seconds": {"type": "integer", "label": "时长", "default": 30},
         "missing": {"type": "text", "label": "缺省输入"},
     })
@@ -1622,30 +1676,26 @@ def test_workflow_root_input_tokens_render_only_in_executable_fields() -> None:
         "id": "poster",
         "title": "海报",
         "kind": "image",
-        "prompt": {"task": "按 {{ inputs.aspect_ratio }} 制作 {{ inputs.duration_seconds }} 秒海报。"},
+        "prompt": {"task": "制作 {{ inputs.duration_seconds }} 秒海报。"},
         "fields": {
-            "aspect_ratio": "{{ inputs.aspect_ratio }}",
             "duration_seconds": "{{ inputs.duration_seconds }}",
-            "note": "ratio={{ inputs.aspect_ratio }}",
             "unresolved": "{{ inputs.missing }}",
         },
     })
 
     normalized = canvas_workflow_templates.normalize_inline_workflow(
         payload,
-        input_values={"aspect_ratio": "1:1", "duration_seconds": 30},
+        input_values={"duration_seconds": 30},
     )
     by_id = {step["id"]: step for step in normalized["steps"]}
     assert by_id["poster"]["fields"] == {
-        "aspect_ratio": "1:1",
         "duration_seconds": 30,
-        "note": "ratio=1:1",
         "unresolved": "{{ inputs.missing }}",
         "workflow_source_step": "poster__prompt",
         "workflow_source_path": "output",
         "workflow_generate": True,
     }
-    assert "{{ inputs.aspect_ratio }}" in by_id["poster__prompt"]["prompt_template"]
+    assert "{{ inputs.duration_seconds }}" in by_id["poster__prompt"]["prompt_template"]
 
 
 def test_private_llm_phases_execute_even_though_they_are_not_public_nodes() -> None:

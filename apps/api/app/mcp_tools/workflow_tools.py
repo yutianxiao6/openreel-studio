@@ -3259,41 +3259,115 @@ def _workflow_result_error(result: Any) -> str:
     return str(result.get("error") or result.get("message") or "").strip()
 
 
+_WORKFLOW_MEDIA_RUNTIME_FIELD_KEYS = {
+    "model",
+    "provider",
+    "aspect_ratio",
+    "ratio",
+    "aspect_width",
+    "aspect_height",
+    "ratio_width",
+    "ratio_height",
+    "width_ratio",
+    "height_ratio",
+    "resolution",
+    "size",
+    "dimensions",
+    "width",
+    "height",
+    "resolution_width",
+    "resolution_height",
+    "pixel_width",
+    "pixel_height",
+    "image_width",
+    "image_height",
+    "video_width",
+    "video_height",
+    "quality",
+    "fps",
+}
+
+_WORKFLOW_UI_MEDIA_FIELD_KEYS = {
+    "aspect_ratio",
+    "resolution",
+    "width",
+    "height",
+    "quality",
+    "fps",
+}
+
+
+def _workflow_ui_step_override(
+    step: dict[str, Any],
+    ui_overrides: dict[str, Any] | None,
+    key: str,
+) -> Any:
+    if not isinstance(ui_overrides, dict):
+        return None
+    overrides = ui_overrides.get(key)
+    if not isinstance(overrides, dict):
+        return None
+    candidate_ids = [
+        str(step.get("id") or "").strip(),
+        str(step.get("logical_step_id") or "").strip(),
+        str(step.get("template_step_id") or "").strip(),
+    ]
+    for candidate_id in candidate_ids:
+        if candidate_id and candidate_id in overrides:
+            return overrides[candidate_id]
+    return None
+
+
 def _workflow_ui_media_model_override(step: dict[str, Any], ui_overrides: dict[str, Any] | None) -> str:
     if not isinstance(ui_overrides, dict):
         return ""
     node_type = str(step.get("node_type") or "").strip()
     if node_type not in {"image", "video", "audio"}:
         return ""
-    overrides = ui_overrides.get("media_model_overrides")
-    if not isinstance(overrides, dict):
-        return ""
-    step_id = str(step.get("id") or "").strip()
-    if not step_id:
-        return ""
-    return str(overrides.get(step_id) or "").strip()
+    value = _workflow_ui_step_override(step, ui_overrides, "media_model_overrides")
+    return str(value or "").strip()
+
+
+def _workflow_ui_media_field_overrides(
+    step: dict[str, Any],
+    ui_overrides: dict[str, Any] | None,
+) -> dict[str, Any]:
+    node_type = str(step.get("node_type") or "").strip()
+    if node_type not in {"image", "video", "audio"}:
+        return {}
+    raw = _workflow_ui_step_override(step, ui_overrides, "media_field_overrides")
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key in _WORKFLOW_UI_MEDIA_FIELD_KEYS:
+        value = raw.get(key)
+        if value in (None, ""):
+            continue
+        if key in {"width", "height", "fps"}:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                result[key] = parsed
+            continue
+        result[key] = str(value).strip()
+    return result
 
 
 def _workflow_ui_node_run_extra_fields(step: dict[str, Any], ui_overrides: dict[str, Any] | None) -> dict[str, Any]:
+    fields = _workflow_ui_media_field_overrides(step, ui_overrides)
     model = _workflow_ui_media_model_override(step, ui_overrides)
-    return {"model": model} if model else {}
-
-
-def _workflow_strip_template_media_model(fields: dict[str, Any], node_type: str) -> dict[str, Any]:
-    if node_type in {"image", "video", "audio"}:
-        fields.pop("model", None)
+    if model:
+        fields["model"] = model
     return fields
 
 
-def _workflow_default_image_resolution(aspect_ratio: Any) -> str:
-    aspect = str(aspect_ratio or "").strip().lower().replace("：", ":")
-    if aspect in {"1:1", "square"}:
-        return "2048x2048"
-    if aspect in {"16:9", "landscape"}:
-        return "2560x1440"
-    if aspect in {"9:16", "portrait"}:
-        return "1440x2560"
-    return "2560x1440"
+def _workflow_strip_template_media_settings(fields: dict[str, Any], node_type: str) -> dict[str, Any]:
+    if node_type in {"image", "video", "audio"}:
+        for key in _WORKFLOW_MEDIA_RUNTIME_FIELD_KEYS:
+            fields.pop(key, None)
+    return fields
 
 
 _WORKFLOW_CANVAS_SPEC_SYNC_KEYS = {
@@ -4562,6 +4636,7 @@ async def _materialize_workflow_step(
     origin_y: float = 120,
     spacing_x: float = 360,
     spacing_y: float = 240,
+    ui_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     target_id = str(step_id or "").strip()
     if not target_id:
@@ -4690,21 +4765,15 @@ async def _materialize_workflow_step(
             existing_fields = dict(existing.get("input") if isinstance(existing.get("input"), dict) else {})
             original_existing_fields = deepcopy(existing_fields)
             existing_node_type = str(existing.get("type") or step.get("node_type") or "text")
-            desired_step_fields = _workflow_strip_template_media_model(
+            desired_step_fields = _workflow_strip_template_media_settings(
                 _merge_dict(default_fields, step.get("fields") or {}),
                 existing_node_type,
             )
-            if existing_node_type == "image":
-                desired_step_fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
-                desired_step_fields.setdefault(
-                    "resolution",
-                    template.get("defaults", {}).get("resolution")
-                    or _workflow_default_image_resolution(desired_step_fields.get("aspect_ratio")),
-                )
-                desired_step_fields.setdefault("quality", template.get("defaults", {}).get("quality") or "high")
+            desired_step_fields = _merge_dict(
+                desired_step_fields,
+                _workflow_ui_media_field_overrides(step, ui_overrides),
+            )
             if existing_node_type == "video":
-                desired_step_fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
-                desired_step_fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "720p")
                 if template.get("defaults", {}).get("duration_seconds"):
                     desired_step_fields.setdefault("duration_seconds", template["defaults"]["duration_seconds"])
             existing_fields = _workflow_sync_existing_canvas_fields(
@@ -4814,7 +4883,8 @@ async def _materialize_workflow_step(
     if not isinstance(default_fields, dict):
         default_fields = {}
     node_type = str(step.get("node_type") or "text")
-    fields = _workflow_strip_template_media_model(_merge_dict(default_fields, step.get("fields") or {}), node_type)
+    fields = _workflow_strip_template_media_settings(_merge_dict(default_fields, step.get("fields") or {}), node_type)
+    fields = _merge_dict(fields, _workflow_ui_media_field_overrides(step, ui_overrides))
     step_title = str(step.get("title") or fields.get("title") or step.get("id") or "工作流步骤").strip()
     if title and step_index == 0:
         step_title = str(title).strip()
@@ -4823,17 +4893,7 @@ async def _materialize_workflow_step(
     fields.setdefault("stage", step.get("id"))
     if node_type in {"image", "video", "audio"}:
         fields.setdefault("prompt_status", "draft")
-    if node_type == "image":
-        fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
-        fields.setdefault(
-            "resolution",
-            template.get("defaults", {}).get("resolution")
-            or _workflow_default_image_resolution(fields.get("aspect_ratio")),
-        )
-        fields.setdefault("quality", template.get("defaults", {}).get("quality") or "high")
     if node_type == "video":
-        fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
-        fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "720p")
         if template.get("defaults", {}).get("duration_seconds"):
             fields.setdefault("duration_seconds", template["defaults"]["duration_seconds"])
     surface = _workflow_step_surface(step)
@@ -5038,6 +5098,7 @@ async def workflow_materialize_step(
     title: str = "",
     inputs: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
+    ui_overrides: dict[str, Any] | None = None,
     instance_id: str = "",
     origin_x: float = 120,
     origin_y: float = 120,
@@ -5076,6 +5137,7 @@ async def workflow_materialize_step(
         origin_y=origin_y,
         spacing_x=spacing_x,
         spacing_y=spacing_y,
+        ui_overrides=ui_overrides,
     )
 
 
@@ -6087,6 +6149,7 @@ async def workflow_run_step(
             origin_y=origin_y,
             spacing_x=spacing_x,
             spacing_y=spacing_y,
+            ui_overrides=ui_overrides,
         )
         if materialized.get("ok") is False:
             return {
@@ -7612,6 +7675,7 @@ async def _materialize_template(
     template: dict[str, Any],
     title: str = "",
     inputs: dict[str, Any] | None = None,
+    ui_overrides: dict[str, Any] | None = None,
     origin_x: float = 120,
     origin_y: float = 120,
     spacing_x: float = 360,
@@ -7644,7 +7708,8 @@ async def _materialize_template(
         if step["id"] in virtual_step_ids:
             continue
         node_type = str(step["node_type"])
-        fields = _workflow_strip_template_media_model(_merge_dict(default_fields, step.get("fields") or {}), node_type)
+        fields = _workflow_strip_template_media_settings(_merge_dict(default_fields, step.get("fields") or {}), node_type)
+        fields = _merge_dict(fields, _workflow_ui_media_field_overrides(step, ui_overrides))
         step_title = str(step.get("title") or fields.get("title") or step["id"]).strip()
         if title and index == 0:
             step_title = str(title).strip()
@@ -7653,17 +7718,7 @@ async def _materialize_template(
         fields.setdefault("stage", step.get("id"))
         if node_type in {"image", "video", "audio"}:
             fields.setdefault("prompt_status", "draft")
-        if node_type == "image":
-            fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
-            fields.setdefault(
-                "resolution",
-                template.get("defaults", {}).get("resolution")
-                or _workflow_default_image_resolution(fields.get("aspect_ratio")),
-            )
-            fields.setdefault("quality", template.get("defaults", {}).get("quality") or "high")
         if node_type == "video":
-            fields.setdefault("aspect_ratio", template.get("defaults", {}).get("aspect_ratio") or "9:16")
-            fields.setdefault("resolution", template.get("defaults", {}).get("resolution") or "720p")
             if template.get("defaults", {}).get("duration_seconds"):
                 fields.setdefault("duration_seconds", template["defaults"]["duration_seconds"])
         surface = _workflow_step_surface(step)
@@ -7930,6 +7985,7 @@ async def workflow_instantiate(
     template_id: str = "",
     title: str = "",
     inputs: dict[str, Any] | None = None,
+    ui_overrides: dict[str, Any] | None = None,
     origin_x: float = 120,
     origin_y: float = 120,
     spacing_x: float = 360,
@@ -7959,6 +8015,7 @@ async def workflow_instantiate(
         template=template,
         title=title,
         inputs=inputs,
+        ui_overrides=ui_overrides,
         origin_x=origin_x,
         origin_y=origin_y,
         spacing_x=spacing_x,
@@ -8522,6 +8579,7 @@ async def workflow_materialize(
     title: str = "",
     inputs: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
+    ui_overrides: dict[str, Any] | None = None,
     origin_x: float = 120,
     origin_y: float = 120,
     spacing_x: float = 360,
@@ -8556,6 +8614,7 @@ async def workflow_materialize(
         template=template,
         title=title,
         inputs=inputs,
+        ui_overrides=ui_overrides,
         origin_x=origin_x,
         origin_y=origin_y,
         spacing_x=spacing_x,
@@ -8598,6 +8657,7 @@ async def workflow_materialize_artifact(
     title: str = "",
     inputs: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
+    ui_overrides: dict[str, Any] | None = None,
     origin_x: float = 120,
     origin_y: float = 120,
     spacing_x: float = 360,
@@ -8647,6 +8707,7 @@ async def workflow_materialize_artifact(
         template=template,
         title=title,
         inputs=inputs,
+        ui_overrides=ui_overrides,
         origin_x=origin_x,
         origin_y=origin_y,
         spacing_x=spacing_x,

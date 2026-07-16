@@ -95,7 +95,6 @@ import WorkflowRunOutputView, {
 import { cn } from "@/lib/utils"
 import { canvasNodeDisplayText } from "@/lib/nodeDisplay"
 import {
-  defaultVideoResolutionForProvider,
   inferVideoModeFromReferences,
   resolveVideoProvider,
   videoReferenceImageLimitForProvider,
@@ -508,7 +507,6 @@ const WORKFLOW_FORM_INPUT_PRESETS: WorkflowInputPreset[] = [
   { id: "total_duration_seconds", label: "视频总时长", type: "number", description: "输入整个视频的总秒数，例如 60。", required: true },
   { id: "segment_seconds", label: "分段秒数", type: "number", description: "每一段多少秒，默认 15。", default: "15" },
   { id: "style", label: "视觉风格", type: "text", description: "例如：写实、电影感、冷色调、国风。", required: false },
-  { id: "aspect_ratio", label: "画面比例", type: "text", description: "例如：16:9、9:16。", default: "16:9" },
 ]
 
 const WORKFLOW_FIELD_TYPE_OPTIONS = [
@@ -1024,23 +1022,93 @@ function workflowCopyAuthoringField(source: Record<string, unknown>, target: Rec
   if (workflowHasValue(value)) target[key] = workflowCloneValue(value)
 }
 
-function workflowAuthoringFieldsWithoutUiModel(step: WorkflowTemplateStepSummary): Record<string, unknown> | undefined {
+const WORKFLOW_SPEC_MEDIA_RUNTIME_FIELD_KEYS = [
+  "model",
+  "provider",
+  "aspect_ratio",
+  "ratio",
+  "aspect_width",
+  "aspect_height",
+  "ratio_width",
+  "ratio_height",
+  "width_ratio",
+  "height_ratio",
+  "resolution",
+  "size",
+  "dimensions",
+  "width",
+  "height",
+  "resolution_width",
+  "resolution_height",
+  "pixel_width",
+  "pixel_height",
+  "image_width",
+  "image_height",
+  "video_width",
+  "video_height",
+  "quality",
+  "fps",
+] as const
+
+const WORKFLOW_SPEC_MEDIA_RUNTIME_INPUT_KEYS = new Set([
+  "model",
+  "provider",
+  "aspect_ratio",
+  "ratio",
+  "resolution",
+  "size",
+  "dimensions",
+  "width",
+  "height",
+  "quality",
+  "fps",
+])
+
+function workflowAuthoringFieldsWithoutMediaRuntimeSettings(step: WorkflowTemplateStepSummary): Record<string, unknown> | undefined {
   const fields = asWorkflowObject(step.fields)
   if (!fields) return undefined
   const next = { ...fields }
-  if (workflowStepIsCanvasProduct(step)) delete next.model
+  if (workflowStepIsCanvasProduct(step)) {
+    for (const key of WORKFLOW_SPEC_MEDIA_RUNTIME_FIELD_KEYS) delete next[key]
+  }
   return Object.keys(next).length > 0 ? next : undefined
 }
 
-function workflowSpecFieldsWithoutTemplateModel(step: Record<string, unknown>): Record<string, unknown> | undefined {
+function workflowSpecFieldsWithoutMediaRuntimeSettings(step: Record<string, unknown>): Record<string, unknown> | undefined {
   const fields = asWorkflowObject(step.fields)
   if (!fields) return undefined
   const next = { ...fields }
   const kind = workflowStringValue(step.kind).toLowerCase()
   if (["image", "video", "audio"].includes(kind)) {
-    delete next.model
+    for (const key of WORKFLOW_SPEC_MEDIA_RUNTIME_FIELD_KEYS) delete next[key]
   }
   return Object.keys(next).length > 0 ? next : undefined
+}
+
+function workflowSpecWithoutMediaRuntimeSettings(workflow: Record<string, unknown>): Record<string, unknown> {
+  const cleanStep = (value: unknown): Record<string, unknown> | null => {
+    const step = asWorkflowObject(value)
+    if (!step) return null
+    const next = workflowCloneValue(step)
+    const fields = workflowSpecFieldsWithoutMediaRuntimeSettings(next)
+    if (fields) next.fields = fields
+    else delete next.fields
+    if (Array.isArray(next.steps)) {
+      next.steps = next.steps.map(cleanStep).filter((item): item is Record<string, unknown> => Boolean(item))
+    }
+    return next
+  }
+  const next = workflowCloneValue(workflow)
+  const inputs = asWorkflowObject(next.inputs)
+  if (inputs) {
+    next.inputs = Object.fromEntries(
+      Object.entries(inputs).filter(([key]) => !WORKFLOW_SPEC_MEDIA_RUNTIME_INPUT_KEYS.has(key.trim().toLowerCase())),
+    )
+  }
+  if (Array.isArray(next.steps)) {
+    next.steps = next.steps.map(cleanStep).filter((item): item is Record<string, unknown> => Boolean(item))
+  }
+  return next
 }
 
 function workflowMappedDependencyIds(
@@ -1090,7 +1158,7 @@ function workflowAuthoringStepFromSummary({
   result.on_error = step.on_error === "continue" ? "continue" : "stop"
   workflowCopyAuthoringField(stepRecord, result, "when")
   workflowCopyAuthoringField(stepRecord, result, "ui")
-  const authoringFields = workflowAuthoringFieldsWithoutUiModel(step)
+  const authoringFields = workflowAuthoringFieldsWithoutMediaRuntimeSettings(step)
   if (authoringFields) result.fields = authoringFields
 
   if (kind === "loop") {
@@ -1278,7 +1346,7 @@ function workflowStepMetadataFromSpec(step: Record<string, unknown>): Partial<Wo
     const value = asWorkflowObject(step[key])
     if (value) (result as Record<string, unknown>)[key] = value
   }
-  const cleanFields = workflowSpecFieldsWithoutTemplateModel(step)
+  const cleanFields = workflowSpecFieldsWithoutMediaRuntimeSettings(step)
   if (cleanFields) result.fields = cleanFields
   if (typeof step.prompt === "string" && step.prompt.trim()) result.prompt = step.prompt
   if (Array.isArray(step.uses)) {
@@ -1574,7 +1642,7 @@ function workflowGraphStepsForTemplateSource(
 function workflowPreviewFromImportedSpec(payload: unknown, filename: string): WorkflowArtifactPreview | null {
   const root = asWorkflowObject(payload)
   if (!root) return null
-  const workflow = root
+  const workflow = workflowSpecWithoutMediaRuntimeSettings(asWorkflowObject(root.workflow) || root)
   if (workflow.schema !== WORKFLOW_SPEC_VERSION || !Array.isArray(workflow.steps)) return null
   const steps = workflowStepSummariesFromSpecSteps(workflow.steps)
   return {
@@ -2345,11 +2413,72 @@ function workflowCleanMediaModelOverrides(overrides: Record<string, string>): Re
   return cleaned
 }
 
-function workflowUiOverridesFromMediaModels(overrides: Record<string, string>): Record<string, unknown> | undefined {
-  const mediaModelOverrides = workflowCleanMediaModelOverrides(overrides)
-  return Object.keys(mediaModelOverrides).length > 0
-    ? { media_model_overrides: mediaModelOverrides }
-    : undefined
+type WorkflowMediaFieldOverride = {
+  aspect_ratio?: string
+  resolution?: string
+  quality?: string
+  width?: number
+  height?: number
+  fps?: number
+}
+
+type WorkflowMediaFieldOverrides = Record<string, WorkflowMediaFieldOverride>
+
+function workflowCleanMediaFieldOverrides(overrides: WorkflowMediaFieldOverrides): WorkflowMediaFieldOverrides {
+  const cleaned: WorkflowMediaFieldOverrides = {}
+  for (const [stepId, fields] of Object.entries(overrides)) {
+    const key = stepId.trim()
+    if (!key || !fields || typeof fields !== "object") continue
+    const next: WorkflowMediaFieldOverride = {}
+    const aspectRatio = workflowStringValue(fields.aspect_ratio)
+    const resolution = workflowStringValue(fields.resolution)
+    const quality = workflowStringValue(fields.quality)
+    if (aspectRatio) next.aspect_ratio = aspectRatio
+    if (resolution) next.resolution = resolution
+    if (quality) next.quality = quality
+    if (typeof fields.width === "number" && fields.width > 0) next.width = Math.round(fields.width)
+    if (typeof fields.height === "number" && fields.height > 0) next.height = Math.round(fields.height)
+    if (typeof fields.fps === "number" && fields.fps > 0) next.fps = Math.round(fields.fps)
+    if (Object.keys(next).length > 0) cleaned[key] = next
+  }
+  return cleaned
+}
+
+function workflowUiOverridesFromMediaSettings(
+  modelOverrides: Record<string, string>,
+  fieldOverrides: WorkflowMediaFieldOverrides,
+  steps: WorkflowTemplateStepSummary[],
+): Record<string, unknown> | undefined {
+  const mediaModelOverrides = workflowCleanMediaModelOverrides(modelOverrides)
+  const mediaFieldOverrides = workflowCleanMediaFieldOverrides(fieldOverrides)
+  for (const step of steps) {
+    const stepId = step.id.trim()
+    const kind = workflowStepAuthoringKind(step)
+    if (!stepId || !["image", "video", "audio"].includes(kind)) continue
+    const current = mediaFieldOverrides[stepId] || {}
+    if (kind === "image") {
+      mediaFieldOverrides[stepId] = {
+        aspect_ratio: current.aspect_ratio || "16:9",
+        resolution: current.resolution || "2560x1440",
+        quality: current.quality || "high",
+        ...(current.width ? { width: current.width } : {}),
+        ...(current.height ? { height: current.height } : {}),
+        ...(current.fps ? { fps: current.fps } : {}),
+      }
+    } else if (kind === "video") {
+      mediaFieldOverrides[stepId] = {
+        aspect_ratio: current.aspect_ratio || "16:9",
+        resolution: current.resolution || "720p",
+        ...(current.fps ? { fps: current.fps } : {}),
+      }
+    } else if (Object.keys(current).length > 0) {
+      mediaFieldOverrides[stepId] = current
+    }
+  }
+  const result: Record<string, unknown> = {}
+  if (Object.keys(mediaModelOverrides).length > 0) result.media_model_overrides = mediaModelOverrides
+  if (Object.keys(mediaFieldOverrides).length > 0) result.media_field_overrides = mediaFieldOverrides
+  return Object.keys(result).length > 0 ? result : undefined
 }
 
 function workflowProductSourceStep(step: WorkflowTemplateStepSummary): string {
@@ -2362,7 +2491,6 @@ interface WorkflowMediaDimensions {
   height: number
 }
 
-const WORKFLOW_DEFAULT_MEDIA_ASPECT: WorkflowMediaDimensions = { width: 16, height: 9 }
 const WORKFLOW_DEFAULT_MEDIA_RESOLUTION: WorkflowMediaDimensions = { width: 2560, height: 1440 }
 type WorkflowImageResolutionTier = "1k" | "2k" | "4k"
 const WORKFLOW_IMAGE_RESOLUTION_TIERS: Array<{ label: string; value: WorkflowImageResolutionTier }> = [
@@ -2377,26 +2505,6 @@ const WORKFLOW_IMAGE_RESOLUTION_SHORT_EDGE: Record<WorkflowImageResolutionTier, 
 }
 const WORKFLOW_IMAGE_ASPECT_OPTIONS = ["16:9", "9:16", "1:1", "1:2", "2:1", "3:4", "4:3", "2:3", "3:2", "4:5", "5:4", "21:9", "9:21"]
 const WORKFLOW_MAX_IMAGE_PIXEL_AREA = 3840 * 2160
-
-function workflowExactInputBindingId(value: unknown): string {
-  const match = workflowStringValue(value).trim().match(/^\{\{\s*inputs\.([A-Za-z][A-Za-z0-9_-]*)\s*\}\}$/)
-  return match?.[1] || ""
-}
-
-function workflowInputBindingToken(inputId: string): string {
-  return `{{ inputs.${inputId} }}`
-}
-
-function workflowAspectRatioInputId(
-  inputIds: string[],
-  inputSpecs: Record<string, WorkflowInputDraftSpec>,
-): string {
-  if (inputIds.includes("aspect_ratio")) return "aspect_ratio"
-  return inputIds.find((inputId) => {
-    const label = workflowNormalizeInputDisplayLabel(inputSpecs[inputId]?.label || workflowInputLabel(inputId))
-    return label === "画面比例" || /(?:^|_)(?:aspect_ratio|aspectratio|ratio)(?:_|$)/i.test(inputId)
-  }) || ""
-}
 
 function workflowPreventInvalidPositiveIntegerKey(event: ReactKeyboardEvent<HTMLInputElement>) {
   if (["e", "E", "+", "-", "."].includes(event.key)) event.preventDefault()
@@ -2487,107 +2595,11 @@ function workflowVideoResolutionValue(value: unknown, fallback = ""): string {
   return fallback
 }
 
-function workflowProductAspectDimensions(step: WorkflowTemplateStepSummary): WorkflowMediaDimensions {
-  const fields = workflowStepFields(step)
-  const pair = workflowDimensionPairFromText(fields.aspect_ratio || fields.ratio)
-  const width = workflowPositiveIntegerValue(fields.aspect_width || fields.ratio_width || fields.width_ratio) || pair?.width || WORKFLOW_DEFAULT_MEDIA_ASPECT.width
-  const height = workflowPositiveIntegerValue(fields.aspect_height || fields.ratio_height || fields.height_ratio) || pair?.height || WORKFLOW_DEFAULT_MEDIA_ASPECT.height
-  return { width, height }
-}
-
-function workflowProductAspectRatio(step: WorkflowTemplateStepSummary): string {
-  const fields = workflowStepFields(step)
-  const parsed = workflowParseAspectRatio(fields.aspect_ratio || fields.ratio)
-  if (parsed) return parsed.value
-  const dimensions = workflowProductAspectDimensions(step)
-  return `${dimensions.width}:${dimensions.height}`
-}
-
-function workflowProductResolutionDimensions(step: WorkflowTemplateStepSummary): WorkflowMediaDimensions {
-  const fields = workflowStepFields(step)
-  const pair = workflowDimensionPairFromText(fields.resolution || fields.size || fields.dimensions)
-  const width = workflowPositiveIntegerValue(fields.width || fields.resolution_width || fields.pixel_width || fields.image_width || fields.video_width) || pair?.width || WORKFLOW_DEFAULT_MEDIA_RESOLUTION.width
-  const height = workflowPositiveIntegerValue(fields.height || fields.resolution_height || fields.pixel_height || fields.image_height || fields.video_height) || pair?.height || WORKFLOW_DEFAULT_MEDIA_RESOLUTION.height
-  return { width, height }
-}
-
-function workflowPatchProductAspectRatioFields(step: WorkflowTemplateStepSummary, aspectRatio: string): Record<string, unknown> | undefined {
-  const parsed = workflowParseAspectRatio(aspectRatio)
-  return workflowPatchStepFields(step, {
-    aspect_width: parsed?.width,
-    aspect_height: parsed?.height,
-    aspect_ratio: parsed?.value || aspectRatio,
-  })
-}
-
-function workflowPatchProductAspectInputBindingFields(
-  step: WorkflowTemplateStepSummary,
-  inputId: string,
-): Record<string, unknown> | undefined {
-  return workflowPatchStepFields(step, {
-    aspect_width: undefined,
-    aspect_height: undefined,
-    aspect_ratio: workflowInputBindingToken(inputId),
-  })
-}
-
-function workflowPatchProductResolutionFields(
-  step: WorkflowTemplateStepSummary,
-  dimensions: WorkflowMediaDimensions,
-): Record<string, unknown> | undefined {
-  return workflowPatchStepFields(step, {
-    width: dimensions.width,
-    height: dimensions.height,
-    resolution: `${dimensions.width}x${dimensions.height}`,
-  })
-}
-
-function workflowPatchProductVideoResolutionFields(step: WorkflowTemplateStepSummary, resolution: string): Record<string, unknown> | undefined {
-  return workflowPatchStepFields(step, {
-    width: undefined,
-    height: undefined,
-    resolution,
-  })
-}
-
-function workflowPatchProductImageAspectAndResolutionFields(
-  step: WorkflowTemplateStepSummary,
-  aspectRatio: string,
-  dimensions: WorkflowMediaDimensions,
-): Record<string, unknown> | undefined {
-  const parsed = workflowParseAspectRatio(aspectRatio)
-  return workflowPatchStepFields(step, {
-    aspect_width: parsed?.width,
-    aspect_height: parsed?.height,
-    aspect_ratio: parsed?.value || aspectRatio,
-    width: dimensions.width,
-    height: dimensions.height,
-    resolution: `${dimensions.width}x${dimensions.height}`,
-  })
-}
-
 function workflowDefaultCanvasProductFields(
   kind: WorkflowAuthoringKind,
   currentStep?: WorkflowTemplateStepSummary,
 ): Record<string, unknown> {
   const fields: Record<string, unknown> = {}
-  if (kind === "image" || kind === "video") {
-    const aspect = currentStep ? workflowProductAspectDimensions(currentStep) : WORKFLOW_DEFAULT_MEDIA_ASPECT
-    fields.aspect_width = aspect.width
-    fields.aspect_height = aspect.height
-    fields.aspect_ratio = `${aspect.width}:${aspect.height}`
-  }
-  if (kind === "image") {
-    const resolution = currentStep ? workflowProductResolutionDimensions(currentStep) : WORKFLOW_DEFAULT_MEDIA_RESOLUTION
-    fields.width = resolution.width
-    fields.height = resolution.height
-    fields.resolution = `${resolution.width}x${resolution.height}`
-    fields.quality = currentStep ? workflowStringValue(workflowStepFields(currentStep).quality) || "high" : "high"
-  }
-  if (kind === "video") {
-    const currentResolution = currentStep ? workflowStringValue(workflowStepFields(currentStep).resolution) : ""
-    if (currentResolution) fields.resolution = workflowVideoResolutionValue(currentResolution, "")
-  }
   const durationSeconds = currentStep ? workflowPositiveIntegerValue(workflowStepFields(currentStep).duration_seconds) : undefined
   if (kind === "video" || kind === "audio") fields.duration_seconds = durationSeconds || 5
   return fields
@@ -5997,6 +6009,7 @@ function WorkflowStepInspector({
   videoProtocols = [],
   mediaConfigError = null,
   mediaModelOverrides = {},
+  mediaFieldOverrides = {},
   readOnly,
   showRunButton,
   inputIds,
@@ -6015,6 +6028,7 @@ function WorkflowStepInspector({
   onUpdateWorkflowInputSpec,
   onInputValueChange,
   onMediaModelOverrideChange,
+  onMediaFieldOverrideChange,
   onRunStep,
   onUpdateStep,
   onRenameStep,
@@ -6033,6 +6047,7 @@ function WorkflowStepInspector({
   videoProtocols?: VideoProtocolSummary[]
   mediaConfigError?: string | null
   mediaModelOverrides?: Record<string, string>
+  mediaFieldOverrides?: WorkflowMediaFieldOverrides
   readOnly: boolean
   showRunButton: boolean
   inputIds: string[]
@@ -6051,6 +6066,7 @@ function WorkflowStepInspector({
   onUpdateWorkflowInputSpec: (inputId: string, patch: Partial<WorkflowInputDraftSpec>) => void
   onInputValueChange: (id: string, value: string) => void
   onMediaModelOverrideChange?: (stepId: string, value: string) => void
+  onMediaFieldOverrideChange?: (stepId: string, patch: WorkflowMediaFieldOverride) => void
   onRunStep: (stepId: string) => void
   onUpdateStep: (stepId: string, patch: Partial<WorkflowTemplateStepSummary>) => void
   onRenameStep: (stepId: string, nextId: string) => void
@@ -6591,23 +6607,10 @@ function WorkflowStepInspector({
     ? `未指定时使用当前模型：${workflowMediaProviderLabel(defaultProductProvider)}`
     : "未配置可用模型"
   const productProviderForSpecs = selectedProductProvider || defaultProductProvider
-  const availableAspectInputId = isCanvasProduct ? workflowAspectRatioInputId(inputIds, inputSpecs) : ""
-  const productBoundAspectInputId = isCanvasProduct
-    ? workflowExactInputBindingId(productFields.aspect_ratio || productFields.ratio)
-    : ""
-  const productActiveAspectInputId = kind === "video" ? productBoundAspectInputId : ""
-  const productAspectBindingValue = productActiveAspectInputId
-    ? workflowInputValueForId(productActiveAspectInputId, inputValues, inputSpecs)
-    : ""
-  const productAspectRatio = isCanvasProduct
-    ? workflowParseAspectRatio(productAspectBindingValue)?.value || workflowProductAspectRatio(step)
-    : "16:9"
-  const productAspectSelection = productActiveAspectInputId
-    ? workflowInputBindingToken(productActiveAspectInputId)
-    : productAspectRatio
-  const productResolutionDimensions = isCanvasProduct
-    ? workflowProductResolutionDimensions(step)
-    : WORKFLOW_DEFAULT_MEDIA_RESOLUTION
+  const productMediaFields = mediaFieldOverrides[step.id] || {}
+  const productAspectRatio = workflowParseAspectRatio(productMediaFields.aspect_ratio)?.value || "16:9"
+  const productResolutionDimensions = workflowDimensionPairFromText(productMediaFields.resolution)
+    || WORKFLOW_DEFAULT_MEDIA_RESOLUTION
   const productImageResolutionTier = workflowImageResolutionTierFromDimensions(productResolutionDimensions)
   const productImageResolutionValue = `${productResolutionDimensions.width}x${productResolutionDimensions.height}`
   const productImageResolutionByTier = WORKFLOW_IMAGE_RESOLUTION_TIERS.map((item) => {
@@ -6621,13 +6624,6 @@ function WorkflowStepInspector({
   })
   const productImageSelectedResolution = productImageResolutionByTier.find((item) => item.value === productImageResolutionValue)?.value
     || `${workflowImageResolutionForAspectTier(productAspectRatio, productImageResolutionTier).width}x${workflowImageResolutionForAspectTier(productAspectRatio, productImageResolutionTier).height}`
-  const productAspectBindingOption = kind === "video" && availableAspectInputId
-    ? {
-      label: `跟随输入 · ${workflowInputDisplayName(availableAspectInputId, inputSpecs)}`,
-      value: workflowInputBindingToken(availableAspectInputId),
-      hint: `本次运行值：${workflowInputValueForId(availableAspectInputId, inputValues, inputSpecs) || "待填写"}`,
-    }
-    : undefined
   const productVideoMode = workflowStringValue(productFields.video_mode || productFields.mode)
   const productVideoSupportedRatios = kind === "video"
     ? videoSupportedRatiosForProvider(productProviderForSpecs, videoProtocols, productVideoMode)
@@ -6637,15 +6633,14 @@ function WorkflowStepInspector({
     : []
   const productVideoResolution = kind === "video"
     ? workflowVideoResolutionValue(
-      productFields.resolution,
-      defaultVideoResolutionForProvider(productProviderForSpecs, videoProtocols, productVideoMode),
+      productMediaFields.resolution,
+      "720p",
     )
     : ""
   const productVideoAspectOptions = kind === "video"
     ? [
-      ...(productAspectBindingOption ? [productAspectBindingOption] : []),
-      ...(!productActiveAspectInputId && productAspectRatio && !productVideoSupportedRatios.includes(productAspectRatio)
-        ? [{ label: `当前 ${productAspectRatio}`, value: productAspectRatio, disabled: true }]
+      ...(productAspectRatio && !productVideoSupportedRatios.includes(productAspectRatio)
+        ? [{ label: productAspectRatio, value: productAspectRatio }]
         : []),
       ...productVideoSupportedRatios.map((value) => ({ label: value, value })),
     ]
@@ -7356,7 +7351,7 @@ function WorkflowStepInspector({
               <div className="mb-2">
                 <div className="text-[11px] font-semibold text-cyan-100/80">节点属性</div>
                 <div className="mt-1 text-[10px] leading-4 text-cyan-100/45">
-                  生成参数会保存到模板；模型选择仅用于本次运行，不写入可复用模板。
+                  模型、比例、清晰度和画质仅用于本次前端产物运行，不写入 workflow spec。
                 </div>
               </div>
               <div className="grid gap-3">
@@ -7384,35 +7379,33 @@ function WorkflowStepInspector({
                 {kind === "image" && (
                   <WorkflowMediaOptionGrid
                     label="画质"
-                    value={workflowStringValue(productFields.quality) || "high"}
-                    disabled={readOnly}
+                    value={workflowStringValue(productMediaFields.quality) || "high"}
+                    disabled={readOnly || !onMediaFieldOverrideChange}
                     columns="grid-cols-3"
                     options={[
                       { label: "低画质", value: "low" },
                       { label: "标准画质", value: "medium" },
                       { label: "高画质", value: "high" },
                     ]}
-                    onChange={(quality) => onUpdateStep(step.id, {
-                      fields: workflowPatchStepFields(step, { quality }),
-                    })}
+                    onChange={(quality) => onMediaFieldOverrideChange?.(step.id, { quality })}
                   />
                 )}
                 {kind === "image" && (
                   <WorkflowMediaOptionGrid
                     label="清晰度"
                     value={productImageSelectedResolution}
-                    disabled={readOnly}
+                    disabled={readOnly || !onMediaFieldOverrideChange}
                     columns="grid-cols-3"
                     options={productImageResolutionByTier.map((item) => ({
                       label: item.label,
                       value: item.value,
                       hint: item.hint,
                     }))}
-                    hint={`保存值：${productResolutionDimensions.width}x${productResolutionDimensions.height}`}
+                    hint={`本次运行：${productResolutionDimensions.width}x${productResolutionDimensions.height}`}
                     onChange={(resolution) => {
                       const dimensions = workflowDimensionPairFromText(resolution) || WORKFLOW_DEFAULT_MEDIA_RESOLUTION
-                      onUpdateStep(step.id, {
-                        fields: workflowPatchProductResolutionFields(step, dimensions),
+                      onMediaFieldOverrideChange?.(step.id, {
+                        resolution: `${dimensions.width}x${dimensions.height}`,
                       })
                     }}
                   />
@@ -7420,15 +7413,16 @@ function WorkflowStepInspector({
                 {kind === "image" && (
                   <WorkflowMediaOptionGrid
                     label="比例"
-                    value={productAspectSelection}
-                    disabled={readOnly}
+                    value={productAspectRatio}
+                    disabled={readOnly || !onMediaFieldOverrideChange}
                     columns="grid-cols-3"
                     options={WORKFLOW_IMAGE_ASPECT_OPTIONS.map((value) => ({ label: value, value }))}
                     onChange={(aspectRatio) => {
                       const tier = workflowImageResolutionTierFromDimensions(productResolutionDimensions)
                       const dimensions = workflowImageResolutionForAspectTier(aspectRatio, tier)
-                      onUpdateStep(step.id, {
-                        fields: workflowPatchProductImageAspectAndResolutionFields(step, aspectRatio, dimensions),
+                      onMediaFieldOverrideChange?.(step.id, {
+                        aspect_ratio: aspectRatio,
+                        resolution: `${dimensions.width}x${dimensions.height}`,
                       })
                     }}
                   />
@@ -7436,31 +7430,22 @@ function WorkflowStepInspector({
                 {kind === "video" && (
                   <WorkflowMediaOptionGrid
                     label="比例"
-                    value={productAspectSelection}
-                    disabled={readOnly}
+                    value={productAspectRatio}
+                    disabled={readOnly || !onMediaFieldOverrideChange}
                     columns="grid-cols-3"
                     options={productVideoAspectOptions}
-                    onChange={(aspectRatio) => {
-                      const boundInputId = workflowExactInputBindingId(aspectRatio)
-                      onUpdateStep(step.id, {
-                        fields: boundInputId
-                          ? workflowPatchProductAspectInputBindingFields(step, boundInputId)
-                          : workflowPatchProductAspectRatioFields(step, aspectRatio),
-                      })
-                    }}
+                    onChange={(aspectRatio) => onMediaFieldOverrideChange?.(step.id, { aspect_ratio: aspectRatio })}
                   />
                 )}
                 {kind === "video" && (
                   <WorkflowMediaOptionGrid
                     label="清晰度"
                     value={productVideoResolution}
-                    disabled={readOnly}
+                    disabled={readOnly || !onMediaFieldOverrideChange}
                     columns="grid-cols-4"
                     options={productVideoResolutionOptions}
                     hint={productVideoResolutionHint}
-                    onChange={(resolution) => onUpdateStep(step.id, {
-                      fields: workflowPatchProductVideoResolutionFields(step, resolution),
-                    })}
+                    onChange={(resolution) => onMediaFieldOverrideChange?.(step.id, { resolution })}
                   />
                 )}
                 {kind === "image" && (
@@ -8179,9 +8164,11 @@ function WorkflowTemplatePanel({
   requiredInputIds,
   nodeStates,
   mediaModelOverrides,
+  mediaFieldOverrides,
   onSelectedIdChange,
   onInputValueChange,
   onMediaModelOverrideChange,
+  onMediaFieldOverrideChange,
   onClearArtifactPreview,
   onRefresh,
   onImportSpecFile,
@@ -8208,9 +8195,11 @@ function WorkflowTemplatePanel({
   requiredInputIds: string[]
   nodeStates: Record<string, WorkflowStepNodeState>
   mediaModelOverrides: Record<string, string>
+  mediaFieldOverrides: WorkflowMediaFieldOverrides
   onSelectedIdChange: (id: string) => void
   onInputValueChange: (id: string, value: string) => void
   onMediaModelOverrideChange: (stepId: string, value: string) => void
+  onMediaFieldOverrideChange: (stepId: string, patch: WorkflowMediaFieldOverride) => void
   onClearArtifactPreview: () => void
   onRefresh: () => void
   onImportSpecFile: (file: File) => void
@@ -8273,6 +8262,7 @@ function WorkflowTemplatePanel({
   )
   const draftDirty = draftBaselineSignature !== null && draftSignature !== draftBaselineSignature
   const hasMediaModelOverrides = Object.keys(workflowCleanMediaModelOverrides(mediaModelOverrides)).length > 0
+  const hasMediaFieldOverrides = Object.keys(workflowCleanMediaFieldOverrides(mediaFieldOverrides)).length > 0
 
   useEffect(() => {
     let cancelled = false
@@ -8357,6 +8347,7 @@ function WorkflowTemplatePanel({
     ))
     for (const step of draftSteps) {
       onMediaModelOverrideChange(step.id, "")
+      onMediaFieldOverrideChange(step.id, {})
     }
     setDraftError(null)
   }, [
@@ -8364,6 +8355,7 @@ function WorkflowTemplatePanel({
     draftSteps,
     inputs,
     onMediaModelOverrideChange,
+    onMediaFieldOverrideChange,
     requiredInputIds,
     selected,
     selectedDescription,
@@ -9225,7 +9217,7 @@ function WorkflowTemplatePanel({
           <button
             type="button"
             onClick={resetDraftWorkflow}
-            disabled={!draftDirty && !hasMediaModelOverrides}
+            disabled={!draftDirty && !hasMediaModelOverrides && !hasMediaFieldOverrides}
             className="hidden h-8 rounded-md border border-amber-200/20 bg-amber-300/10 px-2 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-300/16 disabled:cursor-not-allowed disabled:opacity-45 sm:inline-flex sm:items-center"
             title="恢复到当前模板打开时的内容"
           >
@@ -9541,6 +9533,7 @@ function WorkflowTemplatePanel({
             videoProtocols={workflowVideoProtocols}
             mediaConfigError={workflowMediaConfigError}
             mediaModelOverrides={mediaModelOverrides}
+            mediaFieldOverrides={mediaFieldOverrides}
             readOnly={false}
             showRunButton={false}
             inputIds={draftInputIds}
@@ -9559,6 +9552,7 @@ function WorkflowTemplatePanel({
             onUpdateWorkflowInputSpec={updateDraftInputSpec}
             onInputValueChange={onInputValueChange}
             onMediaModelOverrideChange={onMediaModelOverrideChange}
+            onMediaFieldOverrideChange={onMediaFieldOverrideChange}
             onRunStep={onRunStep}
             onUpdateStep={updateDraftStep}
             onRenameStep={renameDraftStep}
@@ -10951,6 +10945,7 @@ export default function WorkflowCanvas({
   const [workflowNodeTypesError, setWorkflowNodeTypesError] = useState<string | null>(null)
   const [workflowInputValues, setWorkflowInputValues] = useState<Record<string, string>>({})
   const [workflowMediaModelOverrides, setWorkflowMediaModelOverrides] = useState<Record<string, string>>({})
+  const [workflowMediaFieldOverrides, setWorkflowMediaFieldOverrides] = useState<WorkflowMediaFieldOverrides>({})
   const [workflowArtifactPreview, setWorkflowArtifactPreview] = useState<WorkflowArtifactPreview | null>(null)
   const [workflowImportedSpec, setWorkflowImportedSpec] = useState<Record<string, unknown> | null>(null)
   const [workflowResolvedPreview, setWorkflowResolvedPreview] = useState<WorkflowResolvedPreview | null>(null)
@@ -11297,13 +11292,18 @@ export default function WorkflowCanvas({
     [activeWorkflowTemplateId, nodes, workflowRuntimeInstanceId],
   )
   const workflowRunUiOverrides = useMemo(
-    () => workflowUiOverridesFromMediaModels(workflowMediaModelOverrides),
-    [workflowMediaModelOverrides],
+    () => workflowUiOverridesFromMediaSettings(
+      workflowMediaModelOverrides,
+      workflowMediaFieldOverrides,
+      activeWorkflowSteps,
+    ),
+    [activeWorkflowSteps, workflowMediaFieldOverrides, workflowMediaModelOverrides],
   )
 
   useEffect(() => {
     setWorkflowMediaModelOverrides({})
-  }, [currentProject?.id])
+    setWorkflowMediaFieldOverrides({})
+  }, [activeWorkflowTemplateId, currentProject?.id])
 
   useEffect(() => {
     if (!currentProject?.id || !workflowPreviewTarget || !workflowPreviewRequestKey) {
@@ -11600,6 +11600,24 @@ export default function WorkflowCanvas({
     })
   }, [])
 
+  const updateWorkflowMediaFieldOverride = useCallback((stepId: string, patch: WorkflowMediaFieldOverride) => {
+    setWorkflowMediaFieldOverrides((current) => {
+      const key = stepId.trim()
+      if (!key) return current
+      if (Object.keys(patch).length === 0) {
+        if (!current[key]) return current
+        const next = { ...current }
+        delete next[key]
+        return next
+      }
+      const candidate = workflowCleanMediaFieldOverrides({
+        [key]: { ...(current[key] || {}), ...patch },
+      })[key]
+      if (!candidate) return current
+      return { ...current, [key]: candidate }
+    })
+  }, [])
+
   const importWorkflowSpecFile = useCallback(async (file: File) => {
     setWorkflowTemplatesError(null)
     if (!currentProject?.id) {
@@ -11772,6 +11790,7 @@ export default function WorkflowCanvas({
           : { template_id: template?.id }),
         inputs: workflowMaterializeInputs,
         context: workflowRuntimeContext,
+        ui_overrides: workflowRunUiOverrides,
         origin_x: position.x,
         origin_y: position.y,
       })
@@ -11798,6 +11817,7 @@ export default function WorkflowCanvas({
     workflowImportedSpec,
     workflowMaterializeInputs,
     workflowMaterializing,
+    workflowRunUiOverrides,
     workflowRuntimeContext,
     upsertWorkflowRuntimePayload,
     workspaceView,
@@ -13754,9 +13774,11 @@ export default function WorkflowCanvas({
       requiredInputIds={activeWorkflowRequiredInputIds}
       nodeStates={workflowStepNodeStates}
       mediaModelOverrides={workflowMediaModelOverrides}
+      mediaFieldOverrides={workflowMediaFieldOverrides}
       onSelectedIdChange={handleWorkflowTemplateSelection}
       onInputValueChange={updateWorkflowInputValue}
       onMediaModelOverrideChange={updateWorkflowMediaModelOverride}
+      onMediaFieldOverrideChange={updateWorkflowMediaFieldOverride}
       onClearArtifactPreview={() => {
         const nextTemplateId = selectedWorkflowTemplateId || workflowTemplates[0]?.id || ""
         setWorkflowArtifactPreview(null)

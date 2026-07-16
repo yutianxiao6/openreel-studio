@@ -149,7 +149,7 @@ WORKFLOW_SPEC_V2_GUIDE = """\
 - Dynamic references add `select.values` and `select.by` to `{from,as}`. Values use a scoped path such as `steps.frame_plan.output.selected_character_ids`; `by` is a stable candidate field such as `character_id`. For `shot.character_ids`, first emit it from an object/collection step inside that loop, then select through that step output; never bind by array order.
 - `when` is `{path,op,value}` and path is one root input. `empty|not_empty` omit value; other ops require it. Fields: `execution=auto|manual`, `on_error=stop|continue`.
 - Direct media adoption has exactly one `source` use, no prompt, and no other use.
-- Reusable specs contain no provider/model/tier, runner/node_type/surface/visibility, runtime state, generated content, or hidden prompt phases. Plugin ids are namespaced.
+- Specs omit provider/model routing, media output settings, runtime internals/content, and hidden prompt phases. Frontend supplies media settings; plugin ids are namespaced.
 
 Frequent errors: input `string`; undeclared fields; duplicate ids; invalid loops; prompt siblings; wrong media roles; unscoped selection; provider/model routing.
 
