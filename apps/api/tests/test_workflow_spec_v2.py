@@ -1368,6 +1368,8 @@ def test_workflow_media_runtime_settings_come_from_ui_overrides() -> None:
             "character_image": {
                 "aspect_ratio": "9:16",
                 "resolution": "1440x2560",
+                "width": 1440,
+                "height": 2560,
                 "quality": "high",
             }
         },
@@ -1376,6 +1378,8 @@ def test_workflow_media_runtime_settings_come_from_ui_overrides() -> None:
     assert workflow_tools._workflow_ui_node_run_extra_fields(step, ui_overrides) == {
         "aspect_ratio": "9:16",
         "resolution": "1440x2560",
+        "width": 1440,
+        "height": 2560,
         "quality": "high",
         "model": "image-model",
     }
@@ -1389,6 +1393,23 @@ def test_workflow_media_runtime_settings_come_from_ui_overrides() -> None:
         },
         "image",
     ) == {"purpose": "character_reference"}
+    assert workflow_tools._workflow_sync_existing_canvas_fields(
+        {"aspect_ratio": "16:9", "resolution": "1920x1080", "quality": "medium"},
+        {
+            "aspect_ratio": "9:16",
+            "resolution": "1440x2560",
+            "width": 1440,
+            "height": 2560,
+            "quality": "high",
+        },
+        "image",
+    ) == {
+        "aspect_ratio": "9:16",
+        "resolution": "1440x2560",
+        "width": 1440,
+        "height": 2560,
+        "quality": "high",
+    }
 
 
 def test_builtin_template_preserves_artifact_prompt_writing_methods() -> None:

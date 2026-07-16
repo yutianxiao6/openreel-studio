@@ -942,7 +942,7 @@ function workflowEditorTopologicalSteps(steps: WorkflowTemplateStepSummary[]): W
 }
 
 function workflowStepAuthoringKind(step: WorkflowTemplateStepSummary): WorkflowAuthoringKind {
-  const raw = String(step.kind || "").trim().toLowerCase()
+  const raw = String(step.kind || step.node_type || "").trim().toLowerCase()
   if (raw === "loop" || step.shape === "loop" || step.role === "repeat_group") return "loop"
   if (raw === "collection") return "collection"
   if (raw === "object") return "object"
@@ -2469,12 +2469,14 @@ function workflowUiOverridesFromMediaSettings(
       if (defaultProvider?.name) mediaModelOverrides[stepId] = defaultProvider.name
     }
     if (kind === "image") {
+      const resolution = current.resolution || "2560x1440"
+      const dimensions = workflowDimensionPairFromText(resolution) || WORKFLOW_DEFAULT_MEDIA_RESOLUTION
       mediaFieldOverrides[stepId] = {
         aspect_ratio: current.aspect_ratio || "16:9",
-        resolution: current.resolution || "2560x1440",
+        resolution: `${dimensions.width}x${dimensions.height}`,
+        width: dimensions.width,
+        height: dimensions.height,
         quality: current.quality || "high",
-        ...(current.width ? { width: current.width } : {}),
-        ...(current.height ? { height: current.height } : {}),
         ...(current.fps ? { fps: current.fps } : {}),
       }
     } else if (kind === "video") {
@@ -11306,10 +11308,10 @@ export default function WorkflowCanvas({
     () => workflowUiOverridesFromMediaSettings(
       workflowMediaModelOverrides,
       workflowMediaFieldOverrides,
-      activeWorkflowSteps,
+      [...workflowTemplateSteps, ...activeWorkflowSteps],
       videoReferenceProviders,
     ),
-    [activeWorkflowSteps, videoReferenceProviders, workflowMediaFieldOverrides, workflowMediaModelOverrides],
+    [activeWorkflowSteps, videoReferenceProviders, workflowMediaFieldOverrides, workflowMediaModelOverrides, workflowTemplateSteps],
   )
 
   useEffect(() => {
