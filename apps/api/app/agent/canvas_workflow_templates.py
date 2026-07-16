@@ -19,6 +19,7 @@ from app.agent.workflow_spec import (
     WorkflowSpecError,
     compile_workflow_spec,
     parse_workflow_spec,
+    workflow_media_runtime_contract,
     workflow_spec_payload,
 )
 
@@ -95,6 +96,7 @@ def workflow_protocol_info() -> dict[str, Any]:
         "reference_roles": ["vision", "reference", "source"],
         "execution_modes": ["auto", "manual"],
         "error_policies": ["stop", "continue"],
+        "media_runtime_settings": workflow_media_runtime_contract(),
         "loop_until": {
             "source": "foreach.count",
             "count_min": 1,

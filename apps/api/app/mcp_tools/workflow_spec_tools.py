@@ -27,7 +27,7 @@ from app.mcp_tools.registry import register
         "create 传 workflow；update 传 base 和 operations；replace 传 base 和 workflow。",
         "base 可引用 artifact_ref、template_id 或 version_id；save.target 为 artifact 或 template。",
         "新建和修改统一使用 schema='openreel.workflow.v2'。",
-        "workflow 描述输入、逻辑步骤、提示词、循环、依赖、输出、引用角色和节点设置；正文产物由运行阶段生成。",
+        "workflow 描述输入、逻辑步骤、提示词、循环、依赖、输出、引用角色和执行策略；媒体模型、画幅、分辨率、宽高、画质和 fps 由前端运行配置提供。",
         "工具会校验 V2、编译私有执行计划、执行 deterministic audit，并返回 artifact_ref 或 template_id。",
     ],
     schema={

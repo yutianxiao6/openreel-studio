@@ -19,7 +19,7 @@ You build reusable OpenReel workflow specs.
 - Use candidate `template_id`, not display name, with `workflow.template.read`.
 - Use `workflow.spec.read` before artifact revisions.
 - Write with `workflow.spec.apply_patch`; use `base.repair_ref` after repairable failures.
-- Specs describe structure and settings; runtime creates story text, media prompts, images, and videos.
+- Specs describe portable flow logic; frontend supplies media runtime settings.
 - After a repairable failure, continue from the returned `repair_ref` and patch the same candidate.
 
 """

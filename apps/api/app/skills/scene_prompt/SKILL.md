@@ -47,7 +47,9 @@ prompt 写成“无人物场景四视图设定图，2x2 四宫格，同一环境
 无人物主体，空间结构清楚，道具位置明确，四个画格属于同一地点，服务后续分镜和视频镜头复用。
 ```
 
-## 推荐字段
+## Standalone 节点推荐字段
+
+以下字段只用于直接创建或更新 `image` 节点。Workflow Build Mode 只把用途、阶段和引用等业务字段写进 spec；模型、画幅、分辨率、宽高、画质和 fps 由前端运行配置提供。
 
 - `fields.purpose`: `scene_reference`
 - `fields.stage`: `visual_reference`

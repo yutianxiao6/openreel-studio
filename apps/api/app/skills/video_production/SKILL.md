@@ -114,7 +114,7 @@ Standalone 节点仍要写清：
 
 - text 节点有非空 `fields.content` 或 output。
 - image/video 节点有非空 prompt。
-- `duration_seconds`、`aspect_ratio` 和用户硬约束已写入。
+- workflow spec 已写入 `duration_seconds` 和用户硬约束，媒体画幅等产物参数来自前端运行配置；standalone 节点则写入自身可执行字段。
 - `fields.references` 指向真实上游 node、asset 或上传路径。
 - workflow runtime 的 `progress` 没有未处理的 failed/running 状态。
 

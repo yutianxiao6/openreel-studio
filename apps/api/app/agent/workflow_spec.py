@@ -707,3 +707,13 @@ def workflow_spec_payload(value: Any) -> dict[str, Any]:
     """Return the canonical public v2 document without runtime data."""
     spec = value if isinstance(value, WorkflowSpec) else parse_workflow_spec(value)
     return spec.model_dump(by_alias=True, exclude_none=True)
+
+
+def workflow_media_runtime_contract() -> dict[str, Any]:
+    """Describe media settings that stay outside the reusable public spec."""
+    return {
+        "source": "frontend_ui_overrides",
+        "spec_policy": "omitted",
+        "input_keys": sorted(_MEDIA_RUNTIME_INPUT_KEYS),
+        "media_field_keys": sorted(_MEDIA_RUNTIME_FIELD_KEYS),
+    }

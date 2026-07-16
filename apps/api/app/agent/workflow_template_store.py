@@ -310,10 +310,13 @@ def _workflow_payload_from_template_file(
 
 
 def _record_from_template_file(path: Path) -> dict[str, Any]:
+    from app.agent.workflow_spec import workflow_spec_payload
+
     payload = _load_json(path)
     workflow, sample_inputs, user_preview, self_check, source = _workflow_payload_from_template_file(payload, path)
     normalized_id = normalize_template_id(workflow.get("id") or path.stem)
     workflow["id"] = normalized_id
+    workflow = workflow_spec_payload(workflow)
     normalized, structural_preview, audit = _preview_workflow(workflow, sample_inputs)
     template_name = str(workflow.get("title") or structural_preview.get("name") or normalized_id).strip()
     description = str(workflow.get("description") or structural_preview.get("description") or "").strip()
@@ -452,6 +455,8 @@ def list_user_template_summaries() -> list[dict[str, Any]]:
 
 
 def load_user_template(template_id: str, version_id: str = "") -> dict[str, Any]:
+    from app.agent.workflow_spec import workflow_spec_payload
+
     normalized = normalize_template_id(template_id)
     wanted_version = str(version_id or "").strip()
     for record in list_user_template_records():
@@ -462,11 +467,12 @@ def load_user_template(template_id: str, version_id: str = "") -> dict[str, Any]
         if wanted_version and wanted_version not in {active_version, FILE_TEMPLATE_VERSION_ID}:
             break
         version = record.get("version") if isinstance(record.get("version"), dict) else {}
+        canonical_workflow = workflow_spec_payload(version.get("workflow") or {})
         return {
             "manifest": deepcopy(record.get("manifest") or {}),
             "version": deepcopy(version),
             "summary": deepcopy(summary),
-            "workflow": deepcopy(version.get("workflow") or {}),
+            "workflow": canonical_workflow,
             "sample_inputs": deepcopy(version.get("sample_inputs") or {}),
             "preview": deepcopy(version.get("preview") or {}),
             "self_check": deepcopy(version.get("self_check") or {}),
@@ -483,11 +489,12 @@ def load_user_template(template_id: str, version_id: str = "") -> dict[str, Any]
             active_version = _active_version_id(manifest, wanted_version)
             version = _load_json(_version_path(normalized, active_version, root=root))
             summary = _summary_from_manifest(manifest)
+            canonical_workflow = workflow_spec_payload(version.get("workflow") or {})
             return {
                 "manifest": manifest,
                 "version": version,
                 "summary": summary,
-                "workflow": deepcopy(version.get("workflow") or {}),
+                "workflow": canonical_workflow,
                 "sample_inputs": deepcopy(version.get("sample_inputs") or {}),
                 "preview": deepcopy(version.get("preview") or {}),
                 "self_check": deepcopy(version.get("self_check") or {}),
@@ -514,6 +521,9 @@ def save_user_template(
 ) -> dict[str, Any]:
     if not isinstance(workflow, dict):
         raise WorkflowTemplateStoreError("workflow must be an object")
+    from app.agent.workflow_spec import workflow_spec_payload
+
+    workflow = workflow_spec_payload(workflow)
     normalized, structural_preview, audit = _preview_workflow(workflow, sample_inputs)
     requested_name = str(name or "").strip()
     workflow_name = str(workflow.get("title") or workflow.get("name") or "").strip()
@@ -682,6 +692,8 @@ def export_template_package(template_id: str, version_id: str = "") -> dict[str,
     loaded = load_user_template(template_id, version_id)
     manifest = deepcopy(loaded["manifest"])
     version = deepcopy(loaded["version"])
+    workflow = deepcopy(loaded["workflow"])
+    version["workflow"] = deepcopy(workflow)
     return {
         "kind": "openreel.workflow_template.export",
         "schema_version": "workflow_template_export_v1",
@@ -690,7 +702,7 @@ def export_template_package(template_id: str, version_id: str = "") -> dict[str,
         "version_id": version.get("version_id"),
         "manifest": manifest,
         "version": version,
-        "workflow": deepcopy(version.get("workflow") or {}),
+        "workflow": workflow,
         "preview": deepcopy(version.get("preview") or {}),
     }
 

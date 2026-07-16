@@ -11,7 +11,12 @@ from typing import Any
 
 from app.agent import canvas_workflow_templates
 from app.agent.workflow_audit import ensure_workflow_audit_passes
-from app.agent.workflow_spec import WORKFLOW_SPEC_VERSION, compile_workflow_spec, parse_workflow_spec
+from app.agent.workflow_spec import (
+    WORKFLOW_SPEC_VERSION,
+    compile_workflow_spec,
+    parse_workflow_spec,
+    workflow_spec_payload,
+)
 
 from app.agent.context_compact import tool_results_dir
 
@@ -186,6 +191,7 @@ def save_workflow_spec_artifact(
     source: dict[str, Any] | None = None,
     sample_inputs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    workflow = workflow_spec_payload(workflow)
     name = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:10]}.json"
     path = _artifact_path(project_id, name)
     audit = ensure_workflow_audit_passes(
@@ -240,6 +246,7 @@ def load_workflow_spec_artifact(project_id: str, artifact_ref: str) -> dict[str,
     workflow = payload.get("workflow")
     if not isinstance(workflow, dict):
         raise ValueError("workflow spec artifact has no workflow object")
+    payload["workflow"] = workflow_spec_payload(workflow)
     return payload
 
 

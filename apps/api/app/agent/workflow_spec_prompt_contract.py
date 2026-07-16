@@ -137,7 +137,7 @@ WORKFLOW_SPEC_V2_GUIDE = """\
 - Input types are exactly `text|long_text|number|integer|boolean|enum|image|video|audio|json`; each input has `type,label`. Use `text`, never `string`, for short text. Enum options are `{value,label}`. Declare every referenced input.
 - Step kinds are `text|object|collection|image|video|audio|loop|plugin`; ids are globally unique.
 - `text|object|collection` require `prompt`; object/collection require `output.schema.fields`. A collection schema describes one item. Field types are `string|number|integer|boolean|object|array`; nested fields belong only to object/array. Declare every field later read. Visible text sets `output.canvas:true`.
-- Media is one logical step with its own `prompt`; Do not create prompt sibling steps. Put media settings in `fields`.
+- Media is one logical step with its own `prompt`; Do not create prompt sibling steps.
 - Dependencies come from `needs` and referenced `inputs.<id>`/`steps.<id>.output...` paths, loop sources, plugin inputs, and `uses`.
 - Loop: exactly one `foreach.items|count`, plus `as` and nested `steps`; item paths end `[]`. Nested loops may use `episode.segments[]`. Use stable `key` for object items.
 - Nested scope: logical dependencies and `uses.from` bind the same shared parent item first, then the current repeat index; bounded-loop downstream selects the latest completed attempt in that parent scope. Use `uses.select` for unrelated collections. Projection and runtime must agree.
@@ -149,7 +149,7 @@ WORKFLOW_SPEC_V2_GUIDE = """\
 - Dynamic references add `select.values` and `select.by` to `{from,as}`. Values use a scoped path such as `steps.frame_plan.output.selected_character_ids`; `by` is a stable candidate field such as `character_id`. For `shot.character_ids`, first emit it from an object/collection step inside that loop, then select through that step output; never bind by array order.
 - `when` is `{path,op,value}` and path is one root input. `empty|not_empty` omit value; other ops require it. Fields: `execution=auto|manual`, `on_error=stop|continue`.
 - Direct media adoption has exactly one `source` use, no prompt, and no other use.
-- Specs omit provider/model routing, media output settings, runtime internals/content, and hidden prompt phases. Frontend supplies media settings; plugin ids are namespaced.
+- Specs omit provider/model, aspect ratio, resolution, width/height, quality, fps, and runtime internals. Frontend supplies media settings; plugin ids are namespaced.
 
 Frequent errors: input `string`; undeclared fields; duplicate ids; invalid loops; prompt siblings; wrong media roles; unscoped selection; provider/model routing.
 

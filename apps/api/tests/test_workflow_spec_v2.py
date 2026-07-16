@@ -19,6 +19,7 @@ from app.agent.workflow_audit import audit_workflow_spec
 from app.agent.workflow_spec_prompt_contract import WORKFLOW_SPEC_V2_EXAMPLE, WORKFLOW_SPEC_V2_GUIDE
 from app.agent import workflow_template_store
 from app.agent import workflow_canvas_projection
+from app.agent import workflow_spec_artifacts
 from app.config import settings
 from app.mcp_tools import node_universal, workflow_tools
 from app.mcp_tools.registry import registry
@@ -366,6 +367,22 @@ def test_v2_bounded_feedback_loop_compiles_until_without_creating_a_dependency_c
 def test_v2_protocol_info_exposes_generic_bounded_feedback_loop_contract() -> None:
     protocol = canvas_workflow_templates.workflow_protocol_info()
     contract = protocol["loop_until"]
+
+    assert protocol["media_runtime_settings"]["source"] == "frontend_ui_overrides"
+    assert protocol["media_runtime_settings"]["spec_policy"] == "omitted"
+    assert {
+        "model",
+        "provider",
+        "aspect_ratio",
+        "resolution",
+        "width",
+        "height",
+        "quality",
+        "fps",
+    }.issubset(
+        set(protocol["media_runtime_settings"]["input_keys"])
+        | set(protocol["media_runtime_settings"]["media_field_keys"])
+    )
 
     assert contract == {
         "source": "foreach.count",
@@ -1951,6 +1968,9 @@ def test_workflow_build_guide_documents_v2_high_frequency_errors() -> None:
     assert "Direct media adoption" in WORKFLOW_SPEC_V2_GUIDE
     assert "Do not create prompt sibling steps" in WORKFLOW_SPEC_V2_GUIDE
     assert "provider/model routing" in WORKFLOW_SPEC_V2_GUIDE
+    assert "aspect ratio, resolution, width/height, quality, fps" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Frontend supplies media settings" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Put media settings in `fields`" not in WORKFLOW_SPEC_V2_GUIDE
     assert "foreach.until" in WORKFLOW_SPEC_V2_GUIDE
     assert "{{ previous }}" in WORKFLOW_SPEC_V2_GUIDE
     assert "terminal: no sibling may depend on it" in WORKFLOW_SPEC_V2_GUIDE
@@ -1981,8 +2001,24 @@ def test_user_template_file_stays_a_plain_portable_v2_document(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "PROJECT_ROOT", str(tmp_path))
+    workflow = _base_spec()
+    workflow["inputs"]["aspect_ratio"] = {"type": "text", "label": "画幅", "default": "9:16"}
+    workflow["steps"].append({
+        "id": "poster",
+        "title": "海报",
+        "kind": "image",
+        "prompt": {"task": "生成海报。"},
+        "fields": {
+            "purpose": "poster",
+            "aspect_ratio": "{{ inputs.aspect_ratio }}",
+            "resolution": "1440x2560",
+            "width": 1440,
+            "height": 2560,
+            "quality": "high",
+        },
+    })
     saved = workflow_template_store.save_user_template(
-        workflow=_base_spec(),
+        workflow=workflow,
         template_id="portable_video_flow",
         name="可移植视频流程",
         replace_existing=True,
@@ -1998,6 +2034,75 @@ def test_user_template_file_stays_a_plain_portable_v2_document(
     assert "workflow" not in stored
     assert "x-openreel" not in stored
     assert "runner" not in str(stored)
+    assert "aspect_ratio" not in stored["inputs"]
+    assert stored["steps"][1]["fields"] == {"purpose": "poster"}
+
+
+def test_legacy_user_template_is_canonicalized_before_model_read_or_export(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "PROJECT_ROOT", str(tmp_path))
+    workflow = _base_spec()
+    workflow["inputs"]["resolution"] = {"type": "text", "label": "分辨率", "default": "2k"}
+    workflow["steps"].append({
+        "id": "poster",
+        "title": "海报",
+        "kind": "image",
+        "prompt": {"task": "生成海报。"},
+        "fields": {"purpose": "poster", "resolution": "2560x1440", "quality": "high"},
+    })
+    root = tmp_path / "workflow_templates" / "user"
+    root.mkdir(parents=True)
+    (root / "video_flow.json").write_text(json.dumps(workflow, ensure_ascii=False), encoding="utf-8")
+
+    loaded = workflow_template_store.load_user_template("video_flow")
+    exported = workflow_template_store.export_template_package("video_flow")
+
+    assert "resolution" not in loaded["workflow"]["inputs"]
+    assert loaded["workflow"]["steps"][1]["fields"] == {"purpose": "poster"}
+    assert exported["workflow"] == loaded["workflow"]
+    assert exported["version"]["workflow"] == loaded["workflow"]
+
+
+def test_workflow_artifact_persists_only_canonical_public_spec(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(workflow_spec_artifacts, "tool_results_dir", lambda: tmp_path)
+    workflow = _base_spec()
+    workflow["inputs"]["quality"] = {"type": "text", "label": "画质", "default": "high"}
+    workflow["steps"].append({
+        "id": "poster",
+        "title": "海报",
+        "kind": "image",
+        "prompt": {"task": "生成海报。"},
+        "fields": {"purpose": "poster", "resolution": "2560x1440", "quality": "high"},
+    })
+
+    saved = workflow_spec_artifacts.save_workflow_spec_artifact(
+        project_id="project-1",
+        workflow=workflow,
+    )
+    loaded = workflow_spec_artifacts.load_workflow_spec_artifact("project-1", saved["artifact_ref"])
+
+    assert "quality" not in loaded["workflow"]["inputs"]
+    assert loaded["workflow"]["steps"][1]["fields"] == {"purpose": "poster"}
+
+
+@pytest.mark.asyncio
+async def test_workflow_template_read_returns_public_v2_instead_of_private_execution_plan() -> None:
+    result = await workflow_tools.workflow_template_read(
+        project_id="project-1",
+        template_id="general_short_drama_workflow",
+        detail="workflow",
+    )
+
+    assert result["ok"] is True
+    assert result["workflow"]["schema"] == WORKFLOW_SPEC_VERSION
+    assert "public_spec" not in result["workflow"]
+    assert "plan_hash" not in result["workflow"]
+    assert "node_type" not in str(result["workflow"])
 
 
 def test_invalid_user_override_does_not_hide_runnable_builtin_template(

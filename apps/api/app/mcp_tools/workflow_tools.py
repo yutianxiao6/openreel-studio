@@ -7656,7 +7656,7 @@ async def _emit_canvas_action(project_id: str, action: str, payload: dict[str, A
         "通用有界反馈循环使用固定 foreach.count(1..10)、foreach.until 和 {{ previous }}；门控来源必须是每轮必跑的终点子步骤。",
         "需要看图写提示词使用 uses.as=['vision']；媒体生成参考使用 reference。",
         "第三方步骤使用 namespaced plugin.id；插件不可用时保存和运行前报错。",
-        "可移植 spec 不写 provider、model、tier 或私有运行字段。",
+        "可移植 spec 不写 provider、model、tier、画幅、分辨率、宽高、画质、fps 或私有运行字段；这些媒体参数来自前端运行配置。",
     ],
     is_read_only=True,
     is_concurrency_safe=True,
@@ -8145,7 +8145,7 @@ async def workflow_template_read(
             "self_check": {},
         }
         if str(detail or "").strip() == "workflow":
-            payload["workflow"] = template
+            payload["workflow"] = deepcopy(template.get("public_spec") or {})
             payload["source"] = {"source": template.get("source") or "builtin_template"}
         return payload
     payload: dict[str, Any] = {

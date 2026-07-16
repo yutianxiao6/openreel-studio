@@ -74,7 +74,9 @@ applies_to: 人物提示词 人物图 角色图 角色设定集 人物设定 角
 
 普通人物欣赏图、写真、海报、剧照或氛围图按画面目标写背景、动作、构图和光影；设定集模板服务于后续视频一致性。
 
-## 推荐字段
+## Standalone 节点推荐字段
+
+以下字段只用于直接创建或更新 `image` 节点。Workflow Build Mode 只把用途、阶段和引用等业务字段写进 spec；模型、画幅、分辨率、宽高、画质和 fps 由前端运行配置提供。
 
 - `fields.purpose`: `character_reference`
 - `fields.stage`: `visual_reference`

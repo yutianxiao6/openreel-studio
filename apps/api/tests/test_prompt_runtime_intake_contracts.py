@@ -101,6 +101,9 @@ def test_workflow_build_prompt_uses_dedicated_cached_prefix() -> None:
     assert "`uses` is the only reference contract" in result.system
     assert "Dynamic references add `select.values`" in result.system
     assert "provider/model routing" in result.system
+    assert "frontend supplies media runtime settings" in result.system
+    assert "Put media settings in `fields`" not in result.system
+    assert "Specs describe structure and settings" not in result.system
     assert "openreel.workflow.authoring.v1" not in result.system
     assert "After a repairable failure, continue from the returned `repair_ref`" in result.system
     assert "Ready means saved and inspected with `workflow.canvas.inspect`" in result.system
