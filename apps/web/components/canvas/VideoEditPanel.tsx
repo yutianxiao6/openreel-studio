@@ -164,6 +164,9 @@ const DEFAULT_PX_PER_SECOND = 84
 const MIN_CLIP_SECONDS = 0.25
 const SNAP_PIXELS = 10
 const PLAYBACK_UI_FRAME_MS = 1000 / 20
+const MEDIA_CLOCK_STALL_GRACE_MS = 600
+const MEDIA_CLOCK_RECOVERY_INTERVAL_MS = 750
+const MEDIA_CLOCK_PROGRESS_EPSILON_SECONDS = 1 / 1000
 const TIMELINE_FRAME_WIDTH = 96
 const FRAME_TILE_COLUMNS = 8
 const FRAME_TILE_ROWS = 4
@@ -178,6 +181,88 @@ const MAX_CLIP_GAIN_DB = 12
 
 const mediaDurationCache = new Map<string, number>()
 const mediaDurationRequests = new Map<string, Promise<number>>()
+
+interface MediaClockProgressState {
+  sourceKey: string
+  mediaTime: number
+  advancedAt: number
+}
+
+interface PlaybackClockAdvance {
+  timelineTime: number
+  mediaClockState: MediaClockProgressState | null
+  stalled: boolean
+}
+
+function advancePlaybackClock({
+  timelineTime,
+  deltaSeconds,
+  now,
+  sourceKey,
+  mediaTime,
+  sampledTimelineTime,
+  mediaClockState,
+}: {
+  timelineTime: number
+  deltaSeconds: number
+  now: number
+  sourceKey: string | null
+  mediaTime: number | null
+  sampledTimelineTime: number | null
+  mediaClockState: MediaClockProgressState | null
+}): PlaybackClockAdvance {
+  if (
+    !sourceKey ||
+    mediaTime == null ||
+    sampledTimelineTime == null ||
+    !Number.isFinite(mediaTime) ||
+    !Number.isFinite(sampledTimelineTime)
+  ) {
+    return {
+      timelineTime: timelineTime + deltaSeconds,
+      mediaClockState: null,
+      stalled: false,
+    }
+  }
+
+  const sourceChanged = mediaClockState?.sourceKey !== sourceKey
+  const mediaAdvanced = !mediaClockState ||
+    mediaTime > mediaClockState.mediaTime + MEDIA_CLOCK_PROGRESS_EPSILON_SECONDS ||
+    mediaTime < mediaClockState.mediaTime - MEDIA_CLOCK_PROGRESS_EPSILON_SECONDS
+  if (sourceChanged || mediaAdvanced) {
+    return {
+      timelineTime: Math.max(timelineTime, sampledTimelineTime),
+      mediaClockState: { sourceKey, mediaTime, advancedAt: now },
+      stalled: false,
+    }
+  }
+
+  if (now - mediaClockState.advancedAt <= MEDIA_CLOCK_STALL_GRACE_MS) {
+    return {
+      timelineTime: Math.max(timelineTime, sampledTimelineTime),
+      mediaClockState,
+      stalled: false,
+    }
+  }
+
+  return {
+    timelineTime: timelineTime + deltaSeconds,
+    mediaClockState,
+    stalled: true,
+  }
+}
+
+function isEditableKeyboardTarget(eventTarget: EventTarget | null): boolean {
+  const target = eventTarget as HTMLElement | null
+  return ["input", "textarea", "select"].includes(target?.tagName?.toLowerCase() || "") ||
+    Boolean(target?.isContentEditable || target?.closest('[contenteditable="true"]'))
+}
+
+function releaseEditorButtonFocus(eventTarget: EventTarget | null): void {
+  const target = eventTarget as HTMLElement | null
+  const button = target?.closest<HTMLButtonElement>("button")
+  if (button?.closest(".openreel-video-edit-panel")) button.blur()
+}
 
 type EditorIconName =
   | "audio"
@@ -1417,6 +1502,8 @@ export default function VideoEditPanel({
   const previewGainValuesRef = useRef(new WeakMap<HTMLMediaElement, number>())
   const decodedVideoClockRef = useRef<{ mediaTime: number; observedAt: number } | null>(null)
   const suppressMediaClockUntilRef = useRef(0)
+  const mediaClockProgressRef = useRef<MediaClockProgressState | null>(null)
+  const lastMediaClockRecoveryAtRef = useRef(0)
   const sourcePreviewRef = useRef<HTMLVideoElement | null>(null)
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const playheadRef = useRef<HTMLDivElement | null>(null)
@@ -2218,6 +2305,8 @@ export default function VideoEditPanel({
     setLoopEnabled(false)
     setLoopRange({ inFrame: 0, outFrame: 0 })
     decodedVideoClockRef.current = null
+    mediaClockProgressRef.current = null
+    lastMediaClockRecoveryAtRef.current = 0
     setSourceMarks({})
     setSourceCursorFrame(0)
     setSelectedClipId(null)
@@ -2781,6 +2870,8 @@ export default function VideoEditPanel({
 
   const seekTo = useCallback((time: number) => {
     const nextTime = clamp(frameToTime(timeToFrame(time)), 0, timelineDuration)
+    mediaClockProgressRef.current = null
+    lastMediaClockRecoveryAtRef.current = 0
     currentTimeRef.current = nextTime
     setCurrentTime(nextTime)
   }, [frameToTime, timeToFrame, timelineDuration])
@@ -2890,6 +2981,8 @@ export default function VideoEditPanel({
 
   const togglePlayback = useCallback(() => {
     const video = videoRef.current
+    mediaClockProgressRef.current = null
+    lastMediaClockRecoveryAtRef.current = 0
     if (playing) {
       video?.pause()
       audioRef.current?.pause()
@@ -2911,6 +3004,8 @@ export default function VideoEditPanel({
   }, [currentTime, ensurePreviewAudioGraph, playbackEnd, playing])
 
   const shuttlePlayback = useCallback((direction: 1 | -1) => {
+    mediaClockProgressRef.current = null
+    lastMediaClockRecoveryAtRef.current = 0
     const nextStart = direction > 0 && playbackEnd > 0 && currentTimeRef.current >= playbackEnd - 0.02
       ? 0
       : currentTimeRef.current
@@ -2944,40 +3039,80 @@ export default function VideoEditPanel({
       if (playbackDirection < 0) {
         timelineTime += deltaSeconds * playbackDirection
       } else {
-        let sampledMediaClock = false
+        let mediaClockSourceKey: string | null = null
+        let sampledMediaTime: number | null = null
+        let sampledTimelineTime: number | null = null
+        let sampledMediaElement: HTMLMediaElement | null = null
+        let sampledMediaClip: TimelineClipState | null = null
         if (now >= suppressMediaClockUntilRef.current && playbackClockSource === "audio-transition" && activeTransitionAudioClockClip) {
           const audio = transitionOutgoingAudioRef.current
           if (audio && !audio.paused && audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-            const sampledTimelineTime = activeTransitionAudioClockClip.startFrame / framesPerSecond + (
+            sampledMediaTime = audio.currentTime
+            sampledTimelineTime = activeTransitionAudioClockClip.startFrame / framesPerSecond + (
               audio.currentTime - activeTransitionAudioClockClip.sourceInFrame / framesPerSecond
             )
-            timelineTime = Math.max(timelineTime, sampledTimelineTime)
-            sampledMediaClock = true
+            mediaClockSourceKey = `${playbackClockSource}:${activeTransitionAudioClockClip.clipId}`
+            sampledMediaElement = audio
+            sampledMediaClip = activeTransitionAudioClockClip
           }
         } else if (now >= suppressMediaClockUntilRef.current && playbackClockSource === "audio" && currentAudioClip) {
           const audio = audioRef.current
           if (audio && !audio.paused && audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-            const sampledTimelineTime = currentAudioClip.startFrame / framesPerSecond + Math.max(
+            sampledMediaTime = audio.currentTime
+            sampledTimelineTime = currentAudioClip.startFrame / framesPerSecond + Math.max(
               0,
               audio.currentTime - currentAudioClip.sourceInFrame / framesPerSecond,
             )
-            timelineTime = Math.max(timelineTime, sampledTimelineTime)
-            sampledMediaClock = true
+            mediaClockSourceKey = `${playbackClockSource}:${currentAudioClip.clipId}`
+            sampledMediaElement = audio
+            sampledMediaClip = currentAudioClip
           }
         } else if (now >= suppressMediaClockUntilRef.current && playbackClockSource === "video-pts" && currentVideoClip) {
           const video = videoRef.current
           if (video && !video.paused && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
             const decoded = decodedVideoClockRef.current
-            const mediaTime = decoded && now - decoded.observedAt < 250 ? decoded.mediaTime : video.currentTime
-            const sampledTimelineTime = currentVideoClip.startFrame / framesPerSecond + Math.max(
+            sampledMediaTime = decoded && now - decoded.observedAt < 250 ? decoded.mediaTime : video.currentTime
+            sampledTimelineTime = currentVideoClip.startFrame / framesPerSecond + Math.max(
               0,
-              mediaTime - currentVideoClip.sourceInFrame / framesPerSecond,
+              sampledMediaTime - currentVideoClip.sourceInFrame / framesPerSecond,
             )
-            timelineTime = Math.max(timelineTime, sampledTimelineTime)
-            sampledMediaClock = true
+            mediaClockSourceKey = `${playbackClockSource}:${currentVideoClip.clipId}`
+            sampledMediaElement = video
+            sampledMediaClip = currentVideoClip
           }
         }
-        if (!sampledMediaClock) timelineTime += deltaSeconds
+        const clockAdvance = advancePlaybackClock({
+          timelineTime,
+          deltaSeconds,
+          now,
+          sourceKey: mediaClockSourceKey,
+          mediaTime: sampledMediaTime,
+          sampledTimelineTime,
+          mediaClockState: mediaClockProgressRef.current,
+        })
+        timelineTime = clockAdvance.timelineTime
+        mediaClockProgressRef.current = clockAdvance.mediaClockState
+        const mediaClockLagging = sampledTimelineTime != null && timelineTime - sampledTimelineTime > 0.25
+        if (
+          (clockAdvance.stalled || mediaClockLagging) &&
+          sampledMediaElement &&
+          sampledMediaClip &&
+          now - lastMediaClockRecoveryAtRef.current >= MEDIA_CLOCK_RECOVERY_INTERVAL_MS
+        ) {
+          lastMediaClockRecoveryAtRef.current = now
+          const expectedMediaTime = sampledMediaClip.sourceInFrame / framesPerSecond + clamp(
+            timelineTime - sampledMediaClip.startFrame / framesPerSecond,
+            0,
+            sampledMediaClip.durationFrames / framesPerSecond,
+          )
+          if (Math.abs((sampledMediaElement.currentTime || 0) - expectedMediaTime) > 0.08) {
+            sampledMediaElement.currentTime = expectedMediaTime
+          }
+          if (sampledMediaElement.paused) {
+            void sampledMediaElement.play().catch(reportPreviewPlaybackFailure)
+          }
+          suppressMediaClockUntilRef.current = now + 120
+        }
       }
       if (
         playbackDirection > 0 &&
@@ -2990,6 +3125,8 @@ export default function VideoEditPanel({
         const audio = audioRef.current
         timelineTime = loopInTime
         decodedVideoClockRef.current = null
+        mediaClockProgressRef.current = null
+        lastMediaClockRecoveryAtRef.current = 0
         if (
           video &&
           currentVideoClip &&
@@ -3031,6 +3168,8 @@ export default function VideoEditPanel({
         if (playheadRef.current) playheadRef.current.style.left = `${TRACK_LABEL_WIDTH + playbackEnd * pxPerSecond}px`
         if (timelineRef.current) timelineRef.current.dataset.currentFrame = String(Math.round(playbackEnd * framesPerSecond))
         setCurrentTime(playbackEnd)
+        mediaClockProgressRef.current = null
+        lastMediaClockRecoveryAtRef.current = 0
         setPlaying(false)
         return
       }
@@ -3044,6 +3183,8 @@ export default function VideoEditPanel({
         if (playheadRef.current) playheadRef.current.style.left = `${TRACK_LABEL_WIDTH}px`
         if (timelineRef.current) timelineRef.current.dataset.currentFrame = "0"
         setCurrentTime(0)
+        mediaClockProgressRef.current = null
+        lastMediaClockRecoveryAtRef.current = 0
         setPlaying(false)
         return
       }
@@ -3834,11 +3975,6 @@ export default function VideoEditPanel({
   }, [audioClips, frameToTime, markers, seekTo, timeToFrame, videoClips])
 
   useEffect(() => {
-    const isEditableKeyboardTarget = (eventTarget: EventTarget | null) => {
-      const target = eventTarget as HTMLElement | null
-      return ["input", "textarea", "select"].includes(target?.tagName?.toLowerCase() || "") ||
-        Boolean(target?.isContentEditable || target?.closest('[contenteditable="true"]'))
-    }
     const onKeyDown = (event: KeyboardEvent) => {
       if (isEditableKeyboardTarget(event.target)) return
       const commandKey = event.ctrlKey || event.metaKey
@@ -3863,6 +3999,8 @@ export default function VideoEditPanel({
       if (event.code === "Space" || event.key === " ") {
         event.preventDefault()
         event.stopPropagation()
+        event.stopImmediatePropagation()
+        releaseEditorButtonFocus(document.activeElement)
         if (!event.repeat) togglePlayback()
         return
       }
@@ -3975,6 +4113,7 @@ export default function VideoEditPanel({
       if (event.code !== "Space" && event.key !== " ") return
       event.preventDefault()
       event.stopPropagation()
+      event.stopImmediatePropagation()
     }
     window.addEventListener("keydown", onKeyDown, true)
     window.addEventListener("keyup", onKeyUp, true)
@@ -4369,6 +4508,9 @@ export default function VideoEditPanel({
     <div
       className="openreel-video-edit-panel nodrag nowheel fixed inset-2 z-[94] overflow-hidden rounded-[4px] border border-[#34383f] bg-[#111316] text-[#d7d9dc] shadow-[0_24px_80px_rgba(0,0,0,0.72)]"
       data-openreel-workflow-ui="true"
+      onClickCapture={(event) => {
+        if (event.detail > 0) releaseEditorButtonFocus(event.target)
+      }}
       onClick={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
@@ -4577,7 +4719,7 @@ export default function VideoEditPanel({
                         ? false
                         : Boolean(activeAudioTransition) || !playAudioThroughVideo || Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)}
                       playsInline
-                      preload="metadata"
+                      preload="auto"
                       className={cn(
                         "object-contain [color-scheme:dark]",
                         playbackResolution === "full"
@@ -4623,7 +4765,7 @@ export default function VideoEditPanel({
                       src={transitionVideoItem.src}
                       muted
                       playsInline
-                      preload="metadata"
+                      preload="auto"
                       className={cn(
                         "object-contain [color-scheme:dark]",
                         playbackResolution === "full"
@@ -4668,7 +4810,7 @@ export default function VideoEditPanel({
                 )}
               </div>
               {currentAudioItem && !playAudioThroughVideo && !activeAudioTransition && (
-                <audio data-openreel-preview-audio="true" ref={audioRef} src={currentAudioItem.src} crossOrigin={previewMediaCrossOrigin(currentAudioItem.src)} preload="metadata" muted={Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)} />
+                <audio data-openreel-preview-audio="true" ref={audioRef} src={currentAudioItem.src} crossOrigin={previewMediaCrossOrigin(currentAudioItem.src)} preload="auto" muted={Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)} />
               )}
               {activeAudioTransition?.outgoingItem && !audioTransitionThroughVideo && (
                 <audio
@@ -4682,7 +4824,7 @@ export default function VideoEditPanel({
                   ref={transitionOutgoingAudioRef}
                   src={activeAudioTransition.outgoingItem.src}
                   crossOrigin={previewMediaCrossOrigin(activeAudioTransition.outgoingItem.src)}
-                  preload="metadata"
+                  preload="auto"
                 />
               )}
               {activeAudioTransition?.incomingItem && !audioTransitionSingleSource && !audioTransitionThroughVideo && (
@@ -4692,7 +4834,7 @@ export default function VideoEditPanel({
                   ref={transitionIncomingAudioRef}
                   src={activeAudioTransition.incomingItem.src}
                   crossOrigin={previewMediaCrossOrigin(activeAudioTransition.incomingItem.src)}
-                  preload="metadata"
+                  preload="auto"
                 />
               )}
             </div>
