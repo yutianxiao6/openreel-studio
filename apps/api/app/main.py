@@ -21,6 +21,12 @@ from app.db.session import init_db
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    from app.services.workflow_runtime_recovery import recover_interrupted_workflow_runtimes
+    try:
+        await recover_interrupted_workflow_runtimes()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Interrupted workflow runtime recovery failed")
     from app.services.node_recovery import cleanup_interrupted_media_nodes
     try:
         await cleanup_interrupted_media_nodes(

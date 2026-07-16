@@ -355,7 +355,8 @@ async def _authorize_workflow_for_run(
     if not resolved_template_id:
         return None
     if str(template.get("scope") or "").strip() == "builtin":
-        audit = audit_workflow_spec(template, normalized=template, sample_inputs=inputs or {})
+        raw_workflow = template.get("public_spec") if isinstance(template.get("public_spec"), dict) else template
+        audit = audit_workflow_spec(raw_workflow, normalized=template, sample_inputs=inputs or {})
         return _workflow_run_authorization_error(
             {"kind": "template", "template_id": resolved_template_id, "scope": "builtin"},
             audit,

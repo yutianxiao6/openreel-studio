@@ -276,6 +276,148 @@ async def test_llm_generate_continues_truncated_text(monkeypatch) -> None:
     assert calls["count"] == 2
 
 
+def test_llm_request_policy_uses_provider_params() -> None:
+    cfg = {
+        "model": "openai/test",
+        "provider_params": {
+            "request_timeout_seconds": 240,
+            "max_retries": 1,
+            "sdk_max_retries": 0,
+            "retry_backoff_seconds": 1.25,
+            "max_continuations": 0,
+            "accept_backend_content": True,
+        },
+    }
+
+    policy = llm_service._llm_request_policy(cfg)
+    kwargs = llm_service._completion_kwargs(cfg)
+
+    assert policy == {
+        "request_timeout_seconds": 240.0,
+        "max_retries": 1,
+        "sdk_max_retries": 0,
+        "retry_backoff_seconds": 1.25,
+        "max_continuations": 0,
+        "accept_backend_content": True,
+    }
+    assert kwargs["timeout"] == 240.0
+    assert kwargs["max_retries"] == 0
+
+
+@pytest.mark.asyncio
+async def test_llm_generate_honors_zero_configured_retries(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    class ConnectionError(Exception):
+        pass
+
+    async def fake_config(*args, **kwargs):
+        return {
+            **(await _fake_config()),
+            "provider_params": {"max_retries": 0, "sdk_max_retries": 0},
+        }
+
+    async def fake_acompletion(**kwargs):
+        calls["count"] += 1
+        raise ConnectionError("downstream disconnected")
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+
+    with pytest.raises(ConnectionError):
+        await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
+
+    assert calls["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_generate_recovers_standard_backend_content_from_exception(monkeypatch) -> None:
+    class RelayResponseError(Exception):
+        def __init__(self):
+            super().__init__("relay closed after response")
+            self.body = {
+                "id": "relay-response",
+                "model": "relay/model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "accepted backend content"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+            }
+
+    async def fake_config(*args, **kwargs):
+        return {
+            **(await _fake_config()),
+            "provider_params": {
+                "max_retries": 0,
+                "sdk_max_retries": 0,
+                "accept_backend_content": True,
+            },
+        }
+
+    async def fake_acompletion(**kwargs):
+        raise RelayResponseError()
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+
+    result = await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
+
+    assert result["content"] == "accepted backend content"
+
+
+@pytest.mark.asyncio
+async def test_failed_continuation_keeps_content_already_received(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    class ConnectionError(Exception):
+        pass
+
+    async def fake_config(*args, **kwargs):
+        return {
+            **(await _fake_config()),
+            "provider_params": {
+                "max_retries": 0,
+                "sdk_max_retries": 0,
+                "max_continuations": 1,
+                "accept_backend_content": True,
+            },
+        }
+
+    async def fake_acompletion(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _response("content already received", finish_reason="length")
+        raise ConnectionError("continuation disconnected")
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+
+    result = await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
+
+    assert result["content"] == "content already received"
+    assert calls["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_message_content_accepts_backend_text_parts(monkeypatch) -> None:
+    async def fake_acompletion(**kwargs):
+        return _response([
+            {"type": "text", "text": "hello "},
+            {"type": "output_text", "text": "world"},
+        ])
+
+    monkeypatch.setattr(llm_service, "_resolve_config", _fake_config)
+    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+
+    result = await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
+
+    assert result["content"] == "hello world"
+
+
 @pytest.mark.asyncio
 async def test_deepseek_generate_with_tools_rejects_required_image_input(monkeypatch) -> None:
     captured = {}

@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import uuid
 from typing import Any, AsyncIterator
 
 import litellm
@@ -65,16 +67,105 @@ _CONTEXT_ERROR_MARKERS = (
 )
 _MAX_OUTPUT_FINISH_REASONS = {"length", "max_tokens"}
 
+logger = logging.getLogger(__name__)
+
 
 class LLMConfigurationError(RuntimeError):
     """Raised when a hosted LLM task has no configured provider or API key."""
 
 
-def _llm_request_timeout_seconds() -> float:
+def _policy_int(value: Any, default: int, *, minimum: int, maximum: int) -> int:
     try:
-        return max(10.0, float(os.getenv("DRAMA_LLM_REQUEST_TIMEOUT_SECONDS", "90") or "90"))
+        parsed = int(value)
     except (TypeError, ValueError):
-        return 90.0
+        parsed = default
+    return min(maximum, max(minimum, parsed))
+
+
+def _policy_float(value: Any, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(maximum, max(minimum, parsed))
+
+
+def _policy_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _provider_params(cfg: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(cfg, dict):
+        return {}
+    direct = cfg.get("provider_params")
+    if isinstance(direct, dict):
+        return direct
+    metadata = cfg.get("model_metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("params"), dict):
+        return metadata["params"]
+    return {}
+
+
+def _llm_request_timeout_seconds(params: dict[str, Any] | None = None) -> float:
+    params = params or {}
+    try:
+        env_default = float(os.getenv("DRAMA_LLM_REQUEST_TIMEOUT_SECONDS", "90") or "90")
+    except (TypeError, ValueError):
+        env_default = 90.0
+    return _policy_float(
+        params.get("request_timeout_seconds"),
+        env_default,
+        minimum=10.0,
+        maximum=3600.0,
+    )
+
+
+def _llm_request_policy(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    params = _provider_params(cfg)
+    return {
+        # max_retries means retries after the first OpenReel attempt.
+        "max_retries": _policy_int(
+            params.get("max_retries", os.getenv("DRAMA_LLM_MAX_RETRIES", "2")),
+            2,
+            minimum=0,
+            maximum=10,
+        ),
+        # Disable the SDK's hidden retry layer by default. Keeping both layers
+        # enabled multiplies one logical request into many relay requests.
+        "sdk_max_retries": _policy_int(
+            params.get("sdk_max_retries", os.getenv("DRAMA_LLM_SDK_MAX_RETRIES", "0")),
+            0,
+            minimum=0,
+            maximum=10,
+        ),
+        "request_timeout_seconds": _llm_request_timeout_seconds(params),
+        "retry_backoff_seconds": _policy_float(
+            params.get("retry_backoff_seconds", os.getenv("DRAMA_LLM_RETRY_BACKOFF_SECONDS", "0.5")),
+            0.5,
+            minimum=0.0,
+            maximum=60.0,
+        ),
+        "max_continuations": _policy_int(
+            params.get("max_continuations", os.getenv("DRAMA_LLM_MAX_CONTINUATIONS", "1")),
+            1,
+            minimum=0,
+            maximum=5,
+        ),
+        "accept_backend_content": _policy_bool(
+            params.get("accept_backend_content", os.getenv("DRAMA_LLM_ACCEPT_BACKEND_CONTENT", "true")),
+            True,
+        ),
+    }
 
 
 def _default_model_for(task_type: str) -> str:
@@ -320,6 +411,7 @@ def _config_from_provider_row(
     provider = provider_row.provider
     model_name = provider_row.model_name
     model = model_name if "/" in model_name else f"{provider}/{model_name}"
+    metadata = _llm_provider_metadata(provider_row)
     return {
         "model": model,
         "temperature": temperature,
@@ -328,18 +420,23 @@ def _config_from_provider_row(
         "fallback_model": fallback_model,
         "api_base": provider_row.base_url,
         "api_key": provider_row.api_key,
-        "model_metadata": _llm_provider_metadata(provider_row),
+        "model_metadata": metadata,
+        "provider_params": metadata.get("params") or {},
     }
 
 
 def _completion_kwargs(cfg: dict, *, with_tools: list | None = None,
                        stream: bool = False) -> dict[str, Any]:
     """构造透传 api_base/api_key 的 acompletion 参数。"""
+    policy = _llm_request_policy(cfg)
     kwargs: dict[str, Any] = {
         "model": cfg["model"],
         "temperature": cfg.get("temperature", 0.7),
         "max_tokens": cfg.get("max_tokens", 8192),
-        "timeout": _llm_request_timeout_seconds(),
+        "timeout": policy["request_timeout_seconds"],
+        # LiteLLM passes this to the OpenAI client. It must be explicit so its
+        # retry loop cannot silently multiply OpenReel's configured attempts.
+        "max_retries": policy["sdk_max_retries"],
     }
     if cfg.get("top_p"):
         kwargs["top_p"] = cfg["top_p"]
@@ -516,12 +613,108 @@ def _is_retryable_llm_error(exc: Exception) -> bool:
     return any(marker in name for marker in ("ratelimit", "timeout", "connection", "serviceunavailable"))
 
 
+def _content_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            parts.append(item)
+            continue
+        if isinstance(item, dict):
+            text = item.get("text") or item.get("content")
+        else:
+            text = getattr(item, "text", None) or getattr(item, "content", None)
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts)
+
+
+def _payload_message_content(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return ""
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        return ""
+    return _content_text(message.get("content"))
+
+
+def _exception_response_payloads(exc: Exception) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for attr in ("body", "json_body"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, dict):
+            payloads.append(value)
+
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        payloads.append(response)
+    elif response is not None:
+        try:
+            value = response.json()
+            if isinstance(value, dict):
+                payloads.append(value)
+        except Exception:
+            text = getattr(response, "text", None)
+            if isinstance(text, str) and text.strip():
+                try:
+                    value = json.loads(text)
+                    if isinstance(value, dict):
+                        payloads.append(value)
+                except Exception:
+                    pass
+    return payloads
+
+
+def _recover_backend_response(exc: Exception, *, model: str) -> Any | None:
+    """Recover a complete OpenAI-compatible response attached to an SDK error.
+
+    Some relays return a usable response body while the SDK still raises for a
+    transport/status edge case. Only a standard non-empty choices/message
+    payload is accepted; arbitrary error text is never treated as model output.
+    """
+    for raw_payload in _exception_response_payloads(exc):
+        candidates = [raw_payload]
+        nested = raw_payload.get("data")
+        if isinstance(nested, dict):
+            candidates.append(nested)
+        for payload in candidates:
+            if not _payload_message_content(payload).strip():
+                continue
+            normalized = dict(payload)
+            normalized.setdefault("model", model)
+            try:
+                response = litellm.ModelResponse(**normalized)
+            except Exception:
+                continue
+            try:
+                setattr(response, "_openreel_recovered_from_exception", True)
+                setattr(response, "_openreel_recovery_exception_type", exc.__class__.__name__)
+            except Exception:
+                pass
+            return response
+    return None
+
+
 async def _acompletion_with_retries(
     kwargs: dict[str, Any],
     *,
     fallback_model: str | None = None,
     max_attempts: int = 3,
+    retry_backoff_seconds: float = 0.5,
+    accept_backend_content: bool = True,
+    request_id: str | None = None,
 ) -> Any:
+    request_id = request_id or uuid.uuid4().hex[:12]
+    max_attempts = max(1, int(max_attempts))
     models = [kwargs["model"]]
     if fallback_model and fallback_model not in models:
         models.append(fallback_model)
@@ -531,8 +724,26 @@ async def _acompletion_with_retries(
         call_kwargs = dict(kwargs)
         call_kwargs["model"] = model
         for attempt in range(max_attempts):
+            started_at = asyncio.get_running_loop().time()
             try:
+                logger.info(
+                    "LLM request start request_id=%s model=%s attempt=%s/%s",
+                    request_id,
+                    model,
+                    attempt + 1,
+                    max_attempts,
+                )
                 response = await litellm.acompletion(**call_kwargs)
+                logger.info(
+                    "LLM request completed request_id=%s model=%s attempt=%s/%s elapsed=%.3fs finish_reason=%s has_content=%s",
+                    request_id,
+                    model,
+                    attempt + 1,
+                    max_attempts,
+                    asyncio.get_running_loop().time() - started_at,
+                    _choice_finish_reason(response),
+                    bool(_message_content(response).strip()),
+                )
                 try:
                     setattr(response, "_openreel_requested_model", kwargs["model"])
                     setattr(response, "_openreel_actual_model", model)
@@ -545,11 +756,40 @@ async def _acompletion_with_retries(
                 return response
             except Exception as exc:
                 last_exc = exc
+                if accept_backend_content:
+                    recovered = _recover_backend_response(exc, model=model)
+                    if recovered is not None:
+                        try:
+                            setattr(recovered, "_openreel_requested_model", kwargs["model"])
+                            setattr(recovered, "_openreel_actual_model", model)
+                            setattr(recovered, "_openreel_fallback_used", model != kwargs["model"])
+                        except Exception:
+                            pass
+                        logger.warning(
+                            "LLM request accepted attached backend content request_id=%s model=%s attempt=%s/%s elapsed=%.3fs exception=%s",
+                            request_id,
+                            model,
+                            attempt + 1,
+                            max_attempts,
+                            asyncio.get_running_loop().time() - started_at,
+                            exc.__class__.__name__,
+                        )
+                        return recovered
+                logger.warning(
+                    "LLM request failed request_id=%s model=%s attempt=%s/%s elapsed=%.3fs exception=%s retryable=%s",
+                    request_id,
+                    model,
+                    attempt + 1,
+                    max_attempts,
+                    asyncio.get_running_loop().time() - started_at,
+                    exc.__class__.__name__,
+                    _is_retryable_llm_error(exc),
+                )
                 if is_context_length_error(exc):
                     raise
                 if not _is_retryable_llm_error(exc) or attempt >= max_attempts - 1:
                     break
-                await asyncio.sleep(min(4.0, 0.5 * (2 ** attempt)))
+                await asyncio.sleep(min(60.0, retry_backoff_seconds * (2 ** attempt)))
     assert last_exc is not None
     raise last_exc
 
@@ -563,7 +803,7 @@ def _choice_finish_reason(response: Any) -> str:
 
 
 def _message_content(response: Any) -> str:
-    return getattr(_choice_message(response), "content", None) or ""
+    return _content_text(getattr(_choice_message(response), "content", None))
 
 
 def _copy_response_with_content(response: Any, content: str) -> Any:
@@ -580,6 +820,9 @@ async def _continue_text_if_truncated(
     *,
     fallback_model: str | None = None,
     max_continuations: int = 1,
+    max_attempts: int = 3,
+    retry_backoff_seconds: float = 0.5,
+    accept_backend_content: bool = True,
 ) -> Any:
     finish_reason = _choice_finish_reason(response)
     if finish_reason not in _MAX_OUTPUT_FINISH_REASONS:
@@ -601,10 +844,28 @@ async def _continue_text_if_truncated(
             {"role": "user", "content": "Continue exactly where you stopped. Do not repeat previous text."},
         ]
         continue_kwargs["messages"] = continue_messages
-        next_response = await _acompletion_with_retries(
-            continue_kwargs,
-            fallback_model=fallback_model,
-        )
+        try:
+            next_response = await _acompletion_with_retries(
+                continue_kwargs,
+                fallback_model=fallback_model,
+                max_attempts=max_attempts,
+                retry_backoff_seconds=retry_backoff_seconds,
+                accept_backend_content=accept_backend_content,
+            )
+        except Exception as exc:
+            if not accept_backend_content or not combined.strip():
+                raise
+            logger.warning(
+                "LLM continuation failed; accepting previously received backend content exception=%s content_chars=%s",
+                exc.__class__.__name__,
+                len(combined),
+            )
+            try:
+                setattr(response, "_openreel_partial_content_accepted", True)
+                setattr(response, "_openreel_continuation_error", str(exc))
+            except Exception:
+                pass
+            break
         combined += _message_content(next_response)
         finish_reason = _choice_finish_reason(next_response)
         if finish_reason not in _MAX_OUTPUT_FINISH_REASONS:
@@ -627,19 +888,27 @@ class LLMService:
         node_override: str | None = None,
     ) -> dict[str, Any]:
         cfg = await _resolve_config(task_type, self.db, node_override)
+        policy = _llm_request_policy(cfg)
         kwargs = _completion_kwargs(cfg)
         kwargs["messages"] = _build_messages_for_config(messages, system, cfg)
         response = await _acompletion_with_retries(
             kwargs,
             fallback_model=cfg.get("fallback_model"),
+            max_attempts=policy["max_retries"] + 1,
+            retry_backoff_seconds=policy["retry_backoff_seconds"],
+            accept_backend_content=policy["accept_backend_content"],
         )
         response = await _continue_text_if_truncated(
             kwargs,
             response,
             fallback_model=cfg.get("fallback_model"),
+            max_continuations=policy["max_continuations"],
+            max_attempts=policy["max_retries"] + 1,
+            retry_backoff_seconds=policy["retry_backoff_seconds"],
+            accept_backend_content=policy["accept_backend_content"],
         )
         response = _attach_model_metadata(response, cfg.get("model_metadata") or {})
-        content = response.choices[0].message.content or ""
+        content = _message_content(response)
         actual_model = str(getattr(response, "_openreel_actual_model", "") or kwargs["model"])
         return {
             "content": content,
@@ -660,18 +929,33 @@ class LLMService:
         temperature: float = 0.7,
         max_tokens: int = 4096,
     ) -> str:
+        policy = _llm_request_policy({})
         kwargs: dict[str, Any] = {
             "model": model or settings.DEFAULT_FAST_MODEL,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "timeout": policy["request_timeout_seconds"],
+            "max_retries": policy["sdk_max_retries"],
         }
         env_key = _resolve_env_key_for_default(kwargs["model"])
         if env_key:
             kwargs["api_key"] = env_key
         kwargs["messages"] = _build_messages_for_config(messages, system_prompt, kwargs)
-        response = await _acompletion_with_retries(kwargs)
-        response = await _continue_text_if_truncated(kwargs, response)
-        return response.choices[0].message.content or ""
+        response = await _acompletion_with_retries(
+            kwargs,
+            max_attempts=policy["max_retries"] + 1,
+            retry_backoff_seconds=policy["retry_backoff_seconds"],
+            accept_backend_content=policy["accept_backend_content"],
+        )
+        response = await _continue_text_if_truncated(
+            kwargs,
+            response,
+            max_continuations=policy["max_continuations"],
+            max_attempts=policy["max_retries"] + 1,
+            retry_backoff_seconds=policy["retry_backoff_seconds"],
+            accept_backend_content=policy["accept_backend_content"],
+        )
+        return _message_content(response)
 
     async def stream(
         self,
@@ -682,12 +966,21 @@ class LLMService:
         node_override: str | None = None,
     ) -> AsyncIterator[str]:
         cfg = await _resolve_config(task_type, self.db, node_override)
+        policy = _llm_request_policy(cfg)
         kwargs = _completion_kwargs(cfg, stream=True)
         kwargs["messages"] = _build_messages_for_config(messages, system, cfg)
         response = await _acompletion_with_retries(
             kwargs,
             fallback_model=cfg.get("fallback_model"),
+            max_attempts=policy["max_retries"] + 1,
+            retry_backoff_seconds=policy["retry_backoff_seconds"],
+            accept_backend_content=policy["accept_backend_content"],
         )
+        if not hasattr(response, "__aiter__"):
+            content = _message_content(response)
+            if content:
+                yield content
+            return
         async for chunk in response:
             try:
                 delta = chunk.choices[0].delta.content
@@ -708,6 +1001,7 @@ class LLMService:
     ) -> Any:
         """LLM call with function-calling tools. Returns the full response object."""
         cfg = await _resolve_config(task_type, self.db, node_override)
+        policy = _llm_request_policy(cfg)
         kwargs = _completion_kwargs(cfg, with_tools=tools)
         if max_tokens is not None:
             kwargs["max_tokens"] = max(1, int(max_tokens))
@@ -715,12 +1009,19 @@ class LLMService:
         response = await _acompletion_with_retries(
             kwargs,
             fallback_model=cfg.get("fallback_model"),
+            max_attempts=policy["max_retries"] + 1,
+            retry_backoff_seconds=policy["retry_backoff_seconds"],
+            accept_backend_content=policy["accept_backend_content"],
         )
         response = _attach_model_metadata(response, cfg.get("model_metadata") or {})
         response = await _continue_text_if_truncated(
             kwargs,
             response,
             fallback_model=cfg.get("fallback_model"),
+            max_continuations=policy["max_continuations"],
+            max_attempts=policy["max_retries"] + 1,
+            retry_backoff_seconds=policy["retry_backoff_seconds"],
+            accept_backend_content=policy["accept_backend_content"],
         )
         return response
 
