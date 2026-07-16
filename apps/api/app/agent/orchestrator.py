@@ -435,27 +435,15 @@ def _agent_review_state_payload(tool_args: dict[str, Any], result: Any) -> dict[
 
 async def _load_agent_settings() -> dict:
     """读 app_settings 里 agent.* 偏好；失败时返回内置默认。"""
-    def _review_mode(app_settings: dict) -> str:
-        explicit = str(app_settings.get("agent.blueprint_review_mode") or "").strip()
-        if explicit in {"continuous_final_review", "section_review"}:
-            return explicit
-        legacy = str(app_settings.get("agent.video_plan_confirmation_mode", "one_shot"))
-        return "section_review" if legacy == "stepwise" else "continuous_final_review"
-
     try:
         from app.config_store import get_store
         cfg = await get_store().get_runtime()
-        blueprint_review_mode = _review_mode(cfg.app_settings)
         return {
             "max_iterations": int(cfg.app_settings.get("agent.max_iterations", MAX_ITERATIONS)),
             "tool_call_budget": int(cfg.app_settings.get("agent.tool_call_budget", 0)),
             "auto_archive": bool(cfg.app_settings.get("agent.auto_archive", True)),
             "vision_context_max_images": cfg.app_settings.get("agent.vision_context_max_images"),
             "vision_context_max_dimension": cfg.app_settings.get("agent.vision_context_max_dimension"),
-            "blueprint_review_mode": blueprint_review_mode,
-            "video_plan_confirmation_mode": str(
-                cfg.app_settings.get("agent.video_plan_confirmation_mode", "one_shot")
-            ),
         }
     except Exception:
         return {
@@ -464,8 +452,6 @@ async def _load_agent_settings() -> dict:
             "auto_archive": True,
             "vision_context_max_images": None,
             "vision_context_max_dimension": None,
-            "blueprint_review_mode": "continuous_final_review",
-            "video_plan_confirmation_mode": "one_shot",
         }
 
 # Tools that produce a real artifact and deserve a canvas node.

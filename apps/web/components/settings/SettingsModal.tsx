@@ -182,9 +182,9 @@ export function SettingsModal({ open, onClose }: Props) {
     { key: "image", label: "图片 Provider", count: imageCount },
     { key: "video", label: "视频 Provider", count: videoCount },
     { key: "audio", label: "音频 Provider", count: audioCount },
-    { key: "agent", label: "Agent 行为", count: Object.keys(config?.app_settings ?? {}).length },
+    { key: "agent", label: "运行偏好" },
     { key: "debug", label: "Agent 诊断" },
-    { key: "raw", label: "原始文件" },
+    { key: "raw", label: "配置文件" },
   ]
 
   return (

@@ -314,14 +314,10 @@ LEGACY_TASK_TYPE_ALIASES = {
 
 # app_settings 已知键和默认值；启动 bootstrap 时若文件缺失会补全
 DEFAULT_APP_SETTINGS: dict = {
-    "agent.skip_confirmations": False,
     "agent.max_iterations": 200,
     "agent.auto_archive": True,
-    "agent.blueprint_review_mode": "continuous_final_review",
-    "agent.video_plan_confirmation_mode": "one_shot",
     "agent.vision_context_max_images": 8,
     "agent.vision_context_max_dimension": 1536,
-    "ui.canvas_default_view": "canvas",
     "feature_flags": {},
     "kill_switches": {},
 }

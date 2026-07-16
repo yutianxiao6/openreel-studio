@@ -315,7 +315,6 @@ function ProviderSummary({
         {entry.kind === "video" && String(entry.params?.upload_base_url || "").trim() && (
           <SummaryField label="上传 API Base URL" value={String(entry.params?.upload_base_url)} mono />
         )}
-        <SummaryField label="协议引擎" value={entry.api_format} mono />
         <SummaryField label="协议 ID" value={protocolId || "未设置"} mono />
         <SummaryField label="API Key" value={entry.api_key ? "已配置" : "未配置"} />
         {entry.notes && <SummaryField label="备注" value={entry.notes} />}
@@ -555,13 +554,6 @@ function Row({
               </button>
               {advancedOpen && (
                 <div className="mt-2 grid grid-cols-2 gap-2">
-                  <div>
-                    <FieldLabel label="协议引擎" defaultText="固定" />
-                    <div className="rounded border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-200">
-                      Declarative HTTP v1
-                      <span className="ml-2 font-mono text-[10px] text-gray-500">image_http_v1</span>
-                    </div>
-                  </div>
                   <SelectField
                     label="图片输入"
                     value={imageInputTransport}
@@ -646,13 +638,6 @@ function Row({
               </button>
               {advancedOpen && (
                 <div className="mt-2 grid grid-cols-2 gap-2">
-                  <div>
-                    <FieldLabel label="协议引擎" defaultText="固定" />
-                    <div className="rounded border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-200">
-                      Declarative HTTP v1
-                      <span className="ml-2 font-mono text-[10px] text-gray-500">video_http_v1</span>
-                    </div>
-                  </div>
                   <SelectField
                     label="图片输入"
                     value={imageInputTransport}
@@ -698,27 +683,6 @@ function Row({
                 当前保存的协议 ID「{audioProtocolId}」不在配置文件中，请先在 catalog 中加入该协议，或改选已有协议。
               </div>
             )}
-            <div className="col-span-2 rounded border border-gray-800 bg-gray-950/35 p-2">
-              <button
-                type="button"
-                onClick={() => setAdvancedOpen((value) => !value)}
-                className="flex w-full items-center justify-between text-left text-[11px] text-gray-300"
-              >
-                <span>高级设置</span>
-                <span className="text-gray-500">{advancedOpen ? "收起" : "展开"}</span>
-              </button>
-              {advancedOpen && (
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <div>
-                    <FieldLabel label="协议引擎" defaultText="固定" />
-                    <div className="rounded border border-gray-800 bg-gray-950 px-2 py-1 text-xs text-gray-200">
-                      Declarative HTTP v1
-                      <span className="ml-2 font-mono text-[10px] text-gray-500">audio_http_v1</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
           </>
         ) : null}
         <F label="API Key" required value={draft.api_key ?? ""} type="password"

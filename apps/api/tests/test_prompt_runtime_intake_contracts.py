@@ -1408,8 +1408,6 @@ async def test_orchestrator_video_blueprint_basic_intake_emits_structured_event(
         return {
             "max_iterations": 3,
             "auto_archive": True,
-            "blueprint_review_mode": "continuous_final_review",
-            "video_plan_confirmation_mode": "one_shot",
         }
 
     async def fake_compute_canvas_summary(project_id: str):
@@ -1523,8 +1521,6 @@ async def test_orchestrator_retries_empty_length_response(monkeypatch) -> None:
         return {
             "max_iterations": 3,
             "auto_archive": True,
-            "blueprint_review_mode": "continuous_final_review",
-            "video_plan_confirmation_mode": "one_shot",
         }
 
     async def fake_compute_canvas_summary(project_id: str):

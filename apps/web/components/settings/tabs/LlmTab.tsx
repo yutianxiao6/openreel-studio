@@ -2,7 +2,6 @@
 
 import { useState } from "react"
 import type { ConfigContext, LlmProviderEntry, ModelTier } from "../SettingsModal"
-import { callTool } from "@/lib/api"
 
 const MODEL_TIERS: Array<{
   key: ModelTier
@@ -250,21 +249,6 @@ function ProviderRow({
   onSetTierDefault: () => void
 }) {
   const [draft, setDraft] = useState<LlmProviderEntry>({ ...entry, tier: providerTier(entry) })
-  const [testing, setTesting] = useState<null | { ok: boolean; msg: string }>(null)
-  const [paramsText, setParamsText] = useState(() =>
-    JSON.stringify(entry.params ?? {}, null, 2),
-  )
-  const parsedParams = parseParams(paramsText)
-
-  const handleTest = async () => {
-    try {
-      const r = await callTool<{ ok: boolean; message?: string }>(
-        "media.test_provider", { name: draft.name, kind: "llm" })
-      setTesting({ ok: !!r.ok, msg: r.message || (r.ok ? "OK" : "失败") })
-    } catch {
-      setTesting({ ok: false, msg: "test 工具不支持 LLM kind，可在保存后通过对话验证" })
-    }
-  }
 
   if (!editing) {
     return (
@@ -345,13 +329,6 @@ function ProviderRow({
           defaultText="默认 4000"
           hint="未单独设置任务 max_tokens 时使用。"
         />
-        <Field
-          label="Tokenizer"
-          value={draft.tokenizer ?? ""}
-          onChange={(v) => setDraft({ ...draft, tokenizer: v || null })}
-          defaultText="默认 provider"
-          hint="例如 o200k_base / cl100k_base / provider。"
-        />
         <SelectField
           label="Prompt Cache"
           value={boolToInput(draft.supports_prompt_cache)}
@@ -381,20 +358,6 @@ function ProviderRow({
         <Field label="备注" value={draft.notes ?? ""} onChange={(v) => setDraft({ ...draft, notes: v || null })}
           defaultText="默认空" />
       </div>
-      <div>
-        <FieldLabel label="模型私有参数 params" defaultText="默认 {}" />
-        <textarea
-          value={paramsText}
-          onChange={(e) => setParamsText(e.target.value)}
-          rows={4}
-          className="w-full resize-y rounded border border-gray-700 bg-gray-900 px-2 py-1 font-mono text-xs text-gray-100"
-        />
-        <div className={`mt-0.5 text-[10px] ${parsedParams.ok ? "text-gray-600" : "text-red-300"}`}>
-          {parsedParams.ok
-            ? "JSON object；可填写 cache_min_input_tokens、billing_multiplier 等模型私有元数据。"
-            : parsedParams.error}
-        </div>
-      </div>
       <div className="flex items-center gap-3">
         <label className="flex items-center gap-1.5 text-xs text-gray-300">
           <input type="checkbox" checked={draft.enabled}
@@ -402,43 +365,21 @@ function ProviderRow({
           启用 <span className="text-[10px] text-gray-500">默认是</span>
         </label>
         <div className="flex-1" />
-        {testing && (
-          <span className={`text-[11px] ${testing.ok ? "text-emerald-300" : "text-red-300"}`}>
-            {testing.ok ? "OK" : "FAIL"} {testing.msg}
-          </span>
-        )}
-        <button onClick={handleTest}
-          className="rounded bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-700">测试</button>
         <button onClick={onCancel}
           className="rounded bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-700">取消</button>
         <button
-          onClick={() => onSave({ ...draft, tier: providerTier(draft), params: parsedParams.value })}
+          onClick={() => onSave({ ...draft, tier: providerTier(draft) })}
           disabled={
             !draft.name.trim()
             || !draft.provider.trim()
             || !draft.model_name.trim()
             || !(draft.base_url ?? "").trim()
             || !(draft.api_key ?? "").trim()
-            || !parsedParams.ok
           }
           className="rounded bg-indigo-600 px-3 py-1 text-xs text-white hover:bg-indigo-500 disabled:opacity-50">保存</button>
       </div>
     </div>
   )
-}
-
-function parseParams(value: string): { ok: true; value: Record<string, unknown> } | { ok: false; error: string; value: Record<string, unknown> } {
-  const trimmed = value.trim()
-  if (!trimmed) return { ok: true, value: {} }
-  try {
-    const parsed = JSON.parse(trimmed)
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return { ok: true, value: parsed as Record<string, unknown> }
-    }
-    return { ok: false, error: "params 必须是 JSON object。", value: {} }
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err), value: {} }
-  }
 }
 
 function FieldLabel({
