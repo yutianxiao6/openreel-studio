@@ -126,6 +126,29 @@ interface SourceMarkState {
   outFrame: number
 }
 
+interface MediaInsertionSource {
+  sourceInFrame: number
+  durationFrames: number
+  fullSource: boolean
+}
+
+interface TimelineInsertionSlot {
+  startFrame: number
+  gapEndFrame: number | null
+}
+
+interface TimelineInsertPreview extends MediaInsertionSource {
+  itemId: string
+  hoveredTrackId: string
+  targetTrackIds: string[]
+  affectedTrackIds: string[]
+  startFrame: number
+  shiftBoundaryFrame: number
+  shiftFrames: number
+  valid: boolean
+  reason?: string
+}
+
 interface MarqueeState {
   left: number
   top: number
@@ -563,6 +586,66 @@ function timelineGaps(clips: TimelineClipState[], endFrame: number): Array<{ sta
   return gaps
 }
 
+function timelineInsertionSlots(clips: TimelineClipState[]): TimelineInsertionSlot[] {
+  if (clips.length === 0) return [{ startFrame: 0, gapEndFrame: null }]
+  const sorted = [...clips].sort((left, right) => (
+    left.startFrame - right.startFrame || clipEndFrame(left) - clipEndFrame(right)
+  ))
+  const slots: TimelineInsertionSlot[] = []
+  const firstStartFrame = Math.max(0, sorted[0].startFrame)
+  slots.push({ startFrame: 0, gapEndFrame: firstStartFrame })
+  let occupiedEndFrame = 0
+  for (let index = 0; index < sorted.length; index += 1) {
+    occupiedEndFrame = Math.max(occupiedEndFrame, clipEndFrame(sorted[index]))
+    const nextStartFrame = sorted[index + 1]?.startFrame
+    if (nextStartFrame != null && nextStartFrame < occupiedEndFrame) continue
+    slots.push({
+      startFrame: occupiedEndFrame,
+      gapEndFrame: nextStartFrame ?? null,
+    })
+  }
+  return slots.filter((slot, index) => (
+    slots.findIndex((candidate) => candidate.startFrame === slot.startFrame) === index
+  ))
+}
+
+function findTimelineInsertionSlot(
+  clips: TimelineClipState[],
+  pointerFrame: number,
+  snapThresholdFrames: number,
+): TimelineInsertionSlot | null {
+  const frame = Math.max(0, Math.round(pointerFrame))
+  const candidates = timelineInsertionSlots(clips)
+    .map((slot) => {
+      const insideBoundedGap = slot.gapEndFrame != null && (
+        frame >= slot.startFrame && frame <= slot.gapEndFrame
+      )
+      const distance = Math.abs(frame - slot.startFrame)
+      return {
+        slot,
+        eligible: insideBoundedGap || distance <= snapThresholdFrames,
+        distance: insideBoundedGap ? 0 : distance,
+      }
+    })
+    .filter((candidate) => candidate.eligible)
+    .sort((left, right) => left.distance - right.distance)
+  return candidates[0]?.slot || null
+}
+
+function shiftClipsAfterInsertion(
+  clips: TimelineClipState[],
+  boundaryFrame: number,
+  shiftFrames: number,
+  affectedTrackIds: Set<string>,
+): TimelineClipState[] {
+  if (shiftFrames <= 0) return clips
+  return clips.map((clip) => (
+    affectedTrackIds.has(clip.trackId) && clip.startFrame >= boundaryFrame
+      ? { ...clip, startFrame: clip.startFrame + shiftFrames }
+      : clip
+  ))
+}
+
 function clipRightSegment(
   clip: TimelineClipState,
   startFrame: number,
@@ -582,36 +665,6 @@ function clipRightSegment(
     fullSource: false,
     fadeInFrames: 0,
   }
-}
-
-function insertGapIntoClips(
-  clips: TimelineClipState[],
-  insertionFrame: number,
-  durationFrames: number,
-  affectedTrackIds: Set<string>,
-  rightGroupIds: Map<string, string>,
-): TimelineClipState[] {
-  return clips.flatMap((clip) => {
-    if (!affectedTrackIds.has(clip.trackId) || clipEndFrame(clip) <= insertionFrame) return [clip]
-    if (clip.startFrame >= insertionFrame) {
-      return [{ ...clip, startFrame: clip.startFrame + durationFrames }]
-    }
-    const leftDuration = insertionFrame - clip.startFrame
-    const right = clipRightSegment(clip, insertionFrame, rightGroupIds)
-    return [
-      {
-        ...clip,
-        durationFrames: leftDuration,
-        fullSource: false,
-        fadeOutFrames: 0,
-      },
-      {
-        ...right,
-        startFrame: insertionFrame + durationFrames,
-        fadeOutFrames: Math.min(clip.fadeOutFrames || 0, right.durationFrames),
-      },
-    ]
-  })
 }
 
 function overwriteClipsInRange(
@@ -1013,12 +1066,16 @@ const MediaBinItem = memo(function MediaBinItem({
   onInsert,
   onOverwrite,
   onSelect,
+  onDragStart,
+  onDragEnd,
   selected,
 }: {
   item: VideoEditPanelMediaNode
   onInsert: (item: VideoEditPanelMediaNode) => void
   onOverwrite: (item: VideoEditPanelMediaNode) => void
   onSelect: (item: VideoEditPanelMediaNode) => void
+  onDragStart: (item: VideoEditPanelMediaNode) => void
+  onDragEnd: () => void
   selected?: boolean
 }) {
   return (
@@ -1027,7 +1084,10 @@ const MediaBinItem = memo(function MediaBinItem({
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = "copy"
         event.dataTransfer.setData("openreel/media-id", item.id)
+        event.dataTransfer.setData("text/plain", item.id)
+        onDragStart(item)
       }}
+      onDragEnd={onDragEnd}
       onClick={() => onSelect(item)}
       onDoubleClick={() => onInsert(item)}
       data-openreel-media-item="true"
@@ -1040,7 +1100,7 @@ const MediaBinItem = memo(function MediaBinItem({
     >
       <div className="relative aspect-video w-full overflow-hidden bg-[#090a0c]">
         {item.type === "video" ? (
-          <video src={item.src} muted preload="metadata" className="h-full w-full object-cover" />
+          <video src={item.src} muted preload="metadata" className="h-full w-full object-cover" draggable={false} />
         ) : item.type === "image" ? (
           <img src={item.src} alt="" className="h-full w-full object-cover" draggable={false} />
         ) : (
@@ -1060,7 +1120,7 @@ const MediaBinItem = memo(function MediaBinItem({
               onInsert(item)
             }}
             className="flex h-5 min-w-5 items-center justify-center border border-white/20 bg-black/80 px-1 font-mono text-[8px] text-white hover:bg-[#315f83]"
-            title="插入到目标轨道 (,)"
+            title="在播放头附近的剪切点波纹插入 (,)"
             aria-label={`插入素材 ${item.title}`}
           >
             ,
@@ -1104,6 +1164,7 @@ const TimelineClip = memo(function TimelineClip({
   waveformNodeId,
   trackGainDb,
   trackMuted,
+  previewShiftFrames,
   disabled,
   selected,
   onBeginEdit,
@@ -1130,6 +1191,7 @@ const TimelineClip = memo(function TimelineClip({
   waveformNodeId?: string
   trackGainDb?: number
   trackMuted?: boolean
+  previewShiftFrames?: number
   disabled?: boolean
   selected?: boolean
   onBeginEdit: () => void
@@ -1142,7 +1204,7 @@ const TimelineClip = memo(function TimelineClip({
   onCutAtFrame: (frame: number, clipId: string, independent?: boolean) => void
 }) {
   const [dragging, setDragging] = useState(false)
-  const left = clip.startFrame / sequenceFps * pxPerSecond
+  const left = (clip.startFrame + (previewShiftFrames || 0)) / sequenceFps * pxPerSecond
   const width = Math.max(18, clip.durationFrames / sequenceFps * pxPerSecond)
   const clipHeight = Math.max(52, trackHeight - 12)
   const clipDurationSeconds = clip.durationFrames / sequenceFps
@@ -1303,10 +1365,11 @@ const TimelineClip = memo(function TimelineClip({
       data-fade-in-frames={clip.fadeInFrames || 0}
       data-fade-out-frames={clip.fadeOutFrames || 0}
       data-trim-mode={trimMode}
+      data-preview-shift-frames={previewShiftFrames || 0}
       data-selected={selected ? "true" : "false"}
       onPointerDown={beginMove}
       className={cn(
-        "group/clip absolute top-1.5 overflow-hidden rounded-[2px] border shadow-[0_1px_2px_rgba(0,0,0,.55)]",
+        "group/clip absolute top-1.5 overflow-hidden rounded-[2px] border shadow-[0_1px_2px_rgba(0,0,0,.55)] transition-[left] duration-75",
         kind === "video"
           ? "border-[#315f80] bg-[#254d69]"
           : "border-[#32664f] bg-[#24523e]",
@@ -1524,6 +1587,8 @@ export default function VideoEditPanel({
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(() => new Set())
   const [marquee, setMarquee] = useState<MarqueeState | null>(null)
+  const [draggedMediaId, setDraggedMediaId] = useState<string | null>(null)
+  const [timelineInsertPreview, setTimelineInsertPreview] = useState<TimelineInsertPreview | null>(null)
   const [videoClips, setVideoClips] = useState<TimelineClipState[]>([])
   const [audioClips, setAudioClips] = useState<TimelineClipState[]>([])
   const [historyDepth, setHistoryDepth] = useState({ undo: 0, redo: 0 })
@@ -2148,8 +2213,14 @@ export default function VideoEditPanel({
       ...videoClips.map(clipEndFrame),
       ...audioClips.map(clipEndFrame),
     )
-    return Math.max(DEFAULT_TIMELINE_SECONDS, Math.ceil(lastClipEndFrame / framesPerSecond + 2))
-  }, [audioClips, framesPerSecond, videoClips])
+    const previewEndFrame = timelineInsertPreview?.valid
+      ? Math.max(
+          timelineInsertPreview.startFrame + timelineInsertPreview.durationFrames,
+          lastClipEndFrame + timelineInsertPreview.shiftFrames,
+        )
+      : lastClipEndFrame
+    return Math.max(DEFAULT_TIMELINE_SECONDS, Math.ceil(previewEndFrame / framesPerSecond + 2))
+  }, [audioClips, framesPerSecond, timelineInsertPreview, videoClips])
   const timelineWidth = timelineDuration * pxPerSecond
   const ticks = useMemo(() => {
     const step = pxPerSecond >= 120 ? 1 : pxPerSecond >= 72 ? 2 : 5
@@ -2267,6 +2338,8 @@ export default function VideoEditPanel({
     setSourceCursorFrame(0)
     setSelectedClipId(null)
     setSelectedClipIds(new Set())
+    setDraggedMediaId(null)
+    setTimelineInsertPreview(null)
     setMarkers([])
     setTransitions([])
     setSelectedMarkerId(null)
@@ -3315,12 +3388,7 @@ export default function VideoEditPanel({
     }))
   }, [recordUndoSnapshot, trackById, tracks])
 
-  const placeMediaItem = useCallback((
-    item: VideoEditPanelMediaNode,
-    mode: "insert" | "overwrite",
-    startAt?: number,
-    explicitTrackId?: string,
-  ) => {
+  const mediaInsertionSourceForItem = useCallback((item: VideoEditPanelMediaNode): MediaInsertionSource => {
     const sourceFrameCount = item.type === "image"
       ? Math.round(DEFAULT_CLIP_SECONDS * framesPerSecond)
       : sourceFrameCountForItem(item) || Math.round(DEFAULT_CLIP_SECONDS * framesPerSecond)
@@ -3329,7 +3397,114 @@ export default function VideoEditPanel({
     const sourceOutFrame = Math.round(clamp(mark.outFrame, sourceInFrame + 1, sourceFrameCount))
     const durationFrames = sourceOutFrame - sourceInFrame
     const fullSource = sourceInFrame === 0 && sourceOutFrame === sourceFrameCount
-    const startFrame = snapFrameToBoundaries(timeToFrame(startAt ?? currentTimeRef.current))
+    return { sourceInFrame, durationFrames, fullSource }
+  }, [framesPerSecond, sourceFrameCountForItem, sourceMarks])
+
+  const resolveTimelineInsertPreview = useCallback((
+    item: VideoEditPanelMediaNode,
+    hoveredTrackId: string,
+    pointerFrame: number,
+  ): TimelineInsertPreview => {
+    const source = mediaInsertionSourceForItem(item)
+    const rawStartFrame = Math.max(0, Math.round(pointerFrame))
+    const invalid = (reason: string): TimelineInsertPreview => ({
+      ...source,
+      itemId: item.id,
+      hoveredTrackId,
+      targetTrackIds: [hoveredTrackId],
+      affectedTrackIds: [],
+      startFrame: rawStartFrame,
+      shiftBoundaryFrame: rawStartFrame,
+      shiftFrames: 0,
+      valid: false,
+      reason,
+    })
+    const hoveredTrack = trackById.get(hoveredTrackId)
+    if (!hoveredTrack || hoveredTrack.locked) return invalid("目标轨道已锁定或不存在")
+    if (hoveredTrack.kind === "video" && item.type === "audio") return invalid("音频只能拖到音频轨道")
+    if (hoveredTrack.kind === "audio" && item.type !== "audio") return invalid("图片和视频只能拖到视频轨道")
+
+    const hoveredClips = (hoveredTrack.kind === "video" ? videoClips : audioClips)
+      .filter((clip) => clip.trackId === hoveredTrack.id)
+    const thresholdFrames = Math.max(1, Math.ceil(SNAP_PIXELS / pxPerSecond * framesPerSecond))
+    const slot = findTimelineInsertionSlot(hoveredClips, rawStartFrame, thresholdFrames)
+    if (!slot) return invalid("请拖到两个片段的剪切点附近")
+
+    const linkedAudio = item.type === "video" ? audioItemForVideo(item) : undefined
+    const targetTrackIds = [
+      hoveredTrack.id,
+      ...(linkedAudio && activeAudioTrackId !== hoveredTrack.id ? [activeAudioTrackId] : []),
+    ]
+    const targetTracks = targetTrackIds.map((trackId) => trackById.get(trackId))
+    if (targetTracks.some((track) => !track || track.locked)) {
+      return invalid("关联的目标轨道已锁定或不存在")
+    }
+    const allClips = [...videoClips, ...audioClips]
+    const targetClips = allClips.filter((clip) => targetTrackIds.includes(clip.trackId))
+    const spanningTarget = targetClips.find((clip) => (
+      clip.startFrame < slot.startFrame && clipEndFrame(clip) > slot.startFrame
+    ))
+    if (spanningTarget) return invalid("关联轨道在该位置仍有完整片段，不能切断插入")
+
+    const nextTargetStarts = targetTrackIds
+      .map((trackId) => targetClips
+        .filter((clip) => clip.trackId === trackId && clip.startFrame >= slot.startFrame)
+        .reduce<number | null>((earliest, clip) => (
+          earliest == null || clip.startFrame < earliest ? clip.startFrame : earliest
+        ), null))
+      .filter((frame): frame is number => frame != null)
+    const nextTargetStart = nextTargetStarts.length > 0 ? Math.min(...nextTargetStarts) : null
+    const availableFrames = nextTargetStart == null
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, nextTargetStart - slot.startFrame)
+    const shiftFrames = Number.isFinite(availableFrames)
+      ? Math.max(0, source.durationFrames - availableFrames)
+      : 0
+    const affectedTrackIds = tracks
+      .filter((track) => !track.locked && (track.syncLocked || targetTrackIds.includes(track.id)))
+      .map((track) => track.id)
+    return {
+      ...source,
+      itemId: item.id,
+      hoveredTrackId,
+      targetTrackIds,
+      affectedTrackIds,
+      startFrame: slot.startFrame,
+      shiftBoundaryFrame: nextTargetStart ?? slot.startFrame + source.durationFrames,
+      shiftFrames,
+      valid: true,
+    }
+  }, [activeAudioTrackId, audioClips, audioItemForVideo, framesPerSecond, mediaInsertionSourceForItem, pxPerSecond, trackById, tracks, videoClips])
+
+  const clearTimelineInsertPreview = useCallback(() => {
+    setDraggedMediaId(null)
+    setTimelineInsertPreview(null)
+    setSnapGuideFrame(null)
+  }, [])
+
+  const placeMediaItem = useCallback((
+    item: VideoEditPanelMediaNode,
+    mode: "insert" | "overwrite",
+    startAt?: number,
+    explicitTrackId?: string,
+    resolvedInsertPreview?: TimelineInsertPreview,
+  ) => {
+    const source = mediaInsertionSourceForItem(item)
+    const insertionPreview = mode === "insert"
+      ? resolvedInsertPreview || resolveTimelineInsertPreview(
+          item,
+          explicitTrackId || (item.type === "audio" ? activeAudioTrackId : activeVideoTrackId),
+          timeToFrame(startAt ?? currentTimeRef.current),
+        )
+      : null
+    if (insertionPreview && !insertionPreview.valid) {
+      setError(insertionPreview.reason || "请在片段剪切点附近插入素材")
+      clearTimelineInsertPreview()
+      return
+    }
+    const { sourceInFrame, durationFrames, fullSource } = insertionPreview || source
+    const startFrame = insertionPreview?.startFrame
+      ?? snapFrameToBoundaries(timeToFrame(startAt ?? currentTimeRef.current))
     const visualTrackId = item.type !== "audio"
       ? (explicitTrackId && trackById.get(explicitTrackId)?.kind === "video" ? explicitTrackId : activeVideoTrackId)
       : undefined
@@ -3349,12 +3524,11 @@ export default function VideoEditPanel({
     recordUndoSnapshot()
     const rightGroupIds = new Map<string, string>()
     if (mode === "insert") {
-      const affectedTrackIds = new Set(tracks
-        .filter((track) => track.syncLocked && !track.locked)
-        .map((track) => track.id))
-      targetTrackIds.forEach((trackId) => affectedTrackIds.add(trackId))
-      setVideoClips((current) => insertGapIntoClips(current, startFrame, durationFrames, affectedTrackIds, rightGroupIds))
-      setAudioClips((current) => insertGapIntoClips(current, startFrame, durationFrames, affectedTrackIds, rightGroupIds))
+      const affectedTrackIds = new Set(insertionPreview?.affectedTrackIds || targetTrackIds)
+      const shiftBoundaryFrame = insertionPreview?.shiftBoundaryFrame ?? startFrame
+      const shiftFrames = insertionPreview?.shiftFrames ?? durationFrames
+      setVideoClips((current) => shiftClipsAfterInsertion(current, shiftBoundaryFrame, shiftFrames, affectedTrackIds))
+      setAudioClips((current) => shiftClipsAfterInsertion(current, shiftBoundaryFrame, shiftFrames, affectedTrackIds))
     } else {
       setVideoClips((current) => overwriteClipsInRange(current, startFrame, durationFrames, targetTrackIds, rightGroupIds))
       setAudioClips((current) => overwriteClipsInRange(current, startFrame, durationFrames, targetTrackIds, rightGroupIds))
@@ -3371,7 +3545,7 @@ export default function VideoEditPanel({
       }
       setSelectedClipId(clip.clipId)
       setSelectedClipIds(selectedIds)
-      setSnapGuideFrame(null)
+      clearTimelineInsertPreview()
       setError(null)
       return
     }
@@ -3388,16 +3562,16 @@ export default function VideoEditPanel({
       setVideoClips((current) => [...current, clip])
       setSelectedClipId(clip.clipId)
       setSelectedClipIds(new Set([clip.clipId]))
-      setSnapGuideFrame(null)
+      clearTimelineInsertPreview()
       setError(null)
       return
     }
     setAudioClips((current) => [...current, clip])
     setSelectedClipId(clip.clipId)
     setSelectedClipIds(new Set([clip.clipId]))
-    setSnapGuideFrame(null)
+    clearTimelineInsertPreview()
     setError(null)
-  }, [activeAudioTrackId, activeVideoTrackId, audioItemForVideo, framesPerSecond, recordUndoSnapshot, snapFrameToBoundaries, sourceFrameCountForItem, sourceMarks, timeToFrame, trackById, tracks])
+  }, [activeAudioTrackId, activeVideoTrackId, audioItemForVideo, clearTimelineInsertPreview, mediaInsertionSourceForItem, recordUndoSnapshot, resolveTimelineInsertPreview, snapFrameToBoundaries, timeToFrame, trackById])
 
   const insertMediaItem = useCallback((item: VideoEditPanelMediaNode) => {
     placeMediaItem(item, "insert")
@@ -3407,22 +3581,58 @@ export default function VideoEditPanel({
     placeMediaItem(item, "overwrite")
   }, [placeMediaItem])
 
+  const handleTrackDragOver = (track: TimelineTrackState, event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const id = event.dataTransfer.getData("openreel/media-id") || draggedMediaId || ""
+    const item = mediaById.get(id)
+    const container = timelineRef.current
+    if (!item || !container) {
+      event.dataTransfer.dropEffect = "none"
+      return
+    }
+    const preview = resolveTimelineInsertPreview(
+      item,
+      track.id,
+      timeToFrame(timeFromPointer(event, container, pxPerSecond)),
+    )
+    event.dataTransfer.dropEffect = preview.valid ? "copy" : "none"
+    setTimelineInsertPreview(preview)
+    setSnapGuideFrame(preview.valid ? preview.startFrame : null)
+  }
+
+  const handleTrackDragLeave = (track: TimelineTrackState, event: ReactDragEvent<HTMLDivElement>) => {
+    const relatedTarget = event.relatedTarget as Node | null
+    if (relatedTarget && event.currentTarget.contains(relatedTarget)) return
+    setTimelineInsertPreview((current) => current?.hoveredTrackId === track.id ? null : current)
+    setSnapGuideFrame(null)
+  }
+
   const handleTrackDrop = (track: TimelineTrackState, event: ReactDragEvent<HTMLDivElement>) => {
     event.preventDefault()
     event.stopPropagation()
-    const id = event.dataTransfer.getData("openreel/media-id")
+    const id = event.dataTransfer.getData("openreel/media-id") || draggedMediaId || ""
     const item = mediaById.get(id)
     const container = timelineRef.current
-    if (!item || !container) return
-    if (track.locked) return
-    if (track.kind === "video" && item.type === "audio") return
-    if (track.kind === "audio" && item.type !== "audio") return
-    placeMediaItem(
-      item,
-      event.shiftKey ? "insert" : "overwrite",
-      timeFromPointer(event, container, pxPerSecond),
-      track.id,
-    )
+    if (!item || !container) {
+      clearTimelineInsertPreview()
+      return
+    }
+    const preview = timelineInsertPreview?.itemId === item.id && timelineInsertPreview.hoveredTrackId === track.id
+      ? timelineInsertPreview
+      : resolveTimelineInsertPreview(
+          item,
+          track.id,
+          timeToFrame(timeFromPointer(event, container, pxPerSecond)),
+        )
+    if (!preview.valid) {
+      setError(preview.reason || "请拖到两个片段的剪切点附近")
+      clearTimelineInsertPreview()
+      return
+    }
+    if (track.kind === "video") setActiveVideoTrackId(track.id)
+    else setActiveAudioTrackId(track.id)
+    placeMediaItem(item, "insert", undefined, track.id, preview)
   }
 
   const updateClipStartFrame = useCallback((kind: "video" | "audio", clipId: string, startFrame: number, trackId: string) => {
@@ -4010,6 +4220,20 @@ export default function VideoEditPanel({
     const trackClips = kindClips.filter((clip) => clip.trackId === track.id)
     const trackTransitions = transitions.filter((transition) => transition.trackId === track.id)
     const gaps = timelineGaps(trackClips, sequenceEndFrame)
+    const insertPreview = timelineInsertPreview?.targetTrackIds.includes(track.id)
+      ? timelineInsertPreview
+      : null
+    const previewItem = insertPreview ? mediaById.get(insertPreview.itemId) : undefined
+    const trackPreviewShiftFrames = timelineInsertPreview?.valid &&
+      timelineInsertPreview.shiftFrames > 0 &&
+      timelineInsertPreview.affectedTrackIds.includes(track.id)
+      ? timelineInsertPreview.shiftFrames
+      : 0
+    const previewShiftForClip = (clip: TimelineClipState) => (
+      trackPreviewShiftFrames > 0 && clip.startFrame >= (timelineInsertPreview?.shiftBoundaryFrame || 0)
+        ? trackPreviewShiftFrames
+        : 0
+    )
     const isActive = track.kind === "video" ? activeVideoTrackId === track.id : activeAudioTrackId === track.id
     const sameKindCount = tracks.filter((candidate) => candidate.kind === track.kind).length
     const canDelete = sameKindCount > 1 && trackClips.length === 0
@@ -4039,6 +4263,7 @@ export default function VideoEditPanel({
         data-track-muted={track.muted ? "true" : "false"}
         data-track-active={isActive ? "true" : "false"}
         data-track-height={track.height}
+        data-media-insert-target={insertPreview ? (insertPreview.valid ? "valid" : "invalid") : ""}
         className="relative grid border-b border-[#30343a]"
         style={{ gridTemplateColumns: `${TRACK_LABEL_WIDTH}px ${timelineWidth}px`, height: track.height }}
       >
@@ -4113,13 +4338,12 @@ export default function VideoEditPanel({
           className={cn(
             "relative [background-image:linear-gradient(90deg,rgba(255,255,255,.025)_1px,transparent_1px)] [background-size:84px_100%]",
             track.locked ? "bg-[#1d1d20]" : "bg-[#17191d]",
+            insertPreview?.valid && "bg-[#17232a] ring-1 ring-inset ring-[#54b9e8]/45",
+            insertPreview && !insertPreview.valid && "bg-[#25191a] ring-1 ring-inset ring-[#d66a6d]/45",
           )}
           onPointerDown={activateTrack}
-          onDragOver={(event) => {
-            if (track.locked) return
-            event.preventDefault()
-            event.dataTransfer.dropEffect = event.shiftKey ? "copy" : "move"
-          }}
+          onDragOver={(event) => handleTrackDragOver(track, event)}
+          onDragLeave={(event) => handleTrackDragLeave(track, event)}
           onDrop={(event) => handleTrackDrop(track, event)}
         >
           {gaps.map((gap) => (
@@ -4149,7 +4373,7 @@ export default function VideoEditPanel({
           ))}
           {trackClips.length === 0 && track.kind === "audio" && (
             <div className="pointer-events-none absolute inset-2 flex items-center justify-center border border-dashed border-[#343940] text-[9px] text-[#5f656d]">
-              {track.locked ? "轨道已锁定" : "拖入音频 · Shift 为插入"}
+              {track.locked ? "轨道已锁定" : "从媒体池拖入音频 · 自动吸附剪切点"}
             </div>
           )}
           {trackClips.map((clip) => {
@@ -4177,6 +4401,7 @@ export default function VideoEditPanel({
                 waveformNodeId={track.kind === "audio" ? mediaSourceKey(item) : undefined}
                 trackGainDb={track.gainDb}
                 trackMuted={track.muted}
+                previewShiftFrames={previewShiftForClip(clip)}
                 disabled={track.locked}
                 selected={selectedClipIds.has(clip.clipId)}
                 onBeginEdit={recordUndoSnapshot}
@@ -4213,7 +4438,7 @@ export default function VideoEditPanel({
                     : "border-[#82c9a6] bg-[linear-gradient(155deg,rgba(32,92,65,.92)_0%,rgba(93,169,128,.82)_48%,rgba(32,92,65,.92)_100%)] text-[#e3f9ed]",
                 )}
                 style={{
-                  left: range.startFrame / framesPerSecond * pxPerSecond,
+                  left: (range.startFrame + previewShiftForClip(incoming)) / framesPerSecond * pxPerSecond,
                   width,
                 }}
               >
@@ -4224,6 +4449,40 @@ export default function VideoEditPanel({
               </div>
             )
           })}
+          {insertPreview && (
+            <div
+              data-openreel-media-insert-ghost="true"
+              data-media-id={insertPreview.itemId}
+              data-track-id={track.id}
+              data-start-frame={insertPreview.startFrame}
+              data-duration-frames={insertPreview.durationFrames}
+              data-shift-frames={insertPreview.shiftFrames}
+              data-valid={insertPreview.valid ? "true" : "false"}
+              className={cn(
+                "pointer-events-none absolute bottom-1.5 top-1.5 z-30 overflow-hidden rounded-[2px] border-2 border-dashed opacity-75 shadow-[0_0_12px_rgba(0,0,0,.45)]",
+                insertPreview.valid
+                  ? track.kind === "video"
+                    ? "border-[#70cdf5] bg-[#2f779e]/75 text-[#e7f7ff]"
+                    : "border-[#72d5a6] bg-[#277553]/75 text-[#e7fff2]"
+                  : "border-[#e47a7d] bg-[#7b3033]/70 text-[#ffe8e8]",
+              )}
+              style={{
+                left: insertPreview.startFrame / framesPerSecond * pxPerSecond,
+                width: Math.max(18, insertPreview.durationFrames / framesPerSecond * pxPerSecond),
+              }}
+              title={insertPreview.valid ? "松开以波纹插入" : insertPreview.reason}
+            >
+              <div className="flex h-full min-w-0 items-center gap-1.5 px-2">
+                <EditorIcon name={track.kind === "video" ? (previewItem?.type === "image" ? "image" : "film") : "audio"} className="shrink-0" />
+                <span className="truncate text-[8px] font-semibold">
+                  {insertPreview.valid ? previewItem?.title || "源素材" : insertPreview.reason}
+                </span>
+                {insertPreview.valid && insertPreview.shiftFrames > 0 && (
+                  <span className="ml-auto shrink-0 font-mono text-[7px]">后移 {insertPreview.shiftFrames}f</span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -4269,7 +4528,10 @@ export default function VideoEditPanel({
           <aside data-openreel-media-bin="true" className="flex min-h-0 flex-col border-r border-[#34383f] bg-[#191b1f]">
             <div className="flex h-8 items-end justify-between border-b border-[#34383f] bg-[#202328] px-2.5">
               <div className="flex h-full items-center border-b-2 border-[#4d92c5] text-[10px] font-semibold text-[#e3e5e8]">媒体池</div>
-              <div className="mb-2 font-mono text-[9px] text-[#777d86]">{mediaNodes.length} ITEMS</div>
+              <div className="mb-1 text-right font-mono text-[8px] leading-3 text-[#777d86]">
+                <div>{mediaNodes.length} ITEMS</div>
+                <div>拖到剪切点插入</div>
+              </div>
             </div>
             <div
               data-openreel-source-monitor="true"
@@ -4318,7 +4580,7 @@ export default function VideoEditPanel({
                   onClick={() => selectedMediaItem && placeMediaItem(selectedMediaItem, "insert")}
                   className="h-5 border border-[#3e4f5e] bg-[#263744] px-1.5 font-mono text-[8px] text-[#bcd9ee] hover:bg-[#315f83] disabled:opacity-35"
                   aria-label="插入所选素材"
-                  title="插入 (,)"
+                  title="在播放头附近的剪切点波纹插入 (,)"
                 >
                   INSERT ,
                 </button>
@@ -4342,6 +4604,12 @@ export default function VideoEditPanel({
                   onInsert={insertMediaItem}
                   onOverwrite={overwriteMediaItem}
                   onSelect={(selected) => setSelectedMediaId(selected.id)}
+                  onDragStart={(dragged) => {
+                    setSelectedMediaId(dragged.id)
+                    setDraggedMediaId(dragged.id)
+                    setError(null)
+                  }}
+                  onDragEnd={clearTimelineInsertPreview}
                   selected={item.id === selectedMediaItem?.id}
                 />
               ))}
@@ -5354,7 +5622,7 @@ export default function VideoEditPanel({
               <button type="button" disabled={!selectedMarkerId} onClick={deleteSelectedMarker} className="h-6 border border-[#4a4440] bg-[#2a2826] px-1 text-[8px] text-[#a9a19a] hover:bg-[#473a31] disabled:opacity-30" aria-label="删除所选序列标记" title="删除所选标记">−M</button>
               <button type="button" onClick={() => addTrack("video")} className="h-6 border border-[#3d4d59] bg-[#252b31] px-1.5 text-[8px] font-semibold text-[#b9d7eb] hover:bg-[#304a5c]" aria-label="添加视频轨道" title="添加视频轨道">+V</button>
               <button type="button" onClick={() => addTrack("audio")} className="h-6 border border-[#3d5148] bg-[#252d29] px-1.5 text-[8px] font-semibold text-[#b8dfca] hover:bg-[#305141]" aria-label="添加音频轨道" title="添加音频轨道">+A</button>
-              <button type="button" disabled={!selectedMediaItem} onClick={() => selectedMediaItem && placeMediaItem(selectedMediaItem, "insert")} className="h-6 border border-[#3e4f5e] bg-[#263744] px-1.5 text-[8px] text-[#bcd9ee] hover:bg-[#315f83] disabled:opacity-35" aria-label="时间线插入编辑" title="插入所选素材 (,)">插入 ,</button>
+              <button type="button" disabled={!selectedMediaItem} onClick={() => selectedMediaItem && placeMediaItem(selectedMediaItem, "insert")} className="h-6 border border-[#3e4f5e] bg-[#263744] px-1.5 text-[8px] text-[#bcd9ee] hover:bg-[#315f83] disabled:opacity-35" aria-label="时间线波纹插入编辑" title="在播放头附近的剪切点波纹插入所选素材 (,)">插入 ,</button>
               <button type="button" disabled={!selectedMediaItem} onClick={() => selectedMediaItem && placeMediaItem(selectedMediaItem, "overwrite")} className="h-6 border border-[#594d3a] bg-[#3a3023] px-1.5 text-[8px] text-[#ead5b3] hover:bg-[#6b5330] disabled:opacity-35" aria-label="时间线覆盖编辑" title="覆盖所选素材 (.)">覆盖 .</button>
               <div className="ml-1 h-4 w-px bg-[#3b4047]" />
               <ToolButton label="撤销 (Ctrl+Z)" icon="undo" disabled={historyDepth.undo === 0} onClick={undoEditor} />
@@ -5405,6 +5673,8 @@ export default function VideoEditPanel({
             data-selected-clip-count={selectedClipIds.size}
             data-snap-guide-frame={snapGuideFrame ?? ""}
             data-current-frame={currentFrame}
+            data-media-insert-preview={timelineInsertPreview ? (timelineInsertPreview.valid ? "valid" : "invalid") : ""}
+            data-media-insert-shift-frames={timelineInsertPreview?.shiftFrames || 0}
             className="relative min-h-0 w-full min-w-0 flex-1 overflow-auto bg-[#15171a]"
             onPointerDown={handleTimelineBackgroundDown}
           >
