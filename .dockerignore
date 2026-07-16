@@ -10,6 +10,8 @@ node_modules
 **/.pytest_cache
 .turbo
 **/.turbo
+build
+dist
 apps/web/.next
 **/.next
 apps/api/.venv
