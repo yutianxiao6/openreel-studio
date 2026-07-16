@@ -2448,6 +2448,7 @@ function workflowUiOverridesFromMediaSettings(
   modelOverrides: Record<string, string>,
   fieldOverrides: WorkflowMediaFieldOverrides,
   steps: WorkflowTemplateStepSummary[],
+  providers: MediaProviderSummary[],
 ): Record<string, unknown> | undefined {
   const mediaModelOverrides = workflowCleanMediaModelOverrides(modelOverrides)
   const mediaFieldOverrides = workflowCleanMediaFieldOverrides(fieldOverrides)
@@ -2455,7 +2456,18 @@ function workflowUiOverridesFromMediaSettings(
     const stepId = step.id.trim()
     const kind = workflowStepAuthoringKind(step)
     if (!stepId || !["image", "video", "audio"].includes(kind)) continue
-    const current = mediaFieldOverrides[stepId] || {}
+    const templateStepId = workflowStringValue(step.template_step_id)
+    const current = mediaFieldOverrides[stepId]
+      || (templateStepId ? mediaFieldOverrides[templateStepId] : undefined)
+      || {}
+    const selectedModel = mediaModelOverrides[stepId]
+      || (templateStepId ? mediaModelOverrides[templateStepId] : "")
+    if (selectedModel) {
+      mediaModelOverrides[stepId] = selectedModel
+    } else {
+      const defaultProvider = workflowResolveMediaProvider("", workflowMediaProvidersForKind(providers, kind))
+      if (defaultProvider?.name) mediaModelOverrides[stepId] = defaultProvider.name
+    }
     if (kind === "image") {
       mediaFieldOverrides[stepId] = {
         aspect_ratio: current.aspect_ratio || "16:9",
@@ -6604,7 +6616,7 @@ function WorkflowStepInspector({
     : productModel
     ? productModel
     : defaultProductProvider
-    ? `未指定时使用当前模型：${workflowMediaProviderLabel(defaultProductProvider)}`
+    ? `默认模型：${workflowMediaProviderLabel(defaultProductProvider)}`
     : "未配置可用模型"
   const productProviderForSpecs = selectedProductProvider || defaultProductProvider
   const productMediaFields = mediaFieldOverrides[step.id] || {}
@@ -7359,12 +7371,11 @@ function WorkflowStepInspector({
                   <label className="block text-[10px] font-medium text-zinc-500">
                     本次运行模型
                     <select
-                      value={productModel ? selectedProductProvider?.name || productModel : ""}
+                      value={productModel ? selectedProductProvider?.name || productModel : defaultProductProvider?.name || ""}
                       disabled={productModelSelectDisabled}
                       onChange={(event) => onMediaModelOverrideChange?.(step.id, event.target.value)}
                       className={cn(textFieldClass, "mt-1 h-8")}
                     >
-                      <option value="">未指定</option>
                       {productModelOptions.map((item) => (
                         <option key={item.value || item.label} value={item.value} disabled={item.disabled}>
                           {item.label}
@@ -11296,8 +11307,9 @@ export default function WorkflowCanvas({
       workflowMediaModelOverrides,
       workflowMediaFieldOverrides,
       activeWorkflowSteps,
+      videoReferenceProviders,
     ),
-    [activeWorkflowSteps, workflowMediaFieldOverrides, workflowMediaModelOverrides],
+    [activeWorkflowSteps, videoReferenceProviders, workflowMediaFieldOverrides, workflowMediaModelOverrides],
   )
 
   useEffect(() => {
