@@ -185,7 +185,7 @@
             "purpose": "character_reference",
             "stage": "character_reference",
             "character_id": "{{ character.character_id }}",
-            "aspect_ratio": "{{ inputs.aspect_ratio }}",
+            "aspect_ratio": "16:9",
             "quality": "high"
           }
         }
@@ -272,7 +272,7 @@
           "fields": {
             "purpose": "scene_reference",
             "stage": "scene_reference",
-            "aspect_ratio": "{{ inputs.aspect_ratio }}",
+            "aspect_ratio": "16:9",
             "quality": "high"
           }
         },
@@ -357,7 +357,7 @@
               "fields": {
                 "purpose": "storyboard",
                 "stage": "storyboard",
-                "aspect_ratio": "{{ inputs.aspect_ratio }}",
+                "aspect_ratio": "16:9",
                 "quality": "high"
               }
             },

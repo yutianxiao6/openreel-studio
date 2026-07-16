@@ -1352,6 +1352,10 @@ def test_builtin_template_preserves_artifact_prompt_writing_methods() -> None:
         step["id"]: step for step in segment_steps["storyboard_review_loop"]["steps"]
     }
 
+    assert character_image["fields"]["aspect_ratio"] == "16:9"
+    assert segment_steps["scene_reference"]["fields"]["aspect_ratio"] == "16:9"
+    assert review_steps["storyboard"]["fields"]["aspect_ratio"] == "16:9"
+    assert segment_steps["final_video"]["fields"]["aspect_ratio"] == "{{ inputs.aspect_ratio }}"
     assert "官方设定集角色视觉参考表" in character_image["prompt"]["output"]
     assert "正面/侧面/背面全身三面图" in character_image["prompt"]["output"]
     assert "2x2 四机位全景图网格" in segment_steps["scene_reference"]["prompt"]["output"]
@@ -1602,7 +1606,7 @@ def test_private_loop_expansion_resolves_item_fields_but_keeps_workflow_paths() 
 
     assert "阿澈" in character_prompt["prompt_template"]
     assert "{{ steps.production_plan.output.style_template }}" in character_prompt["prompt_template"]
-    assert character_image["fields"]["aspect_ratio"] == "9:16"
+    assert character_image["fields"]["aspect_ratio"] == "16:9"
     assert final_video["fields"]["duration_seconds"] == "9"
     assert final_video["fields"]["aspect_ratio"] == "9:16"
 

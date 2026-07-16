@@ -508,7 +508,7 @@ const WORKFLOW_FORM_INPUT_PRESETS: WorkflowInputPreset[] = [
   { id: "total_duration_seconds", label: "视频总时长", type: "number", description: "输入整个视频的总秒数，例如 60。", required: true },
   { id: "segment_seconds", label: "分段秒数", type: "number", description: "每一段多少秒，默认 15。", default: "15" },
   { id: "style", label: "视觉风格", type: "text", description: "例如：写实、电影感、冷色调、国风。", required: false },
-  { id: "aspect_ratio", label: "画面比例", type: "text", description: "例如：9:16、16:9。", default: "9:16" },
+  { id: "aspect_ratio", label: "画面比例", type: "text", description: "例如：16:9、9:16。", default: "16:9" },
 ]
 
 const WORKFLOW_FIELD_TYPE_OPTIONS = [
@@ -1721,7 +1721,7 @@ function workflowInputPlaceholder(name: string): string {
     theme: "例如：都市复仇短剧",
     style: "例如：写实、冷色、电影感",
     aspectRatio: "例如：16:9",
-    aspect_ratio: "例如：9:16",
+    aspect_ratio: "例如：16:9",
     durationSeconds: "例如：15",
     duration_seconds: "例如：15",
     total_duration_seconds: "例如：60",
@@ -1734,7 +1734,7 @@ function workflowInputPlaceholder(name: string): string {
     segment_count: "例如：5",
     storyboardGrid: "例如：四宫格",
     segments_per_episode: "例如：5",
-    resolution: "例如：1080x1920",
+    resolution: "例如：2560x1440",
   }
   return placeholders[normalized] || "输入本次工作流参数"
 }
@@ -2362,8 +2362,8 @@ interface WorkflowMediaDimensions {
   height: number
 }
 
-const WORKFLOW_DEFAULT_MEDIA_ASPECT: WorkflowMediaDimensions = { width: 9, height: 16 }
-const WORKFLOW_DEFAULT_MEDIA_RESOLUTION: WorkflowMediaDimensions = { width: 1080, height: 1920 }
+const WORKFLOW_DEFAULT_MEDIA_ASPECT: WorkflowMediaDimensions = { width: 16, height: 9 }
+const WORKFLOW_DEFAULT_MEDIA_RESOLUTION: WorkflowMediaDimensions = { width: 2560, height: 1440 }
 type WorkflowImageResolutionTier = "1k" | "2k" | "4k"
 const WORKFLOW_IMAGE_RESOLUTION_TIERS: Array<{ label: string; value: WorkflowImageResolutionTier }> = [
   { label: "1K", value: "1k" },
@@ -2375,7 +2375,7 @@ const WORKFLOW_IMAGE_RESOLUTION_SHORT_EDGE: Record<WorkflowImageResolutionTier, 
   "2k": 1440,
   "4k": 2160,
 }
-const WORKFLOW_IMAGE_ASPECT_OPTIONS = ["9:16", "16:9", "1:1", "1:2", "2:1", "3:4", "4:3", "2:3", "3:2", "4:5", "5:4", "21:9", "9:21"]
+const WORKFLOW_IMAGE_ASPECT_OPTIONS = ["16:9", "9:16", "1:1", "1:2", "2:1", "3:4", "4:3", "2:3", "3:2", "4:5", "5:4", "21:9", "9:21"]
 const WORKFLOW_MAX_IMAGE_PIXEL_AREA = 3840 * 2160
 
 function workflowExactInputBindingId(value: unknown): string {
@@ -2441,7 +2441,7 @@ function workflowRoundToMultipleOfEight(value: number): number {
 }
 
 function workflowImageResolutionForAspectTier(aspectRatio: string, tier: WorkflowImageResolutionTier): WorkflowMediaDimensions {
-  const aspect = workflowParseAspectRatio(aspectRatio) || { width: 9, height: 16, value: "9:16" }
+  const aspect = workflowParseAspectRatio(aspectRatio) || { width: 16, height: 9, value: "16:9" }
   if (aspect.value === "1:1") {
     const size = tier === "1k" ? 1080 : tier === "2k" ? 2048 : 2880
     return { width: size, height: size }
@@ -2523,13 +2523,11 @@ function workflowPatchProductAspectRatioFields(step: WorkflowTemplateStepSummary
 function workflowPatchProductAspectInputBindingFields(
   step: WorkflowTemplateStepSummary,
   inputId: string,
-  clearResolution: boolean,
 ): Record<string, unknown> | undefined {
   return workflowPatchStepFields(step, {
     aspect_width: undefined,
     aspect_height: undefined,
     aspect_ratio: workflowInputBindingToken(inputId),
-    ...(clearResolution ? { width: undefined, height: undefined, resolution: undefined } : {}),
   })
 }
 
@@ -5867,7 +5865,7 @@ function WorkflowEditorGraph({
       selectionOnDrag={editable}
       selectionMode={SelectionMode.Partial}
       panOnDrag={editable ? [1] : true}
-      panOnScroll
+      panOnScroll={false}
       zoomOnScroll
       zoomOnPinch
       deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
@@ -6597,23 +6595,17 @@ function WorkflowStepInspector({
   const productBoundAspectInputId = isCanvasProduct
     ? workflowExactInputBindingId(productFields.aspect_ratio || productFields.ratio)
     : ""
-  const productAspectBindingValue = productBoundAspectInputId
-    ? workflowInputValueForId(productBoundAspectInputId, inputValues, inputSpecs)
+  const productActiveAspectInputId = kind === "video" ? productBoundAspectInputId : ""
+  const productAspectBindingValue = productActiveAspectInputId
+    ? workflowInputValueForId(productActiveAspectInputId, inputValues, inputSpecs)
     : ""
   const productAspectRatio = isCanvasProduct
     ? workflowParseAspectRatio(productAspectBindingValue)?.value || workflowProductAspectRatio(step)
-    : "9:16"
-  const productAspectSelection = productBoundAspectInputId
-    ? workflowInputBindingToken(productBoundAspectInputId)
+    : "16:9"
+  const productAspectSelection = productActiveAspectInputId
+    ? workflowInputBindingToken(productActiveAspectInputId)
     : productAspectRatio
-  const productHasExplicitResolution = Boolean(
-    workflowDimensionPairFromText(productFields.resolution || productFields.size || productFields.dimensions)
-    || workflowPositiveIntegerValue(productFields.width || productFields.resolution_width || productFields.pixel_width || productFields.image_width || productFields.video_width)
-    || workflowPositiveIntegerValue(productFields.height || productFields.resolution_height || productFields.pixel_height || productFields.image_height || productFields.video_height),
-  )
-  const productResolutionDimensions = kind === "image" && productBoundAspectInputId && !productHasExplicitResolution
-    ? workflowImageResolutionForAspectTier(productAspectRatio, "2k")
-    : isCanvasProduct
+  const productResolutionDimensions = isCanvasProduct
     ? workflowProductResolutionDimensions(step)
     : WORKFLOW_DEFAULT_MEDIA_RESOLUTION
   const productImageResolutionTier = workflowImageResolutionTierFromDimensions(productResolutionDimensions)
@@ -6629,7 +6621,7 @@ function WorkflowStepInspector({
   })
   const productImageSelectedResolution = productImageResolutionByTier.find((item) => item.value === productImageResolutionValue)?.value
     || `${workflowImageResolutionForAspectTier(productAspectRatio, productImageResolutionTier).width}x${workflowImageResolutionForAspectTier(productAspectRatio, productImageResolutionTier).height}`
-  const productAspectBindingOption = availableAspectInputId
+  const productAspectBindingOption = kind === "video" && availableAspectInputId
     ? {
       label: `跟随输入 · ${workflowInputDisplayName(availableAspectInputId, inputSpecs)}`,
       value: workflowInputBindingToken(availableAspectInputId),
@@ -6652,7 +6644,7 @@ function WorkflowStepInspector({
   const productVideoAspectOptions = kind === "video"
     ? [
       ...(productAspectBindingOption ? [productAspectBindingOption] : []),
-      ...(!productBoundAspectInputId && productAspectRatio && !productVideoSupportedRatios.includes(productAspectRatio)
+      ...(!productActiveAspectInputId && productAspectRatio && !productVideoSupportedRatios.includes(productAspectRatio)
         ? [{ label: `当前 ${productAspectRatio}`, value: productAspectRatio, disabled: true }]
         : []),
       ...productVideoSupportedRatios.map((value) => ({ label: value, value })),
@@ -7409,16 +7401,14 @@ function WorkflowStepInspector({
                   <WorkflowMediaOptionGrid
                     label="清晰度"
                     value={productImageSelectedResolution}
-                    disabled={readOnly || Boolean(productBoundAspectInputId)}
+                    disabled={readOnly}
                     columns="grid-cols-3"
                     options={productImageResolutionByTier.map((item) => ({
                       label: item.label,
                       value: item.value,
                       hint: item.hint,
                     }))}
-                    hint={productBoundAspectInputId
-                      ? `跟随画面比例输入，运行时自动使用 2K：${productResolutionDimensions.width}x${productResolutionDimensions.height}`
-                      : `保存值：${productResolutionDimensions.width}x${productResolutionDimensions.height}`}
+                    hint={`保存值：${productResolutionDimensions.width}x${productResolutionDimensions.height}`}
                     onChange={(resolution) => {
                       const dimensions = workflowDimensionPairFromText(resolution) || WORKFLOW_DEFAULT_MEDIA_RESOLUTION
                       onUpdateStep(step.id, {
@@ -7433,18 +7423,8 @@ function WorkflowStepInspector({
                     value={productAspectSelection}
                     disabled={readOnly}
                     columns="grid-cols-3"
-                    options={[
-                      ...(productAspectBindingOption ? [productAspectBindingOption] : []),
-                      ...WORKFLOW_IMAGE_ASPECT_OPTIONS.map((value) => ({ label: value, value })),
-                    ]}
+                    options={WORKFLOW_IMAGE_ASPECT_OPTIONS.map((value) => ({ label: value, value }))}
                     onChange={(aspectRatio) => {
-                      const boundInputId = workflowExactInputBindingId(aspectRatio)
-                      if (boundInputId) {
-                        onUpdateStep(step.id, {
-                          fields: workflowPatchProductAspectInputBindingFields(step, boundInputId, true),
-                        })
-                        return
-                      }
                       const tier = workflowImageResolutionTierFromDimensions(productResolutionDimensions)
                       const dimensions = workflowImageResolutionForAspectTier(aspectRatio, tier)
                       onUpdateStep(step.id, {
@@ -7464,7 +7444,7 @@ function WorkflowStepInspector({
                       const boundInputId = workflowExactInputBindingId(aspectRatio)
                       onUpdateStep(step.id, {
                         fields: boundInputId
-                          ? workflowPatchProductAspectInputBindingFields(step, boundInputId, false)
+                          ? workflowPatchProductAspectInputBindingFields(step, boundInputId)
                           : workflowPatchProductAspectRatioFields(step, aspectRatio),
                       })
                     }}
