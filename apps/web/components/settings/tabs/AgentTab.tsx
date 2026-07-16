@@ -22,9 +22,9 @@ const KNOWN_KEYS: KnownKeyMeta[] = [
   { key: "agent.vision_context_max_images", label: "单次视觉上下文图片上限", type: "int",
     defaultValue: 8,
     hint: "控制一轮模型调用最多携带的真实图片数量。" },
-  { key: "agent.vision_context_max_dimension", label: "视觉图片最大边长", type: "int",
-    defaultValue: 1536,
-    hint: "图片进入模型上下文前的最大像素边长。" },
+  { key: "agent.vision_context_max_dimension", label: "发送给 AI 的图片最大边长", type: "int",
+    defaultValue: 2048,
+    hint: "默认 2048px；整张图片等比例缩小，不会裁剪。" },
 ]
 
 export function AgentTab({ ctx }: { ctx: ConfigContext }) {

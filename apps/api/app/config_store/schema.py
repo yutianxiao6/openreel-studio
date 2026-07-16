@@ -317,7 +317,7 @@ DEFAULT_APP_SETTINGS: dict = {
     "agent.max_iterations": 200,
     "agent.auto_archive": True,
     "agent.vision_context_max_images": 8,
-    "agent.vision_context_max_dimension": 1536,
+    "agent.vision_context_max_dimension": 2048,
     "feature_flags": {},
     "kill_switches": {},
 }
