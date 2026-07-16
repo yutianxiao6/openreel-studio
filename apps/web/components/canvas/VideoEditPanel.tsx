@@ -40,9 +40,10 @@ interface VideoEditPanelProps {
   mediaNodes: VideoEditPanelMediaNode[]
   onClose: () => void
   onCommitted: () => Promise<void> | void
+  onSequenceExported: (outputNodeId: string) => Promise<void> | void
 }
 
-type BusyAction = "frame" | "tail" | "split" | "trim" | "concat-video" | "concat-audio" | "render" | null
+type BusyAction = "frame" | "render" | null
 type TimelineTool = "select" | "blade"
 type TrimMode = "normal" | "ripple" | "rolling"
 type PreviewScale = "fit" | "50" | "75" | "100"
@@ -978,35 +979,6 @@ function ToolButton({
   )
 }
 
-function ActionButton({
-  children,
-  disabled,
-  active,
-  onClick,
-}: {
-  children: React.ReactNode
-  disabled?: boolean
-  active?: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "h-7 rounded-[3px] border px-2.5 text-[10px] font-medium transition",
-        active
-          ? "border-[#579bd3] bg-[#315f83] text-white"
-          : "border-[#3a3f47] bg-[#272a30] text-[#d2d5da] hover:border-[#515862] hover:bg-[#30343a]",
-        disabled && "cursor-not-allowed opacity-35 hover:border-[#3a3f47] hover:bg-[#272a30]",
-      )}
-    >
-      {children}
-    </button>
-  )
-}
-
 const MediaBinItem = memo(function MediaBinItem({
   item,
   onSelect,
@@ -1431,6 +1403,7 @@ export default function VideoEditPanel({
   mediaNodes,
   onClose,
   onCommitted,
+  onSequenceExported,
 }: VideoEditPanelProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -1495,7 +1468,6 @@ export default function VideoEditPanel({
   })
   const [busy, setBusy] = useState<BusyAction>(null)
   const [error, setError] = useState<string | null>(null)
-  const [renderNotice, setRenderNotice] = useState<string | null>(null)
   const [renderJob, setRenderJob] = useState<VideoEditorSequenceRenderJob | null>(null)
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null)
   const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(() => new Set())
@@ -2237,7 +2209,6 @@ export default function VideoEditPanel({
     setSequenceLoaded(false)
     renderPollTokenRef.current += 1
     setRenderJob(null)
-    setRenderNotice(null)
     setTool("select")
     setTrimMode("normal")
     setSnappingEnabled(true)
@@ -2485,13 +2456,15 @@ export default function VideoEditPanel({
         setRenderJob(current)
       }
       if (current.status === "completed") {
-        const render = current.result?.render
-        setRenderNotice(render
-          ? `已导出 r${current.sequence_revision} · ${render.width}×${render.height} · ${render.duration_frames} 帧`
-          : `已导出序列 r${current.sequence_revision}`)
-        await onCommitted()
+        if (!current.output_node_id) {
+          setError("成片渲染完成，但没有返回画布视频节点")
+          return
+        }
+        await onSequenceExported(current.output_node_id)
       } else if (current.status === "failed") {
         setError(current.error_message || "时间线导出失败")
+      } else if (current.status === "cancelled") {
+        setError("导出已取消，时间线和已有成片均未改变")
       }
     } catch (reason) {
       if (renderPollTokenRef.current === token) {
@@ -2500,7 +2473,7 @@ export default function VideoEditPanel({
     } finally {
       if (renderPollTokenRef.current === token) setBusy(null)
     }
-  }, [nodeId, onCommitted, projectId])
+  }, [nodeId, onSequenceExported, projectId])
 
   useEffect(() => {
     if (!sequenceLoaded || initializedNodeRef.current !== nodeId) return
@@ -3105,7 +3078,6 @@ export default function VideoEditPanel({
     if (busy || !sequenceLoaded || sequenceEndFrame <= 0) return
     setBusy("render")
     setError(null)
-    setRenderNotice(null)
     try {
       const revision = await persistSequenceNow()
       const result = await renderVideoEditorSequence(
@@ -4090,11 +4062,9 @@ export default function VideoEditPanel({
     window.addEventListener("pointerup", onEnd)
   }
 
-  const canTrim = Boolean(selectedVideoClip && selectedVideoItem?.type === "video" && selectedVideoClip.durationFrames > 1)
   const selectedSourceDuration = selectedVideoClip ? sourceDurationForClip(selectedVideoClip) : null
-  const videoConcatIds = videoClips.map((clip) => clip.mediaId).filter((id) => videoItems.some((item) => item.id === id))
-  const audioConcatIds = audioClips.map((clip) => clip.mediaId).filter((id) => audioItems.some((item) => item.id === id))
   const isBusy = Boolean(busy)
+  const renderActive = Boolean(renderJob && ["queued", "running", "cancelling"].includes(renderJob.status))
   const previewScaleStyle = previewScale === "fit"
     ? { height: "100%", width: "auto", maxWidth: "100%" }
     : { width: `${previewScale}%`, maxWidth: "960px" }
@@ -4411,19 +4381,67 @@ export default function VideoEditPanel({
           <div className="font-mono text-[9px] tabular-nums text-[#777d86]">{formatTimePrecise(currentTime)} / {formatTimePrecise(playbackEnd)}</div>
           <div className="font-mono text-[8px] text-[#626871]">{framesPerSecond.toFixed(3).replace(/\.000$/, "")} fps · r{sequenceRevision}</div>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="flex h-6 w-7 items-center justify-center rounded-[2px] text-[#9ca1a9] transition hover:bg-[#353940] hover:text-white"
-          title="关闭编辑器"
-          aria-label="关闭编辑器"
-        >
-          <EditorIcon name="close" />
-        </button>
+        <div className="flex items-center gap-1.5">
+          {renderActive && (
+            <div
+              className="min-w-24 text-right text-[10px] text-[#a9cde6]"
+              data-openreel-render-progress="true"
+              data-render-status={renderJob?.status}
+              data-render-progress={renderJob?.progress || 0}
+            >
+              <span>{renderJob?.phase || "正在渲染"}</span>
+              <span className="ml-1.5 font-mono font-semibold">{renderJob?.progress || 0}%</span>
+            </div>
+          )}
+          {renderActive && (
+            <button
+              type="button"
+              onClick={() => void cancelSequenceRender()}
+              disabled={renderJob?.status === "cancelling"}
+              className="h-7 rounded-[3px] border border-[#735050] bg-[#3b292b] px-2.5 text-[10px] font-medium text-[#e7bfc0] hover:border-[#996264] hover:bg-[#4a3033] disabled:cursor-wait disabled:opacity-50"
+              aria-label="取消导出"
+              data-openreel-cancel-render="true"
+            >
+              {renderJob?.status === "cancelling" ? "取消中" : "取消"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void renderSequence()}
+            disabled={isBusy || !sequenceLoaded || sequenceEndFrame <= 0}
+            aria-label="导出时间线成片到画布"
+            data-openreel-render-sequence="true"
+            className={cn(
+              "relative flex h-7 min-w-24 items-center justify-center overflow-hidden rounded-[3px] border px-3 text-[11px] font-semibold transition",
+              busy === "render"
+                ? "border-[#5e9dca] bg-[#315f83] text-white"
+                : "border-[#4e8fbc] bg-[#285777] text-[#edf8ff] hover:border-[#77b8e4] hover:bg-[#346b90]",
+              (isBusy || !sequenceLoaded || sequenceEndFrame <= 0) && "cursor-not-allowed opacity-45",
+            )}
+            title="渲染时间线，并在画布创建已连接的成片视频节点"
+          >
+            {busy === "render" ? `导出中 ${renderJob?.progress || 0}%` : "导出成片"}
+            {busy === "render" && (
+              <span
+                className="absolute inset-x-0 bottom-0 h-0.5 bg-[#8bd4ff] transition-[width] duration-300"
+                style={{ width: `${Math.max(0, Math.min(100, renderJob?.progress || 0))}%` }}
+              />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-7 w-8 items-center justify-center rounded-[2px] text-[#9ca1a9] transition hover:bg-[#353940] hover:text-white"
+            title="关闭编辑器"
+            aria-label="关闭编辑器"
+          >
+            <EditorIcon name="close" />
+          </button>
+        </div>
       </div>
 
       <div className="grid h-[calc(100%-2rem)] w-full min-w-0 grid-rows-[minmax(360px,70%)_minmax(260px,30%)] bg-[#111316]">
-        <div className="grid min-h-0 w-full min-w-0 grid-cols-[238px_minmax(420px,1fr)_284px] border-b border-[#34383f] max-xl:grid-cols-[210px_minmax(360px,1fr)_270px] max-lg:grid-cols-1 max-lg:overflow-y-auto">
+        <div className="grid min-h-0 w-full min-w-0 grid-cols-[238px_minmax(420px,1fr)_320px] border-b border-[#34383f] max-xl:grid-cols-[210px_minmax(360px,1fr)_300px] max-lg:grid-cols-1 max-lg:overflow-y-auto">
           <aside data-openreel-media-bin="true" className="flex min-h-0 flex-col border-r border-[#34383f] bg-[#191b1f]">
             <div className="flex h-8 items-end justify-between border-b border-[#34383f] bg-[#202328] px-2.5">
               <div className="flex h-full items-center border-b-2 border-[#4d92c5] text-[10px] font-semibold text-[#e3e5e8]">媒体池</div>
@@ -4779,157 +4797,18 @@ export default function VideoEditPanel({
             </div>
           </main>
 
-          <aside data-openreel-inspector-pane="true" className="flex min-h-0 flex-col border-l border-[#34383f] bg-[#191b1f]">
-            <div className="flex h-8 items-end justify-between border-b border-[#34383f] bg-[#202328] px-2.5">
-              <div className="flex h-full items-center border-b-2 border-[#4d92c5] text-[10px] font-semibold text-[#e3e5e8]">检查器</div>
-              <div className="mb-2 text-[8px] uppercase tracking-[0.12em] text-[#6e747d]">Clip</div>
+          <aside
+            data-openreel-inspector-pane="true"
+            className="flex min-h-0 flex-col border-l border-[#34383f] bg-[#191b1f] text-[12px] leading-5 [&_section]:text-[12px] [&_section_button]:text-[11px] [&_section_div]:text-[11px] [&_section_input]:text-[11px] [&_section_label]:text-[11px] [&_section_select]:text-[11px] [&_section_span]:text-[11px]"
+          >
+            <div className="flex h-9 items-end justify-between border-b border-[#34383f] bg-[#202328] px-3">
+              <div className="flex h-full items-center border-b-2 border-[#4d92c5] text-[13px] font-semibold text-[#e3e5e8]">检查器</div>
+              <div className="mb-2.5 text-[11px] tracking-[0.08em] text-[#858c95]">片段</div>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto">
               <section className="border-b border-[#34383f] px-3 py-2.5">
                 <div className="mb-2 flex items-center justify-between">
-                  <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">输出与媒体操作</div>
-                  <span className={cn("h-1.5 w-1.5 rounded-full", isBusy ? "bg-[#67a9d8]" : "bg-[#6b727b]")} />
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void renderSequence()}
-                  disabled={isBusy || !sequenceLoaded || sequenceEndFrame <= 0}
-                  aria-label="导出时间线成片"
-                  data-openreel-render-sequence="true"
-                  className={cn(
-                    "mb-1.5 flex h-9 w-full items-center justify-between rounded-[3px] border px-2.5 text-left transition",
-                    busy === "render"
-                      ? "border-[#5e9dca] bg-[#315f83] text-white"
-                      : "border-[#477da4] bg-[#26465e] text-[#e3f1fb] hover:border-[#6aa8d4] hover:bg-[#315772]",
-                    (isBusy || !sequenceLoaded || sequenceEndFrame <= 0) && "cursor-not-allowed opacity-40",
-                  )}
-                >
-                  <span>
-                    <span className="block text-[10px] font-semibold">
-                      {busy === "render" ? `正在渲染时间线 ${renderJob?.progress || 0}%` : "导出时间线成片"}
-                    </span>
-                    <span className="mt-0.5 block font-mono text-[7px] text-[#9fc5df]">
-                      H.264 · AAC · {sequenceSpec.settings.width}×{sequenceSpec.settings.height} · {framesPerSecond.toFixed(2)} FPS
-                    </span>
-                  </span>
-                  <span className="font-mono text-[8px] text-[#9fc5df]">r{sequenceRevision}</span>
-                </button>
-                {renderJob && ["queued", "running", "cancelling"].includes(renderJob.status) && (
-                  <div
-                    className="mb-1.5 border border-[#355a74] bg-[#1e303d] px-2 py-1.5"
-                    data-openreel-render-progress="true"
-                    data-render-status={renderJob.status}
-                    data-render-progress={renderJob.progress}
-                  >
-                    <div className="mb-1 flex items-center justify-between text-[8px] text-[#b9d7eb]">
-                      <span>{renderJob.phase || "正在渲染"}</span>
-                      <span className="font-mono">{renderJob.progress}%</span>
-                    </div>
-                    <div className="h-1 overflow-hidden bg-[#14232d]">
-                      <div
-                        className="h-full bg-[#62a9d8] transition-[width] duration-300"
-                        style={{ width: `${Math.max(0, Math.min(100, renderJob.progress))}%` }}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void cancelSequenceRender()}
-                      disabled={renderJob.status === "cancelling"}
-                      className="mt-1.5 h-5 w-full border border-[#735050] bg-[#3b292b] text-[8px] text-[#e7bfc0] hover:border-[#996264] hover:bg-[#4a3033] disabled:cursor-wait disabled:opacity-50"
-                      aria-label="取消时间线导出"
-                      data-openreel-cancel-render="true"
-                    >
-                      {renderJob.status === "cancelling" ? "正在取消…" : "取消导出"}
-                    </button>
-                  </div>
-                )}
-                {renderJob?.status === "cancelled" && !renderNotice && (
-                  <div className="mb-1.5 border border-[#75613d] bg-[#3d3321] px-2 py-1.5 text-[8px] text-[#e5d09b]" data-openreel-render-cancelled="true">
-                    导出已取消，时间线和已有成片均未改变。
-                  </div>
-                )}
-                {renderJob?.status === "failed" && (
-                  <div className="mb-1.5 border border-[#7d4547] bg-[#3c2426] px-2 py-1.5 text-[8px] leading-3 text-[#f0c1c3]" data-openreel-render-failed="true">
-                    {renderJob.error_message || "时间线导出失败"}
-                  </div>
-                )}
-                {renderNotice && !error && (
-                  <div
-                    className="mb-1.5 border border-[#386b55] bg-[#203d31] px-2 py-1.5 text-[8px] leading-3 text-[#bde6d0]"
-                    data-openreel-render-success="true"
-                  >
-                    {renderNotice}
-                  </div>
-                )}
-                <div className="grid grid-cols-2 gap-1.5">
-                  <ActionButton
-                    active={busy === "tail"}
-                    disabled={isBusy || selectedVideoItem?.type !== "video"}
-                    onClick={() => void runOperation("tail", {
-                      operation: "video.export_frame",
-                      source_node_id: selectedVideoClip?.mediaId || nodeId,
-                      frame_mode: "tail",
-                      title: `${title || "视频"} 尾帧`,
-                    })}
-                  >
-                    尾帧
-                  </ActionButton>
-                  <ActionButton
-                    active={busy === "split"}
-                    disabled={isBusy}
-                    onClick={() => void runOperation("split", {
-                      operation: "video.split_tracks",
-                      source_node_id: nodeId,
-                    })}
-                  >
-                    分音轨
-                  </ActionButton>
-                  <ActionButton
-                    active={busy === "trim"}
-                    disabled={isBusy || !canTrim}
-                    onClick={() => void runOperation("trim", {
-                      operation: "video.trim",
-                      source_node_id: selectedVideoClip?.mediaId || nodeId,
-                      range: {
-                        start_seconds: Math.max(0, (selectedVideoClip?.sourceInFrame || 0) / framesPerSecond),
-                        end_seconds: Math.max(
-                          MIN_CLIP_SECONDS,
-                          ((selectedVideoClip?.sourceInFrame || 0) + (selectedVideoClip?.durationFrames || 1)) / framesPerSecond,
-                        ),
-                      },
-                      title: `${selectedVideoItem?.title || title || "视频"} 片段`,
-                    })}
-                  >
-                    导出片段
-                  </ActionButton>
-                  <ActionButton
-                    active={busy === "concat-video"}
-                    disabled={isBusy || videoConcatIds.length < 2}
-                    onClick={() => void runOperation("concat-video", {
-                      operation: "video.concat",
-                      source_node_ids: videoConcatIds,
-                      title: "拼接视频",
-                    })}
-                  >
-                    拼接视频
-                  </ActionButton>
-                  <ActionButton
-                    active={busy === "concat-audio"}
-                    disabled={isBusy || audioConcatIds.length < 2}
-                    onClick={() => void runOperation("concat-audio", {
-                      operation: "audio.concat",
-                      source_node_ids: audioConcatIds,
-                      title: "拼接音频",
-                    })}
-                  >
-                    拼接音频
-                  </ActionButton>
-                </div>
-              </section>
-
-              <section className="border-b border-[#34383f] px-3 py-2.5">
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">片段属性</div>
+                  <div className="!text-[12px] font-semibold tracking-[0.06em] text-[#d2d6dc]">片段属性</div>
                   <div className="font-mono text-[8px] text-[#707680]">{trimMode.toUpperCase()} · SNAP {snappingEnabled ? `${SNAP_PIXELS}px` : "OFF"} · {selectedClipIds.size} SEL</div>
                 </div>
                 {selectedTimelineClip && (
@@ -5079,7 +4958,7 @@ export default function VideoEditPanel({
                 <section className="border-b border-[#34383f] px-3 py-2.5" data-openreel-visual-inspector="true">
                   <div className="mb-2 flex items-center justify-between">
                     <div>
-                      <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">画面</div>
+                      <div className="!text-[12px] font-semibold tracking-[0.06em] text-[#d2d6dc]">画面</div>
                       <div className="mt-0.5 font-mono text-[7px] text-[#666d76]">MOTION · CROP · OPACITY</div>
                     </div>
                     <button
@@ -5227,7 +5106,7 @@ export default function VideoEditPanel({
                 <section className="border-b border-[#34383f] px-3 py-2.5" data-openreel-transition-inspector="true">
                   <div className="mb-2 flex items-center justify-between">
                     <div>
-                      <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">转场</div>
+                      <div className="!text-[12px] font-semibold tracking-[0.06em] text-[#d2d6dc]">转场</div>
                       <div className="mt-0.5 font-mono text-[7px] text-[#666d76]">CUT POINT · SOURCE HANDLES</div>
                     </div>
                     <span className="font-mono text-[7px] text-[#737a83]">{selectedTimelineClip?.startFrame || 0}f</span>
@@ -5345,7 +5224,7 @@ export default function VideoEditPanel({
               {selectedAudioClip && (
                 <section className="border-b border-[#34383f] px-3 py-2.5">
                   <div className="mb-2 flex items-center justify-between">
-                    <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-[#b8bdc4]">音频片段</div>
+                    <div className="!text-[12px] font-semibold tracking-[0.06em] text-[#d2d6dc]">音频片段</div>
                     <button
                       type="button"
                       onClick={() => {

@@ -14234,6 +14234,11 @@ export default function WorkflowCanvas({
           onCommitted={async () => {
             await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true })
           }}
+          onSequenceExported={async (outputNodeId) => {
+            setVideoEditRequest(null)
+            await refreshCanvas({ preserveOnEmpty: true, preserveLayout: true, fitView: true })
+            selectNode(outputNodeId)
+          }}
         />
       )}
 

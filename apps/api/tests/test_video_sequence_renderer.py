@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
+from PIL import Image, ImageStat
 
 from app.config import settings
 from app.db.models import WorkflowNode
@@ -151,6 +152,42 @@ def _single_clip_spec(*, gain_db: float = 0.0, muted: bool = False) -> SequenceS
     })
 
 
+def _video_then_image_spec() -> SequenceSpec:
+    return SequenceSpec.model_validate({
+        "schema_version": "openreel.video_sequence.v1",
+        "settings": {
+            "frame_rate": {"numerator": 24, "denominator": 1},
+            "width": 320,
+            "height": 180,
+            "audio_sample_rate": 48_000,
+            "audio_channels": 2,
+        },
+        "tracks": [
+            {"id": "v1", "kind": "video", "name": "Video 1", "order": 0},
+        ],
+        "clips": [
+            {
+                "id": "video",
+                "track_id": "v1",
+                "media_id": "video-source",
+                "timeline_start_frame": 0,
+                "duration_frames": 24,
+                "source_in_frame": 0,
+                "source_frame_count": 24,
+            },
+            {
+                "id": "image",
+                "track_id": "v1",
+                "media_id": "image-source",
+                "timeline_start_frame": 24,
+                "duration_frames": 24,
+                "source_in_frame": 0,
+                "source_frame_count": None,
+            },
+        ],
+    })
+
+
 def test_compile_sequence_render_plan_includes_frame_transforms_and_audio_mix(tmp_path: Path) -> None:
     source = tmp_path / "source.mp4"
     plan = video_sequence_renderer.compile_sequence_render_plan(
@@ -242,6 +279,89 @@ async def test_render_sequence_creates_frame_exact_h264_aac_output(monkeypatch, 
     assert [progress for progress, _ in progress_updates] == sorted(
         progress for progress, _ in progress_updates
     )
+
+
+@pytest.mark.asyncio
+async def test_render_sequence_includes_image_appended_after_video(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(settings, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setattr(settings, "STORAGE_DIR", str(tmp_path / "storage"))
+    project_id = "render-video-then-image"
+    project_root = tmp_path / "storage" / project_id
+    video_path = project_root / "generated_videos" / "red.mp4"
+    image_path = project_root / "generated_images" / "blue.png"
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    await media_operations._run_ffmpeg([  # noqa: SLF001
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=red:size=320x180:rate=24:duration=1",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        str(video_path),
+    ])
+    await media_operations._run_ffmpeg([  # noqa: SLF001
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=blue:size=320x180",
+        "-frames:v",
+        "1",
+        str(image_path),
+    ])
+    video_node = WorkflowNode(
+        id="video-source",
+        project_id=project_id,
+        type="video",
+        title="Red video",
+        status="completed",
+        output_json=json.dumps({
+            "type": "video",
+            "local_url": f"/api/media/{project_id}/generated_videos/red.mp4",
+        }),
+    )
+    image_node = WorkflowNode(
+        id="image-source",
+        project_id=project_id,
+        type="image",
+        title="Blue image",
+        status="completed",
+        output_json=json.dumps({
+            "type": "image",
+            "local_url": f"/api/media/{project_id}/generated_images/blue.png",
+        }),
+    )
+
+    result = await video_sequence_renderer.render_sequence(
+        project_id,
+        _video_then_image_spec(),
+        revision=2,
+        nodes_by_id={video_node.id: video_node, image_node.id: image_node},
+        title="Video then image",
+    )
+    first_frame = tmp_path / "first.png"
+    last_frame = tmp_path / "last.png"
+    for timestamp, target in ((0.5, first_frame), (1.5, last_frame)):
+        await media_operations._run_ffmpeg([  # noqa: SLF001
+            "-y",
+            "-ss",
+            str(timestamp),
+            "-i",
+            str(result.path),
+            "-frames:v",
+            "1",
+            str(target),
+        ])
+
+    first_rgb = ImageStat.Stat(Image.open(first_frame).convert("RGB")).mean
+    last_rgb = ImageStat.Stat(Image.open(last_frame).convert("RGB")).mean
+    assert first_rgb[0] > first_rgb[2] * 4
+    assert last_rgb[2] > last_rgb[0] * 4
 
 
 @pytest.mark.asyncio
