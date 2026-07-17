@@ -25,7 +25,7 @@ import ReactFlow, {
   type ReactFlowInstance,
 } from "reactflow"
 import "reactflow/dist/style.css"
-import { AnimatePresence } from "framer-motion"
+import { AnimatePresence, motion } from "framer-motion"
 import { useCanvasStore } from "@/stores/canvasStore"
 import { useProjectStore } from "@/stores/projectStore"
 import { useChatStore } from "@/stores/chatStore"
@@ -3452,6 +3452,17 @@ function WorkflowRunDock({
     const progress = workflowRuntimeProgress(runtime, workflowRuntimeStepSummariesFromPayload(runtime, template?.steps || []))
     return runningIds.includes(workflowRuntimeId(runtime)) || runtime.status === "running" || progress.running > 0
   }).length
+  const completedCount = runtimes.filter((runtime) => workflowStringValue(runtime.status) === "completed").length
+  useEffect(() => {
+    if (!open) return
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return
+      if (detail) onCloseDetail()
+      else onOpenChange(false)
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [detail, onCloseDetail, onOpenChange, open])
   const activeDetailRuntime = detail ? runtimes.find((runtime) => workflowRuntimeId(runtime) === detail.runtimeId) : undefined
   const activeDetailRuntimeId = workflowRuntimeId(activeDetailRuntime)
   const activeDetailTemplateId = workflowRuntimeTemplateId(activeDetailRuntime)
@@ -3513,27 +3524,74 @@ function WorkflowRunDock({
   const showSideDrawer = showDetailDrawer
   if (!open) {
     return (
-      <div data-openreel-workflow-ui="true" className="absolute bottom-5 left-1/2 z-40 -translate-x-1/2">
+      <motion.div
+        data-openreel-workflow-ui="true"
+        className="absolute bottom-5 left-1/2 z-40 -translate-x-1/2"
+        initial={{ opacity: 0, y: 10, scale: 0.96 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ type: "spring", stiffness: 360, damping: 28 }}
+      >
         <button
           type="button"
           onClick={() => onOpenChange(true)}
-          className="group flex h-10 items-center gap-2 rounded-full border border-cyan-200/22 bg-[#10151d]/90 px-4 text-xs font-semibold text-zinc-100 shadow-2xl shadow-black/40 backdrop-blur transition hover:border-cyan-200/45 hover:bg-[#121a25]/96"
+          aria-expanded="false"
+          className="openreel-workflow-dock-trigger group flex min-h-12 items-center gap-2.5 rounded-2xl border border-cyan-200/22 bg-[#10151d]/90 px-3 py-2 text-xs font-semibold text-zinc-100 shadow-2xl shadow-black/40 backdrop-blur transition hover:border-cyan-200/45 hover:bg-[#121a25]/96"
         >
-          <span className={cn("h-2 w-2 rounded-full", runningCount > 0 ? "bg-cyan-300 shadow-[0_0_14px_rgba(34,211,238,0.75)]" : "bg-zinc-500")} />
-          <span>流程</span>
-          <span className="rounded border border-white/[0.08] bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-zinc-300">{runtimes.length}</span>
-          {runningCount > 0 && <span className="text-[10px] text-cyan-100">{runningCount} 运行中</span>}
+          <span className="openreel-workflow-dock-trigger-icon">
+            <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
+              <rect x="1.5" y="2" width="5" height="4" rx="1.2" />
+              <rect x="11.5" y="12" width="5" height="4" rx="1.2" />
+              <path d="M6.5 4h2.6v10h2.4" />
+            </svg>
+            {runningCount > 0 && <span className="openreel-workflow-dock-running-ring" />}
+          </span>
+          <span className="min-w-0 text-left">
+            <span className="block text-[11px] font-semibold tracking-wide text-zinc-100">流程运行</span>
+            <span className="mt-0.5 block whitespace-nowrap text-[9px] font-medium text-zinc-500">
+              {runtimes.length === 0
+                ? "添加流程并开始运行"
+                : runningCount > 0
+                ? `${runtimes.length} 个流程 · ${runningCount} 个运行中`
+                : `${runtimes.length} 个流程 · ${completedCount} 个已完成`}
+            </span>
+          </span>
+          {runtimes.length > 0 && (
+            <span className="openreel-workflow-dock-segments" aria-hidden="true">
+              {runtimes.slice(0, 5).map((runtime) => {
+                const runtimeId = workflowRuntimeId(runtime)
+                const status = runningIds.includes(runtimeId) ? "running" : workflowStringValue(runtime.status) || "idle"
+                return <span key={runtimeId} data-status={status} />
+              })}
+            </span>
+          )}
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-zinc-500 transition-transform group-hover:-translate-y-0.5 group-hover:text-cyan-100">
+            <path d="m4 10 4-4 4 4" />
+          </svg>
         </button>
-      </div>
+      </motion.div>
     )
   }
 
   return (
     <>
+      <motion.div
+        data-openreel-workflow-ui="true"
+        className={cn("openreel-workflow-dock-dismiss-layer absolute inset-0 z-[38]", showDetailDrawer && "has-detail")}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.18 }}
+        onPointerDown={() => {
+          if (showDetailDrawer) onCloseDetail()
+          onOpenChange(false)
+        }}
+      />
       {showDetailDrawer && activeDetailRuntime && activeDetailStep && (
-        <aside
+        <motion.aside
           data-openreel-workflow-ui="true"
-          className="absolute bottom-0 right-0 top-0 z-[70] flex w-[440px] max-w-[42vw] flex-col overflow-hidden border-l border-cyan-200/14 bg-[#0b1118] shadow-[-18px_0_40px_rgba(0,0,0,0.38)] max-md:inset-x-0 max-md:bottom-0 max-md:top-auto max-md:max-h-[72vh] max-md:w-auto max-md:max-w-none max-md:border-l-0 max-md:border-t"
+          className="openreel-workflow-run-detail absolute bottom-0 right-0 top-0 z-[70] flex w-[440px] max-w-[42vw] flex-col overflow-hidden border-l border-cyan-200/14 bg-[#0b1118] shadow-[-18px_0_40px_rgba(0,0,0,0.38)] max-md:inset-x-0 max-md:bottom-0 max-md:top-auto max-md:max-h-[72vh] max-md:w-auto max-md:max-w-none max-md:border-l-0 max-md:border-t"
+          initial={{ opacity: 0, x: 24 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ type: "spring", stiffness: 360, damping: 32 }}
           onClick={(event) => event.stopPropagation()}
           onDoubleClick={(event) => event.stopPropagation()}
           onPointerDown={(event) => event.stopPropagation()}
@@ -3541,23 +3599,19 @@ function WorkflowRunDock({
           onPointerUp={(event) => event.stopPropagation()}
           onWheel={(event) => event.stopPropagation()}
         >
-          <div className="flex items-start gap-3 border-b border-cyan-200/10 bg-[#0f1722] px-4 py-3">
+          <div className="openreel-workflow-run-detail-header flex items-start gap-3 border-b border-cyan-200/10 bg-[#0f1722] px-4 py-3">
             <div className="min-w-0 flex-1">
               <div className="text-sm font-semibold text-cyan-50">流程步骤详情</div>
               <div className="mt-1 truncate text-[11px] text-cyan-100/55">{workflowRuntimeTemplateName(activeDetailRuntime, templates)}</div>
             </div>
-            <button
-              type="button"
-              onClick={onCloseDetail}
-              className="h-8 shrink-0 rounded-md border border-white/10 px-2.5 text-[11px] text-zinc-300 transition hover:bg-white/[0.06]"
-            >
-              关闭
-            </button>
+            <span className={cn("openreel-workflow-run-detail-state", workflowStepStateClass(activeDetailStatus))}>
+              {workflowRunStatusLabel(activeDetailStatus)}
+            </span>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
             <div className="min-w-0 truncate text-base font-semibold text-zinc-100">{activeDetailStep.title || activeDetailStep.id}</div>
             <div className="mt-1 text-[10px] text-zinc-500">{activeDetailStep.id}</div>
-            <div className="mt-3 grid grid-cols-2 gap-1.5 text-[10px] text-zinc-400">
+            <div className="openreel-workflow-run-detail-metrics mt-3 grid grid-cols-2 gap-1.5 text-[10px] text-zinc-400">
               <div className="rounded border border-white/[0.06] bg-black/16 px-2 py-1">
                 <span className="text-zinc-600">运行</span>
                 <span className="ml-1 text-zinc-200">{activeDetailRawStep?.run_count || activeDetailState?.runCount || 0} 次</span>
@@ -3658,9 +3712,9 @@ function WorkflowRunDock({
               </div>
             )}
           </div>
-        </aside>
+        </motion.aside>
       )}
-      <div
+      <motion.div
         data-openreel-workflow-ui="true"
         data-openreel-workflow-dock="true"
         className={cn(
@@ -3669,6 +3723,9 @@ function WorkflowRunDock({
             ? "left-[calc(50%-220px)] w-[min(760px,calc(100%-440px))] -translate-x-1/2 max-md:left-3 max-md:right-3 max-md:w-auto max-md:translate-x-0"
             : "left-[43%] w-[min(760px,calc(100%-440px))] -translate-x-1/2 max-md:left-3 max-md:right-3 max-md:w-auto max-md:translate-x-0",
         )}
+        initial={{ opacity: 0, y: 18, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ type: "spring", stiffness: 340, damping: 30 }}
         onClick={(event) => event.stopPropagation()}
         onPointerDown={(event) => event.stopPropagation()}
       >
@@ -3697,13 +3754,7 @@ function WorkflowRunDock({
           >
             添加流程
           </button>
-          <button
-            type="button"
-            onClick={() => onOpenChange(false)}
-            className="h-8 shrink-0 whitespace-nowrap rounded-full border border-white/10 px-3 text-xs text-zinc-300 transition hover:bg-white/[0.06]"
-          >
-            隐藏
-          </button>
+          <span className="hidden whitespace-nowrap text-[9px] text-zinc-600 xl:inline">点击画布收起 · Esc</span>
         </div>
       </div>
         <div data-openreel-workflow-runtime-list="true" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2">
@@ -3928,7 +3979,7 @@ function WorkflowRunDock({
           </div>
         )}
         </div>
-      </div>
+      </motion.div>
     </>
   )
 }
@@ -5723,6 +5774,9 @@ function WorkflowEditorGraph({
   const [alignmentGuides, setAlignmentGuides] = useState<WorkflowAlignmentGuide[]>([])
   const flowNodesRef = useRef<FlowNode[]>(sourceNodes)
   const dragStartPositionRef = useRef<Map<string, { x: number; y: number }>>(new Map())
+  const dragFrameRef = useRef<number | null>(null)
+  const pendingDragNodeRef = useRef<FlowNode | null>(null)
+  const graphDraggingRef = useRef(false)
 
   const guideNodes = useMemo<FlowNode[]>(() => alignmentGuides.map((guide) => {
     const length = Math.max(1, guide.end - guide.start)
@@ -5798,21 +5852,38 @@ function WorkflowEditorGraph({
 
   const handleNodeDragStart = useCallback((_: MouseEvent, node: FlowNode) => {
     if (!editable) return
+    graphDraggingRef.current = true
+    graphSurfaceRef.current?.setAttribute("data-dragging", "true")
+    graphSurfaceRef.current?.style.setProperty("--workflow-pointer-opacity", "0")
     dragStartPositionRef.current.set(node.id, workflowNormalizeEditorPosition(node.position))
     setAlignmentGuides([])
   }, [editable])
 
   const handleNodeDrag = useCallback((_: MouseEvent, node: FlowNode) => {
     if (!editable) return
-    const snap = workflowGraphSnapDragPosition(node, flowNodesRef.current)
-    setAlignmentGuides(snap.guides)
-    const nextNodes = flowNodesRef.current.map((item) => item.id === node.id ? { ...item, position: snap.position } : item)
-    flowNodesRef.current = nextNodes
-    setFlowNodes(nextNodes)
+    pendingDragNodeRef.current = node
+    if (dragFrameRef.current !== null) return
+    dragFrameRef.current = window.requestAnimationFrame(() => {
+      const pendingNode = pendingDragNodeRef.current
+      dragFrameRef.current = null
+      if (!pendingNode) return
+      const snap = workflowGraphSnapDragPosition(pendingNode, flowNodesRef.current)
+      setAlignmentGuides(snap.guides)
+      const nextNodes = flowNodesRef.current.map((item) => item.id === pendingNode.id ? { ...item, position: snap.position } : item)
+      flowNodesRef.current = nextNodes
+      setFlowNodes(nextNodes)
+    })
   }, [editable])
 
   const handleNodeDragStop = useCallback((_: MouseEvent, node: FlowNode) => {
     if (!editable) return
+    graphDraggingRef.current = false
+    graphSurfaceRef.current?.removeAttribute("data-dragging")
+    pendingDragNodeRef.current = null
+    if (dragFrameRef.current !== null) {
+      window.cancelAnimationFrame(dragFrameRef.current)
+      dragFrameRef.current = null
+    }
     setAlignmentGuides([])
     const finalPosition = workflowGraphSnapDragPosition(node, flowNodesRef.current).position
     const nextNodes = flowNodesRef.current.map((item) => item.id === node.id ? { ...item, position: finalPosition } : item)
@@ -5888,6 +5959,10 @@ function WorkflowEditorGraph({
   const handleGraphPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const surface = graphSurfaceRef.current
     if (!surface) return
+    if (graphDraggingRef.current || event.buttons !== 0) {
+      surface.style.setProperty("--workflow-pointer-opacity", "0")
+      return
+    }
     const rect = surface.getBoundingClientRect()
     graphPointerPositionRef.current = {
       x: event.clientX - rect.left,
@@ -5911,6 +5986,9 @@ function WorkflowEditorGraph({
   useEffect(() => () => {
     if (graphPointerFrameRef.current !== null) {
       window.cancelAnimationFrame(graphPointerFrameRef.current)
+    }
+    if (dragFrameRef.current !== null) {
+      window.cancelAnimationFrame(dragFrameRef.current)
     }
   }, [])
 
@@ -6907,7 +6985,7 @@ function WorkflowStepInspector({
 
   return (
     <aside className="openreel-workflow-inspector flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
-      <div className="flex shrink-0 items-start gap-3 border-b border-white/[0.08] bg-gradient-to-b from-white/[0.025] to-transparent px-4 py-3.5">
+      <div className="openreel-workflow-inspector-header flex shrink-0 items-start gap-3 border-b border-white/[0.08] bg-gradient-to-b from-white/[0.025] to-transparent px-4 py-3.5">
         <div className={cn("mt-0.5 flex h-10 w-10 items-center justify-center rounded-xl border text-[12px] font-semibold shadow-lg shadow-black/20", workflowStepToneClass(step))}>
           {WORKFLOW_NODE_TYPE_LABEL[step.node_type]?.slice(0, 1) || "节"}
         </div>
@@ -6936,24 +7014,31 @@ function WorkflowStepInspector({
           </button>
         )}
       </div>
-      <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-white/[0.08] bg-black/16 px-3 py-1.5">
+      <div className="openreel-workflow-inspector-tabs flex shrink-0 gap-1 overflow-x-auto border-b border-white/[0.08] bg-black/16 px-3 py-1.5">
         {templateTabs.map((tab) => (
           <button
             key={tab.value}
             type="button"
             onClick={() => setActiveTab(tab.value)}
             className={cn(
-              "h-8 shrink-0 border-b-2 px-2.5 text-[11px] font-medium transition-colors",
+              "relative h-8 shrink-0 px-3 text-[11px] font-medium transition-colors",
               activeTab === tab.value
-                ? "border-cyan-300 text-cyan-50"
-                : "border-transparent text-zinc-500 hover:border-white/15 hover:text-zinc-200",
+                ? "text-cyan-50"
+                : "text-zinc-500 hover:text-zinc-200",
             )}
           >
-            {tab.label}
+            {activeTab === tab.value && (
+              <motion.span
+                layoutId="openreel-workflow-inspector-active-tab"
+                className="absolute inset-0 rounded-lg border border-cyan-200/20 bg-gradient-to-r from-cyan-300/[0.12] to-violet-300/[0.1] shadow-[0_8px_20px_rgba(8,145,178,0.08),inset_0_1px_rgba(255,255,255,0.06)]"
+                transition={{ type: "spring", stiffness: 430, damping: 34 }}
+              />
+            )}
+            <span className="relative z-10">{tab.label}</span>
           </button>
         ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      <div className="openreel-workflow-inspector-content min-h-0 flex-1 overflow-y-auto px-4 py-3">
         <div className="grid gap-3">
           {activeTab === "properties" && (
             <section className="grid grid-cols-3 gap-2">
@@ -9383,17 +9468,18 @@ function WorkflowTemplatePanel({
       )}
 
       <div className="openreel-workflow-body relative flex min-h-0 flex-1 border-t border-white/[0.08]">
+        {(toolboxOpen || inspectorOpen) && (
+          <div
+            className="openreel-workflow-editor-dismiss-layer"
+            aria-hidden="true"
+            onPointerDown={() => {
+              setToolboxOpen(false)
+              setInspectorOpen(false)
+            }}
+          />
+        )}
         {toolboxOpen && (
         <aside className="openreel-workflow-library flex w-[260px] shrink-0 flex-col border-r border-white/[0.08] bg-[#0b1017]">
-          <button
-            type="button"
-            className="openreel-workflow-library-close"
-            onClick={() => setToolboxOpen(false)}
-            aria-label="关闭步骤库"
-            title="关闭步骤库"
-          >
-            ×
-          </button>
           <div className="border-b border-white/[0.08] px-3 py-3">
             <div className="flex items-end justify-between gap-2">
               <div>
@@ -9602,7 +9688,6 @@ function WorkflowTemplatePanel({
           )}
         </main>
         {inspectorOpen && (
-          <>
           <WorkflowStepInspector
             step={detailStep}
             steps={draftSteps}
@@ -9642,16 +9727,6 @@ function WorkflowTemplatePanel({
             onMoveStepScope={moveDraftStepScope}
             onDeleteStep={deleteDraftStep}
           />
-          <button
-            type="button"
-            className="openreel-workflow-inspector-close"
-            onClick={() => setInspectorOpen(false)}
-            aria-label="关闭流程详情"
-            title="关闭流程详情"
-          >
-            ×
-          </button>
-          </>
         )}
       </div>
     </section>

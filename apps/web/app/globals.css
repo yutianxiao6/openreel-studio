@@ -148,6 +148,16 @@ select:focus-visible,
   50% { filter: drop-shadow(0 0 16px rgb(34 211 238 / 0.26)); }
 }
 
+@keyframes workflow-running-ring {
+  0% { opacity: 0.72; scale: 0.72; }
+  75%, 100% { opacity: 0; scale: 1.75; }
+}
+
+@keyframes workflow-status-scan {
+  from { transform: translateX(-140%); }
+  to { transform: translateX(240%); }
+}
+
 .studio-shell {
   position: relative;
   isolation: isolate;
@@ -695,22 +705,53 @@ select:focus-visible,
 
 .openreel-workflow-toolbar input,
 .openreel-workflow-toolbar select,
-.openreel-workflow-inspector input,
+.openreel-workflow-inspector input:not([type="checkbox"]):not([type="range"]),
 .openreel-workflow-inspector textarea,
 .openreel-workflow-inspector select {
+  min-height: 32px;
+  border-color: rgb(255 255 255 / 0.095) !important;
   border-radius: 8px !important;
-  background-color: rgb(5 9 15 / 0.7) !important;
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.28), inset 0 1px rgb(255 255 255 / 0.025);
-  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+  background-color: rgb(5 9 15 / 0.82) !important;
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.36), inset 0 1px rgb(255 255 255 / 0.025), 0 6px 18px rgb(0 0 0 / 0.08);
+  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease, transform 180ms var(--studio-ease);
 }
 
 .openreel-workflow-toolbar input:focus,
 .openreel-workflow-toolbar select:focus,
-.openreel-workflow-inspector input:focus,
+.openreel-workflow-inspector input:not([type="checkbox"]):not([type="range"]):focus,
 .openreel-workflow-inspector textarea:focus,
 .openreel-workflow-inspector select:focus {
   border-color: rgb(103 232 249 / 0.48) !important;
-  box-shadow: 0 0 0 3px rgb(34 211 238 / 0.08), inset 0 1px 2px rgb(0 0 0 / 0.22);
+  background-color: rgb(7 14 22 / 0.96) !important;
+  box-shadow: 0 0 0 3px rgb(34 211 238 / 0.085), 0 12px 30px rgb(0 0 0 / 0.18), inset 0 1px 2px rgb(0 0 0 / 0.22);
+}
+
+.openreel-workflow-inspector select {
+  appearance: none;
+  padding-right: 28px !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgb(148 163 184 / 0.85) 50%),
+    linear-gradient(135deg, rgb(148 163 184 / 0.85) 50%, transparent 50%);
+  background-position:
+    calc(100% - 13px) 50%,
+    calc(100% - 9px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+}
+
+.openreel-workflow-inspector input[type="checkbox"] {
+  height: 15px;
+  width: 15px;
+  accent-color: #22d3ee;
+  filter: drop-shadow(0 0 6px rgb(34 211 238 / 0.16));
+}
+
+.openreel-workflow-inspector label {
+  transition: color 180ms ease;
+}
+
+.openreel-workflow-inspector label:focus-within > span:first-child {
+  color: rgb(207 250 254) !important;
 }
 
 .openreel-workflow-toolbar [data-workflow-action] {
@@ -774,8 +815,7 @@ select:focus-visible,
   box-shadow: 0 12px 28px rgb(0 0 0 / 0.3), 0 0 0 1px rgb(34 211 238 / 0.04), inset 0 1px rgb(255 255 255 / 0.055);
 }
 
-.openreel-workflow-editor .openreel-workflow-library-close,
-.openreel-workflow-editor .openreel-workflow-inspector-close {
+.openreel-workflow-editor-dismiss-layer {
   display: none;
 }
 
@@ -806,13 +846,35 @@ select:focus-visible,
   box-shadow: -20px 0 50px rgb(0 0 0 / 0.24), inset 1px 0 rgb(255 255 255 / 0.02) !important;
 }
 
+.openreel-workflow-inspector-header {
+  background:
+    radial-gradient(circle at 14% 0, rgb(34 211 238 / 0.09), transparent 30%),
+    linear-gradient(180deg, rgb(255 255 255 / 0.035), transparent) !important;
+}
+
+.openreel-workflow-inspector-tabs {
+  background: linear-gradient(180deg, rgb(5 8 13 / 0.42), rgb(5 8 13 / 0.22)) !important;
+  box-shadow: inset 0 -1px rgb(0 0 0 / 0.24);
+}
+
+.openreel-workflow-inspector-tabs button {
+  overflow: visible;
+}
+
+.openreel-workflow-inspector-content {
+  scroll-behavior: smooth;
+  background: radial-gradient(circle at 100% 0, rgb(53 46 129 / 0.035), transparent 24%);
+}
+
 .openreel-workflow-inspector section {
-  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+  border-radius: 10px !important;
+  background-image: linear-gradient(145deg, rgb(255 255 255 / 0.018), transparent 56%);
+  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease, transform 180ms var(--studio-ease);
 }
 
 .openreel-workflow-inspector section:hover {
   border-color: rgb(139 124 255 / 0.16);
-  box-shadow: inset 0 1px rgb(255 255 255 / 0.025);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.1), inset 0 1px rgb(255 255 255 / 0.03);
 }
 
 .openreel-workflow-graph {
@@ -827,13 +889,22 @@ select:focus-visible,
 .openreel-workflow-graph::after {
   position: absolute;
   z-index: 4;
-  inset: 0;
+  top: 0;
+  left: 0;
+  height: 210px;
+  width: 210px;
   content: "";
   pointer-events: none;
-  background: radial-gradient(460px circle at var(--workflow-pointer-x) var(--workflow-pointer-y), rgb(103 232 249 / 0.075), rgb(139 124 255 / 0.025) 34%, transparent 72%);
+  border-radius: 999px;
+  background: radial-gradient(circle, rgb(103 232 249 / 0.055), rgb(139 124 255 / 0.018) 40%, transparent 72%);
   opacity: var(--workflow-pointer-opacity);
-  mix-blend-mode: screen;
-  transition: opacity 320ms ease;
+  transform: translate3d(calc(var(--workflow-pointer-x) - 105px), calc(var(--workflow-pointer-y) - 105px), 0);
+  transition: opacity 220ms ease, transform 110ms cubic-bezier(0.22, 0.7, 0.3, 1);
+  will-change: transform, opacity;
+}
+
+.openreel-workflow-graph[data-dragging="true"]::after {
+  opacity: 0;
 }
 
 .openreel-workflow-flow {
@@ -852,6 +923,13 @@ select:focus-visible,
 
 .openreel-workflow-node.is-selected {
   animation: workflow-node-focus 2.5s ease-in-out infinite;
+}
+
+.openreel-workflow-graph[data-dragging="true"] .openreel-workflow-node,
+.openreel-workflow-graph[data-dragging="true"] .openreel-workflow-node-content {
+  animation: none !important;
+  filter: none !important;
+  transition: none !important;
 }
 
 .openreel-workflow-node-content {
@@ -921,6 +999,227 @@ select:focus-visible,
   backdrop-filter: blur(22px) saturate(1.2) !important;
 }
 
+.openreel-workflow-dock-trigger {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-width: 220px;
+  border-color: rgb(103 232 249 / 0.19) !important;
+  background:
+    radial-gradient(circle at 14% 0, rgb(34 211 238 / 0.105), transparent 32%),
+    linear-gradient(145deg, rgb(19 26 38 / 0.96), rgb(8 12 19 / 0.94)) !important;
+  box-shadow: 0 20px 58px rgb(0 0 0 / 0.42), 0 0 0 1px rgb(255 255 255 / 0.02), inset 0 1px rgb(255 255 255 / 0.065) !important;
+  backdrop-filter: blur(22px) saturate(1.2) !important;
+}
+
+.openreel-workflow-dock-trigger::before {
+  position: absolute;
+  z-index: -1;
+  top: -50%;
+  bottom: -50%;
+  left: -32%;
+  width: 22%;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgb(103 232 249 / 0.1), transparent);
+  transform: translateX(-140%);
+}
+
+.openreel-workflow-dock-trigger:hover::before {
+  animation: workflow-status-scan 900ms var(--studio-ease) both;
+}
+
+.openreel-workflow-dock-trigger:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 26px 70px rgb(0 0 0 / 0.48), 0 0 30px rgb(34 211 238 / 0.07), inset 0 1px rgb(255 255 255 / 0.08) !important;
+}
+
+.openreel-workflow-dock-trigger-icon {
+  position: relative;
+  display: grid;
+  height: 32px;
+  width: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgb(103 232 249 / 0.18);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgb(34 211 238 / 0.12), rgb(139 124 255 / 0.1));
+  color: #a5f3fc;
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.07), 0 8px 20px rgb(0 0 0 / 0.18);
+}
+
+.openreel-workflow-dock-trigger-icon > svg {
+  height: 18px;
+  width: 18px;
+}
+
+.openreel-workflow-dock-running-ring {
+  position: absolute;
+  inset: -2px;
+  border: 1px solid rgb(34 211 238 / 0.72);
+  border-radius: 12px;
+  animation: workflow-running-ring 1.8s ease-out infinite;
+}
+
+.openreel-workflow-dock-segments {
+  display: flex;
+  height: 20px;
+  align-items: flex-end;
+  gap: 2px;
+  border-left: 1px solid rgb(255 255 255 / 0.065);
+  padding-left: 9px;
+}
+
+.openreel-workflow-dock-segments > span {
+  height: 8px;
+  width: 3px;
+  border-radius: 999px;
+  background: #525866;
+  box-shadow: 0 0 8px rgb(82 88 102 / 0.18);
+}
+
+.openreel-workflow-dock-segments > span[data-status="running"] {
+  height: 18px;
+  background: #67e8f9;
+  box-shadow: 0 0 10px rgb(34 211 238 / 0.52);
+}
+
+.openreel-workflow-dock-segments > span[data-status="completed"] {
+  height: 13px;
+  background: #6ee7b7;
+}
+
+.openreel-workflow-dock-segments > span[data-status="failed"] {
+  height: 13px;
+  background: #fca5a5;
+}
+
+.openreel-workflow-dock-dismiss-layer {
+  background: rgb(2 5 9 / 0.02);
+}
+
+.openreel-workflow-dock-dismiss-layer.has-detail {
+  background: linear-gradient(90deg, transparent 40%, rgb(2 5 9 / 0.18));
+  backdrop-filter: blur(1px);
+}
+
+[data-openreel-workflow-dock="true"] {
+  border-color: rgb(139 124 255 / 0.17) !important;
+  background:
+    radial-gradient(circle at 16% -10%, rgb(34 211 238 / 0.08), transparent 28%),
+    linear-gradient(145deg, rgb(16 23 34 / 0.98), rgb(7 11 17 / 0.97)) !important;
+  box-shadow: 0 34px 100px rgb(0 0 0 / 0.56), 0 0 0 1px rgb(255 255 255 / 0.025), inset 0 1px rgb(255 255 255 / 0.055) !important;
+  backdrop-filter: blur(28px) saturate(1.22) !important;
+}
+
+[data-openreel-workflow-dock-header="true"] {
+  background: linear-gradient(180deg, rgb(24 31 44 / 0.96), rgb(11 16 24 / 0.94)) !important;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.18), inset 0 -1px rgb(0 0 0 / 0.22), inset 0 1px rgb(255 255 255 / 0.04);
+}
+
+[data-openreel-workflow-dock="true"] select,
+[data-openreel-workflow-dock="true"] input:not([type="checkbox"]):not([type="range"]),
+[data-openreel-workflow-dock="true"] textarea,
+.openreel-workflow-run-detail select,
+.openreel-workflow-run-detail input:not([type="checkbox"]):not([type="range"]),
+.openreel-workflow-run-detail textarea {
+  border-color: rgb(255 255 255 / 0.1) !important;
+  border-radius: 8px !important;
+  background-color: rgb(5 9 15 / 0.82) !important;
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / 0.34), inset 0 1px rgb(255 255 255 / 0.025);
+  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+[data-openreel-workflow-dock="true"] select,
+.openreel-workflow-run-detail select {
+  appearance: none;
+  padding-right: 28px !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgb(148 163 184 / 0.85) 50%),
+    linear-gradient(135deg, rgb(148 163 184 / 0.85) 50%, transparent 50%);
+  background-position:
+    calc(100% - 13px) 50%,
+    calc(100% - 9px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+}
+
+[data-openreel-workflow-dock="true"] select:focus,
+[data-openreel-workflow-dock="true"] input:focus,
+[data-openreel-workflow-dock="true"] textarea:focus,
+.openreel-workflow-run-detail select:focus,
+.openreel-workflow-run-detail input:focus,
+.openreel-workflow-run-detail textarea:focus {
+  border-color: rgb(103 232 249 / 0.5) !important;
+  box-shadow: 0 0 0 3px rgb(34 211 238 / 0.08), 0 12px 30px rgb(0 0 0 / 0.16);
+}
+
+[data-openreel-workflow-runtime-card="true"] {
+  border-color: rgb(255 255 255 / 0.075) !important;
+  background: linear-gradient(145deg, rgb(255 255 255 / 0.035), rgb(255 255 255 / 0.012)) !important;
+  box-shadow: 0 16px 36px rgb(0 0 0 / 0.18), inset 0 1px rgb(255 255 255 / 0.03) !important;
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms var(--studio-ease);
+}
+
+[data-openreel-workflow-runtime-card="true"]:hover {
+  border-color: rgb(103 232 249 / 0.14) !important;
+  box-shadow: 0 22px 48px rgb(0 0 0 / 0.24), inset 0 1px rgb(255 255 255 / 0.04) !important;
+}
+
+[data-openreel-workflow-runtime-actions="true"] {
+  border: 1px solid rgb(255 255 255 / 0.05);
+  padding: 4px;
+  background: linear-gradient(180deg, rgb(20 28 40 / 0.98), rgb(12 18 27 / 0.98)) !important;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 0.18), inset 0 1px rgb(255 255 255 / 0.025) !important;
+}
+
+[data-openreel-workflow-runtime-actions="true"] button {
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.04);
+}
+
+.openreel-workflow-run-detail {
+  border-color: rgb(103 232 249 / 0.16) !important;
+  background:
+    radial-gradient(circle at 100% 0, rgb(34 211 238 / 0.075), transparent 30%),
+    linear-gradient(160deg, rgb(14 21 31 / 0.995), rgb(7 11 17 / 0.995)) !important;
+  box-shadow: -28px 0 90px rgb(0 0 0 / 0.48), inset 1px 0 rgb(255 255 255 / 0.025) !important;
+  backdrop-filter: blur(28px) saturate(1.18);
+}
+
+.openreel-workflow-run-detail-header {
+  background: linear-gradient(180deg, rgb(22 32 46 / 0.98), rgb(12 19 28 / 0.96)) !important;
+  box-shadow: 0 12px 34px rgb(0 0 0 / 0.22), inset 0 -1px rgb(0 0 0 / 0.2), inset 0 1px rgb(255 255 255 / 0.045);
+}
+
+.openreel-workflow-run-detail-state {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 9px;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.openreel-workflow-run-detail-metrics > div {
+  border-color: rgb(255 255 255 / 0.075) !important;
+  border-radius: 8px !important;
+  background: linear-gradient(145deg, rgb(255 255 255 / 0.035), rgb(255 255 255 / 0.012)) !important;
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.025);
+  transition: border-color 180ms ease, transform 180ms var(--studio-ease);
+}
+
+.openreel-workflow-run-detail-metrics > div:hover {
+  transform: translateY(-1px);
+  border-color: rgb(103 232 249 / 0.16) !important;
+}
+
+.openreel-workflow-run-detail section {
+  border-radius: 10px !important;
+  background-image: linear-gradient(145deg, rgb(255 255 255 / 0.018), transparent 58%);
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.025);
+}
+
 @container (max-width: 760px) {
   .openreel-workflow-library {
     position: absolute;
@@ -946,30 +1245,13 @@ select:focus-visible,
     width: 100%;
   }
 
-  .openreel-workflow-editor .openreel-workflow-library-close,
-  .openreel-workflow-editor .openreel-workflow-inspector-close {
+  .openreel-workflow-editor-dismiss-layer {
     position: absolute;
-    z-index: 40;
-    display: grid;
-    height: 30px;
-    width: 30px;
-    place-items: center;
-    border: 1px solid rgb(255 255 255 / 0.1);
-    border-radius: 9px;
-    background: linear-gradient(145deg, rgb(36 43 57 / 0.94), rgb(15 20 29 / 0.94));
-    color: #cbd5e1;
-    font-size: 16px;
-    box-shadow: 0 10px 26px rgb(0 0 0 / 0.34), inset 0 1px rgb(255 255 255 / 0.06);
-  }
-
-  .openreel-workflow-editor .openreel-workflow-library-close {
-    top: 9px;
-    right: 9px;
-  }
-
-  .openreel-workflow-editor .openreel-workflow-inspector-close {
-    top: 9px;
-    right: 9px;
+    z-index: 26;
+    inset: 0;
+    display: block;
+    background: linear-gradient(90deg, rgb(3 6 10 / 0.08), rgb(3 6 10 / 0.28));
+    backdrop-filter: blur(1.5px);
   }
 }
 
