@@ -101,6 +101,7 @@ def test_button_system_and_workflow_editor_use_advanced_interaction_layers() -> 
     assert "onMoveEnd={handleGraphMoveEnd}" in workflow
     assert "onPointerDownCapture={handleGraphPointerDownCapture}" in workflow
     assert 'window.addEventListener("pointerup", finishGraphPointerInteraction' in workflow
-    assert 'toggleAttribute("data-dragging", active)' in workflow
+    assert 'surface.setAttribute("data-dragging", "true")' in workflow
+    assert 'surface.removeAttribute("data-dragging")' in workflow
     assert 'layoutId="openreel-workflow-inspector-active-tab"' in workflow
     assert "studio-workspace-switcher-button" in tabs

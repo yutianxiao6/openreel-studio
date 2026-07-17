@@ -5856,8 +5856,12 @@ function WorkflowEditorGraph({
     const surface = graphSurfaceRef.current
     if (!surface) return
     const active = graphDraggingRef.current || graphPanningRef.current
-    surface.toggleAttribute("data-dragging", active)
-    if (active) surface.style.setProperty("--workflow-pointer-opacity", "0")
+    if (active) {
+      surface.setAttribute("data-dragging", "true")
+      surface.style.setProperty("--workflow-pointer-opacity", "0")
+    } else {
+      surface.removeAttribute("data-dragging")
+    }
   }, [])
 
   const handleNodeDragStart = useCallback((_: MouseEvent, node: FlowNode) => {
