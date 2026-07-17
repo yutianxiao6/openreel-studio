@@ -64,3 +64,11 @@ def test_workspace_and_content_transitions_use_motion_contracts() -> None:
     assert "<Background" in canvas
     assert "studio-canvas-empty" in canvas
     assert 'data-node-status={status}' in nodes
+
+
+def test_chat_autoscroll_is_scoped_to_the_message_container() -> None:
+    chat = read("components/chat/ChatPanel.tsx")
+
+    assert "container.scrollTo({ top: container.scrollHeight, behavior })" in chat
+    assert "messagesEndRef" not in chat
+    assert "scrollIntoView({ behavior: \"smooth\" })" not in chat

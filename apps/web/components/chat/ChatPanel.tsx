@@ -2001,7 +2001,6 @@ export function ChatPanel() {
   const [input, setInput] = useState("")
   const [dragOver, setDragOver] = useState(false)
   const [slashSelectedIdx, setSlashSelectedIdx] = useState(0)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesScrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -2016,6 +2015,12 @@ export function ChatPanel() {
   const [showTokenMonitor, setShowTokenMonitor] = useState(true)
   const [localStreamActive, setLocalStreamActive] = useState(false)
   const [collaborationMode, setCollaborationMode] = useState<AgentCollaborationMode>("default")
+
+  const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const container = messagesScrollRef.current
+    if (!container) return
+    container.scrollTo({ top: container.scrollHeight, behavior })
+  }, [])
 
   // 细粒度订阅:setInput 重渲只触发 input 相关 UI,不会让 messages / 各 action 引起的 setState
   // 把整个 ChatPanel 重渲一次。整体 useChatStore() 解构会让任意 store 字段变都重渲所有订阅者,
@@ -2202,9 +2207,9 @@ export function ChatPanel() {
 
   useEffect(() => {
     if (autoScroll) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+      scrollMessagesToBottom()
     }
-  }, [messages, autoScroll])
+  }, [messages, autoScroll, scrollMessagesToBottom])
 
   useEffect(() => {
     if (!slashRunStatus || slashRunStatus.status === "running") return
@@ -3433,14 +3438,13 @@ export function ChatPanel() {
             onCancelQueuedMessage={handleCancelQueuedMessage}
           />
         ))}
-        <div ref={messagesEndRef} />
       </div>
 
       {!autoScroll && (
         <button
           onClick={() => {
             setAutoScroll(true)
-            messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+            scrollMessagesToBottom()
           }}
           className="absolute bottom-24 right-6 z-20 rounded-full bg-indigo-600/90 hover:bg-indigo-500 text-white text-xs px-3 py-1.5 shadow-lg backdrop-blur-sm flex items-center gap-1"
         >
