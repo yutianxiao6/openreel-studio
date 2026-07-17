@@ -31,6 +31,7 @@ def test_studio_shell_uses_shared_chrome_and_pointer_atmosphere() -> None:
 def test_project_workspace_restores_chat_resize_and_video_editor_escapes_workspace_stack() -> None:
     project = read("app/projects/[projectId]/page.tsx")
     editor = read("components/canvas/VideoEditPanel.tsx")
+    styles = read("app/globals.css")
 
     assert 'role="separator"' in project
     assert 'aria-label="调整聊天区宽度"' in project
@@ -41,6 +42,9 @@ def test_project_workspace_restores_chat_resize_and_video_editor_escapes_workspa
     assert "), document.body)" in editor
     assert editor.index('data-openreel-frame-strip="true"') < editor.index("return createPortal((")
     assert editor.index("return createPortal((") < editor.index('className="openreel-video-edit-panel')
+    editor_styles = styles[styles.index(".openreel-video-edit-panel {"):]
+    assert "animation: none !important" in editor_styles[:800]
+    assert "transform: none !important" in editor_styles[:800]
 
 
 def test_studio_visual_system_covers_primary_product_surfaces() -> None:

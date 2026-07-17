@@ -1348,7 +1348,9 @@ select:focus-visible,
     radial-gradient(circle at 50% -30%, rgb(78 130 170 / 0.12), transparent 38%),
     #0d1015 !important;
   box-shadow: 0 38px 120px rgb(0 0 0 / 0.78), 0 0 0 1px rgb(255 255 255 / 0.03), inset 0 1px rgb(255 255 255 / 0.055) !important;
-  animation: studio-enter 300ms var(--studio-ease) both;
+  opacity: 1 !important;
+  transform: none !important;
+  animation: none !important;
 }
 
 .openreel-video-edit-panel button,
