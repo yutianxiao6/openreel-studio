@@ -5426,6 +5426,9 @@ function WorkflowEditorGraph({
   const [insertMenuStepId, setInsertMenuStepId] = useState<string | null>(null)
   const [createMenu, setCreateMenu] = useState<WorkflowEditorCreateMenu | null>(null)
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null)
+  const graphSurfaceRef = useRef<HTMLDivElement>(null)
+  const graphPointerFrameRef = useRef<number | null>(null)
+  const graphPointerPositionRef = useRef({ x: 0, y: 0 })
   const layoutPositions = useMemo(() => workflowGraphAutoLayout(steps), [steps])
   const explicitPositionById = useMemo(() => {
     const result = new Map<string, { x: number; y: number }>()
@@ -5505,7 +5508,7 @@ function WorkflowEditorGraph({
       position,
       data: {
         label: (
-          <div className="relative min-w-0">
+          <div className="openreel-workflow-node-content relative min-w-0">
             <div className="mb-2.5 flex items-center justify-between gap-2">
               <div className={cn("inline-flex max-w-full items-center rounded-md border px-1.5 py-0.5 text-[9px] font-semibold", categoryClass)}>
                 <span className="truncate">{categoryLabel}</span>
@@ -5632,6 +5635,13 @@ function WorkflowEditorGraph({
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
       type: "default",
+      className: cn(
+        "openreel-workflow-node",
+        selected && "is-selected",
+        isProductStep && "is-product",
+        isLoopKind && "is-control",
+        isInputStep && "is-input",
+      ),
       draggable: editable && !isInputStep,
       connectable: editable && !isInputStep,
       style: {
@@ -5875,7 +5885,42 @@ function WorkflowEditorGraph({
     setCreateMenu(null)
   }, [createMenu, onCreateStep])
 
+  const handleGraphPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const surface = graphSurfaceRef.current
+    if (!surface) return
+    const rect = surface.getBoundingClientRect()
+    graphPointerPositionRef.current = {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    }
+    surface.style.setProperty("--workflow-pointer-opacity", "1")
+    if (graphPointerFrameRef.current !== null) return
+    graphPointerFrameRef.current = window.requestAnimationFrame(() => {
+      const currentSurface = graphSurfaceRef.current
+      const position = graphPointerPositionRef.current
+      currentSurface?.style.setProperty("--workflow-pointer-x", `${position.x}px`)
+      currentSurface?.style.setProperty("--workflow-pointer-y", `${position.y}px`)
+      graphPointerFrameRef.current = null
+    })
+  }, [])
+
+  const handleGraphPointerLeave = useCallback(() => {
+    graphSurfaceRef.current?.style.setProperty("--workflow-pointer-opacity", "0")
+  }, [])
+
+  useEffect(() => () => {
+    if (graphPointerFrameRef.current !== null) {
+      window.cancelAnimationFrame(graphPointerFrameRef.current)
+    }
+  }, [])
+
   return (
+    <div
+      ref={graphSurfaceRef}
+      className="openreel-workflow-graph h-full w-full"
+      onPointerMove={handleGraphPointerMove}
+      onPointerLeave={handleGraphPointerLeave}
+    >
     <ReactFlow
       nodes={renderedNodes}
       edges={flowEdges}
@@ -5923,7 +5968,7 @@ function WorkflowEditorGraph({
         setCreateMenu(null)
         onSelectStep(null)
       }}
-      className="bg-[#070b11]"
+      className="openreel-workflow-flow bg-[#070b11]"
       proOptions={{ hideAttribution: true }}
     >
       <Background color="rgba(148,163,184,0.13)" gap={22} size={1} />
@@ -5937,7 +5982,7 @@ function WorkflowEditorGraph({
       <Controls className="!rounded-md !border !border-white/10 !bg-[#11151d]/90 [&_button]:!border-white/10 [&_button]:!bg-transparent [&_button]:!text-zinc-300 hover:[&_button]:!bg-white/10" />
       {createMenu && insertNodeTypes.length > 0 && (
         <div
-          className="fixed z-[80] w-48 overflow-hidden rounded-md border border-cyan-200/20 bg-[#111823]/96 py-1 text-sm text-zinc-200 shadow-2xl shadow-black/50 backdrop-blur"
+          className="openreel-workflow-create-menu fixed z-[80] w-48 overflow-hidden rounded-md border border-cyan-200/20 bg-[#111823]/96 py-1 text-sm text-zinc-200 shadow-2xl shadow-black/50 backdrop-blur"
           style={menuPositionStyle(createMenu.x, createMenu.y, 192, 274)}
           onClick={(event) => event.stopPropagation()}
           onPointerDown={(event) => event.stopPropagation()}
@@ -5959,6 +6004,7 @@ function WorkflowEditorGraph({
         </div>
       )}
     </ReactFlow>
+    </div>
   )
 }
 
@@ -6306,7 +6352,7 @@ function WorkflowStepInspector({
   }, [activeTab, readOnly])
   if (!step) {
     return (
-      <aside className="flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
+      <aside className="openreel-workflow-inspector flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
         <div className="border-b border-white/10 px-4 py-3">
           <div className="text-sm font-semibold text-zinc-100">流程设置</div>
           <div className="mt-1 text-[11px] text-zinc-500">
@@ -6397,7 +6443,7 @@ function WorkflowStepInspector({
     ].filter((item) => item.value)
 
     return (
-      <aside className="flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
+      <aside className="openreel-workflow-inspector flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
         <div className="flex shrink-0 items-start gap-3 border-b border-white/10 px-4 py-3">
           <div className={cn("mt-0.5 flex h-8 w-8 items-center justify-center rounded-md border text-[11px] font-semibold", workflowStepToneClass(step))}>
             {WORKFLOW_NODE_TYPE_LABEL[step.node_type]?.slice(0, 1) || "节"}
@@ -6488,7 +6534,7 @@ function WorkflowStepInspector({
 
   if (isInputStep) {
     return (
-      <aside className="flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
+      <aside className="openreel-workflow-inspector flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
         <div className="flex shrink-0 items-start gap-3 border-b border-white/10 px-4 py-3">
           <div className={cn("mt-0.5 flex h-8 w-8 items-center justify-center rounded-md border text-[11px] font-semibold", workflowStepToneClass(step))}>
             入
@@ -6860,7 +6906,7 @@ function WorkflowStepInspector({
   }
 
   return (
-    <aside className="flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
+    <aside className="openreel-workflow-inspector flex h-full w-[400px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0d1219] shadow-[-16px_0_36px_rgba(0,0,0,0.12)]">
       <div className="flex shrink-0 items-start gap-3 border-b border-white/[0.08] bg-gradient-to-b from-white/[0.025] to-transparent px-4 py-3.5">
         <div className={cn("mt-0.5 flex h-10 w-10 items-center justify-center rounded-xl border text-[12px] font-semibold shadow-lg shadow-black/20", workflowStepToneClass(step))}>
           {WORKFLOW_NODE_TYPE_LABEL[step.node_type]?.slice(0, 1) || "节"}
@@ -9166,8 +9212,8 @@ function WorkflowTemplatePanel({
   }, [detailStepId, displayedSteps])
 
   return (
-    <section className="flex h-full w-full flex-col overflow-hidden bg-[#10151d] text-zinc-100">
-      <div className="flex min-h-12 items-center gap-2 border-b border-white/10 px-3 py-2">
+    <section className="openreel-workflow-editor flex h-full w-full flex-col overflow-hidden bg-[#10151d] text-zinc-100">
+      <div className="openreel-workflow-toolbar flex min-h-12 items-center gap-2 border-b border-white/10 px-3 py-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="flex h-8 shrink-0 items-center rounded-md border border-cyan-200/18 bg-cyan-300/[0.06] px-3 text-xs font-semibold text-cyan-100">
             搭建流程
@@ -9208,57 +9254,71 @@ function WorkflowTemplatePanel({
           <button
             type="button"
             onClick={createBlankWorkflow}
-            className="hidden h-8 rounded-md border border-cyan-200/20 bg-cyan-300/10 px-2 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-300/16 sm:inline-flex sm:items-center"
+            data-workflow-action="accent"
+            className="hidden h-8 gap-1.5 rounded-md border border-cyan-200/20 bg-cyan-300/10 px-2 text-[11px] font-semibold text-cyan-100 transition hover:bg-cyan-300/16 sm:inline-flex sm:items-center"
           >
+            <span className="workflow-action-glyph" aria-hidden="true">+</span>
             新建流程
           </button>
           <button
             type="button"
             onClick={pickImportSpecFile}
-            className="hidden h-8 rounded-md border border-white/10 px-2 text-[11px] text-zinc-300 transition hover:bg-white/[0.06] sm:inline-flex sm:items-center"
+            data-workflow-action="neutral"
+            className="hidden h-8 gap-1.5 rounded-md border border-white/10 px-2 text-[11px] text-zinc-300 transition hover:bg-white/[0.06] sm:inline-flex sm:items-center"
           >
+            <span className="workflow-action-glyph" aria-hidden="true">↥</span>
             导入流程
           </button>
           <button
             type="button"
             onClick={onRefresh}
             disabled={loading}
-            className="hidden h-8 rounded-md border border-white/10 px-2 text-[11px] text-zinc-300 transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-50 sm:inline-flex sm:items-center"
+            data-workflow-action="neutral"
+            className="hidden h-8 gap-1.5 rounded-md border border-white/10 px-2 text-[11px] text-zinc-300 transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-50 sm:inline-flex sm:items-center"
           >
+            <span className="workflow-action-glyph" aria-hidden="true">↻</span>
             {loading ? "读取中" : "刷新"}
           </button>
           <button
             type="button"
             onClick={resetDraftWorkflow}
             disabled={!draftDirty && !hasMediaModelOverrides && !hasMediaFieldOverrides}
-            className="hidden h-8 rounded-md border border-amber-200/20 bg-amber-300/10 px-2 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-300/16 disabled:cursor-not-allowed disabled:opacity-45 sm:inline-flex sm:items-center"
+            data-workflow-action="warning"
+            className="hidden h-8 gap-1.5 rounded-md border border-amber-200/20 bg-amber-300/10 px-2 text-[11px] font-semibold text-amber-100 transition hover:bg-amber-300/16 disabled:cursor-not-allowed disabled:opacity-45 sm:inline-flex sm:items-center"
             title="恢复到当前模板打开时的内容"
           >
+            <span className="workflow-action-glyph" aria-hidden="true">↶</span>
             重置
           </button>
           <button
             type="button"
             onClick={() => void saveDraftWorkflow()}
             disabled={!draftDirty || savingDraft || draftSteps.length === 0}
-            className="h-8 rounded-md border border-emerald-200/25 bg-emerald-300/10 px-3 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-300/16 disabled:cursor-not-allowed disabled:opacity-45"
+            data-workflow-action="success"
+            className="flex h-8 items-center gap-1.5 rounded-md border border-emerald-200/25 bg-emerald-300/10 px-3 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-300/16 disabled:cursor-not-allowed disabled:opacity-45"
           >
+            <span className="workflow-action-glyph" aria-hidden="true">✓</span>
             {savingDraft ? "保存中" : draftDirty ? "保存流程" : "已保存"}
           </button>
           <button
             type="button"
             onClick={() => void saveDraftWorkflowAsTemplate()}
             disabled={savingTemplate || draftSteps.length === 0}
-            className="h-8 rounded-md border border-sky-200/25 bg-sky-300/10 px-3 text-xs font-semibold text-sky-100 transition hover:bg-sky-300/16 disabled:cursor-not-allowed disabled:opacity-45"
+            data-workflow-action="primary"
+            className="flex h-8 items-center gap-1.5 rounded-md border border-sky-200/25 bg-sky-300/10 px-3 text-xs font-semibold text-sky-100 transition hover:bg-sky-300/16 disabled:cursor-not-allowed disabled:opacity-45"
           >
+            <span className="workflow-action-glyph" aria-hidden="true">◇</span>
             {savingTemplate ? "保存中" : !artifactMode && !draftWorkflowId ? "另存副本" : "保存为模板"}
           </button>
           <button
             type="button"
             onClick={() => void downloadSelectedTemplate()}
             disabled={!selected?.downloadable || downloadingTemplate}
-            className="hidden h-8 rounded-md border border-white/10 px-2 text-[11px] text-zinc-300 transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 sm:inline-flex sm:items-center"
+            data-workflow-action="neutral"
+            className="hidden h-8 gap-1.5 rounded-md border border-white/10 px-2 text-[11px] text-zinc-300 transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 sm:inline-flex sm:items-center"
             title={selected?.downloadable ? "下载当前用户模板 JSON" : "内置流程需先保存为模板后下载"}
           >
+            <span className="workflow-action-glyph" aria-hidden="true">⇩</span>
             {downloadingTemplate ? "下载中" : "下载模板"}
           </button>
           {selected?.overrides_builtin && (
@@ -9324,7 +9384,7 @@ function WorkflowTemplatePanel({
 
       <div className="flex min-h-0 flex-1 border-t border-white/[0.08]">
         {toolboxOpen && (
-        <aside className="flex w-[260px] shrink-0 flex-col border-r border-white/[0.08] bg-[#0b1017]">
+        <aside className="openreel-workflow-library flex w-[260px] shrink-0 flex-col border-r border-white/[0.08] bg-[#0b1017]">
           <div className="border-b border-white/[0.08] px-3 py-3">
             <div className="flex items-end justify-between gap-2">
               <div>
@@ -9428,8 +9488,8 @@ function WorkflowTemplatePanel({
           </div>
         </aside>
         )}
-        <main className="relative min-w-0 flex-1 bg-[#080d14]">
-          <div className="absolute left-3 top-3 z-20 flex max-w-[calc(100%-24px)] items-center gap-2 rounded-md border border-white/10 bg-[#10151d]/88 px-2 py-1.5 text-[10px] text-zinc-500 shadow-xl shadow-black/25 backdrop-blur">
+        <main className="openreel-workflow-stage relative min-w-0 flex-1 bg-[#080d14]">
+          <div className="openreel-workflow-canvas-toolbar absolute left-3 top-3 z-20 flex max-w-[calc(100%-24px)] items-center gap-2 rounded-md border border-white/10 bg-[#10151d]/88 px-2 py-1.5 text-[10px] text-zinc-500 shadow-xl shadow-black/25 backdrop-blur">
             <span className="flex min-w-0 shrink-0 items-center gap-1 text-zinc-300">
               <span className="max-w-[150px] truncate rounded bg-white/[0.06] px-1.5 py-0.5 text-zinc-100" title={activeTemplateScopeTitle}>
                 {activeTemplateScopeTitle}

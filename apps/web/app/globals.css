@@ -88,6 +88,25 @@ select:focus-visible,
   outline-offset: 2px;
 }
 
+.studio-shell button {
+  touch-action: manipulation;
+  -webkit-font-smoothing: antialiased;
+}
+
+.studio-shell button:not(:disabled) {
+  cursor: pointer;
+}
+
+.studio-shell button:not(:disabled):active {
+  translate: 0 1px;
+  scale: 0.975;
+  transition-duration: 80ms !important;
+}
+
+.studio-shell button:disabled {
+  filter: saturate(0.58) brightness(0.82);
+}
+
 @keyframes studio-aurora {
   0%, 100% { transform: translate3d(-3%, -2%, 0) scale(1); opacity: 0.58; }
   50% { transform: translate3d(5%, 3%, 0) scale(1.08); opacity: 0.86; }
@@ -117,6 +136,16 @@ select:focus-visible,
 @keyframes studio-float {
   0%, 100% { transform: translateY(0) rotate(-1deg); }
   50% { transform: translateY(-6px) rotate(1deg); }
+}
+
+@keyframes workflow-button-glint {
+  0% { transform: translateX(-165%) skewX(-22deg); }
+  100% { transform: translateX(265%) skewX(-22deg); }
+}
+
+@keyframes workflow-node-focus {
+  0%, 100% { filter: drop-shadow(0 0 7px rgb(34 211 238 / 0.12)); }
+  50% { filter: drop-shadow(0 0 16px rgb(34 211 238 / 0.26)); }
 }
 
 .studio-shell {
@@ -327,6 +356,35 @@ select:focus-visible,
   background: linear-gradient(135deg, rgb(139 124 255 / 0.88), rgb(85 215 255 / 0.72));
   color: white;
   box-shadow: 0 8px 20px rgb(72 65 190 / 0.25);
+}
+
+.studio-workspace-switcher {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgb(22 28 40 / 0.88), rgb(8 11 17 / 0.92)) !important;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.2), inset 0 1px rgb(255 255 255 / 0.045) !important;
+}
+
+.studio-workspace-switcher::before {
+  position: absolute;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(110deg, transparent 10%, rgb(255 255 255 / 0.035) 48%, transparent 82%);
+}
+
+.studio-workspace-switcher-button {
+  isolation: isolate;
+  transition: color 180ms ease, transform 180ms var(--studio-ease), filter 180ms ease !important;
+}
+
+.studio-workspace-switcher-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.studio-workspace-switcher-button[aria-pressed="true"] {
+  text-shadow: 0 1px 8px rgb(255 255 255 / 0.22);
 }
 
 .studio-chat-pane {
@@ -565,6 +623,292 @@ select:focus-visible,
     linear-gradient(160deg, rgb(18 24 35 / 0.98), rgb(9 13 20 / 0.98)) !important;
   box-shadow: 0 30px 100px rgb(0 0 0 / 0.62), 0 0 0 1px rgb(255 255 255 / 0.02), inset 0 1px rgb(255 255 255 / 0.055) !important;
   backdrop-filter: blur(28px) saturate(1.15) !important;
+}
+
+.openreel-workflow-editor {
+  --workflow-accent: 103 232 249;
+  --workflow-violet: 139 124 255;
+  background:
+    radial-gradient(circle at 58% -20%, rgb(74 60 190 / 0.12), transparent 34%),
+    linear-gradient(145deg, #0e141d, #080c12 64%) !important;
+}
+
+.openreel-workflow-editor button {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: 8px;
+  background-image: linear-gradient(180deg, rgb(255 255 255 / 0.045), transparent 58%);
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.035);
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms var(--studio-ease),
+    filter 180ms ease !important;
+}
+
+.openreel-workflow-editor button::after {
+  position: absolute;
+  z-index: 3;
+  top: -45%;
+  bottom: -45%;
+  left: -42%;
+  width: 28%;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.2), transparent);
+  opacity: 0;
+  transform: translateX(-165%) skewX(-22deg);
+}
+
+.openreel-workflow-editor button:hover:not(:disabled)::after {
+  opacity: 0.75;
+  animation: workflow-button-glint 720ms var(--studio-ease) both;
+}
+
+.openreel-workflow-editor button:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 8px 22px rgb(0 0 0 / 0.22), inset 0 1px rgb(255 255 255 / 0.07);
+}
+
+.openreel-workflow-toolbar {
+  position: relative;
+  z-index: 30;
+  background:
+    linear-gradient(180deg, rgb(24 31 44 / 0.96), rgb(12 17 25 / 0.94)) !important;
+  box-shadow: 0 14px 38px rgb(0 0 0 / 0.3), inset 0 -1px rgb(0 0 0 / 0.28), inset 0 1px rgb(255 255 255 / 0.045);
+  backdrop-filter: blur(22px) saturate(1.2);
+}
+
+.openreel-workflow-toolbar::after {
+  position: absolute;
+  right: 18%;
+  bottom: -1px;
+  left: 18%;
+  height: 1px;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgb(139 124 255 / 0.5), rgb(103 232 249 / 0.46), transparent);
+}
+
+.openreel-workflow-toolbar input,
+.openreel-workflow-toolbar select,
+.openreel-workflow-inspector input,
+.openreel-workflow-inspector textarea,
+.openreel-workflow-inspector select {
+  border-radius: 8px !important;
+  background-color: rgb(5 9 15 / 0.7) !important;
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.28), inset 0 1px rgb(255 255 255 / 0.025);
+  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+}
+
+.openreel-workflow-toolbar input:focus,
+.openreel-workflow-toolbar select:focus,
+.openreel-workflow-inspector input:focus,
+.openreel-workflow-inspector textarea:focus,
+.openreel-workflow-inspector select:focus {
+  border-color: rgb(103 232 249 / 0.48) !important;
+  box-shadow: 0 0 0 3px rgb(34 211 238 / 0.08), inset 0 1px 2px rgb(0 0 0 / 0.22);
+}
+
+.openreel-workflow-toolbar [data-workflow-action] {
+  min-width: 32px;
+  border-radius: 9px;
+  box-shadow: 0 7px 18px rgb(0 0 0 / 0.22), inset 0 1px rgb(255 255 255 / 0.08);
+}
+
+.openreel-workflow-toolbar [data-workflow-action="primary"] {
+  border-color: rgb(125 211 252 / 0.32);
+  background: linear-gradient(145deg, rgb(14 116 144 / 0.62), rgb(58 55 151 / 0.54));
+  color: #e9fbff;
+}
+
+.openreel-workflow-toolbar [data-workflow-action="accent"] {
+  border-color: rgb(103 232 249 / 0.32);
+  background: linear-gradient(145deg, rgb(8 145 178 / 0.45), rgb(56 44 136 / 0.38));
+  color: #dffbff;
+}
+
+.openreel-workflow-toolbar [data-workflow-action="success"] {
+  border-color: rgb(110 231 183 / 0.3);
+  background: linear-gradient(145deg, rgb(5 150 105 / 0.34), rgb(13 87 75 / 0.26));
+  color: #d9fff0;
+}
+
+.openreel-workflow-toolbar [data-workflow-action="warning"] {
+  border-color: rgb(253 230 138 / 0.25);
+  background: linear-gradient(145deg, rgb(180 83 9 / 0.25), rgb(92 61 17 / 0.22));
+}
+
+.workflow-action-glyph {
+  display: inline-grid;
+  height: 17px;
+  min-width: 17px;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 0.08);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 0.055);
+  font-size: 11px;
+  line-height: 1;
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.06);
+}
+
+.openreel-workflow-library {
+  background:
+    radial-gradient(circle at 20% 0, rgb(35 117 145 / 0.08), transparent 30%),
+    linear-gradient(180deg, rgb(13 19 28 / 0.99), rgb(7 11 17 / 0.99)) !important;
+  box-shadow: 12px 0 36px rgb(0 0 0 / 0.16), inset -1px 0 rgb(255 255 255 / 0.015);
+}
+
+.openreel-workflow-library button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: rgb(103 232 249 / 0.3) !important;
+  background-color: rgb(34 211 238 / 0.065) !important;
+  box-shadow: 0 12px 28px rgb(0 0 0 / 0.3), 0 0 0 1px rgb(34 211 238 / 0.04), inset 0 1px rgb(255 255 255 / 0.055);
+}
+
+.openreel-workflow-stage {
+  background:
+    radial-gradient(circle at 50% 28%, rgb(53 64 151 / 0.08), transparent 36%),
+    #070b11 !important;
+}
+
+.openreel-workflow-canvas-toolbar {
+  overflow: hidden;
+  border-color: rgb(139 124 255 / 0.2) !important;
+  border-radius: 11px !important;
+  background: linear-gradient(145deg, rgb(20 27 39 / 0.9), rgb(7 11 17 / 0.84)) !important;
+  box-shadow: 0 18px 45px rgb(0 0 0 / 0.36), 0 0 0 1px rgb(255 255 255 / 0.02), inset 0 1px rgb(255 255 255 / 0.055) !important;
+  backdrop-filter: blur(22px) saturate(1.22) !important;
+}
+
+.openreel-workflow-canvas-toolbar button {
+  border-radius: 7px;
+}
+
+.openreel-workflow-inspector {
+  border-color: rgb(139 124 255 / 0.14) !important;
+  background:
+    radial-gradient(circle at 100% 0, rgb(69 57 167 / 0.09), transparent 30%),
+    linear-gradient(180deg, rgb(15 21 30 / 0.99), rgb(8 12 18 / 0.99)) !important;
+  box-shadow: -20px 0 50px rgb(0 0 0 / 0.24), inset 1px 0 rgb(255 255 255 / 0.02) !important;
+}
+
+.openreel-workflow-inspector section {
+  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+
+.openreel-workflow-inspector section:hover {
+  border-color: rgb(139 124 255 / 0.16);
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.025);
+}
+
+.openreel-workflow-graph {
+  --workflow-pointer-x: 50%;
+  --workflow-pointer-y: 40%;
+  --workflow-pointer-opacity: 0;
+  position: relative;
+  overflow: hidden;
+  background: #070b11;
+}
+
+.openreel-workflow-graph::after {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  content: "";
+  pointer-events: none;
+  background: radial-gradient(460px circle at var(--workflow-pointer-x) var(--workflow-pointer-y), rgb(103 232 249 / 0.075), rgb(139 124 255 / 0.025) 34%, transparent 72%);
+  opacity: var(--workflow-pointer-opacity);
+  mix-blend-mode: screen;
+  transition: opacity 320ms ease;
+}
+
+.openreel-workflow-flow {
+  z-index: 1;
+  background:
+    linear-gradient(rgb(255 255 255 / 0.013) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.013) 1px, transparent 1px),
+    radial-gradient(circle at 50% 38%, rgb(49 67 109 / 0.08), transparent 38%),
+    #070b11 !important;
+  background-size: 88px 88px, 88px 88px, auto, auto !important;
+}
+
+.openreel-workflow-node {
+  transition: filter 180ms ease;
+}
+
+.openreel-workflow-node.is-selected {
+  animation: workflow-node-focus 2.5s ease-in-out infinite;
+}
+
+.openreel-workflow-node-content {
+  transform-origin: 50% 50%;
+  transition: transform 200ms var(--studio-ease), filter 180ms ease;
+}
+
+.openreel-workflow-node:hover .openreel-workflow-node-content {
+  transform: translateY(-2px);
+  filter: brightness(1.06);
+}
+
+.openreel-workflow-node.is-product .openreel-workflow-node-content {
+  text-shadow: 0 1px 12px rgb(34 211 238 / 0.08);
+}
+
+.openreel-workflow-flow .react-flow__handle {
+  height: 9px;
+  width: 9px;
+  border: 2px solid #071019;
+  background: #67e8f9;
+  box-shadow: 0 0 0 1px rgb(103 232 249 / 0.48), 0 0 12px rgb(34 211 238 / 0.36);
+  transition: scale 160ms var(--studio-ease), box-shadow 160ms ease;
+}
+
+.openreel-workflow-node:hover .react-flow__handle {
+  scale: 1.22;
+  box-shadow: 0 0 0 1px rgb(165 243 252 / 0.72), 0 0 18px rgb(34 211 238 / 0.58);
+}
+
+.openreel-workflow-flow .react-flow__edge-path {
+  transition: stroke 180ms ease, stroke-width 180ms ease, filter 180ms ease;
+}
+
+.openreel-workflow-flow .react-flow__edge:hover .react-flow__edge-path {
+  stroke: rgb(103 232 249 / 0.9) !important;
+  stroke-width: 2.8px !important;
+  filter: drop-shadow(0 0 7px rgb(34 211 238 / 0.4));
+}
+
+.openreel-workflow-flow .react-flow__controls,
+.openreel-workflow-flow .react-flow__minimap {
+  overflow: hidden;
+  border-color: rgb(139 124 255 / 0.18) !important;
+  border-radius: 10px !important;
+  background: linear-gradient(145deg, rgb(19 25 36 / 0.9), rgb(8 12 19 / 0.86)) !important;
+  box-shadow: 0 18px 44px rgb(0 0 0 / 0.36), inset 0 1px rgb(255 255 255 / 0.045) !important;
+  backdrop-filter: blur(18px) saturate(1.18);
+}
+
+.openreel-workflow-flow .react-flow__controls-button {
+  border-color: rgb(255 255 255 / 0.07) !important;
+  background: transparent !important;
+  color: #aab4c5 !important;
+}
+
+.openreel-workflow-flow .react-flow__controls-button:hover {
+  background: rgb(103 232 249 / 0.1) !important;
+  color: #e6fbff !important;
+}
+
+.openreel-workflow-create-menu {
+  border-color: rgb(103 232 249 / 0.26) !important;
+  border-radius: 11px !important;
+  background: linear-gradient(145deg, rgb(20 28 40 / 0.97), rgb(8 13 20 / 0.96)) !important;
+  box-shadow: 0 24px 70px rgb(0 0 0 / 0.56), 0 0 30px rgb(34 211 238 / 0.06), inset 0 1px rgb(255 255 255 / 0.06) !important;
+  backdrop-filter: blur(22px) saturate(1.2) !important;
 }
 
 .studio-settings-backdrop {

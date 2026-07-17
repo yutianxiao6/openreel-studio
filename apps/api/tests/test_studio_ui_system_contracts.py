@@ -72,3 +72,21 @@ def test_chat_autoscroll_is_scoped_to_the_message_container() -> None:
     assert "container.scrollTo({ top: container.scrollHeight, behavior })" in chat
     assert "messagesEndRef" not in chat
     assert "scrollIntoView({ behavior: \"smooth\" })" not in chat
+
+
+def test_button_system_and_workflow_editor_use_advanced_interaction_layers() -> None:
+    styles = read("app/globals.css")
+    workflow = read("components/canvas/WorkflowCanvas.tsx")
+    tabs = read("components/workspace/WorkspaceViewTabs.tsx")
+
+    assert ".studio-shell button:not(:disabled):active" in styles
+    assert "workflow-button-glint" in styles
+    assert ".openreel-workflow-toolbar [data-workflow-action=\"primary\"]" in styles
+    assert ".openreel-workflow-library button:hover:not(:disabled)" in styles
+    assert ".openreel-workflow-graph::after" in styles
+    assert ".openreel-workflow-node.is-selected" in styles
+    assert "requestAnimationFrame" in workflow
+    assert 'className="openreel-workflow-graph h-full w-full"' in workflow
+    assert 'className="openreel-workflow-editor' in workflow
+    assert 'data-workflow-action="success"' in workflow
+    assert "studio-workspace-switcher-button" in tabs

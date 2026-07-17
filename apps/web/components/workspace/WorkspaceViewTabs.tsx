@@ -38,15 +38,16 @@ export function workspaceViewDescription(value: WorkspaceView): string {
 
 export function WorkspaceViewTabs({ value, onChange }: WorkspaceViewTabsProps) {
   return (
-    <div className="flex items-center gap-1 rounded-xl border border-white/[0.08] bg-black/30 p-1 shadow-inner shadow-black/20 backdrop-blur-md">
+    <div className="studio-workspace-switcher flex items-center gap-1 rounded-xl border border-white/[0.08] bg-black/30 p-1 shadow-inner shadow-black/20 backdrop-blur-md">
       {WORKSPACE_VIEWS.map((item) => (
         <button
           key={item.value}
           type="button"
           onClick={() => onChange(item.value)}
           aria-pressed={value === item.value}
+          data-workspace-view={item.value}
           className={cn(
-            "relative flex h-7 items-center gap-1.5 rounded-lg px-3 text-[11px] font-medium transition-colors",
+            "studio-workspace-switcher-button relative flex h-7 items-center gap-1.5 rounded-lg px-3 text-[11px] font-medium transition-colors",
             value === item.value
               ? "text-white"
               : "text-zinc-400 hover:bg-white/[0.08] hover:text-zinc-100",
