@@ -1418,6 +1418,16 @@ def test_workflow_media_runtime_settings_come_from_ui_overrides() -> None:
         "node_type": "image",
     }
     ui_overrides = {
+        "media_model_defaults": {"image": "default-image-model"},
+        "media_field_defaults": {
+            "image": {
+                "aspect_ratio": "16:9",
+                "resolution": "2560x1440",
+                "width": 2560,
+                "height": 1440,
+                "quality": "medium",
+            }
+        },
         "media_model_overrides": {"character_image": "image-model"},
         "media_field_overrides": {
             "character_image": {
@@ -1437,6 +1447,21 @@ def test_workflow_media_runtime_settings_come_from_ui_overrides() -> None:
         "height": 2560,
         "quality": "high",
         "model": "image-model",
+    }
+
+    dynamic_step = {
+        "id": "character_images__supporting__character_image",
+        "logical_step_id": "character_image_instance",
+        "template_step_id": "character_image_instance",
+        "node_type": "image",
+    }
+    assert workflow_tools._workflow_ui_node_run_extra_fields(dynamic_step, ui_overrides) == {
+        "aspect_ratio": "16:9",
+        "resolution": "2560x1440",
+        "width": 2560,
+        "height": 1440,
+        "quality": "medium",
+        "model": "default-image-model",
     }
     assert workflow_tools._workflow_strip_template_media_settings(
         {

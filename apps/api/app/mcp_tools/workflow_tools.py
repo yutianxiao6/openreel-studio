@@ -3326,6 +3326,10 @@ def _workflow_ui_media_model_override(step: dict[str, Any], ui_overrides: dict[s
     if node_type not in {"image", "video", "audio"}:
         return ""
     value = _workflow_ui_step_override(step, ui_overrides, "media_model_overrides")
+    if not value:
+        defaults = ui_overrides.get("media_model_defaults")
+        if isinstance(defaults, dict):
+            value = defaults.get(node_type)
     return str(value or "").strip()
 
 
@@ -3336,9 +3340,15 @@ def _workflow_ui_media_field_overrides(
     node_type = str(step.get("node_type") or "").strip()
     if node_type not in {"image", "video", "audio"}:
         return {}
-    raw = _workflow_ui_step_override(step, ui_overrides, "media_field_overrides")
-    if not isinstance(raw, dict):
+    if not isinstance(ui_overrides, dict):
         return {}
+    defaults = ui_overrides.get("media_field_defaults")
+    default_fields = defaults.get(node_type) if isinstance(defaults, dict) else None
+    step_fields = _workflow_ui_step_override(step, ui_overrides, "media_field_overrides")
+    raw = {
+        **(default_fields if isinstance(default_fields, dict) else {}),
+        **(step_fields if isinstance(step_fields, dict) else {}),
+    }
     result: dict[str, Any] = {}
     for key in _WORKFLOW_UI_MEDIA_FIELD_KEYS:
         value = raw.get(key)

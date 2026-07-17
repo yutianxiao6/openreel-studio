@@ -2434,6 +2434,7 @@ type WorkflowMediaFieldOverride = {
 }
 
 type WorkflowMediaFieldOverrides = Record<string, WorkflowMediaFieldOverride>
+type WorkflowMediaFieldDefaults = Partial<Record<"image" | "video" | "audio", WorkflowMediaFieldOverride>>
 
 function workflowCleanMediaFieldOverrides(overrides: WorkflowMediaFieldOverrides): WorkflowMediaFieldOverrides {
   const cleaned: WorkflowMediaFieldOverrides = {}
@@ -2463,6 +2464,24 @@ function workflowUiOverridesFromMediaSettings(
 ): Record<string, unknown> | undefined {
   const mediaModelOverrides = workflowCleanMediaModelOverrides(modelOverrides)
   const mediaFieldOverrides = workflowCleanMediaFieldOverrides(fieldOverrides)
+  const mediaModelDefaults: Record<string, string> = {}
+  const mediaFieldDefaults: WorkflowMediaFieldDefaults = {
+    image: {
+      aspect_ratio: "16:9",
+      resolution: `${WORKFLOW_DEFAULT_MEDIA_RESOLUTION.width}x${WORKFLOW_DEFAULT_MEDIA_RESOLUTION.height}`,
+      width: WORKFLOW_DEFAULT_MEDIA_RESOLUTION.width,
+      height: WORKFLOW_DEFAULT_MEDIA_RESOLUTION.height,
+      quality: "high",
+    },
+    video: {
+      aspect_ratio: "16:9",
+      resolution: "720p",
+    },
+  }
+  for (const kind of ["image", "video", "audio"] as const) {
+    const defaultProvider = workflowResolveMediaProvider("", workflowMediaProvidersForKind(providers, kind))
+    if (defaultProvider?.name) mediaModelDefaults[kind] = defaultProvider.name
+  }
   for (const step of steps) {
     const stepId = step.id.trim()
     const kind = workflowStepAuthoringKind(step)
@@ -2501,9 +2520,11 @@ function workflowUiOverridesFromMediaSettings(
     }
   }
   const result: Record<string, unknown> = {}
+  if (Object.keys(mediaModelDefaults).length > 0) result.media_model_defaults = mediaModelDefaults
+  result.media_field_defaults = mediaFieldDefaults
   if (Object.keys(mediaModelOverrides).length > 0) result.media_model_overrides = mediaModelOverrides
   if (Object.keys(mediaFieldOverrides).length > 0) result.media_field_overrides = mediaFieldOverrides
-  return Object.keys(result).length > 0 ? result : undefined
+  return result
 }
 
 function workflowProductSourceStep(step: WorkflowTemplateStepSummary): string {
@@ -7606,6 +7627,8 @@ function WorkflowStepInspector({
                       const dimensions = workflowDimensionPairFromText(resolution) || WORKFLOW_DEFAULT_MEDIA_RESOLUTION
                       onMediaFieldOverrideChange?.(step.id, {
                         resolution: `${dimensions.width}x${dimensions.height}`,
+                        width: dimensions.width,
+                        height: dimensions.height,
                       })
                     }}
                   />
@@ -7623,6 +7646,8 @@ function WorkflowStepInspector({
                       onMediaFieldOverrideChange?.(step.id, {
                         aspect_ratio: aspectRatio,
                         resolution: `${dimensions.width}x${dimensions.height}`,
+                        width: dimensions.width,
+                        height: dimensions.height,
                       })
                     }}
                   />
