@@ -30,6 +30,11 @@ def test_project_management_uses_the_left_session_sidebar() -> None:
     assert 'data-openreel-project-session-list="true"' in sidebar
     assert 'data-openreel-project-create="true"' in sidebar
     assert 'data-openreel-project-delete-confirm="true"' in sidebar
+    assert 'data-openreel-project-multi-select="true"' in sidebar
+    assert 'data-openreel-project-multi-actions="true"' in sidebar
+    assert "const [expanded, setExpanded] = useState(false)" in sidebar
+    assert "LS_SIDEBAR_EXPANDED" not in sidebar
+    assert "deleteSelectedProjects" in sidebar
     assert "api.createProject" in sidebar
     assert "api.deleteProject" in sidebar
     assert "router.push(path)" in sidebar

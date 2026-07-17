@@ -6,9 +6,8 @@ import { api } from "@/lib/api"
 import { useProjectStore, type ProjectRecord } from "@/stores/projectStore"
 
 const LS_CURRENT_PROJECT = "drama.currentProjectId"
-const LS_SIDEBAR_EXPANDED = "drama.projectSidebarExpanded"
 
-function SidebarIcon({ name }: { name: "menu" | "collapse" | "plus" | "project" | "trash" | "refresh" }) {
+function SidebarIcon({ name }: { name: "menu" | "collapse" | "plus" | "project" | "trash" | "refresh" | "multi" }) {
   return (
     <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="h-4 w-4">
       {name === "menu" && <><path d="M4 5h12M4 10h12M4 15h12" /></>}
@@ -17,6 +16,7 @@ function SidebarIcon({ name }: { name: "menu" | "collapse" | "plus" | "project" 
       {name === "project" && <><path d="M3.5 5.5h5l1.5 1.7h6.5v8.3h-13z" /><path d="M3.5 8h13" /></>}
       {name === "trash" && <><path d="M5.5 6.5h9M8 3.8h4M7 6.5l.6 9h4.8l.6-9" /></>}
       {name === "refresh" && <><path d="M15 6V3.5L12.5 6" /><path d="M15 5.8A6 6 0 1 0 16 12" /></>}
+      {name === "multi" && <><rect x="3.5" y="4" width="5" height="5" rx="1" /><rect x="11.5" y="4" width="5" height="5" rx="1" /><rect x="3.5" y="12" width="5" height="5" rx="1" /><path d="m12 14.5 1.5 1.5 3-3.5" /></>}
     </svg>
   )
 }
@@ -54,6 +54,10 @@ export function ProjectSessionSidebar() {
   const [creating, setCreating] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  const [multiSelect, setMultiSelect] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false)
+  const [batchDeleting, setBatchDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const orderedProjects = useMemo(() => sortedProjects(projects), [projects])
@@ -62,7 +66,10 @@ export function ProjectSessionSidebar() {
     setLoading(true)
     try {
       const items = await api.listProjects({ compact: true })
-      setProjects(items as ProjectRecord[])
+      const records = items as ProjectRecord[]
+      setProjects(records)
+      const availableIds = new Set(records.map((project) => project.id))
+      setSelectedIds((current) => new Set([...current].filter((id) => availableIds.has(id))))
       setError(null)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "项目列表加载失败")
@@ -72,8 +79,6 @@ export function ProjectSessionSidebar() {
   }, [setProjects])
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(LS_SIDEBAR_EXPANDED)
-    setExpanded(stored == null ? window.matchMedia("(min-width: 1024px)").matches : stored === "true")
     void refreshProjects()
     const onProjectsChanged = () => void refreshProjects()
     window.addEventListener("openreel:projects-changed", onProjectsChanged)
@@ -82,10 +87,41 @@ export function ProjectSessionSidebar() {
 
   const toggleExpanded = () => {
     setExpanded((current) => {
-      const next = !current
-      window.localStorage.setItem(LS_SIDEBAR_EXPANDED, String(next))
+      if (current) {
+        setMultiSelect(false)
+        setSelectedIds(new Set())
+        setBatchDeleteConfirm(false)
+      }
+      return !current
+    })
+  }
+
+  const toggleMultiSelect = () => {
+    setMultiSelect((current) => {
+      if (current) {
+        setSelectedIds(new Set())
+        setBatchDeleteConfirm(false)
+      }
+      return !current
+    })
+  }
+
+  const toggleProjectSelection = (projectId: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (next.has(projectId)) next.delete(projectId)
+      else next.add(projectId)
       return next
     })
+    setBatchDeleteConfirm(false)
+  }
+
+  const toggleSelectAll = () => {
+    setSelectedIds((current) => {
+      if (current.size === orderedProjects.length) return new Set()
+      return new Set(orderedProjects.map((project) => project.id))
+    })
+    setBatchDeleteConfirm(false)
   }
 
   const navigateToProject = (project: ProjectRecord, replace = false) => {
@@ -97,7 +133,6 @@ export function ProjectSessionSidebar() {
     else router.push(path)
     if (window.innerWidth < 768) {
       setExpanded(false)
-      window.localStorage.setItem(LS_SIDEBAR_EXPANDED, "false")
     }
   }
 
@@ -113,12 +148,57 @@ export function ProjectSessionSidebar() {
         budget_level: "low",
       }) as unknown as ProjectRecord
       setProjects([created, ...projects.filter((project) => project.id !== created.id)])
+      setMultiSelect(false)
+      setSelectedIds(new Set())
+      setBatchDeleteConfirm(false)
       window.dispatchEvent(new CustomEvent("openreel:projects-changed"))
       navigateToProject(created)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "新建项目失败")
     } finally {
       setCreating(false)
+    }
+  }
+
+  const deleteSelectedProjects = async () => {
+    if (batchDeleting || selectedIds.size === 0) return
+    setBatchDeleting(true)
+    setError(null)
+    const deletedIds = new Set<string>()
+    const failedIds = new Set<string>()
+    for (const projectId of selectedIds) {
+      try {
+        await api.deleteProject(projectId)
+        deletedIds.add(projectId)
+      } catch {
+        failedIds.add(projectId)
+      }
+    }
+
+    try {
+      let remaining = projects.filter((project) => !deletedIds.has(project.id))
+      if (remaining.length === 0) {
+        const created = await api.createProject({
+          title: "未命名项目",
+          genre: "",
+          episode_count: 1,
+          budget_level: "low",
+        }) as unknown as ProjectRecord
+        remaining = [created]
+      }
+      setProjects(remaining)
+      setSelectedIds(failedIds)
+      setBatchDeleteConfirm(false)
+      if (failedIds.size === 0) setMultiSelect(false)
+      if (failedIds.size > 0) setError(`${failedIds.size} 个项目删除失败，请重试`)
+      if (currentProject?.id && deletedIds.has(currentProject.id)) {
+        navigateToProject(sortedProjects(remaining)[0], true)
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "删除项目后创建新项目失败")
+      await refreshProjects()
+    } finally {
+      setBatchDeleting(false)
     }
   }
 
@@ -182,20 +262,33 @@ export function ProjectSessionSidebar() {
           </button>
         </div>
 
-        <div className={`shrink-0 ${expanded ? "p-2" : "px-1.5 py-2"}`}>
-          <button
-            type="button"
-            onClick={() => void createProject()}
-            disabled={creating}
-            className={`flex h-9 items-center rounded-md border border-white/10 bg-white/[0.035] text-zinc-300 transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-wait disabled:opacity-50 ${expanded ? "w-full gap-2 px-2.5" : "w-9 justify-center"}`}
-            aria-label="新建项目"
-            title="新建项目"
-            data-openreel-project-create="true"
-          >
-            <SidebarIcon name="plus" />
-            {expanded && <span className="text-[11px] font-medium">{creating ? "正在新建…" : "新建项目"}</span>}
-          </button>
-        </div>
+        {expanded && (
+          <div className="flex shrink-0 gap-1.5 p-2">
+            <button
+              type="button"
+              onClick={() => void createProject()}
+              disabled={creating}
+              className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md border border-white/10 bg-white/[0.035] px-2.5 text-zinc-300 transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-wait disabled:opacity-50"
+              aria-label="新建项目"
+              title="新建项目并立即切换"
+              data-openreel-project-create="true"
+            >
+              <SidebarIcon name="plus" />
+              <span className="truncate text-[11px] font-medium">{creating ? "正在新建…" : "新建项目"}</span>
+            </button>
+            <button
+              type="button"
+              onClick={toggleMultiSelect}
+              className={`flex h-9 items-center gap-1.5 rounded-md border px-2.5 text-[10px] transition ${multiSelect ? "border-[#577c99] bg-[#29445a] text-[#c8e2f4]" : "border-white/10 bg-white/[0.035] text-zinc-500 hover:border-white/20 hover:bg-white/[0.08] hover:text-zinc-200"}`}
+              aria-label={multiSelect ? "退出多选" : "多选项目"}
+              aria-pressed={multiSelect}
+              data-openreel-project-multi-select="true"
+            >
+              <SidebarIcon name="multi" />
+              <span>{multiSelect ? "完成" : "多选"}</span>
+            </button>
+          </div>
+        )}
 
         {expanded ? (
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" data-openreel-project-session-list="true">
@@ -209,23 +302,24 @@ export function ProjectSessionSidebar() {
                   const active = currentProject?.id === project.id
                   const confirming = pendingDeleteId === project.id
                   const deleting = deletingId === project.id
+                  const selected = selectedIds.has(project.id)
                   return (
                     <div
                       key={project.id}
                       data-openreel-project-session="true"
                       data-project-id={project.id}
                       data-current-project={active ? "true" : "false"}
-                      className={`group rounded-md border transition ${active ? "border-[#43617b] bg-[#1d2a35]" : "border-transparent bg-transparent hover:border-white/[0.06] hover:bg-white/[0.045]"}`}
+                      className={`group rounded-md border transition ${selected ? "border-cyan-400/40 bg-cyan-400/[0.08]" : active ? "border-[#43617b] bg-[#1d2a35]" : "border-transparent bg-transparent hover:border-white/[0.06] hover:bg-white/[0.045]"}`}
                     >
                       <div className="flex items-start gap-1 p-1">
                         <button
                           type="button"
-                          onClick={() => navigateToProject(project)}
+                          onClick={() => multiSelect ? toggleProjectSelection(project.id) : navigateToProject(project)}
                           className="flex min-w-0 flex-1 items-start gap-2 rounded px-1.5 py-1.5 text-left"
-                          aria-label={`切换到项目 ${project.title || "未命名项目"}`}
+                          aria-label={multiSelect ? `${selected ? "取消选择" : "选择"}项目 ${project.title || "未命名项目"}` : `切换到项目 ${project.title || "未命名项目"}`}
                         >
-                          <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded border ${active ? "border-[#577c99] bg-[#29445a] text-[#b7d7ee]" : "border-white/10 bg-white/[0.03] text-zinc-600"}`}>
-                            <SidebarIcon name="project" />
+                          <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded border ${selected ? "border-cyan-300/60 bg-cyan-400/20 text-cyan-100" : active ? "border-[#577c99] bg-[#29445a] text-[#b7d7ee]" : "border-white/10 bg-white/[0.03] text-zinc-600"}`}>
+                            {multiSelect ? <span className="text-[11px] font-semibold">{selected ? "✓" : ""}</span> : <SidebarIcon name="project" />}
                           </span>
                           <span className="min-w-0 flex-1">
                             <span className={`block truncate text-[11px] ${active ? "font-medium text-zinc-100" : "text-zinc-400 group-hover:text-zinc-200"}`}>{project.title || "未命名项目"}</span>
@@ -235,16 +329,18 @@ export function ProjectSessionSidebar() {
                             </span>
                           </span>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setPendingDeleteId(confirming ? null : project.id)}
-                          disabled={deleting}
-                          className={`mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded text-zinc-600 transition hover:bg-red-500/10 hover:text-red-300 ${confirming ? "bg-red-500/10 text-red-300" : "opacity-0 group-hover:opacity-100 focus:opacity-100"}`}
-                          aria-label={`删除项目 ${project.title || "未命名项目"}`}
-                          title="删除项目"
-                        >
-                          <SidebarIcon name="trash" />
-                        </button>
+                        {!multiSelect && (
+                          <button
+                            type="button"
+                            onClick={() => setPendingDeleteId(confirming ? null : project.id)}
+                            disabled={deleting}
+                            className={`mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded text-zinc-600 transition hover:bg-red-500/10 hover:text-red-300 ${confirming ? "bg-red-500/10 text-red-300" : "opacity-0 group-hover:opacity-100 focus:opacity-100"}`}
+                            aria-label={`删除项目 ${project.title || "未命名项目"}`}
+                            title="删除项目"
+                          >
+                            <SidebarIcon name="trash" />
+                          </button>
+                        )}
                       </div>
                       {confirming && (
                         <div className="mx-2 mb-2 flex items-center gap-1.5 border-t border-red-400/10 pt-2" data-openreel-project-delete-confirm="true">
@@ -263,20 +359,39 @@ export function ProjectSessionSidebar() {
           <div className="min-h-0 flex-1" />
         )}
 
-        <div className={`shrink-0 border-t border-white/10 ${expanded ? "p-2" : "p-1.5"}`}>
-          {expanded && error ? <div className="mb-1.5 break-words rounded bg-red-500/10 px-2 py-1.5 text-[9px] leading-4 text-red-200">{error}</div> : null}
-          <button
-            type="button"
-            onClick={() => void refreshProjects()}
-            disabled={loading}
-            className={`flex h-8 items-center rounded text-zinc-600 transition hover:bg-white/10 hover:text-zinc-200 disabled:opacity-40 ${expanded ? "w-full gap-2 px-2" : "w-9 justify-center"}`}
-            aria-label="刷新项目列表"
-            title="刷新项目列表"
-          >
-            <SidebarIcon name="refresh" />
-            {expanded && <span className="text-[10px]">刷新项目列表</span>}
-          </button>
-        </div>
+        {expanded && (
+          <div className="shrink-0 border-t border-white/10 p-2">
+            {error ? <div className="mb-1.5 break-words rounded bg-red-500/10 px-2 py-1.5 text-[9px] leading-4 text-red-200">{error}</div> : null}
+            {multiSelect && (
+              <div className="mb-1.5 rounded-md border border-white/10 bg-white/[0.025] p-1.5" data-openreel-project-multi-actions="true">
+                {batchDeleteConfirm ? (
+                  <div className="flex items-center gap-1.5">
+                    <span className="min-w-0 flex-1 text-[9px] text-red-200/80">确认删除 {selectedIds.size} 个项目？</span>
+                    <button type="button" onClick={() => setBatchDeleteConfirm(false)} className="rounded px-2 py-1 text-[9px] text-zinc-500 hover:bg-white/10 hover:text-zinc-200">取消</button>
+                    <button type="button" onClick={() => void deleteSelectedProjects()} disabled={batchDeleting} className="rounded bg-red-500/15 px-2 py-1 text-[9px] text-red-200 hover:bg-red-500/25 disabled:opacity-50">{batchDeleting ? "删除中" : "删除"}</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <button type="button" onClick={toggleSelectAll} className="rounded px-2 py-1.5 text-[9px] text-zinc-500 hover:bg-white/10 hover:text-zinc-200">{selectedIds.size === orderedProjects.length ? "取消全选" : "全选"}</button>
+                    <span className="min-w-0 flex-1 text-right text-[9px] text-zinc-600">已选 {selectedIds.size} 项</span>
+                    <button type="button" onClick={() => setBatchDeleteConfirm(true)} disabled={selectedIds.size === 0} className="flex items-center gap-1 rounded bg-red-500/10 px-2 py-1.5 text-[9px] text-red-300 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-30"><SidebarIcon name="trash" />删除所选</button>
+                  </div>
+                )}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => void refreshProjects()}
+              disabled={loading}
+              className="flex h-8 w-full items-center gap-2 rounded px-2 text-zinc-600 transition hover:bg-white/10 hover:text-zinc-200 disabled:opacity-40"
+              aria-label="刷新项目列表"
+              title="刷新项目列表"
+            >
+              <SidebarIcon name="refresh" />
+              <span className="text-[10px]">刷新项目列表</span>
+            </button>
+          </div>
+        )}
       </aside>
     </div>
   )
