@@ -28,7 +28,7 @@ export function PendingActionCard({ action, disabled, onResolve }: PendingAction
   const locked = disabled || status !== "pending"
 
   return (
-    <div className="mb-2 overflow-hidden rounded-lg border border-white/10 bg-[var(--studio-panel)] shadow-sm shadow-black/20">
+    <div className="studio-action-card mb-2 overflow-hidden rounded-xl border border-white/10 bg-[var(--studio-panel)] shadow-sm shadow-black/20">
       <div className="flex items-start justify-between gap-3 border-b border-white/10 px-3 py-3">
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex items-center gap-2">

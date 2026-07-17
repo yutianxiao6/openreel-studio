@@ -1255,7 +1255,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
         scale: 1,
         filter: isSuperseded ? "grayscale(1)" : "grayscale(0)",
       }}
-      transition={{ duration: 0.35, ease: "easeOut" }}
+      transition={{ type: "spring", stiffness: 320, damping: 28, mass: 0.72 }}
       className={cn(
         "group relative rounded-md text-white transition-[filter] will-change-transform",
       )}
@@ -1478,13 +1478,14 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
 
       <div
         className={cn(
-          "h-full w-full overflow-hidden rounded-md border bg-[#232323] shadow-[0_18px_34px_rgba(0,0,0,0.28)] transition-[box-shadow,border-color] hover:border-white/25 hover:shadow-[0_24px_46px_rgba(0,0,0,0.34)]",
+          "relative h-full w-full overflow-hidden rounded-xl border bg-[#232323] shadow-[0_18px_34px_rgba(0,0,0,0.28)] transition-[transform,box-shadow,border-color] duration-200 hover:border-white/25 hover:shadow-[0_24px_46px_rgba(0,0,0,0.34)]",
           "openreel-smart-node-card openreel-smart-node-drag",
           "border-white/[0.08]",
           resizeActive && !selected && "border-cyan-200/80 shadow-[0_0_0_1px_rgba(34,211,238,0.36),0_24px_46px_rgba(0,0,0,0.34)]",
           isRunning && !isSuperseded && style.runningGlow,
           gridToolActive && "nodrag",
         )}
+        data-node-status={status}
         onClick={handleClick}
       >
         {isMediaNode ? (

@@ -122,7 +122,7 @@ export default function MediaHistoryDrawer({
       <button
         type="button"
         onClick={onToggle}
-        className={`absolute right-4 top-4 z-30 rounded-md border px-3 py-2 text-xs font-medium shadow-xl backdrop-blur transition ${
+        className={`studio-history-button absolute right-4 top-4 z-30 rounded-xl border px-3 py-2 text-xs font-medium shadow-xl backdrop-blur transition ${
           open
             ? "border-cyan-200/30 bg-cyan-300/12 text-cyan-100"
             : "border-white/10 bg-[#11151d]/92 text-zinc-200 hover:bg-white/[0.08]"
@@ -131,7 +131,7 @@ export default function MediaHistoryDrawer({
         历史 {items.length > 0 ? items.length : ""}
       </button>
       <div
-        className={`absolute bottom-0 right-0 top-0 z-40 flex w-[min(390px,calc(100vw-18px))] flex-col border-l border-white/10 bg-[#0d1118]/96 shadow-2xl shadow-black/55 backdrop-blur transition-transform duration-200 ${
+        className={`openreel-history-drawer absolute bottom-0 right-0 top-0 z-40 flex w-[min(390px,calc(100vw-18px))] flex-col border-l border-white/10 bg-[#0d1118]/96 shadow-2xl shadow-black/55 backdrop-blur transition-transform duration-300 ease-[cubic-bezier(.22,1,.36,1)] ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
       >

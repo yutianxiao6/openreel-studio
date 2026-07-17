@@ -233,7 +233,7 @@ export function ProjectSessionSidebar() {
   }
 
   return (
-    <div className={`relative z-40 w-12 shrink-0 transition-[width] duration-200 md:z-auto ${expanded ? "md:w-72" : "md:w-12"}`} data-openreel-project-sidebar="true" data-sidebar-expanded={expanded ? "true" : "false"}>
+    <div className={`relative z-40 w-12 shrink-0 transition-[width] duration-300 ease-[cubic-bezier(.22,1,.36,1)] md:z-auto ${expanded ? "md:w-72" : "md:w-12"}`} data-openreel-project-sidebar="true" data-sidebar-expanded={expanded ? "true" : "false"}>
       {expanded && (
         <button
           type="button"
@@ -242,18 +242,18 @@ export function ProjectSessionSidebar() {
           aria-label="收起项目栏"
         />
       )}
-      <aside className={`absolute inset-y-0 left-0 z-50 flex h-full flex-col overflow-hidden border-r border-white/10 bg-[#101217] shadow-2xl shadow-black/40 transition-[width] duration-200 md:relative md:shadow-none ${expanded ? "w-72" : "w-12"}`}>
-        <div className={`flex h-12 shrink-0 items-center border-b border-white/10 ${expanded ? "justify-between px-3" : "justify-center"}`}>
+      <aside className={`studio-session-drawer absolute inset-y-0 left-0 z-50 flex h-full flex-col overflow-hidden border-r border-white/[0.08] transition-[width] duration-300 ease-[cubic-bezier(.22,1,.36,1)] md:relative ${expanded ? "w-72" : "w-12"}`}>
+        <div className={`flex h-12 shrink-0 items-center border-b border-white/[0.07] bg-white/[0.012] ${expanded ? "justify-between px-3" : "justify-center"}`}>
           {expanded && (
             <div className="min-w-0">
-              <div className="text-[11px] font-semibold tracking-[0.08em] text-zinc-200">项目会话</div>
-              <div className="mt-0.5 text-[9px] text-zinc-600">{orderedProjects.length} 个项目</div>
+              <div className="bg-gradient-to-r from-zinc-100 to-violet-200 bg-clip-text text-[11px] font-semibold tracking-[0.08em] text-transparent">项目会话</div>
+              <div className="mt-0.5 text-[9px] text-zinc-600">{orderedProjects.length} 个项目 · 最近更新优先</div>
             </div>
           )}
           <button
             type="button"
             onClick={toggleExpanded}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-zinc-500 transition hover:bg-white/10 hover:text-zinc-100"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-zinc-500 transition duration-200 hover:scale-105 hover:border-violet-300/15 hover:bg-violet-400/10 hover:text-violet-100"
             title={expanded ? "收起项目栏" : "展开项目栏"}
             aria-label={expanded ? "收起项目栏" : "展开项目栏"}
             aria-expanded={expanded}
@@ -268,7 +268,7 @@ export function ProjectSessionSidebar() {
               type="button"
               onClick={() => void createProject()}
               disabled={creating}
-              className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md border border-white/10 bg-white/[0.035] px-2.5 text-zinc-300 transition hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-wait disabled:opacity-50"
+              className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg border border-violet-300/15 bg-gradient-to-r from-violet-500/15 to-cyan-400/[0.07] px-2.5 text-violet-100 shadow-inner shadow-white/[0.025] transition duration-200 hover:-translate-y-0.5 hover:border-violet-300/30 hover:from-violet-500/25 hover:to-cyan-400/10 hover:shadow-lg hover:shadow-violet-950/20 disabled:cursor-wait disabled:opacity-50"
               aria-label="新建项目"
               title="新建项目并立即切换"
               data-openreel-project-create="true"
@@ -279,7 +279,7 @@ export function ProjectSessionSidebar() {
             <button
               type="button"
               onClick={toggleMultiSelect}
-              className={`flex h-9 items-center gap-1.5 rounded-md border px-2.5 text-[10px] transition ${multiSelect ? "border-[#577c99] bg-[#29445a] text-[#c8e2f4]" : "border-white/10 bg-white/[0.035] text-zinc-500 hover:border-white/20 hover:bg-white/[0.08] hover:text-zinc-200"}`}
+              className={`flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-[10px] transition duration-200 hover:-translate-y-0.5 ${multiSelect ? "border-cyan-300/30 bg-cyan-400/15 text-cyan-100 shadow-[0_8px_20px_rgba(34,211,238,.08)]" : "border-white/[0.08] bg-white/[0.025] text-zinc-500 hover:border-white/15 hover:bg-white/[0.06] hover:text-zinc-200"}`}
               aria-label={multiSelect ? "退出多选" : "多选项目"}
               aria-pressed={multiSelect}
               data-openreel-project-multi-select="true"
@@ -298,7 +298,7 @@ export function ProjectSessionSidebar() {
               <div className="px-2 py-6 text-center text-[10px] leading-5 text-zinc-600">暂无项目<br />点击上方按钮开始</div>
             ) : (
               <div className="space-y-1">
-                {orderedProjects.map((project) => {
+                {orderedProjects.map((project, index) => {
                   const active = currentProject?.id === project.id
                   const confirming = pendingDeleteId === project.id
                   const deleting = deletingId === project.id
@@ -309,7 +309,8 @@ export function ProjectSessionSidebar() {
                       data-openreel-project-session="true"
                       data-project-id={project.id}
                       data-current-project={active ? "true" : "false"}
-                      className={`group rounded-md border transition ${selected ? "border-cyan-400/40 bg-cyan-400/[0.08]" : active ? "border-[#43617b] bg-[#1d2a35]" : "border-transparent bg-transparent hover:border-white/[0.06] hover:bg-white/[0.045]"}`}
+                      className={`studio-session-row group rounded-lg border transition duration-200 hover:translate-x-0.5 ${selected ? "border-cyan-300/35 bg-cyan-400/[0.09] shadow-[0_8px_24px_rgba(34,211,238,.06)]" : active ? "border-violet-300/25 bg-gradient-to-r from-violet-500/15 to-cyan-400/[0.06] shadow-[0_10px_28px_rgba(60,45,160,.12)]" : "border-transparent bg-transparent hover:border-white/[0.07] hover:bg-white/[0.04]"}`}
+                      style={{ animationDelay: `${Math.min(index, 10) * 24}ms` }}
                     >
                       <div className="flex items-start gap-1 p-1">
                         <button
@@ -318,13 +319,13 @@ export function ProjectSessionSidebar() {
                           className="flex min-w-0 flex-1 items-start gap-2 rounded px-1.5 py-1.5 text-left"
                           aria-label={multiSelect ? `${selected ? "取消选择" : "选择"}项目 ${project.title || "未命名项目"}` : `切换到项目 ${project.title || "未命名项目"}`}
                         >
-                          <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded border ${selected ? "border-cyan-300/60 bg-cyan-400/20 text-cyan-100" : active ? "border-[#577c99] bg-[#29445a] text-[#b7d7ee]" : "border-white/10 bg-white/[0.03] text-zinc-600"}`}>
+                          <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border shadow-inner shadow-white/[0.025] ${selected ? "border-cyan-300/60 bg-cyan-400/20 text-cyan-100" : active ? "border-violet-300/35 bg-violet-400/15 text-violet-100" : "border-white/[0.08] bg-white/[0.025] text-zinc-600"}`}>
                             {multiSelect ? <span className="text-[11px] font-semibold">{selected ? "✓" : ""}</span> : <SidebarIcon name="project" />}
                           </span>
                           <span className="min-w-0 flex-1">
                             <span className={`block truncate text-[11px] ${active ? "font-medium text-zinc-100" : "text-zinc-400 group-hover:text-zinc-200"}`}>{project.title || "未命名项目"}</span>
                             <span className="mt-0.5 flex items-center gap-1.5 text-[8px] text-zinc-600">
-                              {active && <span className="text-[#79a9cc]">当前</span>}
+                              {active && <span className="text-violet-300">当前</span>}
                               <span>{projectTimeLabel(project.updated_at || project.created_at)}</span>
                             </span>
                           </span>

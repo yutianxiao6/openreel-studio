@@ -9,9 +9,11 @@ import { useChatStore } from "@/stores/chatStore"
 import { useCanvasStore } from "@/stores/canvasStore"
 import { useViewModeStore } from "@/stores/viewModeStore"
 import { useBlueprintStore } from "@/stores/blueprintStore"
-import { ProjectTitleEditor } from "@/components/project/ProjectTitleEditor"
 import { ProjectSessionSidebar } from "@/components/project/ProjectSessionSidebar"
 import { WorkspaceViewTabs, workspaceViewDescription, type WorkspaceView } from "@/components/workspace/WorkspaceViewTabs"
+import { StudioHeader } from "@/components/workspace/StudioHeader"
+import { StudioAtmosphere } from "@/components/workspace/StudioAtmosphere"
+import { SettingsModal } from "@/components/settings/SettingsModal"
 import { api } from "@/lib/api"
 
 const LS_KEY = "drama.currentProjectId"
@@ -27,6 +29,7 @@ export default function ProjectWorkspacePage() {
   const viewMode = useViewModeStore((s) => s.mode)
   const [mobilePane, setMobilePane] = useState<MobilePane>("chat")
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("canvas")
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const viewModeReadyRef = useRef(false)
 
   const switchWorkspaceView = useCallback((next: WorkspaceView) => {
@@ -89,24 +92,16 @@ export default function ProjectWorkspacePage() {
   }, [viewMode])
 
   return (
-    <div className="flex h-[100dvh] min-h-0 flex-col bg-[#0b0d10] text-zinc-100">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-[#111318] px-3 py-2 shadow-sm shadow-black/30 sm:px-4 sm:py-2.5">
-        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-          <span className="shrink-0 text-sm font-semibold tracking-wide text-zinc-100">OpenReel Studio</span>
-          <span className="hidden h-4 w-px bg-white/10 sm:block" />
-          <ProjectTitleEditor fallback="加载中..." />
-        </div>
-        <div className="ml-auto flex shrink-0 items-center gap-2 text-xs text-zinc-500">
-          <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
-          已连接
-        </div>
-      </header>
+    <div className="studio-shell flex h-[100dvh] min-h-0 flex-col text-zinc-100">
+      <StudioAtmosphere />
+      <StudioHeader connected={Boolean(currentProject)} projectFallback="加载中..." onOpenSettings={() => setSettingsOpen(true)} />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
 
-      <div className="grid shrink-0 grid-cols-2 gap-1 border-b border-white/10 bg-[#111318] p-1 md:hidden">
+      <div className="studio-mobile-tabs grid shrink-0 grid-cols-2 gap-1 p-1 md:hidden">
         <button
           onClick={() => setMobilePane("chat")}
           className={`rounded-md px-3 py-2 text-xs font-medium transition-colors ${
-            mobilePane === "chat" ? "bg-zinc-100 text-zinc-950" : "text-zinc-400 hover:bg-white/10"
+            mobilePane === "chat" ? "is-active" : "text-zinc-400 hover:bg-white/10"
           }`}
         >
           聊天
@@ -114,7 +109,7 @@ export default function ProjectWorkspacePage() {
         <button
           onClick={() => setMobilePane("work")}
           className={`rounded-md px-3 py-2 text-xs font-medium transition-colors ${
-            mobilePane === "work" ? "bg-zinc-100 text-zinc-950" : "text-zinc-400 hover:bg-white/10"
+            mobilePane === "work" ? "is-active" : "text-zinc-400 hover:bg-white/10"
           }`}
         >
           工作区
@@ -123,11 +118,11 @@ export default function ProjectWorkspacePage() {
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <ProjectSessionSidebar />
-        <div className={`min-h-0 flex-col border-r border-white/10 md:flex md:w-[420px] md:shrink-0 ${mobilePane === "chat" ? "flex w-full" : "hidden"}`}>
+        <div className={`studio-chat-pane min-h-0 flex-col md:flex md:w-[420px] md:shrink-0 ${mobilePane === "chat" ? "flex w-full" : "hidden"}`}>
           <ChatPanel />
         </div>
-        <div className={`min-h-0 flex-1 flex-col overflow-hidden md:flex ${mobilePane === "work" ? "flex" : "hidden"}`}>
-          <div className="flex shrink-0 items-center gap-1 border-b border-white/10 bg-[#111318]/80 px-3 py-2">
+        <div className={`studio-workspace-pane min-h-0 flex-1 flex-col overflow-hidden md:flex ${mobilePane === "work" ? "flex" : "hidden"}`}>
+          <div className="studio-workbar flex shrink-0 items-center gap-1 px-3 py-2">
             <WorkspaceViewTabs value={workspaceView} onChange={switchWorkspaceView} />
             <span className="ml-auto hidden truncate text-[10px] text-zinc-600 sm:block">
               {workspaceViewDescription(workspaceView)}

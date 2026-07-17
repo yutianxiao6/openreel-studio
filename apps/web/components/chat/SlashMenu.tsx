@@ -85,7 +85,7 @@ export function SlashMenu({ query, extraCompletions = [], selectedIndex, onSelec
   if (items.length === 0) return null
 
   return (
-    <div className="absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900/95 shadow-xl backdrop-blur-sm">
+    <div className="absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto rounded-xl border border-violet-300/15 bg-[#0d121c]/96 shadow-[0_24px_70px_rgba(0,0,0,.52)] backdrop-blur-xl animate-[studio-enter_.18s_ease-out]">
       <div ref={containerRef}>
         {items.map((cmd, i) => {
           const active = i === selectedIndex
@@ -96,10 +96,10 @@ export function SlashMenu({ query, extraCompletions = [], selectedIndex, onSelec
               onMouseEnter={() => onHover(i)}
               onClick={() => onSelect(cmd)}
               className={`flex w-full items-center gap-3 px-3 py-2 text-left text-xs transition-colors ${
-                active ? "bg-indigo-600/30 text-white" : "text-gray-200 hover:bg-gray-800"
+                active ? "bg-gradient-to-r from-violet-500/25 to-cyan-400/10 text-white" : "text-gray-200 hover:bg-white/[0.045]"
               }`}
             >
-              <span className="font-mono font-semibold text-indigo-300 min-w-[150px] whitespace-nowrap">{cmd.name}</span>
+              <span className="min-w-[150px] whitespace-nowrap font-mono font-semibold text-violet-300">{cmd.name}</span>
               <span className="flex-1 truncate text-gray-400">{cmd.description}</span>
               {cmd.usage && active && (
                 <span className="text-[10px] text-gray-500 font-mono">{cmd.usage}</span>

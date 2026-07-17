@@ -4520,7 +4520,7 @@ export default function VideoEditPanel({
       onPointerDown={(event) => event.stopPropagation()}
       onWheel={(event) => event.stopPropagation()}
     >
-      <div className="flex h-8 items-center justify-between border-b border-[#34383f] bg-[#202328] px-2.5 shadow-[inset_0_1px_rgba(255,255,255,.025)]">
+      <div className="openreel-editor-topbar flex h-9 items-center justify-between border-b border-[#34383f] bg-[#202328] px-2.5 shadow-[inset_0_1px_rgba(255,255,255,.025)]">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="border-r border-[#454a52] pr-2.5 text-[9px] font-semibold uppercase tracking-[0.16em] text-[#8d939c]">OpenReel Edit</div>
           <div className="max-w-[340px] truncate text-[11px] font-medium text-[#e1e3e6]">{title || "未命名时间线"}</div>
@@ -4586,9 +4586,9 @@ export default function VideoEditPanel({
         </div>
       </div>
 
-      <div className="grid h-[calc(100%-2rem)] w-full min-w-0 grid-rows-[minmax(360px,70%)_minmax(260px,30%)] bg-[#111316]">
+      <div className="openreel-editor-workspace grid h-[calc(100%-2.25rem)] w-full min-w-0 grid-rows-[minmax(360px,70%)_minmax(260px,30%)] bg-[#111316]">
         <div className="grid min-h-0 w-full min-w-0 grid-cols-[238px_minmax(420px,1fr)_320px] border-b border-[#34383f] max-xl:grid-cols-[210px_minmax(360px,1fr)_300px] max-lg:grid-cols-1 max-lg:overflow-y-auto">
-          <aside data-openreel-media-bin="true" className="flex min-h-0 flex-col border-r border-[#34383f] bg-[#191b1f]">
+          <aside data-openreel-media-bin="true" className="openreel-editor-media flex min-h-0 flex-col border-r border-[#34383f] bg-[#191b1f]">
             <div className="flex h-8 items-end justify-between border-b border-[#34383f] bg-[#202328] px-2.5">
               <div className="flex h-full items-center border-b-2 border-[#4d92c5] text-[10px] font-semibold text-[#e3e5e8]">媒体池</div>
               <div className="mb-1 text-right font-mono text-[8px] leading-3 text-[#777d86]">
@@ -4665,7 +4665,7 @@ export default function VideoEditPanel({
             data-openreel-preview-pane="true"
             data-playback-clock={playbackClockSource}
             data-video-preview-engine={playbackResolution === "full" ? "native" : "canvas"}
-            className="flex min-h-0 min-w-0 flex-col bg-[#111316]"
+            className="openreel-editor-viewer flex min-h-0 min-w-0 flex-col bg-[#111316]"
           >
             <div className="flex h-7 shrink-0 items-center justify-between border-b border-[#2f3339] bg-[#1d2024] px-2.5">
               <span className="text-[9px] font-medium text-[#aeb3ba]">时间线监看器</span>
@@ -4945,7 +4945,7 @@ export default function VideoEditPanel({
 
           <aside
             data-openreel-inspector-pane="true"
-            className="flex min-h-0 flex-col border-l border-[#34383f] bg-[#191b1f] text-[12px] leading-5 [&_section]:text-[12px] [&_section_button]:text-[11px] [&_section_div]:text-[11px] [&_section_input]:text-[11px] [&_section_label]:text-[11px] [&_section_select]:text-[11px] [&_section_span]:text-[11px]"
+            className="openreel-editor-inspector flex min-h-0 flex-col border-l border-[#34383f] bg-[#191b1f] text-[12px] leading-5 [&_section]:text-[12px] [&_section_button]:text-[11px] [&_section_div]:text-[11px] [&_section_input]:text-[11px] [&_section_label]:text-[11px] [&_section_select]:text-[11px] [&_section_span]:text-[11px]"
           >
             <div className="flex h-9 items-end justify-between border-b border-[#34383f] bg-[#202328] px-3">
               <div className="flex h-full items-center border-b-2 border-[#4d92c5] text-[13px] font-semibold text-[#e3e5e8]">检查器</div>
@@ -5484,7 +5484,7 @@ export default function VideoEditPanel({
           </aside>
         </div>
 
-        <section className="flex min-h-0 w-full min-w-0 flex-col bg-[#15171a]">
+        <section className="openreel-editor-timeline flex min-h-0 w-full min-w-0 flex-col bg-[#15171a]">
           <div className="flex h-9 shrink-0 items-center justify-between border-b border-[#34383f] bg-[#202328] px-2">
             <div className="flex items-center gap-2">
               <div className="mr-1 flex h-9 items-center border-b-2 border-[#4d92c5] px-1 text-[10px] font-semibold text-[#e2e4e7]">时间线 1</div>

@@ -25,7 +25,7 @@ function ProgressBar({ done, total, failed }: { done: number; total: number; fai
       <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
         <div className="flex h-full">
           <div
-            className="h-full bg-green-500 transition-all duration-500"
+            className="h-full bg-gradient-to-r from-violet-500 via-cyan-400 to-emerald-400 shadow-[0_0_12px_rgba(85,215,255,.35)] transition-all duration-700 ease-out"
             style={{ width: `${pct}%` }}
           />
           {failPct > 0 && (
@@ -150,7 +150,7 @@ export function ChecklistPanel() {
       <motion.div
         initial={{ opacity: 0, y: -12 }}
         animate={{ opacity: 1, y: 0 }}
-        className="border-b border-gray-800/60 bg-gray-950/80 backdrop-blur"
+        className="border-b border-violet-300/10 bg-[linear-gradient(135deg,rgba(75,62,170,.12),rgba(8,12,19,.88))] shadow-[0_14px_40px_rgba(0,0,0,.16)] backdrop-blur-xl"
       >
         {/* 未完成节点警告 */}
         <UnfinishedWarning nodes={unfinished} />

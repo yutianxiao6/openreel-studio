@@ -3,31 +3,693 @@
 @tailwind utilities;
 
 :root {
-  --studio-bg: #0d0f12;
-  --studio-panel: #111318;
-  --studio-control: #171a20;
-  --studio-elevated: #1c2028;
-  --studio-border: rgb(255 255 255 / 0.10);
-  --studio-border-strong: rgb(255 255 255 / 0.16);
-  --studio-text: #f4f4f5;
-  --studio-text-muted: #a1a1aa;
-  --studio-text-faint: #71717a;
-  --studio-primary: #f4f4f5;
-  --studio-primary-text: #09090b;
+  --studio-bg: #07090e;
+  --studio-panel: #0d1119;
+  --studio-panel-soft: rgb(15 20 30 / 0.82);
+  --studio-control: #141a25;
+  --studio-elevated: #1a2230;
+  --studio-border: rgb(255 255 255 / 0.085);
+  --studio-border-strong: rgb(255 255 255 / 0.15);
+  --studio-text: #f7f8fb;
+  --studio-text-muted: #9ba4b4;
+  --studio-text-faint: #626c7d;
+  --studio-primary: #8b7cff;
+  --studio-primary-hover: #a79cff;
+  --studio-primary-text: #ffffff;
+  --studio-cyan: #55d7ff;
+  --studio-cyan-soft: rgb(85 215 255 / 0.14);
   --studio-danger: #f87171;
   --studio-warning: #fbbf24;
   --studio-success: #34d399;
-  --studio-info: #22d3ee;
-  --studio-radius-card: 8px;
-  --studio-radius-control: 8px;
-  --studio-shadow-panel: 0 18px 48px rgb(0 0 0 / 0.38);
+  --studio-info: #55d7ff;
+  --studio-radius-card: 12px;
+  --studio-radius-control: 10px;
+  --studio-shadow-panel: 0 24px 70px rgb(0 0 0 / 0.46);
+  --studio-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 html,
 body {
   height: 100%;
-  background-color: var(--studio-bg);
+  background:
+    radial-gradient(circle at 12% -10%, rgb(93 78 255 / 0.16), transparent 30%),
+    radial-gradient(circle at 88% 8%, rgb(38 190 255 / 0.09), transparent 27%),
+    var(--studio-bg);
   color: var(--studio-text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(111 122 142 / 0.42) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgb(111 122 142 / 0.38);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgb(139 124 255 / 0.56);
+  background-clip: padding-box;
+}
+
+::selection {
+  background: rgb(139 124 255 / 0.36);
+  color: white;
+}
+
+button,
+input,
+textarea,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid rgb(139 124 255 / 0.72);
+  outline-offset: 2px;
+}
+
+@keyframes studio-aurora {
+  0%, 100% { transform: translate3d(-3%, -2%, 0) scale(1); opacity: 0.58; }
+  50% { transform: translate3d(5%, 3%, 0) scale(1.08); opacity: 0.86; }
+}
+
+@keyframes studio-enter {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes studio-slide-in {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes studio-pulse-ring {
+  0% { transform: scale(0.72); opacity: 0.75; }
+  75%, 100% { transform: scale(1.8); opacity: 0; }
+}
+
+@keyframes studio-gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes studio-float {
+  0%, 100% { transform: translateY(0) rotate(-1deg); }
+  50% { transform: translateY(-6px) rotate(1deg); }
+}
+
+.studio-shell {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, rgb(12 15 23 / 0.98), rgb(6 8 13 / 0.98));
+}
+
+.studio-shell::before {
+  position: absolute;
+  z-index: -1;
+  inset: -30%;
+  content: "";
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 22% 12%, rgb(108 92 255 / 0.16), transparent 24%),
+    radial-gradient(circle at 76% 18%, rgb(38 198 255 / 0.1), transparent 22%);
+  filter: blur(46px);
+  animation: studio-aurora 16s ease-in-out infinite;
+}
+
+.studio-atmosphere {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.studio-pointer-aura {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 520px;
+  width: 520px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, rgb(117 98 255 / 0.13), rgb(68 166 224 / 0.055) 38%, transparent 70%);
+  filter: blur(28px);
+  will-change: transform, opacity;
+}
+
+.studio-atmosphere-mesh {
+  position: absolute;
+  inset: 0;
+  opacity: 0.22;
+  background-image:
+    linear-gradient(115deg, transparent 0 46%, rgb(139 124 255 / 0.025) 48%, transparent 50%),
+    linear-gradient(65deg, transparent 0 47%, rgb(85 215 255 / 0.02) 49%, transparent 51%);
+  background-size: 180px 180px;
+  mask-image: linear-gradient(to bottom, black, transparent 68%);
+}
+
+.studio-topbar {
+  position: relative;
+  z-index: 60;
+  display: flex;
+  min-height: 50px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--studio-border);
+  padding: 7px 12px;
+  background:
+    linear-gradient(180deg, rgb(18 23 34 / 0.94), rgb(10 13 20 / 0.9));
+  box-shadow: 0 12px 38px rgb(0 0 0 / 0.28), inset 0 1px rgb(255 255 255 / 0.035);
+  backdrop-filter: blur(24px) saturate(1.2);
+}
+
+.studio-topbar::after {
+  position: absolute;
+  right: 12%;
+  bottom: -1px;
+  left: 12%;
+  height: 1px;
+  content: "";
+  background: linear-gradient(90deg, transparent, rgb(139 124 255 / 0.55), rgb(85 215 255 / 0.38), transparent);
+  opacity: 0.55;
+}
+
+.studio-brand-mark {
+  position: relative;
+  display: grid;
+  height: 31px;
+  width: 31px;
+  flex: 0 0 auto;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgb(174 166 255 / 0.35);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgb(127 110 255 / 0.9), rgb(34 181 221 / 0.72));
+  box-shadow: 0 8px 24px rgb(80 66 220 / 0.3), inset 0 1px rgb(255 255 255 / 0.36);
+}
+
+.studio-brand-mark::before {
+  position: absolute;
+  inset: -80%;
+  content: "";
+  background: conic-gradient(from 90deg, transparent, rgb(255 255 255 / 0.7), transparent 26%);
+  animation: studio-aurora 6s linear infinite;
+}
+
+.studio-brand-mark-core {
+  position: relative;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.08em;
+  color: white;
+  text-shadow: 0 2px 8px rgb(0 0 0 / 0.3);
+}
+
+.studio-brand-name {
+  background: linear-gradient(90deg, #fff, #c9c4ff 55%, #a6edff);
+  background-clip: text;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+  color: transparent;
+}
+
+.studio-brand-edition {
+  font-size: 8px;
+  font-weight: 650;
+  letter-spacing: 0.18em;
+  color: #596477;
+}
+
+.studio-icon-button {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgb(255 255 255 / 0.085);
+  border-radius: 9px;
+  padding: 0 9px;
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.055), rgb(255 255 255 / 0.025));
+  color: #8b95a6;
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.035);
+  transition: border-color 180ms ease, background 180ms ease, color 180ms ease, transform 180ms var(--studio-ease), box-shadow 180ms ease;
+}
+
+.studio-icon-button:hover {
+  transform: translateY(-1px);
+  border-color: rgb(139 124 255 / 0.36);
+  background: rgb(139 124 255 / 0.1);
+  color: #e6e3ff;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 0.22), inset 0 1px rgb(255 255 255 / 0.06);
+}
+
+.studio-connection-pill {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgb(255 255 255 / 0.07);
+  border-radius: 999px;
+  padding: 0 9px;
+  background: rgb(255 255 255 / 0.025);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #778196;
+}
+
+.studio-connection-indicator {
+  position: relative;
+  display: grid;
+  height: 8px;
+  width: 8px;
+  place-items: center;
+}
+
+.studio-connection-indicator::before,
+.studio-connection-indicator span {
+  position: absolute;
+  height: 6px;
+  width: 6px;
+  border-radius: 999px;
+  content: "";
+  background: #fbbf24;
+}
+
+.studio-connection-pill.is-online .studio-connection-indicator::before,
+.studio-connection-pill.is-online .studio-connection-indicator span {
+  background: #34d399;
+}
+
+.studio-connection-pill.is-online .studio-connection-indicator::before,
+.studio-connection-pill.is-connecting .studio-connection-indicator::before {
+  animation: studio-pulse-ring 2s ease-out infinite;
+}
+
+.studio-mobile-tabs,
+.studio-workbar {
+  position: relative;
+  z-index: 20;
+  border-bottom: 1px solid var(--studio-border);
+  background: rgb(11 15 23 / 0.88);
+  box-shadow: inset 0 -1px rgb(0 0 0 / 0.25);
+  backdrop-filter: blur(18px);
+}
+
+.studio-mobile-tabs button.is-active {
+  background: linear-gradient(135deg, rgb(139 124 255 / 0.88), rgb(85 215 255 / 0.72));
+  color: white;
+  box-shadow: 0 8px 20px rgb(72 65 190 / 0.25);
+}
+
+.studio-chat-pane {
+  position: relative;
+  z-index: 10;
+  border-right: 1px solid var(--studio-border);
+  background: rgb(8 11 17 / 0.76);
+  box-shadow: 12px 0 36px rgb(0 0 0 / 0.12);
+}
+
+.studio-workspace-pane {
+  position: relative;
+  z-index: 5;
+  background: #06080c;
+}
+
+.studio-resizer {
+  z-index: 25;
+  background: linear-gradient(180deg, transparent, rgb(139 124 255 / 0.26), transparent);
+  transition: width 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.studio-resizer:hover,
+.studio-resizer:active {
+  width: 3px;
+  background: linear-gradient(180deg, transparent, rgb(85 215 255 / 0.86), transparent);
+  box-shadow: 0 0 18px rgb(85 215 255 / 0.42);
+}
+
+.studio-session-drawer {
+  background:
+    radial-gradient(circle at 0 0, rgb(139 124 255 / 0.12), transparent 29%),
+    linear-gradient(180deg, rgb(16 21 31 / 0.98), rgb(8 11 17 / 0.98)) !important;
+  box-shadow: 20px 0 60px rgb(0 0 0 / 0.34), inset -1px 0 rgb(255 255 255 / 0.025) !important;
+  backdrop-filter: blur(24px) saturate(1.15);
+}
+
+.studio-session-row {
+  animation: studio-slide-in 280ms var(--studio-ease) both;
+}
+
+.studio-chat-surface {
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 30% 0, rgb(94 78 255 / 0.08), transparent 30%),
+    linear-gradient(180deg, rgb(10 14 21 / 0.92), rgb(7 10 15 / 0.98)) !important;
+}
+
+.studio-chat-messages {
+  background:
+    radial-gradient(circle at 15% 0, rgb(139 124 255 / 0.09), transparent 29%),
+    radial-gradient(circle at 95% 26%, rgb(85 215 255 / 0.045), transparent 24%),
+    linear-gradient(180deg, rgb(255 255 255 / 0.018), transparent 35%) !important;
+}
+
+.studio-empty-state {
+  position: relative;
+  margin: 38px auto 0;
+  width: min(100%, 360px);
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 0.075);
+  border-radius: 18px;
+  padding: 28px 22px 24px;
+  background: linear-gradient(145deg, rgb(255 255 255 / 0.045), rgb(255 255 255 / 0.015));
+  box-shadow: 0 28px 70px rgb(0 0 0 / 0.28), inset 0 1px rgb(255 255 255 / 0.055);
+  backdrop-filter: blur(16px);
+  animation: studio-enter 520ms var(--studio-ease) both;
+}
+
+.studio-empty-state::before {
+  position: absolute;
+  top: -80px;
+  left: 50%;
+  height: 180px;
+  width: 260px;
+  content: "";
+  transform: translateX(-50%);
+  background: radial-gradient(circle, rgb(118 99 255 / 0.2), transparent 68%);
+  pointer-events: none;
+}
+
+.studio-agent-orb {
+  position: relative;
+  display: grid;
+  height: 72px;
+  width: 72px;
+  margin: 0 auto 14px;
+  place-items: center;
+  border: 1px solid rgb(158 146 255 / 0.2);
+  border-radius: 24px;
+  background: linear-gradient(145deg, rgb(139 124 255 / 0.12), rgb(85 215 255 / 0.055));
+  box-shadow: 0 22px 50px rgb(79 63 230 / 0.18), inset 0 1px rgb(255 255 255 / 0.06);
+  animation: studio-float 5s ease-in-out infinite;
+}
+
+.studio-suggestion-chip {
+  border: 1px solid rgb(255 255 255 / 0.07);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgb(255 255 255 / 0.026);
+  text-align: left;
+  font-size: 10px;
+  line-height: 1.45;
+  color: #8d97a8;
+  transition: transform 180ms var(--studio-ease), border-color 180ms ease, background 180ms ease, color 180ms ease;
+}
+
+.studio-suggestion-chip:hover {
+  transform: translateY(-2px);
+  border-color: rgb(139 124 255 / 0.3);
+  background: rgb(139 124 255 / 0.075);
+  color: #d9d5ff;
+}
+
+.studio-composer {
+  position: relative;
+  z-index: 20;
+  border-top: 1px solid var(--studio-border);
+  background:
+    linear-gradient(180deg, rgb(12 16 24 / 0.9), rgb(8 11 17 / 0.98)) !important;
+  box-shadow: 0 -24px 60px rgb(0 0 0 / 0.3), inset 0 1px rgb(255 255 255 / 0.025);
+  backdrop-filter: blur(22px) saturate(1.15);
+}
+
+.studio-prompt-input {
+  border-color: rgb(255 255 255 / 0.1) !important;
+  border-radius: 12px !important;
+  background: linear-gradient(180deg, rgb(24 31 44 / 0.92), rgb(17 22 32 / 0.96)) !important;
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.035), 0 10px 30px rgb(0 0 0 / 0.16) !important;
+  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.studio-prompt-input:focus {
+  border-color: rgb(139 124 255 / 0.55) !important;
+  box-shadow: 0 0 0 3px rgb(139 124 255 / 0.1), 0 14px 34px rgb(0 0 0 / 0.24) !important;
+}
+
+.studio-send-button {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgb(180 172 255 / 0.42);
+  background: linear-gradient(120deg, #6f5df5, #7d73ff 45%, #45bfe7 100%);
+  background-size: 180% 180%;
+  color: white;
+  box-shadow: 0 12px 30px rgb(85 66 220 / 0.28), inset 0 1px rgb(255 255 255 / 0.3);
+  animation: studio-gradient-shift 7s ease infinite;
+  transition: transform 180ms var(--studio-ease), box-shadow 180ms ease, filter 180ms ease;
+}
+
+.studio-send-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  filter: brightness(1.08);
+  box-shadow: 0 16px 36px rgb(86 69 225 / 0.38), inset 0 1px rgb(255 255 255 / 0.36);
+}
+
+.studio-message-bubble {
+  border-radius: 14px !important;
+  backdrop-filter: blur(14px);
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms var(--studio-ease);
+}
+
+.studio-message-bubble:hover {
+  transform: translateY(-1px);
+}
+
+.studio-message-bubble.is-assistant {
+  border-color: rgb(255 255 255 / 0.075) !important;
+  background: linear-gradient(145deg, rgb(24 31 44 / 0.88), rgb(15 20 29 / 0.92)) !important;
+  box-shadow: 0 16px 38px rgb(0 0 0 / 0.18), inset 0 1px rgb(255 255 255 / 0.035) !important;
+}
+
+.studio-message-bubble.is-user {
+  border: 1px solid rgb(196 190 255 / 0.3);
+  background: linear-gradient(135deg, #f4f2ff, #e8f7ff) !important;
+  box-shadow: 0 16px 34px rgb(57 45 142 / 0.18) !important;
+}
+
+.studio-canvas-shell,
+.studio-canvas {
+  background:
+    radial-gradient(circle at 42% 18%, rgb(85 67 194 / 0.07), transparent 34%),
+    #05070b !important;
+}
+
+.openreel-canvas-flow .react-flow__pane {
+  background:
+    radial-gradient(circle at 50% 40%, rgb(64 83 115 / 0.055), transparent 38%),
+    linear-gradient(rgb(255 255 255 / 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.018) 1px, transparent 1px);
+  background-size: auto, 96px 96px, 96px 96px;
+}
+
+.studio-canvas-empty {
+  position: relative;
+  overflow: hidden;
+  border-color: rgb(139 124 255 / 0.18) !important;
+  border-radius: 18px !important;
+  background: linear-gradient(145deg, rgb(20 26 38 / 0.92), rgb(10 14 21 / 0.86)) !important;
+  box-shadow: 0 30px 90px rgb(0 0 0 / 0.4), 0 0 70px rgb(93 74 230 / 0.08), inset 0 1px rgb(255 255 255 / 0.055) !important;
+  animation: studio-enter 520ms var(--studio-ease) both;
+}
+
+.studio-canvas-fab {
+  border-radius: 12px !important;
+  border-color: rgb(139 124 255 / 0.28) !important;
+  background: linear-gradient(145deg, rgb(29 35 51 / 0.94), rgb(16 21 31 / 0.92)) !important;
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.34), inset 0 1px rgb(255 255 255 / 0.07) !important;
+}
+
+.studio-canvas-fab span {
+  transition: transform 240ms var(--studio-ease);
+}
+
+.studio-canvas-fab:hover span {
+  transform: rotate(90deg) scale(1.12);
+}
+
+.openreel-smart-node-card {
+  border-radius: 12px !important;
+  border-color: rgb(255 255 255 / 0.1) !important;
+  background: linear-gradient(145deg, rgb(29 35 47 / 0.98), rgb(18 22 30 / 0.98)) !important;
+  box-shadow: 0 20px 50px rgb(0 0 0 / 0.34), inset 0 1px rgb(255 255 255 / 0.05) !important;
+}
+
+.openreel-smart-node-card:hover {
+  transform: translateY(-2px);
+  border-color: rgb(139 124 255 / 0.42) !important;
+  box-shadow: 0 28px 64px rgb(0 0 0 / 0.42), 0 0 0 1px rgb(139 124 255 / 0.08), inset 0 1px rgb(255 255 255 / 0.07) !important;
+}
+
+.openreel-node-detail-panel {
+  border-color: rgb(139 124 255 / 0.18) !important;
+  border-radius: 16px !important;
+  background:
+    radial-gradient(circle at 0 0, rgb(139 124 255 / 0.09), transparent 26%),
+    linear-gradient(160deg, rgb(18 24 35 / 0.98), rgb(9 13 20 / 0.98)) !important;
+  box-shadow: 0 30px 100px rgb(0 0 0 / 0.62), 0 0 0 1px rgb(255 255 255 / 0.02), inset 0 1px rgb(255 255 255 / 0.055) !important;
+  backdrop-filter: blur(28px) saturate(1.15) !important;
+}
+
+.studio-settings-backdrop {
+  background: radial-gradient(circle at 50% 8%, rgb(104 86 255 / 0.16), transparent 34%), rgb(2 4 8 / 0.76) !important;
+  animation: studio-enter 180ms ease-out both;
+  backdrop-filter: blur(14px) saturate(0.85) !important;
+}
+
+.studio-settings-dialog {
+  overflow: hidden;
+  border-color: rgb(139 124 255 / 0.2) !important;
+  border-radius: 18px !important;
+  background:
+    radial-gradient(circle at 0 0, rgb(139 124 255 / 0.08), transparent 25%),
+    linear-gradient(145deg, rgb(17 22 32 / 0.99), rgb(9 12 19 / 0.99)) !important;
+  box-shadow: 0 36px 120px rgb(0 0 0 / 0.68), 0 0 0 1px rgb(255 255 255 / 0.02), inset 0 1px rgb(255 255 255 / 0.06) !important;
+  animation: studio-enter 320ms var(--studio-ease) both;
+}
+
+.studio-settings-dialog input,
+.studio-settings-dialog textarea,
+.studio-settings-dialog select {
+  border-radius: 8px !important;
+  border-color: rgb(255 255 255 / 0.1) !important;
+  background-color: rgb(10 14 21 / 0.78) !important;
+  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.studio-settings-dialog input:focus,
+.studio-settings-dialog textarea:focus,
+.studio-settings-dialog select:focus {
+  border-color: rgb(139 124 255 / 0.55) !important;
+  box-shadow: 0 0 0 3px rgb(139 124 255 / 0.09);
+}
+
+.studio-settings-dialog section,
+.studio-settings-dialog .rounded-lg {
+  transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.studio-settings-dialog .rounded-lg:hover {
+  border-color: rgb(139 124 255 / 0.2);
+}
+
+.openreel-video-edit-panel {
+  border-color: rgb(113 132 158 / 0.34) !important;
+  border-radius: 14px !important;
+  background:
+    radial-gradient(circle at 50% -30%, rgb(78 130 170 / 0.12), transparent 38%),
+    #0d1015 !important;
+  box-shadow: 0 38px 120px rgb(0 0 0 / 0.78), 0 0 0 1px rgb(255 255 255 / 0.03), inset 0 1px rgb(255 255 255 / 0.055) !important;
+  animation: studio-enter 300ms var(--studio-ease) both;
+}
+
+.openreel-video-edit-panel button,
+.openreel-video-edit-panel input,
+.openreel-video-edit-panel select {
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease, box-shadow 150ms ease, transform 150ms var(--studio-ease);
+}
+
+.openreel-video-edit-panel button:hover:not(:disabled) {
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.05);
+}
+
+.openreel-video-edit-panel input:focus,
+.openreel-video-edit-panel select:focus {
+  box-shadow: 0 0 0 2px rgb(77 172 230 / 0.14);
+}
+
+.openreel-editor-topbar {
+  background: linear-gradient(180deg, rgb(34 40 50 / 0.98), rgb(23 28 36 / 0.98)) !important;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.24), inset 0 1px rgb(255 255 255 / 0.045) !important;
+}
+
+.openreel-editor-media,
+.openreel-editor-inspector {
+  background: linear-gradient(180deg, rgb(24 29 37 / 0.98), rgb(16 20 27 / 0.98)) !important;
+}
+
+.openreel-editor-viewer {
+  background: radial-gradient(circle at 50% 40%, rgb(60 78 98 / 0.09), transparent 48%), #0a0d12 !important;
+}
+
+.openreel-editor-timeline {
+  background: linear-gradient(180deg, #151a21, #10141a) !important;
+  box-shadow: 0 -16px 40px rgb(0 0 0 / 0.24);
+}
+
+.openreel-history-drawer,
+.openreel-image-edit-panel {
+  border-color: rgb(139 124 255 / 0.18) !important;
+  background:
+    radial-gradient(circle at 0 0, rgb(139 124 255 / 0.08), transparent 28%),
+    linear-gradient(160deg, rgb(16 21 31 / 0.98), rgb(7 10 16 / 0.98)) !important;
+  box-shadow: 0 34px 110px rgb(0 0 0 / 0.65), inset 0 1px rgb(255 255 255 / 0.045) !important;
+  backdrop-filter: blur(26px) saturate(1.12) !important;
+}
+
+.studio-history-button {
+  box-shadow: 0 14px 34px rgb(0 0 0 / 0.28), inset 0 1px rgb(255 255 255 / 0.045) !important;
+}
+
+.openreel-panorama-viewer {
+  background: radial-gradient(circle at 50% 30%, rgb(52 75 104 / 0.13), transparent 44%), #020409 !important;
+  animation: studio-enter 280ms var(--studio-ease) both;
+}
+
+.studio-panorama-toolbar {
+  border-color: rgb(139 124 255 / 0.2) !important;
+  background: linear-gradient(145deg, rgb(18 24 35 / 0.82), rgb(7 10 16 / 0.76)) !important;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.38), inset 0 1px rgb(255 255 255 / 0.05);
+  backdrop-filter: blur(24px) saturate(1.2) !important;
+}
+
+.studio-action-card {
+  background:
+    radial-gradient(circle at 0 0, rgb(139 124 255 / 0.065), transparent 32%),
+    linear-gradient(145deg, rgb(24 31 44 / 0.86), rgb(15 20 29 / 0.9)) !important;
+  box-shadow: 0 18px 42px rgb(0 0 0 / 0.2), inset 0 1px rgb(255 255 255 / 0.035) !important;
+  backdrop-filter: blur(14px);
+  animation: studio-enter 280ms var(--studio-ease) both;
+}
+
+.studio-action-card:hover {
+  border-color: rgb(139 124 255 / 0.22) !important;
 }
 
 @keyframes shimmer {
@@ -141,5 +803,21 @@ body {
     border-radius: 999px;
     background: rgb(0 0 0 / 0.001);
     pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .studio-pointer-aura,
+  .studio-atmosphere-mesh {
+    display: none;
   }
 }

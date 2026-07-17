@@ -846,7 +846,7 @@ export default function ImageEditPanel({
 
   return (
     <div
-      className="absolute inset-4 z-[92] overflow-hidden rounded-lg border border-white/10 bg-[#080a0f]/96 text-zinc-100 shadow-[0_28px_90px_rgba(0,0,0,0.62)] backdrop-blur-md"
+      className="openreel-image-edit-panel absolute inset-4 z-[92] overflow-hidden rounded-2xl border border-white/10 bg-[#080a0f]/96 text-zinc-100 shadow-[0_28px_90px_rgba(0,0,0,0.62)] backdrop-blur-md"
       onPointerDown={(event) => {
         settleTextDraft()
         event.stopPropagation()

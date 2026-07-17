@@ -211,14 +211,14 @@ export default function PanoramaViewer({ src, title, onClose, onCapture }: Panor
   }, [captureCurrentView, capturing, onCapture])
 
   return (
-    <div className="fixed inset-0 z-[90] bg-[#03050a] text-white">
-      <div className="absolute left-4 top-4 z-10 flex max-w-[min(640px,calc(100vw-2rem))] items-center gap-3 rounded-md border border-white/10 bg-black/50 px-3 py-2 backdrop-blur-md">
+    <div className="openreel-panorama-viewer fixed inset-0 z-[90] bg-[#03050a] text-white">
+      <div className="studio-panorama-toolbar absolute left-4 top-4 z-10 flex max-w-[min(640px,calc(100vw-2rem))] items-center gap-3 rounded-xl border border-white/10 bg-black/50 px-3 py-2 backdrop-blur-md">
         <div className="min-w-0">
           <div className="truncate text-sm font-semibold">{title || "全景预览"}</div>
           <div className="text-[11px] text-zinc-400">拖拽转动视角，滚轮缩放</div>
         </div>
       </div>
-      <div className="absolute right-4 top-4 z-10 flex items-center gap-2 rounded-md border border-white/10 bg-black/50 p-1.5 backdrop-blur-md">
+      <div className="studio-panorama-toolbar absolute right-4 top-4 z-10 flex items-center gap-2 rounded-xl border border-white/10 bg-black/50 p-1.5 backdrop-blur-md">
         <button
           type="button"
           disabled={!loaded || Boolean(capturing)}

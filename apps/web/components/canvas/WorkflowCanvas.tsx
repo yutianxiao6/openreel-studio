@@ -13831,11 +13831,11 @@ export default function WorkflowCanvas({
   )
 
   return (
-    <div className="h-full w-full overflow-hidden bg-black">
+    <div className="studio-canvas-shell h-full w-full overflow-hidden">
       {workspaceView === "workflow" ? workflowPanel : (
         <div
         ref={canvasContainerRef}
-        className="relative h-full w-full select-none bg-black"
+        className="studio-canvas-shell relative h-full w-full select-none"
         onPointerDownCapture={handlePointerDownCapture}
         onPointerMoveCapture={handlePointerMoveCapture}
         onPointerUpCapture={handlePointerEndCapture}
@@ -13861,22 +13861,22 @@ export default function WorkflowCanvas({
       />
       {flowNodes.length === 0 && !contextMenu && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-zinc-500">
-          <div className="pointer-events-auto rounded-md border border-white/10 bg-[#10151d]/82 px-4 py-3 text-center shadow-xl shadow-black/30 backdrop-blur">
-            <div className="mx-auto mb-2 flex h-9 w-9 items-center justify-center rounded-md bg-white/[0.07] text-[12px] font-semibold tracking-tight text-zinc-300">+</div>
-            <div className="text-sm text-zinc-200">创作画布</div>
-            <div className="mt-1 text-xs text-zinc-500">从节点开始，或直接打开流程模板</div>
+          <div className="studio-canvas-empty pointer-events-auto border px-6 py-5 text-center backdrop-blur-xl">
+            <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl border border-violet-300/15 bg-gradient-to-br from-violet-400/15 to-cyan-300/[0.06] text-lg font-light text-violet-100 shadow-[0_16px_36px_rgba(73,53,190,.16)]">+</div>
+            <div className="bg-gradient-to-r from-white to-violet-200 bg-clip-text text-sm font-semibold text-transparent">创作画布</div>
+            <div className="mt-1.5 text-[11px] text-zinc-500">从一个节点开始，或载入可复用流程模板</div>
             <div className="mt-3 flex items-center justify-center gap-2">
               <button
                 type="button"
                 onClick={openCanvasCreateMenuAtCenter}
-                className="h-8 rounded-md bg-cyan-300 px-3 text-xs font-medium text-cyan-950 transition hover:bg-cyan-200"
+                className="h-8 rounded-lg border border-violet-200/25 bg-gradient-to-r from-violet-500 to-cyan-400 px-3 text-xs font-semibold text-white shadow-[0_10px_26px_rgba(82,67,210,.26)] transition hover:-translate-y-0.5 hover:brightness-110"
               >
                 新建节点
               </button>
               <button
                 type="button"
                 onClick={openWorkflowTemplatesFromCreateMenu}
-                className="h-8 rounded-md border border-white/10 bg-white/[0.04] px-3 text-xs font-medium text-zinc-200 transition hover:bg-white/[0.08]"
+                className="h-8 rounded-lg border border-white/[0.09] bg-white/[0.035] px-3 text-xs font-medium text-zinc-300 transition hover:-translate-y-0.5 hover:border-violet-300/20 hover:bg-violet-400/[0.08] hover:text-white"
               >
                 流程模板
               </button>
@@ -14001,16 +14001,17 @@ export default function WorkflowCanvas({
           if (suppressPaneClickRef.current) return
           clearCanvasSelection()
         }}
-        className="openreel-canvas-flow bg-black"
+        className="openreel-canvas-flow studio-canvas"
       >
+        <Background color="rgba(139, 124, 255, 0.12)" gap={24} size={1} />
         <MiniMap
           pannable
           zoomable
-          className="!bottom-4 !right-4 !hidden !rounded-md !border !border-white/10 !bg-[#11151d]/90 !shadow-xl !shadow-black/30 md:!block"
-          nodeColor={() => "#71717a"}
-          maskColor="rgba(3,7,18,0.58)"
+          className="!bottom-4 !right-4 !hidden !rounded-xl !border !border-violet-300/15 !bg-[#0d121c]/82 !shadow-[0_20px_50px_rgba(0,0,0,.42)] !backdrop-blur-xl md:!block"
+          nodeColor={() => "#8b7cff"}
+          maskColor="rgba(3,6,12,0.66)"
         />
-        <Controls className="!rounded-md !border !border-white/10 !bg-[#11151d]/90 !shadow-xl !shadow-black/30 [&_button]:!h-9 [&_button]:!w-9 [&_button]:!border-white/10 [&_button]:!bg-transparent [&_button]:!text-zinc-300 hover:[&_button]:!bg-white/10 sm:[&_button]:!h-7 sm:[&_button]:!w-7" />
+        <Controls className="!overflow-hidden !rounded-xl !border !border-violet-300/15 !bg-[#0d121c]/82 !shadow-[0_20px_50px_rgba(0,0,0,.42)] !backdrop-blur-xl [&_button]:!h-9 [&_button]:!w-9 [&_button]:!border-white/[0.07] [&_button]:!bg-transparent [&_button]:!text-zinc-400 hover:[&_button]:!bg-violet-400/10 hover:[&_button]:!text-violet-100 sm:[&_button]:!h-8 sm:[&_button]:!w-8" />
       </ReactFlow>
 
       <button
@@ -14022,7 +14023,7 @@ export default function WorkflowCanvas({
           event.stopPropagation()
           openCanvasCreateMenuAtCenter()
         }}
-        className="absolute left-4 top-4 z-40 flex h-9 w-9 items-center justify-center rounded-md border border-white/10 bg-[#11151d]/92 text-zinc-100 shadow-xl shadow-black/30 backdrop-blur transition hover:border-cyan-300/35 hover:bg-cyan-300/12 hover:text-cyan-100"
+        className="studio-canvas-fab absolute left-4 top-4 z-40 flex h-10 w-10 items-center justify-center text-violet-100 backdrop-blur-xl transition hover:border-violet-300/45 hover:text-white"
       >
         <span className="text-base font-light leading-none">+</span>
       </button>

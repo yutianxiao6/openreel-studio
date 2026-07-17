@@ -21,7 +21,7 @@ export function ProposedPlanCard({ plan, disabled, onExecute }: ProposedPlanCard
   const markdown = planMarkdown(plan)
 
   return (
-    <div className="mb-2 overflow-hidden rounded-lg border border-sky-300/20 bg-sky-950/20 shadow-sm shadow-black/20">
+    <div className="studio-action-card mb-2 overflow-hidden rounded-xl border border-sky-300/20 bg-sky-950/20 shadow-sm shadow-black/20">
       <div className="flex items-start justify-between gap-3 border-b border-sky-300/15 px-3 py-3">
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex items-center gap-2">

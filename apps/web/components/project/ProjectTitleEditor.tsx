@@ -73,7 +73,7 @@ export function ProjectTitleEditor({ fallback = "准备中…" }: ProjectTitleEd
             setEditing(false)
           }
         }}
-        className="min-w-0 flex-1 rounded-md border border-white/10 bg-white/[0.06] px-2 py-1 text-xs text-zinc-100 outline-none focus:border-zinc-400 sm:max-w-md"
+        className="min-w-0 flex-1 rounded-lg border border-violet-300/20 bg-violet-400/[0.06] px-2 py-1 text-xs text-zinc-100 outline-none shadow-inner shadow-black/15 focus:border-violet-300/45 sm:max-w-md"
       />
     )
   }
@@ -82,7 +82,7 @@ export function ProjectTitleEditor({ fallback = "准备中…" }: ProjectTitleEd
     <button
       type="button"
       onClick={() => setEditing(true)}
-      className="min-w-0 flex-1 truncate rounded-md px-1 py-1 text-left text-xs text-zinc-500 transition-colors hover:bg-white/[0.04] hover:text-zinc-200 sm:max-w-md"
+      className="group min-w-0 flex-1 truncate rounded-lg px-1.5 py-1 text-left text-[11px] font-medium text-zinc-400 transition-all hover:bg-white/[0.04] hover:text-zinc-100 sm:max-w-md"
       title={currentProject.title}
     >
       {title}

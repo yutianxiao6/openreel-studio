@@ -3368,7 +3368,7 @@ export function ChatPanel() {
 
   return (
     <div
-      className={`flex flex-col h-full bg-[var(--studio-bg)] relative ${
+      className={`studio-chat-surface openreel-chat-panel relative flex h-full flex-col ${
         dragOver ? "ring-2 ring-indigo-500/60 ring-inset" : ""
       }`}
       onDragOver={handleDragOver}
@@ -3376,33 +3376,43 @@ export function ChatPanel() {
       onDrop={handleDrop}
     >
       {dragOver && (
-        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-indigo-950/60 backdrop-blur-sm text-indigo-200 text-sm">
-          松开以上传文件
+        <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center bg-[radial-gradient(circle,rgba(103,87,255,.28),rgba(4,6,11,.88))] text-sm text-violet-100 backdrop-blur-md">
+          <div className="animate-[studio-enter_.25s_ease-out] rounded-2xl border border-violet-300/25 bg-violet-400/10 px-8 py-6 text-center shadow-[0_24px_80px_rgba(0,0,0,.45)]">
+            <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-xl border border-violet-200/25 bg-violet-300/10 text-xl">+</div>
+            松开即可加入创作上下文
+          </div>
         </div>
       )}
       <ChecklistPanel />
       <div
         ref={messagesScrollRef}
         onScroll={handleMessagesScroll}
-        className="flex-1 space-y-4 overflow-y-auto bg-[radial-gradient(circle_at_top_left,rgba(99,102,241,0.10),transparent_34%),linear-gradient(180deg,rgba(255,255,255,0.025),transparent_26%)] px-3 py-4 sm:space-y-5 sm:px-5 sm:py-5"
+        className="studio-chat-messages flex-1 space-y-4 overflow-y-auto px-3 py-4 sm:space-y-5 sm:px-5 sm:py-5"
       >
         {messages.length === 0 && (
-          <div className="text-center text-gray-500 text-sm mt-12">
-            <img
-              src={APP_ICON_SRC}
-              alt="OpenReel Studio"
-              className="mx-auto mb-3 h-16 w-16 object-contain drop-shadow-[0_14px_28px_rgba(6,182,212,0.18)]"
-              draggable={false}
-            />
-            <p className="text-gray-300">你好，我是 OpenReel Agent。</p>
-            <p className="mt-1">告诉我你想创作什么样的视频，我会帮你完成。</p>
-            <div className="mt-6 space-y-1.5 text-xs text-gray-600">
-              <p>试试：</p>
-              <p className="text-gray-400">「做一支 30 秒国风动作短片」</p>
-              <p className="text-gray-400">「基于画布人物生成一张双人参考图」</p>
-              <p className="text-gray-400">「规划一个 3 集短剧项目」</p>
-              <p className="text-gray-500 mt-2">或拖一个剧本 / 图片到这里</p>
+          <div className="studio-empty-state text-center text-sm text-zinc-500">
+            <div className="studio-agent-orb">
+              <img
+                src={APP_ICON_SRC}
+                alt="OpenReel Studio"
+                className="h-14 w-14 object-contain drop-shadow-[0_12px_24px_rgba(91,218,255,0.22)]"
+                draggable={false}
+              />
             </div>
+            <p className="bg-gradient-to-r from-white via-violet-100 to-cyan-100 bg-clip-text text-base font-semibold text-transparent">从一个想法，开始整部作品</p>
+            <p className="mx-auto mt-2 max-w-[280px] text-[11px] leading-5 text-zinc-500">OpenReel Agent 会与你一起规划、生成素材，并把所有产物组织到右侧画布。</p>
+            <div className="mt-5 grid gap-2">
+              {[
+                "做一支 30 秒国风动作短片",
+                "基于画布人物生成一张双人参考图",
+                "规划一个 3 集悬疑短剧项目",
+              ].map((suggestion) => (
+                <button key={suggestion} type="button" onClick={() => setInput(suggestion)} className="studio-suggestion-chip">
+                  <span className="mr-2 text-violet-300">↗</span>{suggestion}
+                </button>
+              ))}
+            </div>
+            <p className="mt-4 text-[9px] uppercase tracking-[0.14em] text-zinc-700">也可以拖入剧本、图片、视频或音频</p>
           </div>
         )}
         {messages.map((msg, idx) => (
@@ -3438,7 +3448,7 @@ export function ChatPanel() {
         </button>
       )}
 
-      <div className="border-t border-white/10 bg-[var(--studio-panel)] px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-[0_-18px_40px_rgba(0,0,0,0.28)] sm:px-4">
+      <div className="studio-composer px-3 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-4">
         <TokenMonitorBar snapshot={tokenUsage} visible={showTokenMonitor} />
         <div className="mb-2 flex items-center justify-between gap-2 text-xs">
           <span className={`inline-flex items-center rounded-md border px-2 py-1 ${collaborationModeClass(collaborationMode)}`}>
@@ -3603,14 +3613,14 @@ export function ChatPanel() {
               }
               disabled={!currentProject || Boolean(pendingInputRequestId) || Boolean(pendingActionRequestId)}
               rows={1}
-              className="w-full rounded-lg border border-white/10 bg-[var(--studio-control)] px-3.5 py-2.5 text-sm leading-[22px] text-zinc-100 placeholder-zinc-500 shadow-inner shadow-black/20 resize-none focus:outline-none focus:ring-1 focus:ring-zinc-200/70 disabled:opacity-50 overflow-y-auto"
+              className="studio-prompt-input w-full resize-none overflow-y-auto border px-3.5 py-2.5 text-sm leading-[22px] text-zinc-100 placeholder-zinc-600 focus:outline-none disabled:opacity-50"
               style={{ minHeight: 44 }}
             />
           </div>
           <button
             onClick={handleSend}
             disabled={sendDisabled}
-            className="h-[44px] min-w-[58px] rounded-lg bg-zinc-100 px-3 text-sm font-semibold text-zinc-950 shadow-sm transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-40 sm:min-w-[64px] sm:px-4"
+            className="studio-send-button h-[44px] min-w-[62px] rounded-xl px-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-35 sm:min-w-[68px] sm:px-4"
           >
             {streaming ? "追加" : "发送"}
           </button>
@@ -3881,7 +3891,7 @@ function MessageBubbleImpl({
         transition={{ duration: 0.2 }}
         className="flex justify-center"
       >
-        <div className="max-w-[80%] rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-center text-[12px] text-zinc-400">
+        <div className="max-w-[80%] rounded-full border border-white/[0.08] bg-white/[0.035] px-3 py-1.5 text-center text-[11px] text-zinc-500 shadow-lg shadow-black/10 backdrop-blur-md">
           {msg.content}
         </div>
       </motion.div>
@@ -3905,22 +3915,22 @@ function MessageBubbleImpl({
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25 }}
+      transition={{ type: "spring", stiffness: 360, damping: 30 }}
       className={`flex gap-2 sm:gap-3 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
     >
       {msg.role === "assistant" && (
         <img
           src={APP_ICON_SRC}
           alt="OpenReel Studio"
-          className="mt-0.5 h-8 w-8 flex-shrink-0 object-contain drop-shadow-[0_8px_18px_rgba(6,182,212,0.18)]"
+          className="mt-0.5 h-8 w-8 flex-shrink-0 rounded-xl border border-violet-300/10 bg-violet-400/[0.045] object-contain p-0.5 drop-shadow-[0_10px_22px_rgba(91,198,255,0.2)]"
           draggable={false}
         />
       )}
       <div
-        className={`max-w-[92%] min-w-0 px-3 py-2.5 text-sm leading-relaxed shadow-lg sm:max-w-[88%] sm:px-4 sm:py-3 ${
+        className={`studio-message-bubble max-w-[92%] min-w-0 px-3 py-2.5 text-sm leading-relaxed shadow-lg sm:max-w-[88%] sm:px-4 sm:py-3 ${
           msg.role === "user"
-            ? "rounded-lg rounded-br-sm bg-[#eef2ff] text-[#141722] shadow-black/10"
-            : "rounded-lg rounded-bl-sm border border-white/10 bg-[var(--studio-control)] text-zinc-100 shadow-black/25"
+            ? "is-user rounded-br-sm text-[#141722]"
+            : "is-assistant rounded-bl-sm border text-zinc-100"
         }`}
       >
         {submittedDecision?.kind === "interaction_input" ? (

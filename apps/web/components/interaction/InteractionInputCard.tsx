@@ -180,7 +180,7 @@ export function InteractionInputCard({ inputRequest, disabled, onSubmit }: Inter
   }
 
   return (
-    <div className="mb-2 overflow-hidden rounded-lg border border-white/10 bg-white/[0.035] shadow-sm shadow-black/20">
+    <div className="studio-action-card mb-2 overflow-hidden rounded-xl border border-white/10 bg-white/[0.035] shadow-sm shadow-black/20">
       <div className="px-3 py-2.5">
         <div className="mb-1 flex items-center gap-2">
           <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] text-zinc-400">

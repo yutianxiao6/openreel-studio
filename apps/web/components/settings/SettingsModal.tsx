@@ -189,31 +189,33 @@ export function SettingsModal({ open, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      className="studio-settings-backdrop fixed inset-0 z-[70] flex items-center justify-center"
       onClick={onClose}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[calc(100dvh-16px)] w-[calc(100vw-16px)] flex-col rounded-xl border border-gray-700 bg-gray-900 shadow-2xl sm:max-h-[90vh] sm:w-[min(1100px,94vw)]"
+        className="studio-settings-dialog flex max-h-[calc(100dvh-16px)] w-[calc(100vw-16px)] flex-col border sm:max-h-[90vh] sm:w-[min(1100px,94vw)]"
       >
-        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-gray-800 px-3 py-3 sm:px-5">
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.08] bg-white/[0.015] px-3 py-3.5 sm:px-5">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-semibold tracking-tight text-zinc-300">SET</span>
-            <h2 className="shrink-0 text-sm font-semibold text-gray-100">系统设置</h2>
-            <span className="hidden truncate text-[11px] text-gray-500 sm:inline">真相源: config/runtime.jsonc · 改完立即生效</span>
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-violet-300/20 bg-gradient-to-br from-violet-400/15 to-cyan-300/[0.06] text-[10px] font-bold tracking-tight text-violet-100 shadow-inner shadow-white/[0.04]">SET</span>
+            <div>
+              <h2 className="shrink-0 bg-gradient-to-r from-white to-violet-200 bg-clip-text text-sm font-semibold text-transparent">系统设置</h2>
+              <span className="hidden truncate text-[10px] text-zinc-600 sm:block">runtime.jsonc · 修改后即时生效</span>
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {toast && <span className="text-[11px] text-emerald-300">{toast}</span>}
             <button
               onClick={refresh}
               disabled={loading}
-              className="text-xs px-2 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 disabled:opacity-50"
+              className="h-8 rounded-lg border border-white/[0.08] bg-white/[0.035] px-3 text-[10px] text-zinc-400 transition hover:border-violet-300/20 hover:bg-violet-400/[0.08] hover:text-violet-100 disabled:opacity-50"
             >
               {loading ? "刷新中…" : "刷新"}
             </button>
             <button
               onClick={onClose}
-              className="text-gray-400 hover:text-gray-100 text-lg leading-none"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-sm text-zinc-500 transition hover:rotate-90 hover:border-white/10 hover:bg-white/[0.06] hover:text-white"
               title="关闭 (Esc)"
             >
               X
@@ -221,15 +223,15 @@ export function SettingsModal({ open, onClose }: Props) {
           </div>
         </header>
 
-        <div className="flex shrink-0 overflow-x-auto border-b border-gray-800 px-2 sm:px-3">
+        <div className="flex shrink-0 overflow-x-auto border-b border-white/[0.07] bg-black/10 px-2 sm:px-3">
           {tabs.map((t) => (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
-              className={`-mb-px shrink-0 border-b-2 px-3 py-2.5 text-xs font-medium transition-colors sm:px-4 ${
+              className={`relative -mb-px shrink-0 border-b-2 px-3 py-3 text-[11px] font-medium transition-all sm:px-4 ${
                 tab === t.key
-                  ? "border-indigo-500 text-indigo-300"
-                  : "border-transparent text-gray-400 hover:text-gray-200"
+                  ? "border-violet-400 text-violet-200 bg-gradient-to-t from-violet-400/[0.08] to-transparent"
+                  : "border-transparent text-zinc-500 hover:bg-white/[0.025] hover:text-zinc-200"
               }`}
             >
               {t.label}
@@ -240,7 +242,7 @@ export function SettingsModal({ open, onClose }: Props) {
           ))}
         </div>
 
-        <div className="flex-1 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
+        <div className="flex-1 overflow-y-auto bg-[radial-gradient(circle_at_100%_0,rgba(85,215,255,.035),transparent_24%)] px-3 py-3 sm:px-5 sm:py-4">
           {error && (
             <div className="rounded border border-red-800 bg-red-950/40 text-red-200 text-xs p-3 mb-3">
               {error}
