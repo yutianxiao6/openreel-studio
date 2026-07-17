@@ -254,8 +254,12 @@ function advancePlaybackClock({
 
 function isEditableKeyboardTarget(eventTarget: EventTarget | null): boolean {
   const target = eventTarget as HTMLElement | null
-  return ["input", "textarea", "select"].includes(target?.tagName?.toLowerCase() || "") ||
-    Boolean(target?.isContentEditable || target?.closest('[contenteditable="true"]'))
+  if (!target) return false
+  if (target.isContentEditable || target.closest('[contenteditable="true"]')) return true
+  if (target.tagName.toLowerCase() === "textarea") return true
+  if (target.tagName.toLowerCase() !== "input") return false
+  const inputType = (target as HTMLInputElement).type.toLowerCase()
+  return ["text", "search", "email", "url", "tel", "password"].includes(inputType)
 }
 
 function releaseEditorButtonFocus(eventTarget: EventTarget | null): void {

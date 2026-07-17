@@ -18,6 +18,9 @@ def test_spacebar_remains_exclusive_to_playback_after_clicking_editor_buttons() 
     assert "releaseEditorButtonFocus(document.activeElement)" in editor
     assert "event.stopImmediatePropagation()" in editor
     assert "if (isEditableKeyboardTarget(event.target)) return" in editor
+    assert 'target.tagName.toLowerCase() === "textarea"' in editor
+    assert '["text", "search", "email", "url", "tel", "password"]' in editor
+    assert '["input", "textarea", "select"]' not in editor
 
 
 def test_media_clock_stalls_fall_back_to_timeline_and_resync_the_media() -> None:

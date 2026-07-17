@@ -13,6 +13,7 @@ const SCREENSHOT_PATH = env.SCREENSHOT_PATH || ""
 const PROGRESS_SCREENSHOT_PATH = env.PROGRESS_SCREENSHOT_PATH || ""
 const HEADLESS = env.HEADED === "1" || env.HEADLESS === "0" ? false : true
 const CHROME_PATH = env.CHROME_PATH || ""
+const KEYBOARD_ONLY = env.KEYBOARD_ONLY === "1"
 
 function usage() {
   console.error([
@@ -20,7 +21,7 @@ function usage() {
     "  WEB_URL=http://127.0.0.1:3000 PROJECT_ID=<id> NODE_ID=<video-node-id> VIDEO_URL=<absolute-or-app-url> node scripts/verify-video-editor-timeline.cjs",
     "",
     "Optional:",
-    "  TIMEOUT_MS=45000 SCREENSHOT_PATH=/tmp/video-editor.png PROGRESS_SCREENSHOT_PATH=/tmp/video-editor-progress.png HEADED=1 CHROME_PATH=/path/to/chrome",
+    "  TIMEOUT_MS=45000 SCREENSHOT_PATH=/tmp/video-editor.png PROGRESS_SCREENSHOT_PATH=/tmp/video-editor-progress.png HEADED=1 CHROME_PATH=/path/to/chrome KEYBOARD_ONLY=1",
     "",
     "This script does not start dev servers. Start web/API separately, then run it.",
   ].join("\n"))
@@ -470,6 +471,33 @@ async function main() {
         .map((element) => Number(element.dataset.frameIndex || -1))
       return new Set(indexes).size >= 6
     }, null, { timeout: 12_000 })
+
+    if (KEYBOARD_ONLY) {
+      const trackGainControl = page.getByLabel("音频轨道音量 A1", { exact: true })
+      await trackGainControl.click()
+      await trackGainControl.fill("-6")
+      const focusedVolumeControl = await trackGainControl.evaluate((element) => document.activeElement === element)
+      const gainBeforeSpace = await trackGainControl.inputValue()
+      await page.keyboard.press("Space")
+      await panel.getByRole("button", { name: "暂停", exact: true }).waitFor({ state: "visible" })
+      const gainAfterPlaySpace = await trackGainControl.inputValue()
+      await page.keyboard.press("Space")
+      await panel.getByRole("button", { name: "播放", exact: true }).waitFor({ state: "visible" })
+      const gainAfterPauseSpace = await trackGainControl.inputValue()
+      const spacebarAfterVolumeControl = focusedVolumeControl &&
+        gainAfterPlaySpace === gainBeforeSpace &&
+        gainAfterPauseSpace === gainBeforeSpace
+      console.log(JSON.stringify({
+        ok: spacebarAfterVolumeControl,
+        focusedVolumeControl,
+        spacebarAfterVolumeControl,
+        gainBeforeSpace,
+        gainAfterPlaySpace,
+        gainAfterPauseSpace,
+      }, null, 2))
+      if (!spacebarAfterVolumeControl) process.exitCode = 1
+      return
+    }
 
     let clips = await readClips(page)
     const { videoIndex, audioIndex } = pickClipIndexes(clips)
@@ -1020,7 +1048,19 @@ async function main() {
     const timelineBox = await timeline.boundingBox()
     if (!timelineBox) throw new Error("Timeline has no bounding box")
     await page.locator('[data-clip-kind="audio"]').first().click()
-    await page.getByLabel("音频轨道音量 A1", { exact: true }).fill("-6")
+    const trackGainControl = page.getByLabel("音频轨道音量 A1", { exact: true })
+    const pauseBeforeGainSpace = panel.getByRole("button", { name: "暂停", exact: true })
+    if (await pauseBeforeGainSpace.isVisible().catch(() => false)) await pauseBeforeGainSpace.click()
+    await trackGainControl.click()
+    await trackGainControl.fill("-6")
+    const gainBeforeSpace = await trackGainControl.inputValue()
+    await page.keyboard.press("Space")
+    await panel.getByRole("button", { name: "暂停", exact: true }).waitFor({ state: "visible" })
+    const gainAfterPlaySpace = await trackGainControl.inputValue()
+    await page.keyboard.press("Space")
+    await panel.getByRole("button", { name: "播放", exact: true }).waitFor({ state: "visible" })
+    const gainAfterPauseSpace = await trackGainControl.inputValue()
+    const spacebarAfterVolumeControl = gainAfterPlaySpace === gainBeforeSpace && gainAfterPauseSpace === gainBeforeSpace
     await page.getByRole("button", { name: "独奏轨道 A1", exact: true }).click()
     await page.getByLabel("淡入时长").fill("24")
     await page.waitForTimeout(900)
@@ -1677,7 +1717,7 @@ async function main() {
       clip.durationFrames >= 1
     ))
     const result = {
-      ok: sequenceRenderUi && sequenceRenderCancelUi && basicVisualControls && basicTransitions && programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && sequenceReopenByteEquivalent && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
+      ok: sequenceRenderUi && sequenceRenderCancelUi && basicVisualControls && basicTransitions && programMonitorControls && initialAligned && movedTogether && clampedAtTimelineStart && maxStretchBounded && trimmedTogether && restoredToSourceBound && startTrimmedTogether && sourceStartBounded && splitSemantics && integerFrameTruth && undoRestoredBeforeSplit && redoRestoredSplit && linkedSelection && independentSelection && independentMove && additiveSelection && marqueeSelection && snappingDisabled && snappingEnabled && visibleSnapGuide && snapGuideCleared && markerAddedAndPersisted && markerSnapping && markerHistory && editPointNavigation && shuttleShortcuts && rippleTrimSemantics && rippleIncomingTrimSemantics && rollingTrimSemantics && rollingIncomingTrimSemantics && exactFrameInputs && exactTimecodeInputs && normalDeleteKeepsGap && explicitGapSemantics && rippleDeleteClosesGap && spacebarAfterVolumeControl && audioControlsPersisted && audioPreviewMixApplied && audioGainShortcut && directAudioEnvelope && sourceMarksApplied && dynamicTracksPersisted && trackResizePersisted && trackResizeHistory && crossTrackMovePreservedSource && insertEditSemantics && overwriteEditSemantics && trackControlsPersisted && lockedTrackRejectedMove && dynamicTrackHistory && sequenceReopenPersisted && sequenceReopenByteEquivalent && zoomExpanded && zoomAnchorStable && detailedFramesVisible && frameVirtualizationEffective && realWaveformsVisible && layoutSupportsTracks && playbackResponsive && consoleErrors.length === 0,
       sequenceRenderUi,
       sequenceRenderCancelUi,
       renderRequestBody,
@@ -1760,6 +1800,10 @@ async function main() {
       explicitGapSemantics,
       explicitGapState,
       rippleDeleteClosesGap,
+      spacebarAfterVolumeControl,
+      gainBeforeSpace,
+      gainAfterPlaySpace,
+      gainAfterPauseSpace,
       audioControlsPersisted,
       audioControls,
       audioPreviewMixApplied,
