@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import * as THREE from "three"
 import { resolveMediaUrl } from "@/lib/api"
 
@@ -210,7 +211,7 @@ export default function PanoramaViewer({ src, title, onClose, onCapture }: Panor
     }
   }, [captureCurrentView, capturing, onCapture])
 
-  return (
+  return createPortal((
     <div className="openreel-panorama-viewer fixed inset-0 z-[90] bg-[#03050a] text-white">
       <div className="studio-panorama-toolbar absolute left-4 top-4 z-10 flex max-w-[min(640px,calc(100vw-2rem))] items-center gap-3 rounded-xl border border-white/10 bg-black/50 px-3 py-2 backdrop-blur-md">
         <div className="min-w-0">
@@ -293,5 +294,5 @@ export default function PanoramaViewer({ src, title, onClose, onCapture }: Panor
         </div>
       )}
     </div>
-  )
+  ), document.body)
 }

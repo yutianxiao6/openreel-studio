@@ -7838,15 +7838,18 @@ export default function NodeDetailPanel({
           </div>
         </motion.div>
 
-        {lightbox && <Lightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />}
-        {videoLightbox && (
+        {lightbox && createPortal(
+          <Lightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />,
+          document.body,
+        )}
+        {videoLightbox && createPortal((
           <VideoLightbox
             src={videoLightbox.src}
             poster={videoLightbox.poster}
             title={videoLightbox.title}
             onClose={() => setVideoLightbox(null)}
           />
-        )}
+        ), document.body)}
       </>
     )
   }
@@ -8090,15 +8093,18 @@ export default function NodeDetailPanel({
         )}
       </motion.div>
 
-      {lightbox && <Lightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />}
-      {videoLightbox && (
+      {lightbox && createPortal(
+        <Lightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />,
+        document.body,
+      )}
+      {videoLightbox && createPortal((
         <VideoLightbox
           src={videoLightbox.src}
           poster={videoLightbox.poster}
           title={videoLightbox.title}
           onClose={() => setVideoLightbox(null)}
         />
-      )}
+      ), document.body)}
     </>
   )
 }

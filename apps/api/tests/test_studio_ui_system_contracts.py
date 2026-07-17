@@ -51,6 +51,27 @@ def test_project_workspace_restores_chat_resize_and_video_editor_escapes_workspa
     assert "body.openreel-video-editor-open .studio-atmosphere" in styles
 
 
+def test_node_preview_surfaces_escape_the_workspace_stacking_context() -> None:
+    canvas = read("components/canvas/WorkflowCanvas.tsx")
+    details = read("components/canvas/NodeDetailPanel.tsx")
+    image_editor = read("components/canvas/ImageEditPanel.tsx")
+    panorama = read("components/canvas/PanoramaViewer.tsx")
+
+    preview = canvas[
+        canvas.index("function NodeOutputPreviewCard") : canvas.index("function stripCanvasNodeReferenceMarker")
+    ]
+    assert 'import { createPortal } from "react-dom"' in canvas
+    assert "return createPortal((" in preview
+    assert "), document.body)" in preview
+    assert details.count("{lightbox && createPortal(") == 2
+    assert details.count("{videoLightbox && createPortal((") == 2
+    for source in (image_editor, panorama):
+        assert 'import { createPortal } from "react-dom"' in source
+        assert "return createPortal((" in source
+        assert "), document.body)" in source
+    assert 'className="openreel-image-edit-panel fixed' in image_editor
+
+
 def test_studio_visual_system_covers_primary_product_surfaces() -> None:
     styles = read("app/globals.css")
     required_selectors = (

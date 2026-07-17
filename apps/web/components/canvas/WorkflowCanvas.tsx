@@ -26,6 +26,7 @@ import ReactFlow, {
 } from "reactflow"
 import "reactflow/dist/style.css"
 import { AnimatePresence, motion } from "framer-motion"
+import { createPortal } from "react-dom"
 import { useCanvasStore } from "@/stores/canvasStore"
 import { useProjectStore } from "@/stores/projectStore"
 import { useChatStore } from "@/stores/chatStore"
@@ -10234,7 +10235,7 @@ function NodeOutputPreviewCard({
     onClose()
   }
 
-  return (
+  return createPortal((
     <div
       className="openreel-node-preview-card nodrag nowheel fixed inset-0 z-[92] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
       onClick={() => void closeWithSave()}
@@ -10391,7 +10392,7 @@ function NodeOutputPreviewCard({
         </div>
       </div>
     </div>
-  )
+  ), document.body)
 }
 
 function stripCanvasNodeReferenceMarker(value: string): string {
