@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react"
+import { createPortal } from "react-dom"
 import { runProjectMediaOperation } from "@/lib/api"
 import {
   cancelVideoEditorSequenceRender,
@@ -877,7 +878,7 @@ function VideoThumbnailStrip({
     if (sourceFrame >= 0) renderedFrames.push({ localFrame, sourceFrame, spanFrames })
   }
 
-  return (
+  return createPortal((
     <div
       className="absolute inset-0 overflow-hidden bg-[#1c3548]"
       data-openreel-frame-strip="true"
@@ -910,7 +911,7 @@ function VideoThumbnailStrip({
         )
       })}
     </div>
-  )
+  ), document.body)
 }
 
 function RealAudioWaveform({

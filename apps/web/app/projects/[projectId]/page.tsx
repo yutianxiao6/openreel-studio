@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
 import { useParams } from "next/navigation"
 import { ChatPanel } from "@/components/chat/ChatPanel"
 import WorkflowCanvas from "@/components/canvas/WorkflowCanvas"
@@ -17,6 +17,11 @@ import { SettingsModal } from "@/components/settings/SettingsModal"
 import { api } from "@/lib/api"
 
 const LS_KEY = "drama.currentProjectId"
+const LS_CHAT_WIDTH = "drama.chatWidth"
+const CHAT_MIN = 320
+const CHAT_MAX = 720
+const CHAT_DEFAULT = 420
+const WORKSPACE_MIN = 440
 type MobilePane = "chat" | "work"
 
 export default function ProjectWorkspacePage() {
@@ -30,11 +35,60 @@ export default function ProjectWorkspacePage() {
   const [mobilePane, setMobilePane] = useState<MobilePane>("chat")
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("canvas")
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [chatWidth, setChatWidth] = useState(CHAT_DEFAULT)
   const viewModeReadyRef = useRef(false)
+  const chatPaneRef = useRef<HTMLDivElement | null>(null)
+  const chatWidthRef = useRef(CHAT_DEFAULT)
+  const resizingChatRef = useRef(false)
 
   const switchWorkspaceView = useCallback((next: WorkspaceView) => {
     setWorkspaceView(next)
     setMobilePane("work")
+  }, [])
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(LS_CHAT_WIDTH)
+    const value = stored ? Number.parseInt(stored, 10) : CHAT_DEFAULT
+    if (!Number.isFinite(value)) return
+    const next = Math.max(CHAT_MIN, Math.min(CHAT_MAX, value))
+    chatWidthRef.current = next
+    setChatWidth(next)
+  }, [])
+
+  const finishChatResize = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizingChatRef.current) return
+    resizingChatRef.current = false
+    if (event?.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    document.body.style.cursor = ""
+    document.body.style.userSelect = ""
+    window.localStorage.setItem(LS_CHAT_WIDTH, String(Math.round(chatWidthRef.current)))
+  }, [])
+
+  const startChatResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.stopPropagation()
+    resizingChatRef.current = true
+    event.currentTarget.setPointerCapture(event.pointerId)
+    document.body.style.cursor = "col-resize"
+    document.body.style.userSelect = "none"
+  }, [])
+
+  const moveChatResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizingChatRef.current) return
+    event.preventDefault()
+    const chatLeft = chatPaneRef.current?.getBoundingClientRect().left || 0
+    const viewportMaximum = Math.max(CHAT_MIN, window.innerWidth - chatLeft - WORKSPACE_MIN)
+    const next = Math.max(CHAT_MIN, Math.min(CHAT_MAX, viewportMaximum, event.clientX - chatLeft))
+    chatWidthRef.current = next
+    setChatWidth(next)
+  }, [])
+
+  useEffect(() => () => {
+    document.body.style.cursor = ""
+    document.body.style.userSelect = ""
   }, [])
 
   useEffect(() => {
@@ -118,8 +172,33 @@ export default function ProjectWorkspacePage() {
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <ProjectSessionSidebar />
-        <div className={`studio-chat-pane min-h-0 flex-col md:flex md:w-[420px] md:shrink-0 ${mobilePane === "chat" ? "flex w-full" : "hidden"}`}>
+        <div
+          ref={chatPaneRef}
+          className={`studio-chat-pane min-h-0 flex-col md:flex md:shrink-0 ${mobilePane === "chat" ? "flex w-full" : "hidden"} md:[width:var(--chat-width)]`}
+          style={{ "--chat-width": `${chatWidth}px` } as CSSProperties}
+        >
           <ChatPanel />
+        </div>
+        <div
+          role="separator"
+          aria-label="调整聊天区宽度"
+          aria-orientation="vertical"
+          aria-valuemin={CHAT_MIN}
+          aria-valuemax={CHAT_MAX}
+          aria-valuenow={Math.round(chatWidth)}
+          onPointerDown={startChatResize}
+          onPointerMove={moveChatResize}
+          onPointerUp={finishChatResize}
+          onPointerCancel={finishChatResize}
+          onDoubleClick={() => {
+            chatWidthRef.current = CHAT_DEFAULT
+            setChatWidth(CHAT_DEFAULT)
+            window.localStorage.setItem(LS_CHAT_WIDTH, String(CHAT_DEFAULT))
+          }}
+          className="studio-resizer group relative hidden w-1 shrink-0 touch-none cursor-col-resize md:block"
+          title="拖动调整聊天区宽度 · 双击恢复默认"
+        >
+          <div className="absolute inset-y-0 -left-2 -right-2" />
         </div>
         <div className={`studio-workspace-pane min-h-0 flex-1 flex-col overflow-hidden md:flex ${mobilePane === "work" ? "flex" : "hidden"}`}>
           <div className="studio-workbar flex shrink-0 items-center gap-1 px-3 py-2">

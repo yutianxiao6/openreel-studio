@@ -28,6 +28,19 @@ def test_studio_shell_uses_shared_chrome_and_pointer_atmosphere() -> None:
     assert "studio-connection-pill" in header
 
 
+def test_project_workspace_restores_chat_resize_and_video_editor_escapes_workspace_stack() -> None:
+    project = read("app/projects/[projectId]/page.tsx")
+    editor = read("components/canvas/VideoEditPanel.tsx")
+
+    assert 'role="separator"' in project
+    assert 'aria-label="调整聊天区宽度"' in project
+    assert "setPointerCapture(event.pointerId)" in project
+    assert "event.clientX - chatLeft" in project
+    assert 'window.localStorage.setItem(LS_CHAT_WIDTH' in project
+    assert 'import { createPortal } from "react-dom"' in editor
+    assert "), document.body)" in editor
+
+
 def test_studio_visual_system_covers_primary_product_surfaces() -> None:
     styles = read("app/globals.css")
     required_selectors = (
