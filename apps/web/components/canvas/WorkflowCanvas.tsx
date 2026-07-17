@@ -5777,6 +5777,7 @@ function WorkflowEditorGraph({
   const dragFrameRef = useRef<number | null>(null)
   const pendingDragNodeRef = useRef<FlowNode | null>(null)
   const graphDraggingRef = useRef(false)
+  const graphPanningRef = useRef(false)
 
   const guideNodes = useMemo<FlowNode[]>(() => alignmentGuides.map((guide) => {
     const length = Math.max(1, guide.end - guide.start)
@@ -5850,14 +5851,21 @@ function WorkflowEditorGraph({
     onConnectSteps(connection.source, connection.target)
   }, [editable, onConnectSteps])
 
+  const syncGraphInteractionSurface = useCallback(() => {
+    const surface = graphSurfaceRef.current
+    if (!surface) return
+    const active = graphDraggingRef.current || graphPanningRef.current
+    surface.toggleAttribute("data-dragging", active)
+    if (active) surface.style.setProperty("--workflow-pointer-opacity", "0")
+  }, [])
+
   const handleNodeDragStart = useCallback((_: MouseEvent, node: FlowNode) => {
     if (!editable) return
     graphDraggingRef.current = true
-    graphSurfaceRef.current?.setAttribute("data-dragging", "true")
-    graphSurfaceRef.current?.style.setProperty("--workflow-pointer-opacity", "0")
+    syncGraphInteractionSurface()
     dragStartPositionRef.current.set(node.id, workflowNormalizeEditorPosition(node.position))
     setAlignmentGuides([])
-  }, [editable])
+  }, [editable, syncGraphInteractionSurface])
 
   const handleNodeDrag = useCallback((_: MouseEvent, node: FlowNode) => {
     if (!editable) return
@@ -5878,7 +5886,7 @@ function WorkflowEditorGraph({
   const handleNodeDragStop = useCallback((_: MouseEvent, node: FlowNode) => {
     if (!editable) return
     graphDraggingRef.current = false
-    graphSurfaceRef.current?.removeAttribute("data-dragging")
+    syncGraphInteractionSurface()
     pendingDragNodeRef.current = null
     if (dragFrameRef.current !== null) {
       window.cancelAnimationFrame(dragFrameRef.current)
@@ -5902,7 +5910,17 @@ function WorkflowEditorGraph({
       }
     }
     onMoveStep(node.id, finalPosition)
-  }, [editable, onMoveStep])
+  }, [editable, onMoveStep, syncGraphInteractionSurface])
+
+  const handleGraphMoveStart = useCallback(() => {
+    graphPanningRef.current = true
+    syncGraphInteractionSurface()
+  }, [syncGraphInteractionSurface])
+
+  const handleGraphMoveEnd = useCallback(() => {
+    graphPanningRef.current = false
+    syncGraphInteractionSurface()
+  }, [syncGraphInteractionSurface])
 
   const handlePaneContextMenu = useCallback((event: MouseEvent) => {
     if (!editable || !flowInstance) return
@@ -6029,6 +6047,8 @@ function WorkflowEditorGraph({
       onNodeDragStart={handleNodeDragStart}
       onNodeDrag={handleNodeDrag}
       onNodeDragStop={handleNodeDragStop}
+      onMoveStart={handleGraphMoveStart}
+      onMoveEnd={handleGraphMoveEnd}
       onPaneContextMenu={handlePaneContextMenu}
       onNodeContextMenu={handleNodeContextMenu}
       onNodeClick={(_, node) => {
