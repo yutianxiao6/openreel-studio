@@ -44,6 +44,7 @@ export function WorkspaceViewTabs({ value, onChange }: WorkspaceViewTabsProps) {
           key={item.value}
           type="button"
           onClick={() => onChange(item.value)}
+          aria-pressed={value === item.value}
           className={cn(
             "relative flex h-7 items-center gap-1.5 rounded-lg px-3 text-[11px] font-medium transition-colors",
             value === item.value

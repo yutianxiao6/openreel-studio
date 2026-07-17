@@ -217,6 +217,7 @@ export function SettingsModal({ open, onClose }: Props) {
               onClick={onClose}
               className="flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-sm text-zinc-500 transition hover:rotate-90 hover:border-white/10 hover:bg-white/[0.06] hover:text-white"
               title="关闭 (Esc)"
+              aria-label="关闭设置"
             >
               X
             </button>
@@ -228,6 +229,7 @@ export function SettingsModal({ open, onClose }: Props) {
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
+              aria-pressed={tab === t.key}
               className={`relative -mb-px shrink-0 border-b-2 px-3 py-3 text-[11px] font-medium transition-all sm:px-4 ${
                 tab === t.key
                   ? "border-violet-400 text-violet-200 bg-gradient-to-t from-violet-400/[0.08] to-transparent"

@@ -24,9 +24,9 @@ export function StudioHeader({ connected, projectFallback, onOpenSettings }: Stu
         <div className="studio-brand-mark" aria-hidden="true">
           <span className="studio-brand-mark-core">O</span>
         </div>
-        <div className="hidden shrink-0 items-baseline gap-1.5 sm:flex">
+        <div className="flex shrink-0 items-baseline gap-1.5">
           <span className="studio-brand-name">OPENREEL</span>
-          <span className="studio-brand-edition">STUDIO</span>
+          <span className="studio-brand-edition hidden sm:inline">STUDIO</span>
         </div>
         <span className="hidden h-5 w-px bg-gradient-to-b from-transparent via-white/15 to-transparent sm:block" />
         <div className="flex min-w-0 items-center gap-2">
