@@ -609,7 +609,6 @@ body.openreel-canvas-interacting .react-flow__edge-path {
   box-shadow: none !important;
 }
 
-body.openreel-canvas-panning .openreel-canvas-flow .react-flow__minimap,
 body.openreel-canvas-panning .openreel-canvas-flow .react-flow__controls,
 body.openreel-canvas-panning .openreel-canvas-group-layer,
 body.openreel-canvas-panning .openreel-node-detail-panel {
@@ -1000,8 +999,7 @@ body.openreel-canvas-panning .openreel-node-detail-panel {
   filter: drop-shadow(0 0 7px rgb(34 211 238 / 0.4));
 }
 
-.openreel-workflow-flow .react-flow__controls,
-.openreel-workflow-flow .react-flow__minimap {
+.openreel-workflow-flow .react-flow__controls {
   overflow: hidden;
   border-color: rgb(139 124 255 / 0.18) !important;
   border-radius: 10px !important;

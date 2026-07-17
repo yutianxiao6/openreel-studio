@@ -6,7 +6,6 @@ import ReactFlow, {
   ConnectionLineType,
   ConnectionMode,
   Controls,
-  MiniMap,
   MarkerType,
   Position,
   SelectionMode,
@@ -6114,13 +6113,6 @@ function WorkflowEditorGraph({
       proOptions={{ hideAttribution: true }}
     >
       <Background color="rgba(148,163,184,0.13)" gap={22} size={1} />
-      <MiniMap
-        pannable
-        zoomable
-        className="!rounded-md !border !border-white/10 !bg-[#11151d]/90"
-        nodeColor={() => "#64748b"}
-        maskColor="rgba(3,7,18,0.62)"
-      />
       <Controls className="!rounded-md !border !border-white/10 !bg-[#11151d]/90 [&_button]:!border-white/10 [&_button]:!bg-transparent [&_button]:!text-zinc-300 hover:[&_button]:!bg-white/10" />
       {createMenu && insertNodeTypes.length > 0 && (
         <div
@@ -9818,7 +9810,7 @@ function touchPoint(event: ReactTouchEvent<HTMLDivElement>) {
 function isInteractiveTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false
   return Boolean(target.closest(
-    "button,a,input,textarea,select,[contenteditable='true'],.nodrag,.nowheel,.openreel-node-detail-panel,.openreel-node-preview-card,.openreel-video-edit-panel,.openreel-canvas-action-menu,.react-flow__handle,.react-flow__controls,.react-flow__minimap",
+    "button,a,input,textarea,select,[contenteditable='true'],.nodrag,.nowheel,.openreel-node-detail-panel,.openreel-node-preview-card,.openreel-video-edit-panel,.openreel-canvas-action-menu,.react-flow__handle,.react-flow__controls",
   ))
 }
 
@@ -14273,13 +14265,6 @@ export default function WorkflowCanvas({
         className="openreel-canvas-flow studio-canvas"
       >
         <Background color="rgba(139, 124, 255, 0.12)" gap={24} size={1} />
-        <MiniMap
-          pannable
-          zoomable
-          className="!bottom-4 !right-4 !hidden !rounded-xl !border !border-violet-300/15 !bg-[#0d121c]/82 !shadow-[0_20px_50px_rgba(0,0,0,.42)] !backdrop-blur-xl md:!block"
-          nodeColor={() => "#8b7cff"}
-          maskColor="rgba(3,6,12,0.66)"
-        />
         <Controls className="!overflow-hidden !rounded-xl !border !border-violet-300/15 !bg-[#0d121c]/82 !shadow-[0_20px_50px_rgba(0,0,0,.42)] !backdrop-blur-xl [&_button]:!h-9 [&_button]:!w-9 [&_button]:!border-white/[0.07] [&_button]:!bg-transparent [&_button]:!text-zinc-400 hover:[&_button]:!bg-violet-400/10 hover:[&_button]:!text-violet-100 sm:[&_button]:!h-8 sm:[&_button]:!w-8" />
       </ReactFlow>
 

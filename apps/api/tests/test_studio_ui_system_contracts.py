@@ -113,7 +113,8 @@ def test_canvas_interactions_suspend_heavy_effects_and_defer_viewport_commits() 
     assert 'querySelectorAll<HTMLElement>(".openreel-smart-node-card")' not in canvas
     assert 'className="openreel-canvas-group-layer' in groups
     assert "body.openreel-canvas-interacting .studio-atmosphere" in styles
-    assert "body.openreel-canvas-panning .openreel-canvas-flow .react-flow__minimap" in styles
+    assert "<MiniMap" not in canvas
+    assert ".react-flow__minimap" not in styles
 
 
 def test_workspace_and_content_transitions_use_motion_contracts() -> None:
