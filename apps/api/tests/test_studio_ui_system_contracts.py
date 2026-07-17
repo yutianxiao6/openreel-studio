@@ -97,6 +97,8 @@ def test_button_system_and_workflow_editor_use_advanced_interaction_layers() -> 
     assert "openreel-workflow-editor-dismiss-layer" in workflow
     assert "openreel-workflow-dock-dismiss-layer" in workflow
     assert "openreel-workflow-dock-trigger" in workflow
+    assert 'className="absolute bottom-5 left-0 right-0 z-40 mx-auto w-fit"' in workflow
+    assert 'left-4 right-4 mx-auto w-[min(760px,calc(100%-32px))]' in workflow
     assert "dragFrameRef" in workflow
     assert "graphPanningRef" in workflow
     assert "onMoveStart={handleGraphMoveStart}" in workflow

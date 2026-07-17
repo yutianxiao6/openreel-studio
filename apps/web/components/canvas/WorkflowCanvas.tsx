@@ -3526,7 +3526,7 @@ function WorkflowRunDock({
     return (
       <motion.div
         data-openreel-workflow-ui="true"
-        className="absolute bottom-5 left-1/2 z-40 -translate-x-1/2"
+        className="absolute bottom-5 left-0 right-0 z-40 mx-auto w-fit"
         initial={{ opacity: 0, y: 10, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ type: "spring", stiffness: 360, damping: 28 }}
@@ -3720,8 +3720,8 @@ function WorkflowRunDock({
         className={cn(
           "absolute bottom-5 z-40 flex max-h-[min(72vh,680px)] flex-col overflow-hidden rounded-2xl border border-white/[0.10] bg-[#0e141d]/96 shadow-2xl shadow-black/50 backdrop-blur-xl",
           showSideDrawer
-            ? "left-[calc(50%-220px)] w-[min(760px,calc(100%-440px))] -translate-x-1/2 max-md:left-3 max-md:right-3 max-md:w-auto max-md:translate-x-0"
-            : "left-[43%] w-[min(760px,calc(100%-440px))] -translate-x-1/2 max-md:left-3 max-md:right-3 max-md:w-auto max-md:translate-x-0",
+            ? "left-3 right-[452px] mx-auto w-[min(760px,calc(100%-464px))] max-md:right-3 max-md:w-auto"
+            : "left-4 right-4 mx-auto w-[min(760px,calc(100%-32px))] max-md:left-3 max-md:right-3 max-md:w-auto",
         )}
         initial={{ opacity: 0, y: 18, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
