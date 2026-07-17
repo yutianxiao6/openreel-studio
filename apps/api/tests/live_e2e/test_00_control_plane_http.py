@@ -61,17 +61,17 @@ async def test_slash_command_catalog_matches_frontend_backend_and_docs() -> None
     frontend_menu = _slash_menu_names()
     frontend_completions = _slash_completion_names()
     frontend_local = _local_slash_names()
-    backend_stream = {"/plan", "/reset", "/doctor", "/project"}
+    backend_stream = {"/plan", "/workflow", "/reset", "/doctor"}
     backend_compat = {f"/{name}" for name in slash_commands._COMMANDS}  # noqa: SLF001
     expected_menu = {
         "/help",
         "/plan",
+        "/workflow",
         "/reset",
         "/doctor",
         "/status",
         "/config",
         "/model",
-        "/project",
         "/mcp",
         "/clear",
     }
@@ -88,14 +88,15 @@ async def test_slash_command_catalog_matches_frontend_backend_and_docs() -> None
     assert backend_stream.isdisjoint(frontend_local)
     assert backend_stream <= frontend_menu
     assert backend_stream <= backend_compat
-    assert {
+    assert not {
+        "/project",
         "/project list",
         "/project new",
         "/project switch",
         "/project delete",
         "/project delete confirm",
         "/project delete cancel",
-    } <= frontend_completions
+    } & (frontend_menu | frontend_completions | backend_compat)
     assert not {"/prompts", "/templates"} & (frontend_menu | frontend_local | frontend_completions)
     assert "/help" in frontend_local
     assert "/help" in backend_compat

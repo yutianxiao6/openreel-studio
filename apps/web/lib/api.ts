@@ -125,9 +125,10 @@ async function asJson<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export async function listProjects() {
+export async function listProjects(options: { compact?: boolean } = {}) {
   const base = await getApiBase()
-  const res = await fetch(`${base}/api/projects`)
+  const query = options.compact ? '?compact=true' : ''
+  const res = await fetch(`${base}/api/projects${query}`)
   return asJson<unknown[]>(res)
 }
 
@@ -155,6 +156,14 @@ export async function updateProject(projectId: string, data: Partial<CreateProje
     body: JSON.stringify(data),
   })
   return asJson<Record<string, unknown>>(res)
+}
+
+export async function deleteProject(projectId: string) {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/projects/${projectId}`, {
+    method: 'DELETE',
+  })
+  return asJson<{ status: 'deleted' }>(res)
 }
 
 export async function getProjectState(projectId: string) {
@@ -2066,6 +2075,7 @@ export const api = {
   createProject,
   getProject,
   updateProject,
+  deleteProject,
   getProjectState,
   clearProjectSession,
   getProjectNodes,

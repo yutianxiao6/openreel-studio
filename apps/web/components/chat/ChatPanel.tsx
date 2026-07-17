@@ -148,50 +148,6 @@ function slashCompletionText(cmd: SlashCommandDef): string {
   return insertText.endsWith(" ") ? insertText : `${insertText} `
 }
 
-function wantsProjectSelectionCompletion(input: string): boolean {
-  return /^\/project\s+(switch|delete)(?:\s|$)/i.test(input.trimStart())
-}
-
-function projectIdToken(project: ProjectRecord, projects: ProjectRecord[]): string {
-  const id = String(project.id || "")
-  if (!id) return ""
-  for (const size of [8, 12, 16, 24, 36]) {
-    const token = id.slice(0, size)
-    if (projects.filter((item) => String(item.id || "").startsWith(token)).length === 1) {
-      return token
-    }
-  }
-  return id
-}
-
-function buildProjectSlashCompletions(
-  projects: ProjectRecord[],
-  currentProjectId?: string | null,
-): SlashCommandDef[] {
-  return projects.flatMap((project, index) => {
-    const token = projectIdToken(project, projects)
-    if (!token) return []
-    const title = (project.title || "未命名项目").trim()
-    const current = project.id === currentProjectId ? " · 当前" : ""
-    const label = `#${index + 1} ${title}${current} · ${token}`
-    const searchText = `${index + 1} ${title} ${project.id} ${token} ${current ? "current 当前" : ""}`
-    return [
-      {
-        name: `/project switch ${token}`,
-        description: label,
-        insertOnly: true,
-        searchText,
-      },
-      {
-        name: `/project delete ${token}`,
-        description: label,
-        insertOnly: true,
-        searchText,
-      },
-    ]
-  })
-}
-
 function slashLabel(status: SlashRunStatus): string {
   const action = status.action ? ` ${status.action}` : ""
   return `${status.command}${action}`
@@ -2052,7 +2008,6 @@ export function ChatPanel() {
   const streamCancelRef = useRef<(() => void) | null>(null)
   const activeStreamRef = useRef(false)
   const pendingProjectSwitchRef = useRef<string | null>(null)
-  const projectListLoadingRef = useRef(false)
   const handleStreamEventRef = useRef<(event: ChatStreamEvent) => void>(() => {})
   const [autoScroll, setAutoScroll] = useState(true)
   const [queuedCount, setQueuedCount] = useState(0)
@@ -2108,8 +2063,6 @@ export function ChatPanel() {
   const resetBlueprintForProject = useBlueprintStore((s) => s.resetForProject)
   const setViewMode = useViewModeStore((s) => s.setMode)
   const currentProject = useProjectStore((s) => s.currentProject)
-  const projects = useProjectStore((s) => s.projects)
-  const setProjects = useProjectStore((s) => s.setProjects)
   const applyCanvasAction = useCanvasStore((s) => s.applyCanvasAction)
   const loadNodes = useCanvasStore((s) => s.loadNodes)
   const setCurrentProject = useProjectStore((s) => s.setCurrentProject)
@@ -2126,17 +2079,13 @@ export function ChatPanel() {
   const isStreamActive = useCallback(() => {
     return activeStreamRef.current || useChatStore.getState().streaming
   }, [])
-  const projectSlashCompletions = useMemo(
-    () => (wantsProjectSelectionCompletion(input) ? buildProjectSlashCompletions(projects, currentProject?.id) : []),
-    [currentProject?.id, input, projects],
-  )
   const slashMatches = useMemo(
     () => (
       input.startsWith("/") && !input.includes("\n")
-        ? filterSlashCommands(input, projectSlashCompletions)
+        ? filterSlashCommands(input)
         : []
     ),
-    [input, projectSlashCompletions],
+    [input],
   )
   const slashMenuOpen = slashMatches.length > 0
 
@@ -2151,24 +2100,6 @@ export function ChatPanel() {
       setShowTokenMonitor(true)
     }
   }, [])
-
-  const refreshProjectList = useCallback(async () => {
-    if (projectListLoadingRef.current) return
-    projectListLoadingRef.current = true
-    try {
-      const items = await api.listProjects()
-      setProjects(items as ProjectRecord[])
-    } catch {
-      // Project command completions are opportunistic; slash execution still works.
-    } finally {
-      projectListLoadingRef.current = false
-    }
-  }, [setProjects])
-
-  useEffect(() => {
-    if (!wantsProjectSelectionCompletion(input) || projects.length > 0) return
-    void refreshProjectList()
-  }, [input, projects.length, refreshProjectList])
 
   useEffect(() => {
     resetBlueprintForProject(currentProject?.id ?? null)
@@ -2677,7 +2608,7 @@ export function ChatPanel() {
       resetBlueprintForProject(newId)
       setActiveChecklist([])
       setCurrentProject({ id: newId, title })
-      void refreshProjectList()
+      window.dispatchEvent(new CustomEvent("openreel:projects-changed"))
       setViewMode("canvas")
       appendMessage({
         id: `${Date.now()}-project-switch`,
@@ -2977,7 +2908,6 @@ export function ChatPanel() {
             "- `/status` — 系统状态(模型/工具/MCP)\n" +
             "- `/config` — LLM/图片/视频/API Keys 配置总览\n" +
             "- `/model` — 当前模型映射\n" +
-            "- `/project [new|switch|delete]` — 查看/新建/切换/删除项目(后端确定性执行)\n" +
             "- `/mcp` — 外部 MCP server 连接状态\n" +
             "- `/clear` — 清空模型可见对话、任务和流程运行态，保留画布节点和资产\n\n" +
             "↑↓ 选择 / Enter 或 Tab 补全 / Esc 关闭",
@@ -3352,7 +3282,7 @@ export function ChatPanel() {
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (slashMenuOpen) {
-      const filtered = filterSlashCommands(input, projectSlashCompletions)
+      const filtered = filterSlashCommands(input)
       if (filtered.length > 0) {
         if (e.key === "ArrowDown") {
           e.preventDefault()
@@ -3650,7 +3580,6 @@ export function ChatPanel() {
             {slashMenuOpen && slashMatches.length > 0 && (
               <SlashMenu
                 query={input}
-                extraCompletions={projectSlashCompletions}
                 selectedIndex={Math.min(slashSelectedIdx, Math.max(0, slashMatches.length - 1))}
                 onSelect={handleSlashSelect}
                 onHover={setSlashSelectedIdx}
@@ -3811,27 +3740,6 @@ function pendingActionFromConfirmRequired(event: ChatStreamEvent): PendingAction
       confirmDisplay: "确认全量重置",
       cancelDisplay: "取消全量重置",
       values: { scope: scope ?? "full", reason },
-    }
-  }
-  if (action === "delete_project") {
-    const targetTitle = typeof record.target_title === "string" ? record.target_title : "当前项目"
-    const targetProjectId = typeof record.target_project_id === "string" ? record.target_project_id : undefined
-    return {
-      id: `confirm-${action}-${targetProjectId ?? "project"}`,
-      kind: "confirmation",
-      target: action,
-      action,
-      title: "确认删除项目",
-      description: `该操作会删除项目「${targetTitle}」。`,
-      reason,
-      risk: "destructive",
-      confirmLabel: "删除项目",
-      cancelLabel: "取消删除",
-      confirmMessage: "/project delete confirm",
-      cancelMessage: "/project delete cancel",
-      confirmDisplay: "确认删除项目",
-      cancelDisplay: "取消删除项目",
-      values: { scope: scope ?? "project", reason, target_project_id: targetProjectId },
     }
   }
   if (action === "canvas.delete") {

@@ -306,7 +306,7 @@ const chatItems: DetailItem[] = [
   {title: "流式 Agent 对话", description: "回复、工具调用和节点变化实时出现，不必等整轮任务全部结束。", usage: "在左侧输入需求并发送；长任务可继续排队消息，也可以取消尚未完成的请求。", badge: "STREAM"},
   {title: "附件与项目资料", description: "可上传剧本、文本、图片和媒体，把外部资料放进当前项目上下文。", usage: "点击“上传”或把文件拖入聊天区；需要引用画布图片时先选中节点再发消息。", badge: "UPLOAD"},
   {title: "Plan Mode", description: "先只读分析方案，不立即改画布，适合重要项目先评估路径和风险。", usage: "输入 /plan 进入规划模式；确认方案后输入 /plan execute，再回到正常执行。", badge: "/PLAN"},
-  {title: "命令与项目切换", description: "内置帮助、诊断、清理、重置和项目管理命令，避免靠菜单反复寻找。", usage: "用 /help 查看命令；/project 管理项目；/doctor 诊断；全量重置必须按确认流程执行。", badge: "SLASH"},
+  {title: "会话式项目切换", description: "左侧项目栏集中管理项目会话，可直接新建、切换和删除；诊断与重置仍保留为控制命令。", usage: "从左侧项目栏管理项目；用 /help 查看控制命令；/doctor 诊断；全量重置必须按确认流程执行。", badge: "SESSION"},
 ]
 
 const canvasItems: DetailItem[] = [

@@ -1153,10 +1153,14 @@ async def create_project(
 
 
 @router.get("")
-async def list_projects(db: AsyncSession = Depends(get_session)):
+async def list_projects(
+    compact: bool = Query(default=False),
+    db: AsyncSession = Depends(get_session),
+):
     svc = ProjectService(db)
     projects = await svc.list_projects()
-    return [p.model_dump() for p in projects]
+    exclude = {"state_json"} if compact else None
+    return [p.model_dump(exclude=exclude) for p in projects]
 
 
 @router.get("/{project_id}")

@@ -20,7 +20,6 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: "/status", description: "系统状态(模型/工具/MCP)" },
   { name: "/config", description: "LLM/图片/视频/Key 配置总览" },
   { name: "/model", description: "当前模型配置" },
-  { name: "/project", description: "查看/新建/切换/删除项目", usage: "/project [new|switch|delete]" },
   { name: "/mcp", description: "MCP 连接状态" },
   { name: "/clear", description: "清空对话、任务和流程运行态" },
 ]
@@ -35,13 +34,6 @@ export const SLASH_COMMAND_COMPLETIONS: SlashCommandDef[] = [
   { name: "/reset full", description: "请求全量重置确认", insertOnly: true },
   { name: "/reset confirm", description: "确认全量重置", insertOnly: true },
   { name: "/reset cancel", description: "取消全量重置", insertOnly: true },
-  { name: "/project list", description: "查看项目列表", insertOnly: true },
-  { name: "/project new", description: "新建项目", insertText: "/project new ", insertOnly: true },
-  { name: "/project switch", description: "切换项目", insertText: "/project switch ", insertOnly: true },
-  { name: "/project delete", description: "请求删除项目确认", insertText: "/project delete ", insertOnly: true },
-  { name: "/project delete current", description: "删除当前项目", insertOnly: true },
-  { name: "/project delete confirm", description: "确认删除项目", insertOnly: true },
-  { name: "/project delete cancel", description: "取消删除项目", insertOnly: true },
 ]
 
 interface SlashMenuProps {

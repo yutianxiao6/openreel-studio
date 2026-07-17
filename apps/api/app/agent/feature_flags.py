@@ -38,7 +38,7 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
     "agent.slash_commands": FeatureFlag(
         name="agent.slash_commands",
         default=True,
-        description="Handle /plan, /reset, /project, and /doctor deterministically before LLM routing.",
+        description="Handle /plan, /reset, and /doctor deterministically before LLM routing.",
     ),
     "agent.chat_event_contracts": FeatureFlag(
         name="agent.chat_event_contracts",

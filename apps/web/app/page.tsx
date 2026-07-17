@@ -10,6 +10,7 @@ import { useViewModeStore } from "@/stores/viewModeStore"
 import { useBlueprintStore } from "@/stores/blueprintStore"
 import { SettingsModal } from "@/components/settings/SettingsModal"
 import { ProjectTitleEditor } from "@/components/project/ProjectTitleEditor"
+import { ProjectSessionSidebar } from "@/components/project/ProjectSessionSidebar"
 import { WorkspaceViewTabs, workspaceViewDescription, type WorkspaceView } from "@/components/workspace/WorkspaceViewTabs"
 import { api } from "@/lib/api"
 
@@ -198,7 +199,8 @@ export default function HomePage() {
         </button>
       </div>
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        <ProjectSessionSidebar />
         <div
           className={`min-h-0 flex-col border-r border-white/10 md:flex md:shrink-0 ${
             mobilePane === "chat" ? "flex w-full" : "hidden"
