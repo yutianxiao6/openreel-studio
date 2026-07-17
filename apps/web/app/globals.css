@@ -638,6 +638,7 @@ select:focus-visible,
 .openreel-workflow-editor {
   --workflow-accent: 103 232 249;
   --workflow-violet: 139 124 255;
+  container: workflow-editor / inline-size;
   background:
     radial-gradient(circle at 58% -20%, rgb(74 60 190 / 0.12), transparent 34%),
     linear-gradient(145deg, #0e141d, #080c12 64%) !important;
@@ -1255,7 +1256,7 @@ select:focus-visible,
   }
 }
 
-@media (max-width: 639px) {
+@container workflow-editor (max-width: 1040px) {
   .openreel-workflow-toolbar {
     min-height: auto;
     flex-wrap: wrap;

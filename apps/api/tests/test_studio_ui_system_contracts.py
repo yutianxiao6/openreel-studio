@@ -86,6 +86,8 @@ def test_button_system_and_workflow_editor_use_advanced_interaction_layers() -> 
     assert ".openreel-workflow-graph::after" in styles
     assert ".openreel-workflow-node.is-selected" in styles
     assert "@container (max-width: 760px)" in styles
+    assert "@container workflow-editor (max-width: 1040px)" in styles
+    assert "container: workflow-editor / inline-size" in styles
     assert ".openreel-workflow-toolbar-fields" in styles
     assert "requestAnimationFrame" in workflow
     assert 'className="openreel-workflow-graph h-full w-full"' in workflow
