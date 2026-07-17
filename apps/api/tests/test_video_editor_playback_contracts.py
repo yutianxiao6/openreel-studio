@@ -33,3 +33,38 @@ def test_media_clock_stalls_fall_back_to_timeline_and_resync_the_media() -> None
     preview_start = editor.index('data-openreel-preview-video="true"')
     preview_end = editor.index("\n                    />", preview_start)
     assert 'preload="auto"' in editor[preview_start:preview_end]
+
+
+def test_video_clock_and_audio_recovery_do_not_block_primary_playback() -> None:
+    editor = _editor_source()
+
+    clock_start = editor.index("const playbackClockSource")
+    clock_end = editor.index("const playAudioElementForClip", clock_start)
+    clock_contract = editor[clock_start:clock_end]
+    assert clock_contract.index('currentVideoClip && currentVideoItem?.type === "video"') < clock_contract.index(
+        "activeAudioTransition?.outgoingItem"
+    )
+    assert "const startPrimaryPlaybackMedia" in editor
+    assert "startPrimaryPlaybackMedia(nextStart)" in editor
+    assert "onCanPlay={() =>" in editor
+    assert "reportPreviewAudioPlaybackFailure" in editor
+    assert "Promise.all(mediaStarts)" not in editor
+    assert "if (!playing) currentTimeRef.current" in editor
+    assert "startTransition(() => setCurrentTime(timelineTime))" in editor
+    assert "updatePlaybackChrome(timelineTime)" in editor
+    assert "playheadRef.current.dataset.playheadTime = safeTimelineTime.toFixed(6)" in editor
+    assert "programTimecodeRef.current.textContent = formatFrameTimecode(frame, framesPerSecond)" in editor
+    assert "function playbackPresentationKeyAtFrame" in editor
+    assert "nextPresentationKey !== playbackPresentationKeyRef.current" in editor
+    assert "(activeVideoTransition || activeAudioTransition) && now - lastUiCommit" in editor
+
+
+def test_playhead_is_hard_clamped_to_the_visible_timeline() -> None:
+    editor = _editor_source()
+
+    assert "function clampPlaybackTimelineTime" in editor
+    assert "timelineTime = clampPlaybackTimelineTime(timelineTime, playbackEnd)" in editor
+    assert 'data-playhead-time={clampPlaybackTimelineTime(currentTime, playbackEnd).toFixed(6)}' in editor
+    assert "TRACK_LABEL_WIDTH + clampPlaybackTimelineTime(currentTime, playbackEnd) * pxPerSecond" in editor
+    assert 'window.addEventListener("pointercancel", onEnd)' in editor
+    assert 'window.removeEventListener("pointercancel", onEnd)' in editor

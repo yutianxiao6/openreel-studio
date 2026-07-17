@@ -1353,6 +1353,18 @@ select:focus-visible,
   animation: none !important;
 }
 
+body.openreel-video-editor-open .studio-shell {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+body.openreel-video-editor-open .studio-shell::before,
+body.openreel-video-editor-open .studio-atmosphere,
+body.openreel-video-editor-open .studio-pointer-aura {
+  animation: none !important;
+  display: none !important;
+}
+
 .openreel-video-edit-panel button,
 .openreel-video-edit-panel input,
 .openreel-video-edit-panel select {

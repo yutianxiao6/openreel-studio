@@ -42,9 +42,13 @@ def test_project_workspace_restores_chat_resize_and_video_editor_escapes_workspa
     assert "), document.body)" in editor
     assert editor.index('data-openreel-frame-strip="true"') < editor.index("return createPortal((")
     assert editor.index("return createPortal((") < editor.index('className="openreel-video-edit-panel')
+    assert 'document.body.classList.add("openreel-video-editor-open")' in editor
+    assert 'document.body.classList.remove("openreel-video-editor-open")' in editor
     editor_styles = styles[styles.index(".openreel-video-edit-panel {"):]
     assert "animation: none !important" in editor_styles[:800]
     assert "transform: none !important" in editor_styles[:800]
+    assert "body.openreel-video-editor-open .studio-shell" in styles
+    assert "body.openreel-video-editor-open .studio-atmosphere" in styles
 
 
 def test_studio_visual_system_covers_primary_product_surfaces() -> None:

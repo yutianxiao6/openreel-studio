@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react"
 import { createPortal } from "react-dom"
 import { runProjectMediaOperation } from "@/lib/api"
@@ -835,8 +835,63 @@ function timeFromPointer(
   pxPerSecond: number,
 ): number {
   const rect = container.getBoundingClientRect()
-  const scrollLeft = container.scrollLeft || 0
-  return Math.max(0, (event.clientX - rect.left + scrollLeft - TRACK_LABEL_WIDTH) / pxPerSecond)
+  const scrollLeft = Math.max(0, container.scrollLeft || 0)
+  const value = (event.clientX - rect.left + scrollLeft - TRACK_LABEL_WIDTH) / pxPerSecond
+  return Number.isFinite(value) ? Math.max(0, value) : 0
+}
+
+function clampPlaybackTimelineTime(value: number, playbackEnd: number): number {
+  if (!Number.isFinite(value)) return 0
+  return clamp(value, 0, Math.max(0, playbackEnd))
+}
+
+function playbackPresentationKeyAtFrame(
+  frame: number,
+  tracks: TimelineTrackState[],
+  videoClips: TimelineClipState[],
+  audioClips: TimelineClipState[],
+  transitions: TimelineTransitionState[],
+): string {
+  const activeFrame = Math.max(0, Math.round(frame))
+  const videoTrack = tracks
+    .filter((track) => track.kind === "video" && track.visible)
+    .sort((left, right) => right.order - left.order)
+    .find((track) => videoClips.some((clip) => (
+      clip.trackId === track.id && activeFrame >= clip.startFrame && activeFrame < clipEndFrame(clip)
+    )))
+  const videoClip = videoTrack
+    ? videoClips.find((clip) => (
+        clip.trackId === videoTrack.id && activeFrame >= clip.startFrame && activeFrame < clipEndFrame(clip)
+      ))
+    : undefined
+  const hasSolo = tracks.some((track) => track.kind === "audio" && track.solo)
+  const audioTrack = tracks
+    .filter((track) => track.kind === "audio" && !track.muted && (!hasSolo || track.solo))
+    .sort((left, right) => left.order - right.order)
+    .find((track) => audioClips.some((clip) => (
+      clip.trackId === track.id && !clip.muted && activeFrame >= clip.startFrame && activeFrame < clipEndFrame(clip)
+    )))
+  const audioClip = audioTrack
+    ? audioClips.find((clip) => (
+        clip.trackId === audioTrack.id && !clip.muted && activeFrame >= clip.startFrame && activeFrame < clipEndFrame(clip)
+      ))
+    : undefined
+  const activeTransitionId = (kind: TimelineTransitionKind, clips: TimelineClipState[]) => {
+    for (const transition of transitions) {
+      if (transition.kind !== kind) continue
+      const incoming = clips.find((clip) => clip.clipId === transition.incomingClipId)
+      if (!incoming) continue
+      const range = transitionFrameRange(transition, incoming.startFrame)
+      if (activeFrame >= range.startFrame && activeFrame < range.endFrame) return transition.id
+    }
+    return ""
+  }
+  return [
+    videoClip?.clipId || "gap",
+    audioClip?.clipId || "gap",
+    activeTransitionId("video_cross_dissolve", videoClips),
+    activeTransitionId("audio_constant_power", audioClips),
+  ].join("|")
 }
 
 function VideoThumbnailStrip({
@@ -1495,6 +1550,11 @@ export default function VideoEditPanel({
   onCommitted,
   onSequenceExported,
 }: VideoEditPanelProps) {
+  useEffect(() => {
+    document.body.classList.add("openreel-video-editor-open")
+    return () => document.body.classList.remove("openreel-video-editor-open")
+  }, [])
+
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const programCanvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -1512,6 +1572,9 @@ export default function VideoEditPanel({
   const sourcePreviewRef = useRef<HTMLVideoElement | null>(null)
   const timelineRef = useRef<HTMLDivElement | null>(null)
   const playheadRef = useRef<HTMLDivElement | null>(null)
+  const programTimecodeRef = useRef<HTMLSpanElement | null>(null)
+  const programFrameRef = useRef<HTMLSpanElement | null>(null)
+  const playbackPresentationKeyRef = useRef("")
   const currentTimeRef = useRef(0)
   const pxPerSecondRef = useRef(DEFAULT_PX_PER_SECOND)
   const pendingZoomRef = useRef<{ anchorTime: number; localX: number } | null>(null)
@@ -1579,14 +1642,21 @@ export default function VideoEditPanel({
     setPlaying(false)
     setError(`媒体预览播放失败：${detail}`)
   }, [])
+  const reportPreviewAudioPlaybackFailure = useCallback((reason: unknown) => {
+    if (reason instanceof Error && reason.name === "AbortError") return
+    const detail = reason instanceof Error && reason.message ? reason.message : "音频暂时不可播放"
+    setError(`音频预览暂不可用：${detail}`)
+  }, [])
   const clearPreviewVideoError = useCallback(() => {
     setError((current) => (
-      current?.startsWith("视频预览失败：") || current?.startsWith("媒体预览播放失败：")
+      current?.startsWith("视频预览失败：") ||
+      current?.startsWith("媒体预览播放失败：") ||
+      current?.startsWith("音频预览暂不可用：")
         ? null
         : current
     ))
   }, [])
-  currentTimeRef.current = currentTime
+  if (!playing) currentTimeRef.current = Math.max(0, currentTime)
   videoClipsRef.current = videoClips
   audioClipsRef.current = audioClips
   tracksRef.current = tracks
@@ -2071,6 +2141,15 @@ export default function VideoEditPanel({
     activeAudioTransition?.outgoingItem?.synthetic &&
     activeAudioTransition.outgoingItem.src === currentVideoItem.src,
   )
+  const playbackPresentationKey = [
+    currentVideoClip?.clipId || "gap",
+    currentAudioClip?.clipId || "gap",
+    activeVideoTransition?.transition.id || "",
+    activeAudioTransition?.transition.id || "",
+  ].join("|")
+  useEffect(() => {
+    playbackPresentationKeyRef.current = playbackPresentationKey
+  }, [playbackPresentationKey])
   const transitionVideoClip = activeVideoTransition && !videoTransitionSingleSource
     ? (currentVideoClip?.clipId === activeVideoTransition.outgoing.clipId
         ? activeVideoTransition.incoming
@@ -2162,17 +2241,70 @@ export default function VideoEditPanel({
   const effectiveLoopOutFrame = loopRange.outFrame > loopRange.inFrame
     ? Math.min(sequenceEndFrame, loopRange.outFrame)
     : sequenceEndFrame
+  const updatePlaybackChrome = useCallback((timelineTime: number) => {
+    const safeTimelineTime = clampPlaybackTimelineTime(timelineTime, playbackEnd)
+    const frame = Math.round(safeTimelineTime * framesPerSecond)
+    if (playheadRef.current) {
+      playheadRef.current.style.left = `${TRACK_LABEL_WIDTH + safeTimelineTime * pxPerSecond}px`
+      playheadRef.current.dataset.playheadTime = safeTimelineTime.toFixed(6)
+    }
+    if (timelineRef.current) timelineRef.current.dataset.currentFrame = String(frame)
+    if (programTimecodeRef.current) programTimecodeRef.current.textContent = formatFrameTimecode(frame, framesPerSecond)
+    if (programFrameRef.current) programFrameRef.current.textContent = `${frame}f`
+  }, [framesPerSecond, playbackEnd, pxPerSecond])
   const playbackClockSource = playbackDirection < 0
     ? "timeline"
-    : audioTransitionThroughVideo && currentVideoClip && currentVideoItem?.type === "video"
+    : currentVideoClip && currentVideoItem?.type === "video"
       ? "video-pts"
-      : activeAudioTransition?.outgoingItem || activeAudioTransition?.incomingItem
+    : activeAudioTransition?.outgoingItem || activeAudioTransition?.incomingItem
       ? "audio-transition"
-      : currentAudioClip && currentAudioItem && !playAudioThroughVideo
+    : currentAudioClip && currentAudioItem && !playAudioThroughVideo
       ? "audio"
-      : currentVideoClip && currentVideoItem?.type === "video"
-        ? "video-pts"
-        : "timeline"
+      : "timeline"
+
+  const playAudioElementForClip = useCallback((
+    audio: HTMLAudioElement,
+    clip: TimelineClipState,
+    timelineTime: number,
+  ) => {
+    const localTime = clip.sourceInFrame / framesPerSecond + clamp(
+      clampPlaybackTimelineTime(timelineTime, playbackEnd) - clip.startFrame / framesPerSecond,
+      0,
+      clip.durationFrames / framesPerSecond,
+    )
+    if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      const maximum = Number.isFinite(audio.duration) ? Math.max(0, audio.duration - 0.001) : localTime
+      const nextMediaTime = clamp(localTime, 0, maximum)
+      if (Math.abs((audio.currentTime || 0) - nextMediaTime) > 0.12) audio.currentTime = nextMediaTime
+    } else if (audio.networkState === HTMLMediaElement.NETWORK_EMPTY) {
+      audio.load()
+    }
+    void audio.play().then(clearPreviewVideoError).catch(reportPreviewAudioPlaybackFailure)
+  }, [clearPreviewVideoError, framesPerSecond, playbackEnd, reportPreviewAudioPlaybackFailure])
+
+  const startPrimaryPlaybackMedia = useCallback((timelineTime: number) => {
+    const safeTimelineTime = clampPlaybackTimelineTime(timelineTime, playbackEnd)
+    const video = videoRef.current
+    if (video && currentVideoClip && currentVideoItem?.type === "video") {
+      const localTime = currentVideoClip.sourceInFrame / framesPerSecond + clamp(
+        safeTimelineTime - currentVideoClip.startFrame / framesPerSecond,
+        0,
+        currentVideoClip.durationFrames / framesPerSecond,
+      )
+      if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+        const maximum = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.001) : localTime
+        const nextMediaTime = clamp(localTime, 0, maximum)
+        if (Math.abs((video.currentTime || 0) - nextMediaTime) > 0.15) video.currentTime = nextMediaTime
+      } else if (video.networkState === HTMLMediaElement.NETWORK_EMPTY) {
+        video.load()
+      }
+      void video.play().then(clearPreviewVideoError).catch(reportPreviewPlaybackFailure)
+    }
+    const audio = audioRef.current
+    if (audio && currentAudioClip && currentAudioItem && !playAudioThroughVideo) {
+      playAudioElementForClip(audio, currentAudioClip, safeTimelineTime)
+    }
+  }, [clearPreviewVideoError, currentAudioClip, currentAudioItem, currentVideoClip, currentVideoItem, framesPerSecond, playAudioElementForClip, playAudioThroughVideo, playbackEnd, reportPreviewPlaybackFailure])
 
   useEffect(() => {
     setLoopRange((current) => {
@@ -2689,7 +2821,7 @@ export default function VideoEditPanel({
       if (playing && playbackDirection > 0) {
         if (audio.paused) {
           if (Math.abs((audio.currentTime || 0) - localTime) > 0.15) audio.currentTime = localTime
-          void audio.play().catch(() => undefined)
+          void audio.play().catch(reportPreviewAudioPlaybackFailure)
         }
       } else {
         if (Math.abs((audio.currentTime || 0) - localTime) > 0.04) audio.currentTime = localTime
@@ -2699,7 +2831,7 @@ export default function VideoEditPanel({
     syncAudio(outgoingAudio, activeAudioTransition.outgoing, activeAudioTransition.outgoingPower)
     if (audioTransitionSingleSource) incomingAudio?.pause()
     else syncAudio(incomingAudio, activeAudioTransition.incoming, activeAudioTransition.incomingPower)
-  }, [activeAudioTransition, audioTransitionSingleSource, audioTransitionThroughVideo, currentFrame, framesPerSecond, playbackDirection, playing, setPreviewMediaGain, sourceFrameCountForClip])
+  }, [activeAudioTransition, audioTransitionSingleSource, audioTransitionThroughVideo, currentFrame, framesPerSecond, playbackDirection, playing, reportPreviewAudioPlaybackFailure, setPreviewMediaGain, sourceFrameCountForClip])
 
   useEffect(() => {
     const audio = audioRef.current
@@ -2732,28 +2864,8 @@ export default function VideoEditPanel({
       audio?.pause()
       return
     }
-    const timelineTime = currentTimeRef.current
-    const mediaStarts: Promise<void>[] = []
-    if (video && currentVideoClip && currentVideoItem?.type === "video") {
-      const localTime = currentVideoClip.sourceInFrame / framesPerSecond + clamp(
-        timelineTime - currentVideoClip.startFrame / framesPerSecond,
-        0,
-        currentVideoClip.durationFrames / framesPerSecond,
-      )
-      if (Math.abs((video.currentTime || 0) - localTime) > 0.15) video.currentTime = localTime
-      mediaStarts.push(video.play())
-    }
-    if (audio && currentAudioClip && currentAudioItem && !playAudioThroughVideo) {
-      const localTime = currentAudioClip.sourceInFrame / framesPerSecond + clamp(
-        timelineTime - currentAudioClip.startFrame / framesPerSecond,
-        0,
-        currentAudioClip.durationFrames / framesPerSecond,
-      )
-      if (Math.abs((audio.currentTime || 0) - localTime) > 0.15) audio.currentTime = localTime
-      mediaStarts.push(audio.play())
-    }
-    void Promise.all(mediaStarts).catch(reportPreviewPlaybackFailure)
-  }, [currentAudioClip, currentAudioItem, currentVideoClip, currentVideoItem, framesPerSecond, playbackDirection, playAudioThroughVideo, playing, reportPreviewPlaybackFailure])
+    startPrimaryPlaybackMedia(currentTimeRef.current)
+  }, [playbackDirection, playing, startPrimaryPlaybackMedia])
 
   useEffect(() => {
     const video = videoRef.current
@@ -2874,7 +2986,7 @@ export default function VideoEditPanel({
   const frameToTime = useCallback((frame: number) => Math.max(0, Math.round(frame)) / framesPerSecond, [framesPerSecond])
 
   const seekTo = useCallback((time: number) => {
-    const nextTime = clamp(frameToTime(timeToFrame(time)), 0, timelineDuration)
+    const nextTime = clampPlaybackTimelineTime(frameToTime(timeToFrame(time)), timelineDuration)
     mediaClockProgressRef.current = null
     lastMediaClockRecoveryAtRef.current = 0
     currentTimeRef.current = nextTime
@@ -2979,9 +3091,12 @@ export default function VideoEditPanel({
     const onEnd = () => {
       window.removeEventListener("pointermove", onMove)
       window.removeEventListener("pointerup", onEnd)
+      window.removeEventListener("pointercancel", onEnd)
+      seekTo(currentTimeRef.current)
     }
     window.addEventListener("pointermove", onMove)
     window.addEventListener("pointerup", onEnd)
+    window.addEventListener("pointercancel", onEnd)
   }
 
   const togglePlayback = useCallback(() => {
@@ -2994,6 +3109,7 @@ export default function VideoEditPanel({
       transitionVideoRef.current?.pause()
       transitionOutgoingAudioRef.current?.pause()
       transitionIncomingAudioRef.current?.pause()
+      setCurrentTime(currentTimeRef.current)
       setPlaying(false)
       return
     }
@@ -3005,8 +3121,9 @@ export default function VideoEditPanel({
       currentTimeRef.current = nextStart
       setCurrentTime(nextStart)
     }
+    startPrimaryPlaybackMedia(nextStart)
     setPlaying(true)
-  }, [currentTime, ensurePreviewAudioGraph, playbackEnd, playing])
+  }, [currentTime, ensurePreviewAudioGraph, playbackEnd, playing, startPrimaryPlaybackMedia])
 
   const shuttlePlayback = useCallback((direction: 1 | -1) => {
     mediaClockProgressRef.current = null
@@ -3023,9 +3140,10 @@ export default function VideoEditPanel({
       setCurrentTime(nextStart)
     }
     void ensurePreviewAudioGraph()
+    if (direction > 0) startPrimaryPlaybackMedia(nextStart)
     setPlaybackDirection(direction)
     setPlaying(true)
-  }, [ensurePreviewAudioGraph, playbackEnd])
+  }, [ensurePreviewAudioGraph, playbackEnd, startPrimaryPlaybackMedia])
 
   const activeTransitionAudioClockClip = activeAudioTransition?.outgoing
   useEffect(() => {
@@ -3119,6 +3237,7 @@ export default function VideoEditPanel({
           suppressMediaClockUntilRef.current = now + 120
         }
       }
+      timelineTime = clampPlaybackTimelineTime(timelineTime, playbackEnd)
       if (
         playbackDirection > 0 &&
         loopEnabled &&
@@ -3151,14 +3270,13 @@ export default function VideoEditPanel({
           !playAudioThroughVideo
         ) {
           audio.currentTime = currentAudioClip.sourceInFrame / framesPerSecond + loopInTime - currentAudioClip.startFrame / framesPerSecond
-          void audio.play().catch(() => undefined)
+          void audio.play().catch(reportPreviewAudioPlaybackFailure)
         } else {
           audio?.pause()
         }
         suppressMediaClockUntilRef.current = now + 120
         currentTimeRef.current = timelineTime
-        if (playheadRef.current) playheadRef.current.style.left = `${TRACK_LABEL_WIDTH + timelineTime * pxPerSecond}px`
-        if (timelineRef.current) timelineRef.current.dataset.currentFrame = String(Math.round(timelineTime * framesPerSecond))
+        updatePlaybackChrome(timelineTime)
         setCurrentTime(timelineTime)
         frame = window.requestAnimationFrame(tick)
         return
@@ -3170,8 +3288,7 @@ export default function VideoEditPanel({
         transitionOutgoingAudioRef.current?.pause()
         transitionIncomingAudioRef.current?.pause()
         currentTimeRef.current = playbackEnd
-        if (playheadRef.current) playheadRef.current.style.left = `${TRACK_LABEL_WIDTH + playbackEnd * pxPerSecond}px`
-        if (timelineRef.current) timelineRef.current.dataset.currentFrame = String(Math.round(playbackEnd * framesPerSecond))
+        updatePlaybackChrome(playbackEnd)
         setCurrentTime(playbackEnd)
         mediaClockProgressRef.current = null
         lastMediaClockRecoveryAtRef.current = 0
@@ -3185,8 +3302,7 @@ export default function VideoEditPanel({
         transitionOutgoingAudioRef.current?.pause()
         transitionIncomingAudioRef.current?.pause()
         currentTimeRef.current = 0
-        if (playheadRef.current) playheadRef.current.style.left = `${TRACK_LABEL_WIDTH}px`
-        if (timelineRef.current) timelineRef.current.dataset.currentFrame = "0"
+        updatePlaybackChrome(0)
         setCurrentTime(0)
         mediaClockProgressRef.current = null
         lastMediaClockRecoveryAtRef.current = 0
@@ -3194,17 +3310,27 @@ export default function VideoEditPanel({
         return
       }
       currentTimeRef.current = timelineTime
-      if (playheadRef.current) playheadRef.current.style.left = `${TRACK_LABEL_WIDTH + timelineTime * pxPerSecond}px`
-      if (timelineRef.current) timelineRef.current.dataset.currentFrame = String(Math.round(timelineTime * framesPerSecond))
-      if (now - lastUiCommit >= PLAYBACK_UI_FRAME_MS) {
+      updatePlaybackChrome(timelineTime)
+      const nextPresentationKey = playbackPresentationKeyAtFrame(
+        timelineTime * framesPerSecond,
+        tracksRef.current,
+        videoClipsRef.current,
+        audioClipsRef.current,
+        transitionsRef.current,
+      )
+      if (nextPresentationKey !== playbackPresentationKeyRef.current) {
+        playbackPresentationKeyRef.current = nextPresentationKey
         lastUiCommit = now
-        setCurrentTime(timelineTime)
+        startTransition(() => setCurrentTime(timelineTime))
+      } else if ((activeVideoTransition || activeAudioTransition) && now - lastUiCommit >= PLAYBACK_UI_FRAME_MS) {
+        lastUiCommit = now
+        startTransition(() => setCurrentTime(timelineTime))
       }
       frame = window.requestAnimationFrame(tick)
     }
     frame = window.requestAnimationFrame(tick)
     return () => window.cancelAnimationFrame(frame)
-  }, [activeTransitionAudioClockClip, currentAudioClip, currentVideoClip, effectiveLoopOutFrame, framesPerSecond, loopEnabled, loopRange.inFrame, playAudioThroughVideo, playbackClockSource, playbackDirection, playbackEnd, playing, pxPerSecond, reportPreviewPlaybackFailure])
+  }, [activeAudioTransition, activeTransitionAudioClockClip, activeVideoTransition, currentAudioClip, currentVideoClip, effectiveLoopOutFrame, framesPerSecond, loopEnabled, loopRange.inFrame, playAudioThroughVideo, playbackClockSource, playbackDirection, playbackEnd, playing, reportPreviewAudioPlaybackFailure, reportPreviewPlaybackFailure, updatePlaybackChrome])
 
   const runOperation = async (action: BusyAction, input: Parameters<typeof runProjectMediaOperation>[1]) => {
     if (!action || busy) return
@@ -4743,6 +4869,10 @@ export default function VideoEditPanel({
                         registerSourceDuration(currentVideoItem.src, nextDuration)
                       }}
                       onLoadedData={clearPreviewVideoError}
+                      onCanPlay={() => {
+                        clearPreviewVideoError()
+                        if (playing && playbackDirection > 0) startPrimaryPlaybackMedia(currentTimeRef.current)
+                      }}
                       onError={(event) => reportPreviewVideoError(event.currentTarget)}
                     />
                   )
@@ -4815,7 +4945,18 @@ export default function VideoEditPanel({
                 )}
               </div>
               {currentAudioItem && !playAudioThroughVideo && !activeAudioTransition && (
-                <audio data-openreel-preview-audio="true" ref={audioRef} src={currentAudioItem.src} crossOrigin={previewMediaCrossOrigin(currentAudioItem.src)} preload="auto" muted={Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)} />
+                <audio
+                  data-openreel-preview-audio="true"
+                  ref={audioRef}
+                  src={currentAudioItem.src}
+                  crossOrigin={previewMediaCrossOrigin(currentAudioItem.src)}
+                  preload="auto"
+                  muted={Boolean(currentAudioTrack?.muted) || Boolean(currentAudioClip?.muted)}
+                  onCanPlay={() => {
+                    clearPreviewVideoError()
+                    if (playing && playbackDirection > 0) startPrimaryPlaybackMedia(currentTimeRef.current)
+                  }}
+                />
               )}
               {activeAudioTransition?.outgoingItem && !audioTransitionThroughVideo && (
                 <audio
@@ -4830,6 +4971,11 @@ export default function VideoEditPanel({
                   src={activeAudioTransition.outgoingItem.src}
                   crossOrigin={previewMediaCrossOrigin(activeAudioTransition.outgoingItem.src)}
                   preload="auto"
+                  onCanPlay={(event) => {
+                    if (playing && playbackDirection > 0) {
+                      playAudioElementForClip(event.currentTarget, activeAudioTransition.outgoing, currentTimeRef.current)
+                    }
+                  }}
                 />
               )}
               {activeAudioTransition?.incomingItem && !audioTransitionSingleSource && !audioTransitionThroughVideo && (
@@ -4840,14 +4986,19 @@ export default function VideoEditPanel({
                   src={activeAudioTransition.incomingItem.src}
                   crossOrigin={previewMediaCrossOrigin(activeAudioTransition.incomingItem.src)}
                   preload="auto"
+                  onCanPlay={(event) => {
+                    if (playing && playbackDirection > 0) {
+                      playAudioElementForClip(event.currentTarget, activeAudioTransition.incoming, currentTimeRef.current)
+                    }
+                  }}
                 />
               )}
             </div>
 
             <div className="relative flex h-10 shrink-0 items-center justify-between border-t border-[#30343a] bg-[#1c1f23] px-2.5">
               <div className="flex min-w-[154px] items-center gap-2">
-                <span className="font-mono text-[11px] font-medium tabular-nums text-[#d9dde2]" data-openreel-program-timecode="true">{formatFrameTimecode(currentFrame, framesPerSecond)}</span>
-                <span className="font-mono text-[7px] tabular-nums text-[#6d737b]">{currentFrame}f</span>
+                <span ref={programTimecodeRef} className="font-mono text-[11px] font-medium tabular-nums text-[#d9dde2]" data-openreel-program-timecode="true">{formatFrameTimecode(currentFrame, framesPerSecond)}</span>
+                <span ref={programFrameRef} className="font-mono text-[7px] tabular-nums text-[#6d737b]">{currentFrame}f</span>
                 <button
                   type="button"
                   disabled={isBusy || currentVideoItem?.type !== "video"}
@@ -5641,8 +5792,9 @@ export default function VideoEditPanel({
             <div
               ref={playheadRef}
               data-openreel-playhead="true"
+              data-playhead-time={clampPlaybackTimelineTime(currentTime, playbackEnd).toFixed(6)}
               className="absolute bottom-0 top-0 z-50 w-3 -translate-x-1/2 touch-none cursor-ew-resize"
-              style={{ left: TRACK_LABEL_WIDTH + currentTime * pxPerSecond }}
+              style={{ left: TRACK_LABEL_WIDTH + clampPlaybackTimelineTime(currentTime, playbackEnd) * pxPerSecond }}
               onPointerDown={beginPlayheadDrag}
             >
               <div className="pointer-events-none absolute bottom-0 left-1/2 top-0 w-px -translate-x-1/2 bg-[#ff4d4f] shadow-[0_0_0_1px_rgba(255,77,79,.18)]" />
