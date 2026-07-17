@@ -39,6 +39,8 @@ def test_project_workspace_restores_chat_resize_and_video_editor_escapes_workspa
     assert 'window.localStorage.setItem(LS_CHAT_WIDTH' in project
     assert 'import { createPortal } from "react-dom"' in editor
     assert "), document.body)" in editor
+    assert editor.index('data-openreel-frame-strip="true"') < editor.index("return createPortal((")
+    assert editor.index("return createPortal((") < editor.index('className="openreel-video-edit-panel')
 
 
 def test_studio_visual_system_covers_primary_product_surfaces() -> None:

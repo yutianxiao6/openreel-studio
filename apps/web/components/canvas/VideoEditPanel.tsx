@@ -878,7 +878,7 @@ function VideoThumbnailStrip({
     if (sourceFrame >= 0) renderedFrames.push({ localFrame, sourceFrame, spanFrames })
   }
 
-  return createPortal((
+  return (
     <div
       className="absolute inset-0 overflow-hidden bg-[#1c3548]"
       data-openreel-frame-strip="true"
@@ -911,7 +911,7 @@ function VideoThumbnailStrip({
         )
       })}
     </div>
-  ), document.body)
+  )
 }
 
 function RealAudioWaveform({
@@ -4509,7 +4509,7 @@ export default function VideoEditPanel({
     )
   }
 
-  return (
+  return createPortal((
     <div
       className="openreel-video-edit-panel nodrag nowheel fixed inset-2 z-[94] overflow-hidden rounded-[4px] border border-[#34383f] bg-[#111316] text-[#d7d9dc] shadow-[0_24px_80px_rgba(0,0,0,0.72)]"
       data-openreel-workflow-ui="true"
@@ -5653,5 +5653,5 @@ export default function VideoEditPanel({
         </section>
       </div>
     </div>
-  )
+  ), document.body)
 }
