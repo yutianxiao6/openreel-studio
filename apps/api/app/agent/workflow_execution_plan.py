@@ -5,7 +5,6 @@ workflow document and must not be exposed in the workflow editor.
 """
 from __future__ import annotations
 
-import json
 import re
 from copy import deepcopy
 from typing import Any
@@ -254,7 +253,7 @@ def _compile_private_step(
                 plan_steps=plan_steps,
                 parent_by_id=parent_by_id,
             ))
-        return [{
+        payload: dict[str, Any] = {
             "id": step.id,
             "title": step.title,
             "depends_on": [item for item in dependencies if item != parent_loop_id],
@@ -262,7 +261,12 @@ def _compile_private_step(
             "repeat": {"scope_key": foreach.get("as")},
             "steps": children,
             "logical_step_id": step.id,
-        }]
+        }
+        if step.description:
+            payload["description"] = step.description
+        if step.when is not None:
+            payload["when"] = step.when.model_dump(by_alias=True, exclude_none=True)
+        return [payload]
 
     if step.kind == "plugin":
         payload = _base_private_step(step, dependencies=dependencies, parent_loop_id=parent_loop_id)

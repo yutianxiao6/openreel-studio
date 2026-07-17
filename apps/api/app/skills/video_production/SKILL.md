@@ -14,7 +14,7 @@ applies_to: 视频制作 视频工作流 默认视频流程 workflow template ge
 - 工作流请求通过 `workflow_spec` 选择器返回现有模板引用；默认路径返回 `general_short_drama_workflow`，不重新生成 spec。
 - 默认视频运行模式只使用现有模板引用、补齐输入并运行 workflow。
 - 用户主动要求查询或选择模板时，优先委派 `workflow_spec` 选择器；只在需要展示列表时读取 workflow 模板目录。
-- 运行前补齐阻塞输入：剧情/主题 `plot`、单集总时长 `duration_seconds`；可选输入是视觉风格 `style`、视频类型 `video_type`、集数 `episode_count` 和每段时长 `segment_seconds`。
+- 运行前补齐阻塞输入：剧情/主题 `plot`、单集总时长 `duration_seconds`；可选输入是视觉风格 `style`、视频类型 `video_type`、画面制作模式 `visual_plan_mode`、集数 `episode_count` 和每段时长 `segment_seconds`。`visual_plan_mode` 默认 `storyboard`，用户可在前端改为 `story_template`。
 - workflow spec 保持可移植，只描述结构、提示词、依赖和业务字段。模型、画幅、清晰度、画质等媒体产物参数由前端运行配置提供；总时长和分段时长必须连续核算，末段终点精确等于 `duration_seconds`。
 - 模板里的 V2 逻辑步骤已经带 `prompt`；运行期编译成私有提示词阶段执行，不把完整 prompt skill 原文塞进主 Agent。
 - prompt 模块索引用于模板维护、局部改提示词或 standalone 节点：剧本 `script_writing`，人物图 `character_prompt`，场景图 `scene_prompt`，宫格分镜 `shot_grid_prompt`，视频提示词 `video_prompt`，故事模板图 `story_template_method`。
@@ -42,12 +42,13 @@ workflow.run_all(
     "episode_count": 1,
     "segment_seconds": 15,
     "style": "...",
-    "video_type": "短剧"
+    "video_type": "短剧",
+    "visual_plan_mode": "storyboard"
   }
 )
 ```
 
-如果用户只说“制作一个视频”，先补问剧情/主题和时长。用户已给足剧情和时长时，可以直接运行默认模板；风格、视频类型、集数和每段时长缺失时使用模板默认值或按用户上下文填写。
+如果用户只说“制作一个视频”，先补问剧情/主题和时长。用户已给足剧情和时长时，可以直接运行默认模板；风格、视频类型、画面制作模式、集数和每段时长缺失时使用模板默认值或按用户上下文填写，其中画面制作模式默认宫格分镜。
 
 ## 模板匹配规则
 
@@ -86,9 +87,9 @@ workflow.runtime_status
 | 剧本 | `script_writing` | 剧本、分段和基础规划 |
 | 人物参考图 | `character_prompt` | 主要人物或配角参考图 |
 | 场景参考图 | `scene_prompt` | 无人物或低人物干扰的场景参考 |
-| 宫格分镜 | `shot_grid_prompt` | 分镜规划和宫格分镜图 |
+| 宫格分镜 | `shot_grid_prompt` | 默认视觉分支的分镜规划和宫格分镜图 |
 | 视频提示词 | `video_prompt` | 最终视频提示词 |
-| 故事模板图 | `story_template_method` | 故事模板图/视觉开发板 |
+| 故事模板图 | `story_template_method` | 可选视觉分支的故事模板图/视觉开发板、审核和看图转译 |
 
 用户自定义 prompt skill 优先于内置 skill。模板维护时，把稳定写法写进对应公开 step 的 `prompt`。
 

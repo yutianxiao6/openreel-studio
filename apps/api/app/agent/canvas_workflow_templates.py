@@ -497,6 +497,8 @@ def _expand_private_loops(
                     },
                 }
                 rendered["item_name"] = item_name
+                if isinstance(group.get("when"), dict) and not isinstance(rendered.get("when"), dict):
+                    rendered["when"] = deepcopy(group["when"])
                 if until:
                     rendered["repeat_until"] = deepcopy(until)
                     rendered["repeat_until_source_step"] = until_source_step

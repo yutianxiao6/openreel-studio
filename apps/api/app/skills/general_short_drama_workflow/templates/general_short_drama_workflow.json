@@ -2,8 +2,8 @@
   "schema": "openreel.workflow.v2",
   "id": "general_short_drama_workflow",
   "title": "通用视频制作工作流",
-  "description": "从故事需求生成剧本、制作规划、人物与场景参考图、分镜图和最终视频。画布只展示可交付的文本与媒体节点。",
-  "tags": ["video", "short_drama", "storyboard", "character_consistency"],
+  "description": "从故事需求生成剧本、制作规划、人物与场景参考图，并按所选模式制作宫格分镜或故事模板后生成最终视频。画布只展示可交付的文本与媒体节点。",
+  "tags": ["video", "short_drama", "storyboard", "story_template", "character_consistency"],
   "inputs": {
     "plot": {
       "type": "long_text",
@@ -22,6 +22,16 @@
       "label": "视频类型",
       "description": "自由填写短剧、广告、预告片、MV、知识视频或其他类型。",
       "default": "短剧"
+    },
+    "visual_plan_mode": {
+      "type": "enum",
+      "label": "画面制作模式",
+      "description": "宫格分镜适合通用叙事；故事模板适合复杂动作、空间调度和强视觉风格。",
+      "default": "storyboard",
+      "options": [
+        {"value": "storyboard", "label": "宫格分镜"},
+        {"value": "story_template", "label": "故事模板"}
+      ]
     },
     "episode_count": {
       "type": "integer",
@@ -271,9 +281,9 @@
             {"from": "scene_reference", "as": ["vision"]}
           ],
           "prompt": {
-            "role": "你是一位资深电影分镜师与镜头语言导演，根据当前段剧本和真实场景参考图规划宫格分镜，重镜头、重动作、重情绪、重构图。",
-            "task": "看场景参考图，结合当前段 {{ segment }}、当前段剧本 {{ steps.segment_script.output }}、场景与配角 {{ steps.scene_plan.output }}、主要人物 {{ steps.production_plan.output.main_characters }} 和时长 {{ segment.duration_seconds }} 秒，规划当前段每一格分镜。",
-            "output": "只输出结构化 selected_character_ids、grid_count 和 frames。普通段落使用 4 格，动作密集或转折复杂时可用 6 格。每个 frame 是一个关键叙事节点，包含 index、grid_position（第X排第Y格）、time_range、shot_size、camera、composition、characters、action、expression、dialogue_or_audio、continuity；按镜头景别与角度、人物动作与情绪、站位构图、场景氛围的顺序组织内容，用人物名指代角色，不重复堆叠外貌服饰。",
+            "role": "你是一位资深电影分镜师与镜头语言导演，根据当前段剧本、真实场景参考图和画面制作模式规划镜头节拍，重镜头、重动作、重情绪、重构图。",
+            "task": "看场景参考图，结合画面制作模式 {{ inputs.visual_plan_mode }}、当前段 {{ segment }}、当前段剧本 {{ steps.segment_script.output }}、场景与配角 {{ steps.scene_plan.output }}、主要人物 {{ steps.production_plan.output.main_characters }} 和时长 {{ segment.duration_seconds }} 秒，规划当前段每一个关键镜头节拍。",
+            "output": "只输出结构化 selected_character_ids、grid_count 和 frames。普通段落使用 4 个镜头节拍，动作密集或转折复杂时可用 6 个。每个 frame 是一个关键叙事节点，包含 index、grid_position（宫格分镜使用第X排第Y格；故事模板仅作为顺序定位）、time_range、shot_size、camera、composition、characters、action、expression、dialogue_or_audio、continuity；按镜头景别与角度、人物动作与情绪、站位构图、场景氛围的顺序组织内容，用人物名指代角色，不重复堆叠外貌服饰。故事模板模式下，这些 frames 用于组织专业故事板设计图，不直接当作普通宫格图提示词。",
             "check": "每格只服务当前段且没有无意义过渡；第一格从 0 秒开始、相邻格时间连续、最后一格精确结束于 {{ segment.duration_seconds }} 秒，时间段总和等于 {{ segment.duration_seconds }} 秒；相邻格动作和情节连贯；遵守 180 度轴线、视线、出入画方向与人物位置连续性，越轴必须有重建空间关系的过渡镜头；服装和道具连续；selected_character_ids 只包含本段实际出镜的主要人物 ID。"
           },
           "output": {
@@ -308,6 +318,7 @@
           "title": "分镜质量循环",
           "kind": "loop",
           "needs": ["frame_plan"],
+          "when": {"path": "inputs.visual_plan_mode", "op": "eq", "value": "storyboard"},
           "foreach": {
             "count": 3,
             "as": "attempt",
@@ -400,10 +411,108 @@
           ]
         },
         {
+          "id": "story_template_review_loop",
+          "title": "故事模板质量循环",
+          "kind": "loop",
+          "needs": ["frame_plan"],
+          "when": {"path": "inputs.visual_plan_mode", "op": "eq", "value": "story_template"},
+          "foreach": {
+            "count": 3,
+            "as": "attempt",
+            "until": {
+              "path": "steps.story_template_review.output.score",
+              "op": "gte",
+              "value": 80
+            }
+          },
+          "steps": [
+            {
+              "id": "story_template",
+              "title": "故事模板",
+              "kind": "image",
+              "needs": ["frame_plan"],
+              "uses": [
+                {"from": "scene_reference", "as": ["vision", "reference"]},
+                {
+                  "from": "character_image",
+                  "as": ["vision", "reference"],
+                  "select": {
+                    "values": "steps.frame_plan.output.selected_character_ids",
+                    "by": ["character_id"]
+                  }
+                }
+              ],
+              "prompt": {
+                "role": "你是资深电影故事板设计师和动作调度导演，必须看人物定妆图和场景图，把镜头节拍组织成一张可供视频制作直接读取的专业故事模板设计图。",
+                "task": "看全部指定参考图，基于当前段剧本 {{ steps.segment_script.output }}、目标时长 {{ segment.duration_seconds }} 秒、镜头节拍 {{ steps.frame_plan.output.frames }}、场景与配角 {{ steps.scene_plan.output }} 和统一风格 {{ steps.production_plan.output.style_template }}，生成故事模板图提示词。上一轮审核反馈（首轮为空）：{{ previous }}",
+                "output": "只输出纯文本 image prompt，不输出 JSON。按本次前端产物画幅组织“专业电影故事板设计图”，不在提示词中写死比例、像素、模型或画质。主体故事板区占最大面积，按第1格、第2格依次呈现全部镜头节拍；每格明确持续时长、画面主体、一个核心动作、站位构图、景别、机位与运镜、台词和音效，不使用第X排第Y格坐标。辅助区展示两张无人物的场景俯视图或空间图，标明入口、人物行动路线、180度轴线、机位与镜头运动路径；再展示必要的人物/场景锚点、光影、色板和美术方向。人物与场景必须继承参考图。收到上一轮审核反馈时，读取 dimension_scores、reason、issues 和 regeneration_instruction，逐项修正后重写完整提示词，不能只追加补丁。",
+                "check": "镜头数量、顺序和每格时长严格对应 frames，第一格从 0 秒开始、相邻时间连续、最后一格精确结束于 {{ segment.duration_seconds }} 秒；主体故事板区清晰可读且不被辅助区挤压；每格只有一个核心动作；空间图能读出路线、轴线和机位；人物脸、服装、道具、场景和风格继承参考图；只保留必要的制作标注，不出现乱码、畸形、重复画格、水印或宣传文案。"
+              },
+              "fields": {
+                "purpose": "story_template",
+                "stage": "story_template"
+              }
+            },
+            {
+              "id": "story_template_review",
+              "title": "故事模板审核",
+              "kind": "object",
+              "needs": ["story_template"],
+              "uses": [
+                {"from": "story_template", "as": ["vision"]}
+              ],
+              "prompt": {
+                "role": "你是严格、独立的资深影视编导与故事板质量审核员。你必须真实查看本轮故事模板图，判断它能否作为最终视频的视觉蓝图。",
+                "task": "查看本轮故事模板图，结合当前段剧本 {{ steps.segment_script.output }}、目标时长 {{ segment.duration_seconds }} 秒、镜头节拍 {{ steps.frame_plan.output.frames }}、场景与配角 {{ steps.scene_plan.output }} 和统一风格 {{ steps.production_plan.output.style_template }}，逐格核对剧情匹配、镜头数量与顺序、时长分配、单格核心动作、景别机位与运镜、构图和人物站位、180度轴线与行动路线、角色/服装/场景/道具参考一致性、相邻镜头视觉连续性，以及故事板区、空间机位区、锚点区和光影色板区是否清晰可读。",
+                "output": "只输出结构化审核结果，包含 score、dimension_scores、reason、issues 和 regeneration_instruction。score 是 0 到 100 的整数。dimension_scores 分别给出 story_match、shot_sequence_timing、shot_language、spatial_staging、composition_action、reference_fidelity、visual_continuity、technical_usability。issues 中每项必须写 category、frame、severity、problem、evidence、correction，指出具体画格或功能区、可见证据和可执行修正。reason 总结通过或不通过的核心依据；regeneration_instruction 汇总成下一轮提示词可以直接执行的完整重写要求。",
+                "check": "按权重严格评分：剧情匹配 15、镜头顺序与时长 15、镜头语言 15、空间调度 15、构图与动作 15、参考一致性 10、视觉连续性 10、技术可用性 5。只有总分 >=80 且不存在剧情错配、关键镜头缺失、时长总和错误、多动作堆叠、无解释越轴、人物场景漂移、主体故事板过小或标注不可读时才通过；任一重大问题都必须压到 80 分以下。低于 80 分必须给出明确原因、问题位置、图中证据和逐项修改建议。"
+              },
+              "output": {
+                "schema": {
+                  "fields": [
+                    {"id": "score", "type": "integer", "required": true},
+                    {
+                      "id": "dimension_scores",
+                      "type": "object",
+                      "required": true,
+                      "fields": [
+                        {"id": "story_match", "type": "integer", "required": true},
+                        {"id": "shot_sequence_timing", "type": "integer", "required": true},
+                        {"id": "shot_language", "type": "integer", "required": true},
+                        {"id": "spatial_staging", "type": "integer", "required": true},
+                        {"id": "composition_action", "type": "integer", "required": true},
+                        {"id": "reference_fidelity", "type": "integer", "required": true},
+                        {"id": "visual_continuity", "type": "integer", "required": true},
+                        {"id": "technical_usability", "type": "integer", "required": true}
+                      ]
+                    },
+                    {"id": "reason", "type": "string", "required": true},
+                    {
+                      "id": "issues",
+                      "type": "array",
+                      "required": true,
+                      "fields": [
+                        {"id": "category", "type": "string", "required": true},
+                        {"id": "frame", "type": "string", "required": true},
+                        {"id": "severity", "type": "string", "required": true},
+                        {"id": "problem", "type": "string", "required": true},
+                        {"id": "evidence", "type": "string", "required": true},
+                        {"id": "correction", "type": "string", "required": true}
+                      ]
+                    },
+                    {"id": "regeneration_instruction", "type": "string", "required": true}
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
           "id": "final_video",
           "title": "最终视频",
           "kind": "video",
           "needs": ["storyboard_review_loop"],
+          "when": {"path": "inputs.visual_plan_mode", "op": "eq", "value": "storyboard"},
           "uses": [
             {"from": "storyboard", "as": ["vision", "reference"]},
             {"from": "scene_reference", "as": ["vision", "reference"]},
@@ -421,6 +530,37 @@
             "task": "看全部指定参考图，基于当前段 {{ segment }}、当前段剧本 {{ steps.segment_script.output }}、分镜规划 {{ steps.frame_plan.output.frames }}、场景与配角 {{ steps.scene_plan.output }}、统一风格 {{ steps.production_plan.output.style_template }} 和目标时长 {{ segment.duration_seconds }} 秒，生成本段最终视频提示词。",
             "output": "只输出纯文本视频提示词，不输出 JSON。开头列出每张参考图片的用途声明，空一行后按时间码逐段描述画面，格式为：【起止时间 | 第X排第Y格 | 画面概述→动作变化 | 镜头运动方式】后接详细描述。每个时间段写镜头层、主体层、画面层和必要对白或音效；第一段从 0 秒开始，相邻时间段首尾相接，最后一段精确结束于 {{ segment.duration_seconds }} 秒，所有时间段之和必须等于 {{ segment.duration_seconds }} 秒；末尾写人物、服装、场景和道具的一致性要求。",
             "check": "提示词重心放在运动过程和动作变化；每个时间段只有一个核心动作；动作承接真实 storyboard 和 frames；景别、运镜、光线使用清楚的高频词；逐段核算时长，无重叠、无缺口，最终时间码必须精确等于 {{ segment.duration_seconds }} 秒；不虚构参考图中不存在的角色特征；不输出 JSON、解释、标题或参数表。"
+          },
+          "fields": {
+            "purpose": "final_video",
+            "stage": "final_video",
+            "production_path": "image_to_video",
+            "duration_seconds": "{{ segment.duration_seconds }}"
+          }
+        },
+        {
+          "id": "final_video_story_template",
+          "title": "最终视频",
+          "kind": "video",
+          "needs": ["story_template_review_loop"],
+          "when": {"path": "inputs.visual_plan_mode", "op": "eq", "value": "story_template"},
+          "uses": [
+            {"from": "story_template", "as": ["vision", "reference"]},
+            {"from": "scene_reference", "as": ["vision", "reference"]},
+            {
+              "from": "character_image",
+              "as": ["vision", "reference"],
+              "select": {
+                "values": "steps.frame_plan.output.selected_character_ids",
+                "by": ["character_id"]
+              }
+            }
+          ],
+          "prompt": {
+            "role": "你是 AI 视频生成提示词专家，必须真实查看故事模板图、场景图和人物定妆图，把已经完成的故事模板逐格转译成可执行的视频提示词，而不是另行创作。",
+            "task": "看全部指定参考图，基于当前段 {{ segment }}、当前段剧本 {{ steps.segment_script.output }}、镜头节拍 {{ steps.frame_plan.output.frames }}、场景与配角 {{ steps.scene_plan.output }}、统一风格 {{ steps.production_plan.output.style_template }} 和目标时长 {{ segment.duration_seconds }} 秒，严格按照故事模板图生成本段最终视频提示词。",
+            "output": "只输出纯文本视频提示词，不输出 JSON。开头列出每张参考图片的用途声明，明确故事模板图是本段视频蓝图。空一行后按照故事模板图上实际可见的第1格、第2格顺序和时长标注逐段转译，格式为：【起止时间 | 第N格 | 画面概述→动作变化 | 镜头运动方式】后接镜头层、主体层、画面层和必要对白或音效。图上画了什么人物、场景、动作、景别、运镜和台词就写什么；图上没有的内容不得新增。标注清楚时沿用图上时长；个别标注不可读时仅用 frame_plan 对应项校正，不改变镜头数量、顺序和画面内容。第一段从 0 秒开始，相邻时间段首尾相接，最后一段精确结束于 {{ segment.duration_seconds }} 秒；末尾写人物、服装、场景、道具、轴线和运动方向的一致性要求。",
+            "check": "逐格对照故事模板真实画面和文字标注；不使用第X排第Y格坐标；不新增图上没有的角色、场景、动作或镜头；每个时间段只有一个核心动作；景别、运镜、光线和声音具体可执行；逐段核算时长，无重叠、无缺口，最终时间码精确等于 {{ segment.duration_seconds }} 秒；不输出 JSON、解释、参数表或脱离模板图的补写。"
           },
           "fields": {
             "purpose": "final_video",

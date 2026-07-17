@@ -12,6 +12,7 @@ from typing import Any
 
 from app.agent import canvas_workflow_templates, workflow_spec_artifacts, workflow_template_store
 from app.agent.workflow_audit import audit_workflow_spec
+from app.agent.workflow_condition_eval import workflow_step_condition_skipped
 from app.agent.workflow_repeat_scope import workflow_repeat_index, workflow_same_repeat_scope
 
 
@@ -345,7 +346,12 @@ def _load_source(
     )
     if not source.get("template_id"):
         source["workflow_id"] = str(normalized.get("id") or raw_workflow.get("id") or "").strip()
-    return raw_workflow, normalized, effective_inputs, source
+    resolved_inputs = (
+        normalized.get("input_values")
+        if isinstance(normalized.get("input_values"), dict)
+        else effective_inputs
+    )
+    return raw_workflow, normalized, deepcopy(resolved_inputs), source
 
 
 def _step_surface(step: dict[str, Any]) -> str:
@@ -365,8 +371,12 @@ def _step_surface(step: dict[str, Any]) -> str:
     return "workflow_runtime"
 
 
-def _is_virtual_step(step: dict[str, Any]) -> bool:
-    return str(step.get("runner") or "").strip().lower() in _WORKFLOW_INPUT_RUNNERS or bool(step.get("runtime_hidden"))
+def _is_virtual_step(step: dict[str, Any], inputs: dict[str, Any] | None = None) -> bool:
+    return (
+        str(step.get("runner") or "").strip().lower() in _WORKFLOW_INPUT_RUNNERS
+        or bool(step.get("runtime_hidden"))
+        or workflow_step_condition_skipped(step, inputs)
+    )
 
 
 def _canvas_node_type(step: dict[str, Any]) -> str:
@@ -481,7 +491,11 @@ def _prompt_summary(step: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
-def _step_node(step: dict[str, Any], steps: list[dict[str, Any]]) -> dict[str, Any]:
+def _step_node(
+    step: dict[str, Any],
+    steps: list[dict[str, Any]],
+    inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     step_id = str(step.get("id") or "").strip()
     fields = step.get("fields") if isinstance(step.get("fields"), dict) else {}
     result = {
@@ -499,7 +513,7 @@ def _step_node(step: dict[str, Any], steps: list[dict[str, Any]]) -> dict[str, A
         "repeat_group_label": str(step.get("repeat_group_label") or "").strip(),
         "repeat_group_index": step.get("repeat_group_index"),
         "template_step_id": str(step.get("template_step_id") or step_id).strip(),
-        "virtual": _is_virtual_step(step),
+        "virtual": _is_virtual_step(step, inputs),
         "prompt": _prompt_summary(step),
     }
     if fields:
@@ -626,11 +640,11 @@ def project_workflow_canvas(
     )
     audit = audit_workflow_spec(raw_workflow, normalized=normalized, sample_inputs=input_values)
     steps = [step for step in normalized.get("steps") or [] if isinstance(step, dict)]
-    flow_nodes = [_step_node(step, steps) for step in steps]
+    flow_nodes = [_step_node(step, steps, input_values) for step in steps]
     canvas_nodes = [
         _canvas_node(step, steps)
         for step in steps
-        if _step_surface(step) == "draft_canvas" and not _is_virtual_step(step)
+        if _step_surface(step) == "draft_canvas" and not _is_virtual_step(step, input_values)
     ]
     canvas_ids = {str(node.get("step_id") or node.get("id") or "").strip() for node in canvas_nodes}
     flow_edges = _edges(steps)

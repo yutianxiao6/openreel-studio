@@ -47,3 +47,32 @@ def condition_matches(left: Any, operator: str, right: Any = None) -> bool:
     except TypeError:
         return False
     return True
+
+
+def condition_value_from_inputs(inputs: dict[str, Any] | None, key: str) -> Any:
+    if not isinstance(inputs, dict):
+        return None
+    if key in inputs:
+        return inputs[key]
+    normalized = key.strip().lower()
+    for candidate, value in inputs.items():
+        if str(candidate).strip().lower() == normalized:
+            return value
+    return None
+
+
+def workflow_step_condition_skipped(
+    step: dict[str, Any],
+    inputs: dict[str, Any] | None,
+) -> bool:
+    condition = step.get("when")
+    if not isinstance(condition, dict):
+        return False
+    path = str(condition.get("path") or "").strip()
+    key = path[len("inputs.") :] if path.startswith("inputs.") else ""
+    if not key:
+        return False
+    left = condition_value_from_inputs(inputs, key)
+    operator = str(condition.get("op") or "").strip()
+    right = condition.get("value")
+    return not condition_matches(left, operator, right)
