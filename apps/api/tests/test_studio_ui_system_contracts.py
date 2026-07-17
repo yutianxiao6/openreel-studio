@@ -74,6 +74,27 @@ def test_studio_visual_system_covers_primary_product_surfaces() -> None:
     assert "studio-gradient-shift" in styles
 
 
+def test_canvas_interactions_suspend_heavy_effects_and_defer_viewport_commits() -> None:
+    canvas = read("components/canvas/WorkflowCanvas.tsx")
+    groups = read("components/canvas/CanvasGroupLayer.tsx")
+    styles = read("app/globals.css")
+
+    assert 'onMove={(_, nextViewport) => setViewport(nextViewport)}' not in canvas
+    assert 'onMoveStart={() => setCanvasInteractionActive("pan", true)}' in canvas
+    assert "viewportRef.current = nextViewport" in canvas
+    assert 'setCanvasInteractionActive("pan", false)' in canvas
+    assert 'setCanvasInteractionActive("node", true)' in canvas
+    assert 'setCanvasInteractionActive("node", false)' in canvas
+    assert "cachedGridDropTargetsRef" in canvas
+    assert "gridDropPreviewElementsRef" in canvas
+    assert "alignmentCandidateBoundsRef" in canvas
+    assert "otherBounds: alignmentCandidateBoundsRef.current" in canvas
+    assert 'querySelectorAll<HTMLElement>(".openreel-smart-node-card")' not in canvas
+    assert 'className="openreel-canvas-group-layer' in groups
+    assert "body.openreel-canvas-interacting .studio-atmosphere" in styles
+    assert "body.openreel-canvas-panning .openreel-canvas-flow .react-flow__minimap" in styles
+
+
 def test_workspace_and_content_transitions_use_motion_contracts() -> None:
     tabs = read("components/workspace/WorkspaceViewTabs.tsx")
     chat = read("components/chat/ChatPanel.tsx")

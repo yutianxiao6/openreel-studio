@@ -112,6 +112,17 @@ interface GridDropTarget {
   element: HTMLElement
 }
 
+interface CachedGridDropTarget extends GridDropTarget {
+  rect: DOMRectReadOnly
+}
+
+interface GridDropPreviewElements {
+  sourceNodeId: string
+  target: HTMLElement
+  source: HTMLElement
+  card: HTMLElement
+}
+
 interface CanvasUndoRecord {
   id: string
   label: string
@@ -11054,24 +11065,19 @@ function nearestAlignment(
 
 function computeAlignmentSnap({
   activeNode,
-  nodes,
-  draggedNodeIds,
+  otherBounds,
   zoom,
   coarsePointer,
 }: {
   activeNode: FlowNode
-  nodes: FlowNode[]
-  draggedNodeIds: Set<string>
+  otherBounds: NodeBounds[]
   zoom: number
   coarsePointer: boolean
 }): { deltaX: number; deltaY: number; guides: CanvasAlignmentGuide[] } {
   const threshold = (coarsePointer ? ALIGNMENT_SNAP_SCREEN_PX_COARSE : ALIGNMENT_SNAP_SCREEN_PX) / Math.max(zoom || 1, 0.15)
   const active = nodeBounds(activeNode)
-  const others = nodes
-    .filter((node) => !draggedNodeIds.has(node.id) && !node.hidden)
-    .map(nodeBounds)
-  const x = nearestAlignment(active, others, "x", threshold)
-  const y = nearestAlignment(active, others, "y", threshold)
+  const x = nearestAlignment(active, otherBounds, "x", threshold)
+  const y = nearestAlignment(active, otherBounds, "y", threshold)
   return {
     deltaX: x?.delta ?? 0,
     deltaY: y?.delta ?? 0,
@@ -11140,6 +11146,7 @@ export default function WorkflowCanvas({
   const streaming = useChatStore((s) => s.streaming)
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null)
   const [viewport, setViewport] = useState<CanvasViewport>({ x: 0, y: 0, zoom: 1 })
+  const viewportRef = useRef<CanvasViewport>({ x: 0, y: 0, zoom: 1 })
   const [groupedNodeIds, setGroupedNodeIds] = useState<string[]>([])
   const [contextMenu, setContextMenu] = useState<CanvasCreateMenuState | null>(null)
   const [nodeActionMenu, setNodeActionMenu] = useState<NodeActionMenuState | null>(null)
@@ -11207,12 +11214,29 @@ export default function WorkflowCanvas({
   const dragStartPositionsRef = useRef<Record<string, { x: number; y: number }>>({})
   const activeDragNodeIdsRef = useRef<string[]>([])
   const alignmentGuideSignatureRef = useRef("")
+  const alignmentCandidateBoundsRef = useRef<NodeBounds[]>([])
+  const cachedGridDropTargetsRef = useRef<CachedGridDropTarget[]>([])
+  const gridDropPreviewElementsRef = useRef<GridDropPreviewElements | null>(null)
+  const canvasInteractionKindsRef = useRef(new Set<"pan" | "node">())
   const connectionStartRef = useRef<PendingConnectionDraft | null>(null)
   const connectionCompletedRef = useRef(false)
   const suppressPaneClickRef = useRef(false)
   const blankPointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null)
   const longPressRef = useRef<LongPressState | null>(null)
   const refreshTimerRef = useRef<number | null>(null)
+  const setCanvasInteractionActive = useCallback((kind: "pan" | "node", active: boolean) => {
+    if (active) canvasInteractionKindsRef.current.add(kind)
+    else canvasInteractionKindsRef.current.delete(kind)
+    document.body.classList.toggle("openreel-canvas-interacting", canvasInteractionKindsRef.current.size > 0)
+    document.body.classList.toggle("openreel-canvas-panning", canvasInteractionKindsRef.current.has("pan"))
+  }, [])
+  useEffect(() => {
+    viewportRef.current = viewport
+  }, [viewport])
+  useEffect(() => () => {
+    canvasInteractionKindsRef.current.clear()
+    document.body.classList.remove("openreel-canvas-interacting", "openreel-canvas-panning")
+  }, [])
   useEffect(() => {
     let cancelled = false
     const loadVideoReferenceConfig = async () => {
@@ -13115,37 +13139,50 @@ export default function WorkflowCanvas({
   }, [refreshCanvas])
 
   const clearGridDropPreview = useCallback(() => {
-    document.querySelectorAll<HTMLElement>(".openreel-grid-drop-target").forEach((element) => {
-      element.classList.remove("openreel-grid-drop-target")
-    })
-    document.querySelectorAll<HTMLElement>(".openreel-grid-drop-source").forEach((element) => {
-      element.classList.remove("openreel-grid-drop-source")
-    })
-    document.querySelectorAll<HTMLElement>(".openreel-smart-node-card").forEach((element) => {
-      element.style.removeProperty("--openreel-grid-drop-scale")
-    })
+    const preview = gridDropPreviewElementsRef.current
+    if (!preview) return
+    preview.target.classList.remove("openreel-grid-drop-target")
+    preview.source.classList.remove("openreel-grid-drop-source")
+    preview.card.style.removeProperty("--openreel-grid-drop-scale")
+    gridDropPreviewElementsRef.current = null
   }, [])
 
   const findFlowNodeElement = useCallback((nodeId: string) => {
-    return Array.from(document.querySelectorAll<HTMLElement>(".react-flow__node"))
-      .find((element) => element.dataset.id === nodeId) ?? null
+    const root = canvasContainerRef.current
+    if (!root) return null
+    return root.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(nodeId)}"]`)
   }, [])
 
   const findGridCellAtPoint = useCallback((x: number, y: number, sourceNodeId: string): GridDropTarget | null => {
-    const cells = Array.from(document.querySelectorAll<HTMLElement>("[data-openreel-grid-cell='true']"))
-    for (const cell of cells) {
-      const gridNodeId = cell.dataset.gridNodeId || ""
-      const cellId = cell.dataset.gridCellId || ""
-      if (!gridNodeId || !cellId || gridNodeId === sourceNodeId) continue
-      const rect = cell.getBoundingClientRect()
+    for (const target of cachedGridDropTargetsRef.current) {
+      if (target.gridNodeId === sourceNodeId) continue
+      const rect = target.rect
       if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-        return { gridNodeId, cellId, element: cell }
+        return target
       }
     }
     return null
   }, [])
 
+  const cacheGridDropTargets = useCallback((sourceNodeId: string) => {
+    const root = canvasContainerRef.current
+    if (!root) {
+      cachedGridDropTargetsRef.current = []
+      return
+    }
+    cachedGridDropTargetsRef.current = Array.from(root.querySelectorAll<HTMLElement>("[data-openreel-grid-cell='true']"))
+      .map((element): CachedGridDropTarget | null => {
+        const gridNodeId = element.dataset.gridNodeId || ""
+        const cellId = element.dataset.gridCellId || ""
+        if (!gridNodeId || !cellId || gridNodeId === sourceNodeId) return null
+        return { gridNodeId, cellId, element, rect: element.getBoundingClientRect() }
+      })
+      .filter((target): target is CachedGridDropTarget => Boolean(target))
+  }, [])
+
   const applyGridDropPreview = useCallback((sourceNodeId: string, target: GridDropTarget | null) => {
+    const current = gridDropPreviewElementsRef.current
+    if (current?.sourceNodeId === sourceNodeId && current.target === target?.element) return
     clearGridDropPreview()
     if (!target) return
     target.element.classList.add("openreel-grid-drop-target")
@@ -13160,6 +13197,12 @@ export default function WorkflowCanvas({
       : 0.72
     card.style.setProperty("--openreel-grid-drop-scale", scale.toFixed(3))
     sourceElement.classList.add("openreel-grid-drop-source")
+    gridDropPreviewElementsRef.current = {
+      sourceNodeId,
+      target: target.element,
+      source: sourceElement,
+      card,
+    }
   }, [clearGridDropPreview, findFlowNodeElement])
 
   const isPlaceableImageNode = useCallback((node: FlowNode) => {
@@ -13177,16 +13220,11 @@ export default function WorkflowCanvas({
       clearGridDropPreview()
     }
 
-    const latestNodes = flowInstance?.getNodes() ?? nodes
     const draggedIds = new Set(activeDragNodeIdsRef.current.length ? activeDragNodeIdsRef.current : [node.id])
-    const latestById = new Map(latestNodes.map((item) => [item.id, item]))
-    const latestActiveNode = latestById.get(node.id)
-    const activeNode = latestActiveNode ? { ...latestActiveNode, position: node.position } : node
     const snap = computeAlignmentSnap({
-      activeNode,
-      nodes: latestNodes,
-      draggedNodeIds: draggedIds,
-      zoom: viewport.zoom,
+      activeNode: node,
+      otherBounds: alignmentCandidateBoundsRef.current,
+      zoom: viewportRef.current.zoom,
       coarsePointer,
     })
     const signature = alignmentGuideSignature(snap.guides)
@@ -13196,6 +13234,9 @@ export default function WorkflowCanvas({
     }
     if (Math.abs(snap.deltaX) <= 0.01 && Math.abs(snap.deltaY) <= 0.01) return
 
+    const latestById = draggedIds.size > 1
+      ? new Map((flowInstance?.getNodes() ?? nodes).map((item) => [item.id, item]))
+      : new Map([[node.id, node]])
     const changes: NodeChange[] = []
     for (const id of draggedIds) {
       const current = latestById.get(id)
@@ -13218,17 +13259,23 @@ export default function WorkflowCanvas({
     flowInstance,
     isPlaceableImageNode,
     nodes,
-    viewport.zoom,
   ])
 
   const handleNodeDragStart = useCallback((_event: MouseEvent, node: FlowNode) => {
+    setCanvasInteractionActive("node", true)
+    if (isPlaceableImageNode(node)) cacheGridDropTargets(node.id)
+    else cachedGridDropTargetsRef.current = []
     const latestNodes = flowInstance?.getNodes() ?? nodes
     const selectedDragNodes = node.selected
       ? latestNodes.filter((item) => item.selected || item.id === node.id)
       : [node]
     const draggedIds = selectedDragNodes.length > 0 ? selectedDragNodes.map((item) => item.id) : [node.id]
+    const draggedIdSet = new Set(draggedIds)
     const latestById = new Map(latestNodes.map((item) => [item.id, item]))
     activeDragNodeIdsRef.current = draggedIds
+    alignmentCandidateBoundsRef.current = latestNodes
+      .filter((item) => !draggedIdSet.has(item.id) && !item.hidden)
+      .map(nodeBounds)
     dragStartPositionsRef.current = {}
     for (const id of draggedIds) {
       const current = id === node.id ? node : latestById.get(id)
@@ -13238,12 +13285,15 @@ export default function WorkflowCanvas({
     }
     alignmentGuideSignatureRef.current = ""
     setAlignmentGuides([])
-  }, [flowInstance, nodes])
+  }, [cacheGridDropTargets, flowInstance, isPlaceableImageNode, nodes, setCanvasInteractionActive])
 
   const handleNodeDragStop = useCallback((event: MouseEvent, node: FlowNode) => {
+    setCanvasInteractionActive("node", false)
     setAlignmentGuides([])
     alignmentGuideSignatureRef.current = ""
+    alignmentCandidateBoundsRef.current = []
     if (!currentProject?.id) {
+      cachedGridDropTargetsRef.current = []
       clearGridDropPreview()
       activeDragNodeIdsRef.current = []
       dragStartPositionsRef.current = {}
@@ -13252,6 +13302,7 @@ export default function WorkflowCanvas({
     const targetCell = isPlaceableImageNode(node)
       ? findGridCellAtPoint(event.clientX, event.clientY, node.id)
       : null
+    cachedGridDropTargetsRef.current = []
     clearGridDropPreview()
     if (targetCell) {
       void callTool<Record<string, unknown>>("image.place_grid_cell", {
@@ -13305,7 +13356,7 @@ export default function WorkflowCanvas({
     }).catch((error) => {
       console.warn("Failed to persist node position", error)
     })
-  }, [clearGridDropPreview, currentProject?.id, findGridCellAtPoint, flowInstance, isPlaceableImageNode, nodes, pushUndo])
+  }, [clearGridDropPreview, currentProject?.id, findGridCellAtPoint, flowInstance, isPlaceableImageNode, nodes, pushUndo, setCanvasInteractionActive])
 
   const isOutputToInputConnection = useCallback((connection: Connection) => {
     if (!connection.source || !connection.target || connection.source === connection.target) return false
@@ -14200,9 +14251,19 @@ export default function WorkflowCanvas({
         onNodeContextMenu={handleNodeContextMenu}
         onInit={(instance) => {
           setFlowInstance(instance)
-          setViewport(instance.getViewport())
+          const nextViewport = instance.getViewport()
+          viewportRef.current = nextViewport
+          setViewport(nextViewport)
         }}
-        onMove={(_, nextViewport) => setViewport(nextViewport)}
+        onMoveStart={() => setCanvasInteractionActive("pan", true)}
+        onMove={(_, nextViewport) => {
+          viewportRef.current = nextViewport
+        }}
+        onMoveEnd={(_, nextViewport) => {
+          viewportRef.current = nextViewport
+          setViewport(nextViewport)
+          setCanvasInteractionActive("pan", false)
+        }}
         onPaneContextMenu={handlePaneContextMenu}
         onPaneClick={() => {
           if (suppressPaneClickRef.current) return

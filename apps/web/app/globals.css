@@ -587,6 +587,35 @@ select:focus-visible,
   background-size: auto, 96px 96px, 96px 96px;
 }
 
+body.openreel-canvas-interacting .studio-shell::before,
+body.openreel-canvas-interacting .studio-atmosphere {
+  display: none !important;
+  animation: none !important;
+}
+
+body.openreel-canvas-interacting .studio-topbar,
+body.openreel-canvas-interacting .studio-chat-surface,
+body.openreel-canvas-interacting .studio-session-drawer,
+body.openreel-canvas-interacting .studio-canvas-fab {
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+}
+
+body.openreel-canvas-interacting .openreel-smart-node-card,
+body.openreel-canvas-interacting .react-flow__handle,
+body.openreel-canvas-interacting .react-flow__edge-path {
+  transition: none !important;
+  filter: none !important;
+  box-shadow: none !important;
+}
+
+body.openreel-canvas-panning .openreel-canvas-flow .react-flow__minimap,
+body.openreel-canvas-panning .openreel-canvas-flow .react-flow__controls,
+body.openreel-canvas-panning .openreel-canvas-group-layer,
+body.openreel-canvas-panning .openreel-node-detail-panel {
+  visibility: hidden !important;
+}
+
 .studio-canvas-empty {
   position: relative;
   overflow: hidden;

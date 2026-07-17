@@ -709,7 +709,7 @@ export default function CanvasGroupLayer({
   }, [beginGroupDrag, containerRef, revealGroup, revealToolbar])
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden">
+    <div className="openreel-canvas-group-layer pointer-events-none absolute inset-0 z-20 overflow-hidden">
       {groupModels.map(({ group, screenRect }) => {
         const toolbarTop = screenRect.top + 8
         const frameVisible = frameGroupId === group.id
