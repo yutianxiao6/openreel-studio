@@ -5778,6 +5778,7 @@ function WorkflowEditorGraph({
   const pendingDragNodeRef = useRef<FlowNode | null>(null)
   const graphDraggingRef = useRef(false)
   const graphPanningRef = useRef(false)
+  const graphPointerPressedRef = useRef(false)
 
   const guideNodes = useMemo<FlowNode[]>(() => alignmentGuides.map((guide) => {
     const length = Math.max(1, guide.end - guide.start)
@@ -5918,6 +5919,7 @@ function WorkflowEditorGraph({
   }, [syncGraphInteractionSurface])
 
   const handleGraphMoveEnd = useCallback(() => {
+    if (graphPointerPressedRef.current) return
     graphPanningRef.current = false
     syncGraphInteractionSurface()
   }, [syncGraphInteractionSurface])
@@ -5997,6 +5999,22 @@ function WorkflowEditorGraph({
     })
   }, [])
 
+  const handleGraphPointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    const target = event.target
+    if (!(target instanceof Element) || !target.closest(".react-flow__pane")) return
+    graphPointerPressedRef.current = true
+    graphPanningRef.current = true
+    syncGraphInteractionSurface()
+  }, [syncGraphInteractionSurface])
+
+  const finishGraphPointerInteraction = useCallback(() => {
+    if (!graphPointerPressedRef.current) return
+    graphPointerPressedRef.current = false
+    graphPanningRef.current = false
+    syncGraphInteractionSurface()
+  }, [syncGraphInteractionSurface])
+
   const handleGraphPointerLeave = useCallback(() => {
     graphSurfaceRef.current?.style.setProperty("--workflow-pointer-opacity", "0")
   }, [])
@@ -6010,10 +6028,20 @@ function WorkflowEditorGraph({
     }
   }, [])
 
+  useEffect(() => {
+    window.addEventListener("pointerup", finishGraphPointerInteraction, { passive: true })
+    window.addEventListener("pointercancel", finishGraphPointerInteraction, { passive: true })
+    return () => {
+      window.removeEventListener("pointerup", finishGraphPointerInteraction)
+      window.removeEventListener("pointercancel", finishGraphPointerInteraction)
+    }
+  }, [finishGraphPointerInteraction])
+
   return (
     <div
       ref={graphSurfaceRef}
       className="openreel-workflow-graph h-full w-full"
+      onPointerDownCapture={handleGraphPointerDownCapture}
       onPointerMove={handleGraphPointerMove}
       onPointerLeave={handleGraphPointerLeave}
     >
