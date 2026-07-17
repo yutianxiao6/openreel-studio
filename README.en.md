@@ -7,76 +7,88 @@ English · [简体中文](./README.md)
 [![npm installer](https://img.shields.io/npm/v/openreel-studio-installer?label=npm%20installer)](https://www.npmjs.com/package/openreel-studio-installer)
 [![License](https://img.shields.io/github/license/yutianxiao6/openreel-studio)](./LICENSE)
 
-**Turn a creative request into a visible, editable, reusable, and cuttable video production flow.**
+**Bring the agent, node canvas, reusable workflows, and frame-based timeline into one creative desktop.**
 
-OpenReel Studio is an open-source, conversational workspace for AI video production. You can develop an idea with an agent or work directly with text, image, video, and audio nodes. Inputs, references, prompts, and generated results remain visible on the canvas, and finished clips can move into the built-in editor for essential cutting and delivery.
+OpenReel Studio is an open-source, conversational workspace for AI video production. Start with a natural-language request and let the agent create and run visible text, image, video, and audio nodes. Build reusable production systems in the workflow editor, then finish the result in the built-in timeline.
 
-![OpenReel Studio creation canvas](./docs/assets/screenshots/creation-canvas.png)
+[Quick start](./docs/en/getting-started.md) · [User guide](./docs/en/user-guide.md) · [Workflows](./docs/en/workflows.md) · [Architecture](./docs/en/architecture.md)
 
-## What it solves
+![The new OpenReel Studio creation canvas with chat, visible deliverables, and dependency edges in one workspace](./docs/assets/screenshots/creation-canvas.png)
 
-AI video production often scatters scripts, references, prompts, and outputs across unrelated tools. OpenReel Studio keeps the process in one traceable workspace:
+## Why OpenReel Studio
 
-- The agent interprets requests, plans work, and calls models while outputs remain editable.
-- Text, images, videos, and audio are first-class visible nodes connected by references.
-- A failed step can be retried or replaced without restarting the whole production.
-- A reliable process can be saved as a workflow template and reused across projects.
-- Generated clips can move directly into a frame-based timeline for basic editing.
+AI video production is more than generating one image or clip. The hard part is keeping the brief, script, references, prompts, provider settings, results, and edit versions consistent—while still being able to redo only what failed.
 
-## From idea to delivery
+OpenReel Studio organizes that chain around three principles:
 
-1. **Describe the target**: provide the subject, duration, aspect ratio, style, and available material.
-2. **Build the source material**: create or import scripts, characters, scenes, storyboards, and references.
-3. **Generate media**: run image, video, and audio providers one node at a time.
-4. **Review and select**: inspect generation history and choose which result should feed downstream work.
-5. **Edit and export**: trim, join, arrange, adjust, and export the finished sequence.
+- **Visible deliverables**: text, images, videos, and audio are real canvas nodes rather than hidden task records.
+- **Traceable dependencies**: references between characters, scenes, storyboards, and final videos are represented by edges.
+- **Local retries**: edit, run, retry, or replace one node without restarting the complete production.
 
-## Highlights
+## One workspace, four ways to collaborate
 
-| Capability | What it provides |
+| Surface | Purpose |
 | --- | --- |
-| Conversational creation | Create, update, run, and review production nodes with natural language. |
-| Node canvas | Manage scripts, prompts, references, storyboards, videos, and audio together. |
-| Visual references | Send pixels to vision tasks when the model must inspect an image, while keeping generation-only references separate. |
-| Generation history | Preserve image and video candidates; a failed attempt does not replace the last successful preview. |
-| Workflow editor | Build reusable flows with inputs, dependencies, collections, loops, and runtime instances. |
+| Project sessions | Create, switch, select, and manage projects from the collapsible left rail; every project keeps its own chat and canvas. |
+| Agent chat | Create, update, run, and review nodes with natural language; resize the chat pane when the workspace needs more room. |
+| Creation canvas | Inspect and edit the actual `text`, `image`, `video`, and `audio` deliverables and their dependencies. |
+| Workflows and editing | Reuse production methods in the workflow editor and finish picture and sound in the frame-based timeline. |
+
+## From one request to a finished video
+
+1. **Describe the target**: provide the subject, duration, style, aspect ratio, and available material.
+2. **Create visible deliverables**: let the agent build script, character, scene, storyboard, video, or audio nodes.
+3. **Review and adjust locally**: inspect real previews, prompts, references, and result history, then rerun only the node that needs work.
+4. **Reuse the method**: save reliable steps as workflows with inputs, dependencies, collections, conditions, and loops.
+5. **Move into the timeline**: drag images, videos, and audio from the media pool onto tracks for arrangement and adjustment.
+6. **Export back to the canvas**: rendered output returns as a new final-video node that can continue into downstream work.
+
+## Core capabilities
+
+| Capability | Current implementation |
+| --- | --- |
+| Node-first creation | User-visible text, image, video, and audio nodes are the source of truth for creative work. |
+| Real visual references | Distinguish pixels shown to a prompt model, visual references used by a media model, and direct source-image adoption. |
+| Generation and history | Run and retry nodes independently and restore previous results without replacing the latest successful preview on failure. |
+| Workflow V2 | Dynamic inputs, `needs`, media `uses`, collection expansion, conditional branches, and bounded feedback loops. |
+| Dynamic media settings | Models, aspect ratios, exact pixels, quality, and frame rate travel with the current front-end run instead of polluting reusable specs. |
 | Provider flexibility | Configure LLM, image, video, and audio services independently through declarative media protocols. |
-| Essential video editing | Frame-based trimming, splitting, joining, multitrack arrangement, real filmstrips, real waveforms, and export. |
-| Picture and sound controls | Position, scale, rotation, opacity, rectangular crop, gain, mute, and fades. |
+| Frame-based editing | Drag-in media, snapping, track arrangement, trims, splits, joins, real filmstrips, and real audio waveforms. |
+| Picture and sound | Position, scale, rotation, opacity, rectangular crop, gain, mute, and fades. |
 | Local and desktop runtime | Run from source, deploy with Docker, or install on Windows, Linux, and macOS. |
-| Diagnostics | Inspect traces, tool results, token/cache usage, and agent diagnostics. |
+| Diagnostics | Inspect agent traces, tool results, token/cache usage, and diagnostic panels. |
 
 ## Product views
 
-The following images were captured from the current running product.
+These screenshots come from the current running product and use a dedicated public demo project.
 
 ### Reusable workflows
 
-The workflow panel defines reusable process structure. The creation canvas remains focused on user-facing text, image, video, and audio deliverables.
+The workflow panel defines production methods: steps, inputs, dependencies, dynamic deliverables, and runtime instances. The creation canvas remains focused on the deliverables users actually inspect and ship.
 
-![OpenReel Studio workflow editor](./docs/assets/screenshots/workflow-editor.png)
+![The new OpenReel Studio workflow editor](./docs/assets/screenshots/workflow-editor.png)
 
-### Frame-based video editor
+### Frame-based video timeline
 
-The built-in editor focuses on rough cutting and delivery: real frame thumbnails, real audio waveforms, trims, splits, joins, tracks, levels, visual transforms, and export.
+The built-in editor provides a media pool, program monitor, frame-based tracks, real waveforms, clip properties, and export. A timeline export creates a new final-video node on the original canvas.
 
-![OpenReel Studio video editor](./docs/assets/screenshots/video-editor.png)
+![The new OpenReel Studio video editor](./docs/assets/screenshots/video-editor.png)
 
 ## Who it is for
 
-- Creators combining several AI providers into repeatable video workflows.
-- Short-form teams that need traceable character, scene, and storyboard references.
-- Users who want model configuration and generated assets on their own machine or server.
-- Developers exploring agents, workflow protocols, and node-based media production.
+- Creators combining several AI providers into a repeatable video production system.
+- Short-form teams that need traceable character, scene, storyboard, and final-video references.
+- Users who want model configuration, workflows, and generated assets on their own machine or server.
+- Developers exploring agent orchestration, Workflow V2, and node-based media production.
 
-OpenReel Studio does not include model credits. Image, video, audio, and LLM operations require accounts and API keys from the providers you choose.
+OpenReel Studio does not include model credits. LLM, image, video, and audio operations require accounts and API keys from the providers you choose.
 
 ## Get started
 
-- Install a desktop build from the [latest release](https://github.com/yutianxiao6/openreel-studio/releases/latest).
-- Run from source with the [English quick start](./docs/en/getting-started.md).
-- Learn the workspace with the [English user guide](./docs/en/user-guide.md).
-- Explore the codebase in the [English architecture guide](./docs/en/architecture.md).
+- Desktop builds: download the current package from the [latest release](https://github.com/yutianxiao6/openreel-studio/releases/latest).
+- Source install: follow the [English quick start](./docs/en/getting-started.md).
+- First session: read the [English user guide](./docs/en/user-guide.md).
+- Provider setup: read [Model providers](./docs/en/model-providers.md).
 
 The installer CLI can download the latest package for the current platform:
 
@@ -110,7 +122,7 @@ Do not paste secrets, complete private configuration, or user data into public i
 
 ## Project status
 
-OpenReel Studio is under active development. Workflow contracts, desktop packaging, and editing behavior will continue to evolve. Validate your providers, media formats, and deployment environment before relying on it for production delivery.
+OpenReel Studio remains under active development. Workflow contracts, provider adapters, desktop packaging, and editing behavior will continue to evolve. Validate your providers, media formats, and deployment environment before relying on it for production delivery.
 
 ## License
 
