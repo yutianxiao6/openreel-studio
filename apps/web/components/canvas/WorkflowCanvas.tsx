@@ -9385,6 +9385,15 @@ function WorkflowTemplatePanel({
       <div className="openreel-workflow-body relative flex min-h-0 flex-1 border-t border-white/[0.08]">
         {toolboxOpen && (
         <aside className="openreel-workflow-library flex w-[260px] shrink-0 flex-col border-r border-white/[0.08] bg-[#0b1017]">
+          <button
+            type="button"
+            className="openreel-workflow-library-close"
+            onClick={() => setToolboxOpen(false)}
+            aria-label="关闭步骤库"
+            title="关闭步骤库"
+          >
+            ×
+          </button>
           <div className="border-b border-white/[0.08] px-3 py-3">
             <div className="flex items-end justify-between gap-2">
               <div>
@@ -9593,6 +9602,7 @@ function WorkflowTemplatePanel({
           )}
         </main>
         {inspectorOpen && (
+          <>
           <WorkflowStepInspector
             step={detailStep}
             steps={draftSteps}
@@ -9632,6 +9642,16 @@ function WorkflowTemplatePanel({
             onMoveStepScope={moveDraftStepScope}
             onDeleteStep={deleteDraftStep}
           />
+          <button
+            type="button"
+            className="openreel-workflow-inspector-close"
+            onClick={() => setInspectorOpen(false)}
+            aria-label="关闭流程详情"
+            title="关闭流程详情"
+          >
+            ×
+          </button>
+          </>
         )}
       </div>
     </section>

@@ -92,4 +92,6 @@ def test_button_system_and_workflow_editor_use_advanced_interaction_layers() -> 
     assert 'className="openreel-workflow-editor' in workflow
     assert 'data-workflow-action="success"' in workflow
     assert "openreel-workflow-body" in workflow
+    assert 'aria-label="关闭步骤库"' in workflow
+    assert 'aria-label="关闭流程详情"' in workflow
     assert "studio-workspace-switcher-button" in tabs

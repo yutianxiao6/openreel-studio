@@ -774,6 +774,11 @@ select:focus-visible,
   box-shadow: 0 12px 28px rgb(0 0 0 / 0.3), 0 0 0 1px rgb(34 211 238 / 0.04), inset 0 1px rgb(255 255 255 / 0.055);
 }
 
+.openreel-workflow-editor .openreel-workflow-library-close,
+.openreel-workflow-editor .openreel-workflow-inspector-close {
+  display: none;
+}
+
 .openreel-workflow-stage {
   background:
     radial-gradient(circle at 50% 28%, rgb(53 64 151 / 0.08), transparent 36%),
@@ -939,6 +944,32 @@ select:focus-visible,
 
   .openreel-workflow-stage {
     width: 100%;
+  }
+
+  .openreel-workflow-editor .openreel-workflow-library-close,
+  .openreel-workflow-editor .openreel-workflow-inspector-close {
+    position: absolute;
+    z-index: 40;
+    display: grid;
+    height: 30px;
+    width: 30px;
+    place-items: center;
+    border: 1px solid rgb(255 255 255 / 0.1);
+    border-radius: 9px;
+    background: linear-gradient(145deg, rgb(36 43 57 / 0.94), rgb(15 20 29 / 0.94));
+    color: #cbd5e1;
+    font-size: 16px;
+    box-shadow: 0 10px 26px rgb(0 0 0 / 0.34), inset 0 1px rgb(255 255 255 / 0.06);
+  }
+
+  .openreel-workflow-editor .openreel-workflow-library-close {
+    top: 9px;
+    right: 9px;
+  }
+
+  .openreel-workflow-editor .openreel-workflow-inspector-close {
+    top: 9px;
+    right: 9px;
   }
 }
 
