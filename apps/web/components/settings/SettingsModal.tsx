@@ -194,13 +194,16 @@ export function SettingsModal({ open, onClose }: Props) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="studio-settings-title"
         className="studio-settings-dialog flex max-h-[calc(100dvh-16px)] w-[calc(100vw-16px)] flex-col border sm:max-h-[90vh] sm:w-[min(1100px,94vw)]"
       >
         <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.08] bg-white/[0.015] px-3 py-3.5 sm:px-5">
           <div className="flex min-w-0 items-center gap-2">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-violet-300/20 bg-gradient-to-br from-violet-400/15 to-cyan-300/[0.06] text-[10px] font-bold tracking-tight text-violet-100 shadow-inner shadow-white/[0.04]">SET</span>
             <div>
-              <h2 className="shrink-0 bg-gradient-to-r from-white to-violet-200 bg-clip-text text-sm font-semibold text-transparent">系统设置</h2>
+              <h2 id="studio-settings-title" className="shrink-0 bg-gradient-to-r from-white to-violet-200 bg-clip-text text-sm font-semibold text-transparent">系统设置</h2>
               <span className="hidden truncate text-[10px] text-zinc-600 sm:block">runtime.jsonc · 修改后即时生效</span>
             </div>
           </div>
