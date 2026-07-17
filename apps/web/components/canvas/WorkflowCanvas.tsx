@@ -9214,8 +9214,8 @@ function WorkflowTemplatePanel({
   return (
     <section className="openreel-workflow-editor flex h-full w-full flex-col overflow-hidden bg-[#10151d] text-zinc-100">
       <div className="openreel-workflow-toolbar flex min-h-12 items-center gap-2 border-b border-white/10 px-3 py-2">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <div className="flex h-8 shrink-0 items-center rounded-md border border-cyan-200/18 bg-cyan-300/[0.06] px-3 text-xs font-semibold text-cyan-100">
+        <div className="openreel-workflow-toolbar-fields flex min-w-0 flex-1 items-center gap-2">
+          <div className="openreel-workflow-title-badge flex h-8 shrink-0 items-center rounded-md border border-cyan-200/18 bg-cyan-300/[0.06] px-3 text-xs font-semibold text-cyan-100">
             搭建流程
           </div>
           {draftWorkflowId ? (
@@ -9227,7 +9227,7 @@ function WorkflowTemplatePanel({
               value={selected?.id || ""}
               onChange={(event) => onSelectedIdChange(event.target.value)}
               disabled={artifactMode || loading || templates.length === 0}
-              className="h-8 w-[220px] rounded-md border border-white/10 bg-black/30 px-2 text-xs text-zinc-100 outline-none transition focus:border-cyan-300/45 disabled:opacity-55"
+              className="openreel-workflow-template-select h-8 w-[220px] rounded-md border border-white/10 bg-black/30 px-2 text-xs text-zinc-100 outline-none transition focus:border-cyan-300/45 disabled:opacity-55"
             >
               {templates.length === 0 ? (
                 <option value="">暂无流程</option>
@@ -9244,13 +9244,13 @@ function WorkflowTemplatePanel({
             value={workflowName}
             onChange={(event) => updateWorkflowName(event.target.value)}
             placeholder="流程名称"
-            className="h-8 min-w-[180px] flex-1 rounded-md border border-white/10 bg-black/30 px-2 text-xs font-semibold text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-cyan-300/45"
+            className="openreel-workflow-name-input h-8 min-w-[180px] flex-1 rounded-md border border-white/10 bg-black/30 px-2 text-xs font-semibold text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-cyan-300/45"
           />
           <span className="hidden shrink-0 text-[10px] text-zinc-600 xl:block">
             {activeTemplateScopeTitle} · {templateDisplaySteps.length} 个步骤
           </span>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="openreel-workflow-toolbar-actions flex shrink-0 items-center gap-1.5">
           <button
             type="button"
             onClick={createBlankWorkflow}
@@ -9382,7 +9382,7 @@ function WorkflowTemplatePanel({
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 border-t border-white/[0.08]">
+      <div className="openreel-workflow-body relative flex min-h-0 flex-1 border-t border-white/[0.08]">
         {toolboxOpen && (
         <aside className="openreel-workflow-library flex w-[260px] shrink-0 flex-col border-r border-white/[0.08] bg-[#0b1017]">
           <div className="border-b border-white/[0.08] px-3 py-3">

@@ -762,6 +762,11 @@ select:focus-visible,
   box-shadow: 12px 0 36px rgb(0 0 0 / 0.16), inset -1px 0 rgb(255 255 255 / 0.015);
 }
 
+.openreel-workflow-body {
+  container-type: inline-size;
+  overflow: hidden;
+}
+
 .openreel-workflow-library button:hover:not(:disabled) {
   transform: translateY(-2px);
   border-color: rgb(103 232 249 / 0.3) !important;
@@ -909,6 +914,75 @@ select:focus-visible,
   background: linear-gradient(145deg, rgb(20 28 40 / 0.97), rgb(8 13 20 / 0.96)) !important;
   box-shadow: 0 24px 70px rgb(0 0 0 / 0.56), 0 0 30px rgb(34 211 238 / 0.06), inset 0 1px rgb(255 255 255 / 0.06) !important;
   backdrop-filter: blur(22px) saturate(1.2) !important;
+}
+
+@container (max-width: 760px) {
+  .openreel-workflow-library {
+    position: absolute;
+    z-index: 28;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(280px, calc(100% - 54px)) !important;
+    animation: studio-slide-in 240ms var(--studio-ease) both;
+  }
+
+  .openreel-workflow-inspector {
+    position: absolute;
+    z-index: 32;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(400px, calc(100% - 40px)) !important;
+    animation: studio-enter 220ms var(--studio-ease) both;
+  }
+
+  .openreel-workflow-stage {
+    width: 100%;
+  }
+}
+
+@media (max-width: 639px) {
+  .openreel-workflow-toolbar {
+    min-height: auto;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 7px 8px;
+  }
+
+  .openreel-workflow-toolbar-fields,
+  .openreel-workflow-toolbar-actions {
+    width: 100%;
+  }
+
+  .openreel-workflow-toolbar-fields {
+    flex: 0 0 auto;
+  }
+
+  .openreel-workflow-title-badge {
+    display: none;
+  }
+
+  .openreel-workflow-template-select {
+    width: 128px !important;
+    flex: 0 1 128px;
+  }
+
+  .openreel-workflow-name-input {
+    min-width: 0 !important;
+  }
+
+  .openreel-workflow-toolbar-actions {
+    justify-content: flex-end;
+    overflow-x: auto;
+    padding-bottom: 1px;
+  }
+
+  .openreel-workflow-canvas-toolbar {
+    max-width: calc(100% - 16px) !important;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
 }
 
 .studio-settings-backdrop {

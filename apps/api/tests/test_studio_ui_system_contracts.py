@@ -85,8 +85,11 @@ def test_button_system_and_workflow_editor_use_advanced_interaction_layers() -> 
     assert ".openreel-workflow-library button:hover:not(:disabled)" in styles
     assert ".openreel-workflow-graph::after" in styles
     assert ".openreel-workflow-node.is-selected" in styles
+    assert "@container (max-width: 760px)" in styles
+    assert ".openreel-workflow-toolbar-fields" in styles
     assert "requestAnimationFrame" in workflow
     assert 'className="openreel-workflow-graph h-full w-full"' in workflow
     assert 'className="openreel-workflow-editor' in workflow
     assert 'data-workflow-action="success"' in workflow
+    assert "openreel-workflow-body" in workflow
     assert "studio-workspace-switcher-button" in tabs
