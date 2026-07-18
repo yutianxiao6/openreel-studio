@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { DownloadFeedback } from "@/components/common/DownloadFeedback";
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
@@ -29,7 +30,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="zh-CN">
-      <body className="min-h-screen overflow-hidden antialiased">{children}</body>
+      <body className="min-h-screen overflow-hidden antialiased">
+        {children}
+        <DownloadFeedback />
+      </body>
     </html>
   );
 }

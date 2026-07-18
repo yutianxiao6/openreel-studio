@@ -35,6 +35,7 @@ import {
   requestWorkflowRefresh,
   getApiBaseSync,
   resolveMediaUrl,
+  saveMediaFile,
   resolveAssetLibraryPreviewUrl,
   type ChatStreamEvent,
   type BlueprintStreamEvent,
@@ -1075,19 +1076,17 @@ function AssetInfoPanel({
     if (result?.ok === false) throw new Error(String(result.error || "操作失败"))
   }
 
-  const handleDownload = useCallback((item: AssetInfoItem) => {
+  const handleDownload = useCallback(async (item: AssetInfoItem) => {
     const url = itemUrl(item)
     if (!url) {
       setOperationError("这个资产没有可下载地址")
       return
     }
-    const anchor = document.createElement("a")
-    anchor.href = url
-    anchor.download = assetBasename(item.path || item.title)
-    anchor.rel = "noopener"
-    document.body.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
+    try {
+      await saveMediaFile(url, assetBasename(item.path || item.title))
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : String(error))
+    }
   }, [itemUrl])
 
   const handleAddToCanvas = useCallback(async (item: AssetInfoItem) => {
@@ -1616,19 +1615,17 @@ function AssetLibraryPanel({
     if (result?.ok === false) throw new Error(String(result.error || "操作失败"))
   }
 
-  const handleDownload = useCallback((item: AssetInfoItem) => {
+  const handleDownload = useCallback(async (item: AssetInfoItem) => {
     const url = itemUrl(item)
     if (!url) {
       setOperationError("这个资产没有可下载地址")
       return
     }
-    const anchor = document.createElement("a")
-    anchor.href = url
-    anchor.download = assetBasename(item.path || item.title)
-    anchor.rel = "noopener"
-    document.body.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
+    try {
+      await saveMediaFile(url, assetBasename(item.path || item.title))
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : String(error))
+    }
   }, [itemUrl])
 
   const handleAddToCanvas = useCallback(async (item: AssetInfoItem) => {

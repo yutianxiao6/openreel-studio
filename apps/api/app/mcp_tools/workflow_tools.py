@@ -30,6 +30,7 @@ from app.agent.workflow_repeat_scope import (
     workflow_repeat_group_id,
     workflow_repeat_index,
     workflow_same_repeat_scope,
+    workflow_scopes_conflict,
 )
 from app.db.session import session_scope
 from app.mcp_tools import canvas_tools
@@ -4635,6 +4636,59 @@ async def _emit_workflow_runtime_update(
         return
 
 
+_WORKFLOW_RETRY_TITLE_RE = re.compile(r"^(?:实例|第)\s*\d+\s*(?:次|轮)?\s*[·•.、_-]\s*")
+
+
+def _workflow_retry_source_title(step: dict[str, Any]) -> str:
+    title = str(step.get("title") or "").strip()
+    if not isinstance(step.get("repeat_until"), dict):
+        return title
+    return _WORKFLOW_RETRY_TITLE_RE.sub("", title).strip() or title
+
+
+def _workflow_prior_retry_canvas_node(
+    nodes: list[dict[str, Any]],
+    step: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Find the prior visible source node for a bounded feedback retry.
+
+    Attempts retain distinct runtime step ids for traceability, while the canvas
+    source is regenerated in place. Existing v2 repeat metadata is sufficient;
+    no additional spec field is required.
+    """
+    until = step.get("repeat_until")
+    target_index = workflow_repeat_index(step)
+    target_group = workflow_repeat_group_id(step)
+    template_step_id = str(step.get("template_step_id") or "").strip()
+    until_source = str(step.get("repeat_until_source_step") or "").strip()
+    if (
+        not isinstance(until, dict)
+        or target_index is None
+        or target_index <= 1
+        or not target_group
+        or not template_step_id
+        or template_step_id == until_source
+    ):
+        return None
+
+    candidates: list[tuple[int, str, dict[str, Any]]] = []
+    for node in nodes:
+        if _workflow_record_surface(node) == "workflow_runtime":
+            continue
+        metadata = _workflow_metadata_from_node(node)
+        if str(metadata.get("repeat_group_id") or "").strip() != target_group:
+            continue
+        if str(metadata.get("template_step_id") or "").strip() != template_step_id:
+            continue
+        candidate_index = workflow_repeat_index(node)
+        if candidate_index is None or candidate_index >= target_index:
+            continue
+        if workflow_scopes_conflict(step, node):
+            continue
+        candidates.append((candidate_index, str(node.get("updated_at") or ""), node))
+    return max(candidates, key=lambda item: (item[0], item[1]))[2] if candidates else None
+
+
 async def _materialize_workflow_step(
     *,
     project_id: str,
@@ -4754,6 +4808,12 @@ async def _materialize_workflow_step(
         default_fields = {}
     target_surface = _workflow_step_surface(step)
     existing = created_by_step.get(target_id)
+    reused_retry_source = False
+    if target_surface != "workflow_runtime":
+        retry_source = _workflow_prior_retry_canvas_node(nodes, step)
+        if retry_source is not None:
+            existing = retry_source
+            reused_retry_source = True
     if existing and target_surface != "workflow_runtime":
         existing_id = str(existing.get("id") or "").strip()
         existing_node_id = str(existing.get("node_id") or "").strip()
@@ -4809,6 +4869,9 @@ async def _materialize_workflow_step(
                     continue
                 canonical_workflow[key] = value
             existing_fields["workflow"] = canonical_workflow
+            retry_title = _workflow_retry_source_title(step)
+            if retry_title:
+                existing_fields["title"] = retry_title
             effective_source = _workflow_effective_source_step(existing_fields, step)
             if effective_source:
                 existing_fields["workflow_source_step"] = effective_source
@@ -4832,7 +4895,16 @@ async def _materialize_workflow_step(
                 replace_managed=True,
             )
             if existing_fields != original_existing_fields:
-                await canvas_tools.update_node(str(existing["id"]), {"input_data": existing_fields})
+                node_patch: dict[str, Any] = {"input_data": existing_fields}
+                if reused_retry_source and retry_title:
+                    node_patch["title"] = retry_title
+                    existing["title"] = retry_title
+                if reused_retry_source:
+                    node_patch["status"] = "idle"
+                    node_patch["error_message"] = None
+                    existing["status"] = "idle"
+                    existing.pop("error_message", None)
+                await canvas_tools.update_node(str(existing["id"]), node_patch)
                 await _sync_workflow_dependency_edges(
                     project_id=project_id,
                     node_id=str(existing["id"]),
@@ -4866,6 +4938,7 @@ async def _materialize_workflow_step(
             "node": existing,
             "runtime_step": target_surface == "workflow_runtime",
             "created": False,
+            "reused_retry_source": reused_retry_source,
         }
 
     missing_deps = [
@@ -4896,7 +4969,12 @@ async def _materialize_workflow_step(
     node_type = str(step.get("node_type") or "text")
     fields = _workflow_strip_template_media_settings(_merge_dict(default_fields, step.get("fields") or {}), node_type)
     fields = _merge_dict(fields, _workflow_ui_media_field_overrides(step, ui_overrides))
-    step_title = str(step.get("title") or fields.get("title") or step.get("id") or "工作流步骤").strip()
+    step_title = str(
+        _workflow_retry_source_title(step)
+        or fields.get("title")
+        or step.get("id")
+        or "工作流步骤"
+    ).strip()
     if title and step_index == 0:
         step_title = str(title).strip()
     fields.setdefault("title", step_title)
@@ -6183,11 +6261,17 @@ async def workflow_run_step(
                 record=materialized.get("node") if isinstance(materialized.get("node"), dict) else {},
                 inputs=inputs,
             )
-            step_results.append({
+            runtime_step_result = {
                 **materialized,
                 **runtime_result,
                 "created": materialized.get("created"),
-            })
+            }
+            step_results.append(runtime_step_result)
+            if runtime_result.get("ok") is False:
+                return {
+                    **runtime_step_result,
+                    "partial_results": step_results[:-1],
+                }
             continue
 
         node_id = str(materialized.get("node_id") or "")
@@ -7721,7 +7805,7 @@ async def _materialize_template(
         node_type = str(step["node_type"])
         fields = _workflow_strip_template_media_settings(_merge_dict(default_fields, step.get("fields") or {}), node_type)
         fields = _merge_dict(fields, _workflow_ui_media_field_overrides(step, ui_overrides))
-        step_title = str(step.get("title") or fields.get("title") or step["id"]).strip()
+        step_title = str(_workflow_retry_source_title(step) or fields.get("title") or step["id"]).strip()
         if title and index == 0:
             step_title = str(title).strip()
         fields.setdefault("title", step_title)

@@ -1,12 +1,13 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { getAudioProviderProtocols, getImageProviderProtocols, getRuntimeConfigFile, getVideoProviderProtocols, patchRuntimeConfig } from "@/lib/api"
+import { getAudioProviderProtocols, getImageProviderProtocols, getRuntimeConfigFile, getVideoProviderProtocols, isOpenReelDesktop, patchRuntimeConfig } from "@/lib/api"
 import { LlmTab } from "./tabs/LlmTab"
 import { MediaTab } from "./tabs/MediaTab"
 import { AgentTab } from "./tabs/AgentTab"
 import { AgentDebugTab } from "./tabs/AgentDebugTab"
 import { RawFileTab } from "./tabs/RawFileTab"
+import { DownloadTab } from "./tabs/DownloadTab"
 
 export interface RuntimeConfig {
   $schema_version: number
@@ -77,7 +78,7 @@ export interface MediaProtocolSummary {
   result_type?: string
 }
 
-export type TabKey = "llm" | "image" | "video" | "audio" | "agent" | "debug" | "raw"
+export type TabKey = "llm" | "image" | "video" | "audio" | "agent" | "download" | "debug" | "raw"
 
 export interface ConfigContext {
   config: RuntimeConfig
@@ -177,12 +178,14 @@ export function SettingsModal({ open, onClose }: Props) {
   const imageCount = config?.media_providers.filter((p) => p.kind === "image").length ?? 0
   const videoCount = config?.media_providers.filter((p) => p.kind === "video").length ?? 0
   const audioCount = config?.media_providers.filter((p) => p.kind === "audio").length ?? 0
+  const desktop = isOpenReelDesktop()
   const tabs: Array<{ key: TabKey; label: string; count?: number }> = [
     { key: "llm", label: "LLM 模型", count: config?.llm_providers.length },
     { key: "image", label: "图片 Provider", count: imageCount },
     { key: "video", label: "视频 Provider", count: videoCount },
     { key: "audio", label: "音频 Provider", count: audioCount },
     { key: "agent", label: "运行偏好" },
+    ...(desktop ? [{ key: "download" as const, label: "下载位置" }] : []),
     { key: "debug", label: "Agent 诊断" },
     { key: "raw", label: "配置文件" },
   ]
@@ -261,6 +264,7 @@ export function SettingsModal({ open, onClose }: Props) {
           {ctx && tab === "video" && <MediaTab ctx={ctx} kind="video" />}
           {ctx && tab === "audio" && <MediaTab ctx={ctx} kind="audio" />}
           {ctx && tab === "agent" && <AgentTab ctx={ctx} />}
+          {desktop && tab === "download" && <DownloadTab />}
           {tab === "debug" && <AgentDebugTab />}
           {ctx && tab === "raw" && <RawFileTab onSaved={refresh} />}
         </div>

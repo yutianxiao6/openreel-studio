@@ -1,10 +1,21 @@
-const { app, BrowserWindow, Menu, Tray, nativeImage } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  Tray,
+  dialog,
+  ipcMain,
+  nativeImage,
+  net: electronNet,
+} = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { Readable } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const { migrateAppDataBackToInstall } = require("./runtime_data.cjs");
 
 const isWindows = process.platform === "win32";
@@ -54,6 +65,158 @@ function desktopDataRoot() {
 function mkdirp(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
+
+function safeSuggestedFilename(value) {
+  const clean = path.basename(String(value || "openreel-media"))
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clean.slice(0, 180) || "openreel-media";
+}
+
+function mediaDownloadPreferencesPath() {
+  return path.join(fixedUserDataDir(), "media-download.json");
+}
+
+function readMediaDownloadDirectory() {
+  try {
+    const preferences = JSON.parse(fs.readFileSync(mediaDownloadPreferencesPath(), "utf8"));
+    const directory = typeof preferences?.directory === "string" ? preferences.directory : "";
+    return directory && fs.existsSync(directory) && fs.statSync(directory).isDirectory()
+      ? directory
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberMediaDownloadDirectory(directory) {
+  const preferencesPath = mediaDownloadPreferencesPath();
+  mkdirp(path.dirname(preferencesPath));
+  fs.writeFileSync(
+    preferencesPath,
+    `${JSON.stringify({ directory }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+async function chooseMediaDownloadDirectory(owner) {
+  const options = {
+    title: "选择媒体下载文件夹",
+    defaultPath: readMediaDownloadDirectory() || app.getPath("downloads"),
+    properties: ["openDirectory", "createDirectory"],
+  };
+  const selected = owner
+    ? await dialog.showOpenDialog(owner, options)
+    : await dialog.showOpenDialog(options);
+  if (selected.canceled || !selected.filePaths[0]) {
+    return "";
+  }
+  const directory = selected.filePaths[0];
+  rememberMediaDownloadDirectory(directory);
+  return directory;
+}
+
+const activeMediaDownloadTargets = new Set();
+
+function uniqueMediaDownloadPath(directory, filename) {
+  const parsed = path.parse(safeSuggestedFilename(filename));
+  const stem = parsed.name || "openreel-media";
+  const extension = parsed.ext;
+  for (let index = 0; index < 10000; index += 1) {
+    const candidateName = index === 0
+      ? `${stem}${extension}`
+      : `${stem} (${index})${extension}`;
+    const candidate = path.join(directory, candidateName);
+    if (!fs.existsSync(candidate) && !activeMediaDownloadTargets.has(candidate)) {
+      return candidate;
+    }
+  }
+  return path.join(directory, `${stem}-${Date.now()}${extension}`);
+}
+
+ipcMain.handle("openreel:get-media-download-directory", () => ({
+  ok: true,
+  directory: readMediaDownloadDirectory(),
+}));
+
+ipcMain.handle("openreel:choose-media-download-directory", async (event) => {
+  const owner = BrowserWindow.fromWebContents(event.sender) || mainWindow || undefined;
+  try {
+    const directory = await chooseMediaDownloadDirectory(owner);
+    return { ok: true, canceled: !directory, directory };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, canceled: false, directory: "", error: message };
+  }
+});
+
+function decodeDataUrl(value) {
+  const match = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(value);
+  if (!match) {
+    throw new Error("Unsupported data URL");
+  }
+  return match[2]
+    ? Buffer.from(match[3], "base64")
+    : Buffer.from(decodeURIComponent(match[3]), "utf8");
+}
+
+async function writeMediaUrlToFile(url, targetPath) {
+  const parsed = new URL(url);
+  const tempPath = `${targetPath}.openreel-${process.pid}-${Date.now()}.part`;
+  try {
+    if (parsed.protocol === "data:") {
+      await fs.promises.writeFile(tempPath, decodeDataUrl(url));
+    } else {
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error(`Unsupported media URL protocol: ${parsed.protocol}`);
+      }
+      const response = await electronNet.fetch(url, { redirect: "follow" });
+      if (!response.ok) {
+        throw new Error(`Media download failed: HTTP ${response.status}`);
+      }
+      if (!response.body) {
+        throw new Error("Media download returned an empty response");
+      }
+      await pipeline(
+        Readable.fromWeb(response.body),
+        fs.createWriteStream(tempPath, { flags: "wx" }),
+      );
+    }
+    await fs.promises.copyFile(tempPath, targetPath);
+  } finally {
+    await fs.promises.rm(tempPath, { force: true }).catch(() => {});
+  }
+}
+
+ipcMain.handle("openreel:save-media", async (event, request) => {
+  const url = typeof request?.url === "string" ? request.url.trim() : "";
+  if (!url) {
+    return { ok: false, error: "没有可保存的媒体地址" };
+  }
+  const suggestedName = safeSuggestedFilename(request?.suggestedName);
+  const owner = BrowserWindow.fromWebContents(event.sender) || mainWindow || undefined;
+  let directory = readMediaDownloadDirectory();
+  if (!directory) {
+    directory = await chooseMediaDownloadDirectory(owner);
+    if (!directory) {
+      return { ok: true, canceled: true };
+    }
+  }
+  const targetPath = uniqueMediaDownloadPath(directory, suggestedName);
+  activeMediaDownloadTargets.add(targetPath);
+  try {
+    await writeMediaUrlToFile(url, targetPath);
+    logDesktop(`saved media url=${new URL(url).protocol} target=${targetPath}`);
+    return { ok: true, canceled: false, path: targetPath };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logDesktop(`failed to save media: ${message}`);
+    return { ok: false, canceled: false, error: message };
+  } finally {
+    activeMediaDownloadTargets.delete(targetPath);
+  }
+});
 
 function copyMissingDirectoryEntries(sourceRoot, targetRoot) {
   if (!sourceRoot || !fs.existsSync(sourceRoot)) {

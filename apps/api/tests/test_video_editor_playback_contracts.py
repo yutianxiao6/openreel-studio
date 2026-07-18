@@ -68,3 +68,23 @@ def test_playhead_is_hard_clamped_to_the_visible_timeline() -> None:
     assert "TRACK_LABEL_WIDTH + clampPlaybackTimelineTime(currentTime, playbackEnd) * pxPerSecond" in editor
     assert 'window.addEventListener("pointercancel", onEnd)' in editor
     assert 'window.removeEventListener("pointercancel", onEnd)' in editor
+
+
+def test_full_source_sequences_adopt_the_indexed_media_frame_rate() -> None:
+    editor = _editor_source()
+
+    assert "function shouldAdoptPrimarySourceFrameRate" in editor
+    assert "videoClip.durationFrames !== sourceFrameCount" in editor
+    assert "audioClip.durationFrames === sourceFrameCount" in editor
+    assert "frameRatesMatch(currentFrameRate, sourceFrameRate)" in editor
+    assert "const primaryIndex = mediaIndexes[nodeId]" in editor
+    assert "sourceFrameRate: primaryIndex.frame_rate" in editor
+
+
+def test_new_video_sequences_wait_for_the_real_media_index() -> None:
+    editor = _editor_source()
+
+    assert 'if (primary.type === "video" && !primaryIndex) return' in editor
+    assert "if (primaryIndex) setSequenceFrameRate(primaryIndex.frame_rate)" in editor
+    assert "Math.round(duration * initializationFps)" in editor
+    assert "sequenceRevisionRef.current === 0" not in editor

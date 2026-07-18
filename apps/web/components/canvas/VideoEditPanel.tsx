@@ -253,6 +253,49 @@ function advancePlaybackClock({
   }
 }
 
+function frameRatesMatch(
+  left: { numerator: number; denominator: number },
+  right: { numerator: number; denominator: number },
+): boolean {
+  return left.numerator * right.denominator === right.numerator * left.denominator
+}
+
+function shouldAdoptPrimarySourceFrameRate({
+  nodeId,
+  sourceFrameCount,
+  currentFrameRate,
+  sourceFrameRate,
+  videoClips,
+  audioClips,
+}: {
+  nodeId: string
+  sourceFrameCount: number
+  currentFrameRate: { numerator: number; denominator: number }
+  sourceFrameRate: { numerator: number; denominator: number }
+  videoClips: TimelineClipState[]
+  audioClips: TimelineClipState[]
+}): boolean {
+  if (frameRatesMatch(currentFrameRate, sourceFrameRate) || videoClips.length !== 1 || audioClips.length > 1) {
+    return false
+  }
+  const videoClip = videoClips[0]
+  if (
+    videoClip.mediaId !== nodeId ||
+    videoClip.startFrame !== 0 ||
+    videoClip.sourceInFrame !== 0 ||
+    videoClip.durationFrames !== sourceFrameCount
+  ) {
+    return false
+  }
+  const audioClip = audioClips[0]
+  if (!audioClip) return true
+  return audioClip.startFrame === 0 &&
+    audioClip.sourceInFrame === 0 &&
+    audioClip.durationFrames === sourceFrameCount &&
+    Boolean(videoClip.syncGroupId) &&
+    audioClip.syncGroupId === videoClip.syncGroupId
+}
+
 function isEditableKeyboardTarget(eventTarget: EventTarget | null): boolean {
   const target = eventTarget as HTMLElement | null
   if (!target) return false
@@ -2559,9 +2602,6 @@ export default function VideoEditPanel({
         setMediaIndexes((current) => current[id] ? current : { ...current, [id]: index })
         const item = mediaById.get(id)
         if (item?.src) registerSourceDuration(item.src, index.duration_seconds)
-        if (id === nodeId && sequenceRevisionRef.current === 0) {
-          setSequenceFrameRate(index.frame_rate)
-        }
       }).catch((reason) => {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "视频逐帧索引失败")
       })
@@ -2573,12 +2613,36 @@ export default function VideoEditPanel({
 
   useEffect(() => {
     if (!sequenceLoaded) return
+    const primaryIndex = mediaIndexes[nodeId]
+    if (!primaryIndex) return
+    setSequenceFrameRate((current) => (
+      shouldAdoptPrimarySourceFrameRate({
+        nodeId,
+        sourceFrameCount: primaryIndex.frame_count,
+        currentFrameRate: current,
+        sourceFrameRate: primaryIndex.frame_rate,
+        videoClips,
+        audioClips,
+      })
+        ? primaryIndex.frame_rate
+        : current
+    ))
+  }, [audioClips, mediaIndexes, nodeId, sequenceLoaded, videoClips])
+
+  useEffect(() => {
+    if (!sequenceLoaded) return
     if (initializedNodeRef.current === nodeId) return
     const primary = videoItems.find((item) => item.id === nodeId) || visualItems[0]
     if (!primary) return
+    const primaryIndex = primary.type === "video" ? mediaIndexes[primary.id] : undefined
+    if (primary.type === "video" && !primaryIndex) return
     initializedNodeRef.current = nodeId
+    if (primaryIndex) setSequenceFrameRate(primaryIndex.frame_rate)
+    const initializationFps = primaryIndex
+      ? primaryIndex.frame_rate.numerator / primaryIndex.frame_rate.denominator
+      : framesPerSecond
     const duration = sourceDurationForItem(primary) || DEFAULT_CLIP_SECONDS
-    const durationFrames = sourceFrameCountForItem(primary) || Math.max(1, Math.round(duration * framesPerSecond))
+    const durationFrames = sourceFrameCountForItem(primary) || Math.max(1, Math.round(duration * initializationFps))
     const syncGroupId = primary.type === "video" && mediaSourceKey(primary) === primarySourceKey
       ? primarySyncGroupId
       : undefined
@@ -2594,7 +2658,7 @@ export default function VideoEditPanel({
     setPlaying(false)
     setTracks(defaultTimelineTracks())
     setError(null)
-  }, [audioItemForVideo, framesPerSecond, nodeId, primarySourceKey, primarySyncGroupId, sequenceLoaded, sourceDurationForItem, sourceFrameCountForItem, videoItems, visualItems])
+  }, [audioItemForVideo, framesPerSecond, mediaIndexes, nodeId, primarySourceKey, primarySyncGroupId, sequenceLoaded, sourceDurationForItem, sourceFrameCountForItem, videoItems, visualItems])
 
   useEffect(() => {
     setVideoClips((current) => current

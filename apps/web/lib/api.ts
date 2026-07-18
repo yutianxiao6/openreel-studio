@@ -1,6 +1,16 @@
 let _cachedApiBase: string | null = null
 export const CANVAS_REFRESH_EVENT = "openreel:canvas-refresh"
 export const WORKFLOW_REFRESH_EVENT = "openreel:workflow-refresh"
+export const MEDIA_DOWNLOAD_EVENT = "openreel:media-download"
+
+export interface MediaDownloadEventDetail {
+  id: string
+  status: "started" | "completed" | "failed" | "canceled"
+  filename: string
+  mode: "desktop" | "browser"
+  path?: string
+  error?: string
+}
 
 export interface CanvasRefreshOptions {
   projectId?: string
@@ -19,6 +29,19 @@ declare global {
       apiBase?: string
       webBase?: string
       platform?: string
+      getMediaDownloadDirectory?: () => Promise<{ ok: boolean; directory?: string; error?: string }>
+      chooseMediaDownloadDirectory?: () => Promise<{
+        ok: boolean
+        canceled?: boolean
+        directory?: string
+        error?: string
+      }>
+      saveMedia?: (request: { url: string; suggestedName: string }) => Promise<{
+        ok: boolean
+        canceled?: boolean
+        path?: string
+        error?: string
+      }>
     }
   }
 }
@@ -100,6 +123,75 @@ export function resolveMediaUrl(url: string | null | undefined): string {
     return base + url
   }
   return url
+}
+
+export async function saveMediaFile(url: string, suggestedName: string): Promise<{ canceled: boolean; path?: string }> {
+  const resolvedUrl = resolveMediaUrl(url)
+  if (!resolvedUrl) throw new Error("没有可保存的媒体地址")
+
+  const desktopSave = typeof window !== "undefined" ? window.openReelDesktop?.saveMedia : undefined
+  const mode: MediaDownloadEventDetail["mode"] = desktopSave ? "desktop" : "browser"
+  const id = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `download-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const emit = (detail: Omit<MediaDownloadEventDetail, "id" | "filename" | "mode">) => {
+    if (typeof window === "undefined") return
+    window.dispatchEvent(new CustomEvent<MediaDownloadEventDetail>(MEDIA_DOWNLOAD_EVENT, {
+      detail: { id, filename: suggestedName, mode, ...detail },
+    }))
+  }
+
+  emit({ status: "started" })
+  try {
+    if (desktopSave) {
+      const result = await desktopSave({ url: resolvedUrl, suggestedName })
+      if (!result?.ok) throw new Error(result?.error || "媒体保存失败")
+      if (result.canceled) {
+        emit({ status: "canceled" })
+        return { canceled: true }
+      }
+      emit({ status: "completed", path: result.path })
+      return { canceled: false, path: result.path }
+    }
+
+    const anchor = document.createElement("a")
+    anchor.href = resolvedUrl
+    anchor.download = suggestedName
+    anchor.rel = "noopener"
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    emit({ status: "completed" })
+    return { canceled: false }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    emit({ status: "failed", error: message })
+    throw error
+  }
+}
+
+export function isOpenReelDesktop(): boolean {
+  return typeof window !== "undefined" && typeof window.openReelDesktop?.saveMedia === "function"
+}
+
+export async function getDesktopMediaDownloadDirectory(): Promise<string> {
+  const getDirectory = typeof window !== "undefined"
+    ? window.openReelDesktop?.getMediaDownloadDirectory
+    : undefined
+  if (!getDirectory) return ""
+  const result = await getDirectory()
+  if (!result?.ok) throw new Error(result?.error || "无法读取下载位置")
+  return result.directory || ""
+}
+
+export async function chooseDesktopMediaDownloadDirectory(): Promise<{ canceled: boolean; directory: string }> {
+  const chooseDirectory = typeof window !== "undefined"
+    ? window.openReelDesktop?.chooseMediaDownloadDirectory
+    : undefined
+  if (!chooseDirectory) throw new Error("此功能仅适用于 OpenReel 安装版")
+  const result = await chooseDirectory()
+  if (!result?.ok) throw new Error(result?.error || "无法设置下载位置")
+  return { canceled: Boolean(result.canceled), directory: result.directory || "" }
 }
 
 export function resolveAssetLibraryPreviewUrl(projectId: string, path: string): string {

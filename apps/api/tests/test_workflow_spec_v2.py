@@ -370,6 +370,29 @@ def test_v2_protocol_info_exposes_generic_bounded_feedback_loop_contract() -> No
 
     assert protocol["media_runtime_settings"]["source"] == "frontend_ui_overrides"
     assert protocol["media_runtime_settings"]["spec_policy"] == "omitted"
+    assert protocol["execution_contract"] == {
+        "execution_shape": "optional string enum only",
+        "execution_values": ["auto", "manual"],
+        "execution_default": "auto",
+        "on_error_shape": "optional string enum only",
+        "on_error_values": ["stop", "continue"],
+        "bounded_loop_serialization": "implicit_from_foreach_until",
+        "forbidden_custom_fields": [
+            "ordered", "sequential", "concurrency", "parallel", "retry",
+        ],
+    }
+    assert protocol["identifier_contract"] == {
+        "runtime_pattern": "^[a-z][a-z0-9_]+$",
+        "runtime_max_length": 101,
+        "authoring_id_max_length": 32,
+        "loop_id_max_length": 10,
+        "item_key_max_length": 12,
+        "projected_id_parts": [
+            "ancestor_loop_ids", "item_keys", "bounded_attempt",
+            "child_id", "optional___prompt_suffix",
+        ],
+        "short_loop_examples": ["episodes", "segments", "quality"],
+    }
     assert {
         "model",
         "provider",
@@ -403,10 +426,31 @@ def test_v2_protocol_info_exposes_generic_bounded_feedback_loop_contract() -> No
     }
     assert protocol["loop_scope"] == {
         "stable_item_identity": "foreach.key",
+        "key_shape": "stable current-item field name, not a path or template",
+        "nested_items_example": "episode.segments[]",
+        "prompt_item_example": "{{ segment.script }}",
         "logical_reference_resolution": "shared_parent_scope_then_repeat_index",
         "feedback_downstream": "latest_completed_attempt_in_same_parent_scope",
         "cross_collection_reference": "uses.select",
-        "projection_matches_runtime": True,
+    }
+    assert protocol["reference_contract"]["selection_shape"]["by"] == (
+        "non-empty unique list[string], never a string"
+    )
+    assert protocol["reference_contract"]["selection_example"]["select"] == {
+        "values": "steps.selection.output.selected_character_ids",
+        "by": ["character_id"],
+    }
+    assert protocol["output_contract"]["canvas_visibility"] == {
+        "media": "always_canvas_in_current_runtime",
+        "structured_default": False,
+        "structured_visible": {"output": {"canvas": True}},
+        "media_canvas_false_hides": False,
+    }
+    assert protocol["projection_contract"] == {
+        "purpose": "structural_authoring_preview",
+        "generated_collection_context": "provide representative step outputs before accepting zero repeat instances",
+        "runtime_gate_authority": True,
+        "exhaustion_error": "workflow_loop_until_exhausted",
     }
 
 
@@ -688,7 +732,57 @@ def test_v2_bounded_feedback_loop_injects_full_previous_review_into_next_prompt(
     )
 
     assert rendered["unresolved_template_paths"] == []
-    assert json.dumps(review_output, ensure_ascii=False) in rendered["rendered_prompt_template"]
+    serialized_review = json.dumps(review_output, ensure_ascii=False)
+    rendered_prompt = rendered["rendered_prompt_template"]
+    assert serialized_review in rendered_prompt
+    assert rendered_prompt.count(serialized_review) == 1
+    assert len(rendered_prompt) < 2000
+
+
+def test_v2_feedback_retry_reuses_prior_visible_source_node() -> None:
+    prior_source = {
+        "id": "story-template-node",
+        "type": "image",
+        "updated_at": "2026-07-17T15:40:00Z",
+        "input": {
+            "workflow": {
+                "template_step_id": "story_template",
+                "repeat_group_id": "segment_s1_story_template_review_loop",
+                "repeat_group_index": 1,
+                "instance_scope": {"segment_id": "s1", "attempt": 1},
+                "surface": "draft_canvas",
+            }
+        },
+    }
+    other_segment = deepcopy(prior_source)
+    other_segment["id"] = "other-segment-node"
+    other_segment["input"]["workflow"]["repeat_group_id"] = "segment_s2_story_template_review_loop"
+    other_segment["input"]["workflow"]["instance_scope"] = {
+        "segment_id": "s2",
+        "attempt": 1,
+    }
+    retry_step = {
+        "id": "segment_s1_story_template_review_loop_i2_story_template",
+        "title": "实例2 · 故事模板",
+        "template_step_id": "story_template",
+        "repeat_group_id": "segment_s1_story_template_review_loop",
+        "repeat_group_index": 2,
+        "instance_scope": {"segment_id": "s1", "attempt": 2},
+        "repeat_until": {
+            "path": "steps.story_template_review.output.score",
+            "op": "gte",
+            "value": 80,
+        },
+        "repeat_until_source_step": "story_template_review",
+    }
+
+    selected = workflow_tools._workflow_prior_retry_canvas_node(
+        [other_segment, prior_source],
+        retry_step,
+    )
+
+    assert selected is prior_source
+    assert workflow_tools._workflow_retry_source_title(retry_step) == "故事模板"
 
 
 def test_v2_bounded_feedback_loop_keeps_nested_parent_scopes_isolated() -> None:
@@ -1520,6 +1614,11 @@ def test_builtin_template_preserves_artifact_prompt_writing_methods() -> None:
         assert media_runtime_keys.isdisjoint(media_step.get("fields", {}))
     assert "官方设定集角色视觉参考表" in character_image["prompt"]["output"]
     assert "正面/侧面/背面全身三面图" in character_image["prompt"]["output"]
+    assert "【主要人物】" in top_level["script"]["prompt"]["output"]
+    assert "3 至 6 个可视化剧情节拍" in top_level["script"]["prompt"]["output"]
+    assert "【出场人物】" in segment_steps["segment_script"]["prompt"]["output"]
+    assert "不提前写景别、机位或运镜" in segment_steps["segment_script"]["prompt"]["output"]
+    assert "单格全部文字控制在 200 个中文字以内" in segment_steps["frame_plan"]["prompt"]["check"]
     assert "2x2 四机位全景图网格" in segment_steps["scene_reference"]["prompt"]["output"]
     assert "宫格分镜图，电影分镜，每格一个镜头" in review_steps["storyboard"]["prompt"]["output"]
     assert "{{ previous }}" in review_steps["storyboard"]["prompt"]["task"]
@@ -1563,6 +1662,9 @@ def test_builtin_template_preserves_artifact_prompt_writing_methods() -> None:
     assert "dimension_scores" in review_steps["storyboard"]["prompt"]["output"]
     assert "专业电影故事板设计图" in story_template_steps["story_template"]["prompt"]["output"]
     assert "不在提示词中写死比例、像素、模型或画质" in story_template_steps["story_template"]["prompt"]["output"]
+    assert "固定三模块" in story_template_steps["story_template"]["prompt"]["output"]
+    assert "grid_count=6 时固定 2x3" in story_template_steps["story_template"]["prompt"]["output"]
+    assert "不再增加人物图鉴" in story_template_steps["story_template"]["prompt"]["output"]
     assert "{{ previous }}" in story_template_steps["story_template"]["prompt"]["task"]
     assert story_template_steps["story_template_review"]["uses"] == [
         {"from": "story_template", "as": ["vision"]}
@@ -2192,9 +2294,11 @@ def test_workflow_build_guide_documents_v2_high_frequency_errors() -> None:
     assert "`inputs` is an object map keyed by input id, never an array" in WORKFLOW_SPEC_V2_GUIDE
     assert "vision" in WORKFLOW_SPEC_V2_GUIDE
     assert "reference" in WORKFLOW_SPEC_V2_GUIDE
-    assert "select.values" in WORKFLOW_SPEC_V2_GUIDE
-    assert "Values use a scoped path" in WORKFLOW_SPEC_V2_GUIDE
-    assert "first emit it from an object/collection step inside that loop" in WORKFLOW_SPEC_V2_GUIDE
+    assert "`select.values` is one scoped string path" in WORKFLOW_SPEC_V2_GUIDE
+    assert "`select.by` is always a non-empty JSON array" in WORKFLOW_SPEC_V2_GUIDE
+    assert '"by":["character_id"]' in WORKFLOW_SPEC_V2_GUIDE
+    assert "it is never a string" in WORKFLOW_SPEC_V2_GUIDE
+    assert "First emit a loop-local selection" in WORKFLOW_SPEC_V2_GUIDE
     assert "Direct media adoption" in WORKFLOW_SPEC_V2_GUIDE
     assert "Do not create prompt sibling steps" in WORKFLOW_SPEC_V2_GUIDE
     assert "provider/model routing" in WORKFLOW_SPEC_V2_GUIDE
@@ -2206,9 +2310,20 @@ def test_workflow_build_guide_documents_v2_high_frequency_errors() -> None:
     assert "terminal: no sibling may depend on it" in WORKFLOW_SPEC_V2_GUIDE
     assert 'uses:[{"from":"candidate","as":["vision"]}]' in WORKFLOW_SPEC_V2_GUIDE
     assert "workflow_loop_until_exhausted" in WORKFLOW_SPEC_V2_GUIDE
-    assert "Downstream steps depend on `quality_loop`" in WORKFLOW_SPEC_V2_GUIDE
+    assert "A downstream step depends on the loop id" in WORKFLOW_SPEC_V2_GUIDE
     assert "same shared parent item" in WORKFLOW_SPEC_V2_GUIDE
-    assert "Projection and runtime must agree" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Current runtime always projects every `image|video|audio` step to canvas" in WORKFLOW_SPEC_V2_GUIDE
+    assert "use lowercase snake case `^[a-z][a-z0-9_]+$`" in WORKFLOW_SPEC_V2_GUIDE
+    assert "the complete result must be at most 101 characters" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Authored ids are at most 32 characters" in WORKFLOW_SPEC_V2_GUIDE
+    assert "loop ids at most 10" in WORKFLOW_SPEC_V2_GUIDE
+    assert '`execution` is only the JSON string `"auto"` or `"manual"`' in WORKFLOW_SPEC_V2_GUIDE
+    assert "never add `ordered`, `sequential`, `concurrency`, `parallel`, or custom retry fields" in WORKFLOW_SPEC_V2_GUIDE
+    assert "item keys used by `foreach.key`" in WORKFLOW_SPEC_V2_GUIDE
+    assert "For an array of objects, its `fields` describe one item" in WORKFLOW_SPEC_V2_GUIDE
+    assert "`key` is the current object item's stable field name" in WORKFLOW_SPEC_V2_GUIDE
+    assert "Projection is a structural authoring preview" in WORKFLOW_SPEC_V2_GUIDE
+    assert "if an expected dynamic loop has zero expanded instances" in WORKFLOW_SPEC_V2_GUIDE
     assert "openreel.workflow.authoring.v1" not in WORKFLOW_SPEC_V2_GUIDE
 
 

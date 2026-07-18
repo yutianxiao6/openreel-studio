@@ -96,6 +96,69 @@ def workflow_protocol_info() -> dict[str, Any]:
         "reference_roles": ["vision", "reference", "source"],
         "execution_modes": ["auto", "manual"],
         "error_policies": ["stop", "continue"],
+        "execution_contract": {
+            "execution_shape": "optional string enum only",
+            "execution_values": ["auto", "manual"],
+            "execution_default": "auto",
+            "on_error_shape": "optional string enum only",
+            "on_error_values": ["stop", "continue"],
+            "bounded_loop_serialization": "implicit_from_foreach_until",
+            "forbidden_custom_fields": [
+                "ordered", "sequential", "concurrency", "parallel", "retry",
+            ],
+        },
+        "identifier_contract": {
+            "runtime_pattern": "^[a-z][a-z0-9_]+$",
+            "runtime_max_length": 101,
+            "authoring_id_max_length": 32,
+            "loop_id_max_length": 10,
+            "item_key_max_length": 12,
+            "projected_id_parts": [
+                "ancestor_loop_ids", "item_keys", "bounded_attempt",
+                "child_id", "optional___prompt_suffix",
+            ],
+            "short_loop_examples": ["episodes", "segments", "quality"],
+        },
+        "input_contract": {
+            "shape": "object_map_by_input_id",
+            "types": [
+                "text", "long_text", "number", "integer", "boolean",
+                "enum", "image", "video", "audio", "json",
+            ],
+            "required_fields": ["type", "label"],
+            "optional_fields": [
+                "description", "required", "default", "min", "max", "options",
+            ],
+            "enum_option_shape": {"value": "scalar", "label": "string"},
+        },
+        "output_contract": {
+            "field_types": ["string", "number", "integer", "boolean", "object", "array"],
+            "nested_fields_allowed_for": ["object", "array"],
+            "object_array_item_schema": "array field uses nested fields; do not add items",
+            "primitive_array_schema": "array field without fields; do not add items",
+            "canvas_visibility": {
+                "media": "always_canvas_in_current_runtime",
+                "structured_default": False,
+                "structured_visible": {"output": {"canvas": True}},
+                "media_canvas_false_hides": False,
+            },
+        },
+        "reference_contract": {
+            "selection_shape": {
+                "values": "one scoped output path string",
+                "by": "non-empty unique list[string], never a string",
+            },
+            "selection_example": {
+                "from": "character_image",
+                "as": ["reference"],
+                "select": {
+                    "values": "steps.selection.output.selected_character_ids",
+                    "by": ["character_id"],
+                },
+            },
+            "combined_roles_allowed": ["vision", "reference"],
+            "source_role_policy": "source is the only role in the only use and media has no prompt",
+        },
         "media_runtime_settings": workflow_media_runtime_contract(),
         "loop_until": {
             "source": "foreach.count",
@@ -116,10 +179,18 @@ def workflow_protocol_info() -> dict[str, Any]:
         },
         "loop_scope": {
             "stable_item_identity": "foreach.key",
+            "key_shape": "stable current-item field name, not a path or template",
+            "nested_items_example": "episode.segments[]",
+            "prompt_item_example": "{{ segment.script }}",
             "logical_reference_resolution": "shared_parent_scope_then_repeat_index",
             "feedback_downstream": "latest_completed_attempt_in_same_parent_scope",
             "cross_collection_reference": "uses.select",
-            "projection_matches_runtime": True,
+        },
+        "projection_contract": {
+            "purpose": "structural_authoring_preview",
+            "generated_collection_context": "provide representative step outputs before accepting zero repeat instances",
+            "runtime_gate_authority": True,
+            "exhaustion_error": "workflow_loop_until_exhausted",
         },
         "available_plugin_nodes": _plugin_protocol_nodes(plugin_nodes),
         "plugin_errors": workflow_plugins.plugin_errors(),

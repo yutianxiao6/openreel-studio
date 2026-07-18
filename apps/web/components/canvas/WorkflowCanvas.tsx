@@ -61,6 +61,7 @@ import {
   getRuntimeConfigFile,
   getVideoProviderProtocols,
   resolveMediaUrl,
+  saveMediaFile,
   restoreProjectMediaHistoryItem,
   restoreProjectCanvasSnapshot,
   restoreBuiltinWorkflowTemplate,
@@ -192,7 +193,8 @@ interface NodeActionMenuState {
   y: number
   nodeId: string
   title: string
-  imageUrl?: string
+  mediaUrl?: string
+  mediaKind?: "image" | "video"
 }
 
 interface AssetCategoryResult {
@@ -10745,42 +10747,21 @@ function deriveCanvasVisibleEdges(
   return [...directEdges, ...bridgedEdges]
 }
 
-function safeDownloadName(title: string, url: string) {
-  const cleanTitle = (title || "openreel-image")
+function safeDownloadName(title: string, url: string, kind: "image" | "video" = "image") {
+  const fallback = kind === "video" ? "openreel-video" : "openreel-image"
+  const cleanTitle = (title || fallback)
     .replace(/[\\/:*?"<>|]+/g, "-")
     .replace(/\s+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 64) || "openreel-image"
+    .slice(0, 64) || fallback
   const path = url.split(/[?#]/, 1)[0] || ""
-  const ext = path.match(/\.(png|jpe?g|webp|gif|bmp|svg)$/i)?.[0]?.toLowerCase() || ".png"
+  const ext = path.match(/\.(png|jpe?g|webp|gif|bmp|svg|mp4|webm|mov|m4v|mkv)$/i)?.[0]?.toLowerCase()
+    || (kind === "video" ? ".mp4" : ".png")
   return cleanTitle.toLowerCase().endsWith(ext) ? cleanTitle : `${cleanTitle}${ext}`
 }
 
 async function downloadUrl(url: string, filename: string) {
-  try {
-    const response = await fetch(url, { credentials: "include" })
-    if (response.ok) {
-      const blob = await response.blob()
-      const objectUrl = URL.createObjectURL(blob)
-      const anchor = document.createElement("a")
-      anchor.href = objectUrl
-      anchor.download = filename
-      document.body.appendChild(anchor)
-      anchor.click()
-      anchor.remove()
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
-      return
-    }
-  } catch {
-    // Fall back to a normal download link; cross-origin URLs may block fetch.
-  }
-  const anchor = document.createElement("a")
-  anchor.href = url
-  anchor.download = filename
-  anchor.rel = "noopener"
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
+  await saveMediaFile(url, filename)
 }
 
 function downloadJsonPayload(payload: unknown, filename: string) {
@@ -13526,13 +13507,16 @@ export default function WorkflowCanvas({
     const node = nodes.find((item) => item.id === nodeId)
     if (!node) return
     const title = String((node.data as { title?: string } | undefined)?.title || "未命名")
+    const imageUrl = imageDownloadUrlFromNode(node) || undefined
+    const videoUrl = previewVideoFromNode(node)?.src
     setContextMenu(null)
     setNodeActionMenu({
       x,
       y,
       nodeId,
       title,
-      imageUrl: imageDownloadUrlFromNode(node) || undefined,
+      mediaUrl: imageUrl || videoUrl,
+      mediaKind: imageUrl ? "image" : videoUrl ? "video" : undefined,
     })
   }, [nodes])
 
@@ -13850,9 +13834,9 @@ export default function WorkflowCanvas({
     selectNode(null)
   }, [deleteCanvasItems, selectNode])
 
-  const handleDownloadImageFromMenu = useCallback(async (url: string, title: string) => {
+  const handleDownloadMediaFromMenu = useCallback(async (url: string, title: string, kind: "image" | "video") => {
     setNodeActionMenu(null)
-    await downloadUrl(url, safeDownloadName(title, url))
+    await downloadUrl(url, safeDownloadName(title, url, kind))
   }, [])
 
   // 项目级长连 SSE — 接收后台任务完成的画布事件和工作流运行态刷新
@@ -14467,17 +14451,17 @@ export default function WorkflowCanvas({
       {nodeActionMenu && (
         <div
           className="openreel-canvas-action-menu fixed z-[80] w-44 overflow-hidden rounded-md border border-white/10 bg-[#11151d]/96 py-1 text-sm text-zinc-200 shadow-2xl shadow-black/50 backdrop-blur"
-          style={menuPositionStyle(nodeActionMenu.x, nodeActionMenu.y, 176, nodeActionMenu.imageUrl ? 92 : 50)}
+          style={menuPositionStyle(nodeActionMenu.x, nodeActionMenu.y, 176, nodeActionMenu.mediaUrl ? 92 : 50)}
           onClick={(event) => event.stopPropagation()}
           onPointerDown={(event) => event.stopPropagation()}
         >
-          {nodeActionMenu.imageUrl && (
+          {nodeActionMenu.mediaUrl && nodeActionMenu.mediaKind && (
             <button
               type="button"
               className="block w-full appearance-none bg-transparent px-3 py-2.5 text-left text-xs text-zinc-100 transition-colors hover:bg-white/10"
-              onClick={() => void handleDownloadImageFromMenu(nodeActionMenu.imageUrl!, nodeActionMenu.title)}
+              onClick={() => void handleDownloadMediaFromMenu(nodeActionMenu.mediaUrl!, nodeActionMenu.title, nodeActionMenu.mediaKind!)}
             >
-              保存图片
+              {nodeActionMenu.mediaKind === "video" ? "下载视频" : "下载图片"}
             </button>
           )}
           <button

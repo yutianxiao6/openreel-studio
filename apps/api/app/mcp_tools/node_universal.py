@@ -4348,6 +4348,7 @@ def _workflow_template_context(
         if normalized_item_name and normalized_item_name != item_name:
             context.setdefault(normalized_item_name, instance_scope)
     previous_segment: dict[str, Any] = {}
+    previous_candidates: list[dict[str, Any]] = []
     current_group = str(workflow.get("repeat_group_id") or "").strip()
     current_index = _workflow_int(workflow.get("repeat_group_index"))
 
@@ -4361,6 +4362,8 @@ def _workflow_template_context(
             and current_index is not None
             and upstream_index == current_index - 1
         )
+        if is_previous:
+            previous_candidates.append(upstream)
         target_context = previous_segment if is_previous else context
         alias_payload = upstream
         if "outputs" not in upstream and upstream.get("output") not in (None, "", [], {}):
@@ -4370,8 +4373,39 @@ def _workflow_template_context(
             if target_context is context:
                 _workflow_add_collection_aliases(context, alias, alias_payload)
 
-    context["previous_segment"] = previous_segment
-    context["previous"] = previous_segment
+    # ``{{ previous }}`` is the previous attempt's result, not an alias index.
+    # The alias index above is useful for path lookup, but serializing it repeats
+    # the same review under step id, template id, group id, title, and normalized
+    # aliases. A small review can otherwise expand into tens of thousands of
+    # characters before the request reaches the provider.
+    previous_value: Any = {}
+    if previous_candidates:
+        until_source = str(workflow.get("repeat_until_source_step") or "").strip()
+        selected_previous = next(
+            (
+                item
+                for item in reversed(previous_candidates)
+                if str(
+                    (
+                        item.get("workflow")
+                        if isinstance(item.get("workflow"), dict)
+                        else {}
+                    ).get("template_step_id")
+                    or ""
+                ).strip()
+                == until_source
+            ),
+            previous_candidates[-1],
+        )
+        previous_value = selected_previous.get("output")
+        if previous_value in (None, "", [], {}):
+            previous_value = {
+                key: selected_previous.get(key)
+                for key in ("title", "status")
+                if selected_previous.get(key) not in (None, "", [], {})
+            }
+    context["previous_segment"] = previous_value
+    context["previous"] = previous_value
     return context
 
 
