@@ -348,7 +348,8 @@ def _project_media_rel_path(project_id: str, url: str | None) -> str | None:
     prefix = f"/api/media/{project_id}/"
     if not url.startswith(prefix):
         return None
-    return f"generated_images/{url[len(prefix):].lstrip('/')}"
+    rel_path = url[len(prefix):].lstrip("/")
+    return rel_path if rel_path.startswith("generated_images/") else f"generated_images/{rel_path}"
 
 
 async def _resolve_asset_record_source(project_id: str, asset_id: str) -> Path | None:
@@ -871,6 +872,12 @@ async def assets_add_to_canvas(
                     "mime_type": mime_type,
                     "source": "asset_library",
                 }
+                if resolved_type == "image":
+                    width, height = _image_dimensions(src)
+                    if width and height:
+                        dimensions = {"width": width, "height": height, "resolution": f"{width}x{height}"}
+                        fields.update(dimensions)
+                        output.update(dimensions)
             else:
                 if src.suffix.lower() in _TEXT_SUFFIXES:
                     text_preview = src.read_text(encoding="utf-8", errors="replace")[:4000]

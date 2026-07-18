@@ -1085,6 +1085,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
         node_id: id,
         rows: preset.rows,
         cols: preset.cols,
+        source_ref: image?.primary || undefined,
       })
       if (result && result.ok === false) {
         throw new Error(String(result.error || "宫格裁剪失败"))
@@ -1110,7 +1111,7 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
     } finally {
       setGridBusy(null)
     }
-  }, [canGridCrop, currentProjectId, gridBusy, id, updateCanvasNode])
+  }, [canGridCrop, currentProjectId, gridBusy, id, image?.primary, updateCanvasNode])
 
   const finishGridTool = useCallback((event: React.MouseEvent) => {
     event.preventDefault()

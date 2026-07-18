@@ -32,6 +32,21 @@ async def test_resolve_image_path_maps_absolute_local_media_url(monkeypatch, tmp
     assert path == (tmp_path / "storage" / "project-grid" / "generated_images" / "source.png").resolve()
 
 
+@pytest.mark.asyncio
+async def test_resolve_image_path_accepts_prefixed_uploaded_media_url(monkeypatch, tmp_path) -> None:
+    await _setup_db(monkeypatch, tmp_path)
+    target = tmp_path / "storage" / "project-grid" / "generated_images" / "uploads" / "manual.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (93, 57), (0, 0, 255)).save(target)
+
+    path = await image_operations.resolve_image_path(
+        "project-grid",
+        "/api/media/project-grid/generated_images/uploads/manual.png",
+    )
+
+    assert path == target.resolve()
+
+
 async def _setup_db(monkeypatch, tmp_path: Path) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'image-grid.db'}"
     engine = create_async_engine(database_url, echo=False, future=True, connect_args={"timeout": 30})

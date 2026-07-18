@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react"
 import { motion } from "framer-motion"
+import { createPortal } from "react-dom"
 import {
   useChatStore,
   type ChatMessage,
@@ -1696,10 +1697,10 @@ function AssetLibraryPanel({
       >
         资产库
       </button>
-      {open ? (
-        <div className="fixed inset-3 z-[90] flex items-center justify-center bg-black/48 backdrop-blur-sm sm:inset-6">
-          <div className="flex h-[82dvh] w-full max-w-6xl overflow-hidden rounded-lg border border-white/10 bg-[var(--studio-panel)] shadow-2xl shadow-black/60">
-            <aside className="flex w-64 shrink-0 flex-col border-r border-white/10 bg-black/18">
+      {open ? createPortal((
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/48 p-3 backdrop-blur-sm sm:p-6">
+          <div className="flex h-[min(82dvh,900px)] max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-white/10 bg-[var(--studio-panel)] shadow-2xl shadow-black/60 md:flex-row">
+            <aside className="flex max-h-44 w-full shrink-0 flex-col border-b border-white/10 bg-black/18 md:max-h-none md:w-64 md:border-b-0 md:border-r">
               <div className="border-b border-white/10 px-4 py-3">
                 <div className="text-sm font-semibold text-zinc-100">资产库</div>
                 <div className="mt-1 text-[11px] text-zinc-500">本地文件夹分类</div>
@@ -1735,9 +1736,9 @@ function AssetLibraryPanel({
                 </button>
               </div>
             </aside>
-            <main className="flex min-w-0 flex-1 flex-col">
+            <main className="flex min-h-0 min-w-0 flex-1 flex-col">
               <header className="border-b border-white/10 px-4 py-3">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold text-zinc-100">
                       {selectedFolder ? selectedFolder.label : "资产库内容"}
@@ -1746,12 +1747,12 @@ function AssetLibraryPanel({
                       {selectedFolder ? selectedFolder.subtitle : "只显示本地资产库中的文件"}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <input
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
                       placeholder="搜索资产"
-                      className="h-8 w-52 rounded-md border border-white/10 bg-[var(--studio-control)] px-2.5 text-xs text-zinc-100 placeholder-zinc-600"
+                      className="h-8 min-w-0 flex-1 rounded-md border border-white/10 bg-[var(--studio-control)] px-2.5 text-xs text-zinc-100 placeholder-zinc-600 sm:w-52 sm:flex-none"
                     />
                     <button
                       type="button"
@@ -1836,7 +1837,7 @@ function AssetLibraryPanel({
             ) : null}
           </div>
         </div>
-      ) : null}
+      ), document.body) : null}
     </div>
   )
 }

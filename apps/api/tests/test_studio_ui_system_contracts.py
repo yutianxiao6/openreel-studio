@@ -72,6 +72,15 @@ def test_node_preview_surfaces_escape_the_workspace_stacking_context() -> None:
     assert 'className="openreel-image-edit-panel fixed' in image_editor
 
 
+def test_asset_library_escapes_the_chat_pane_stacking_context() -> None:
+    chat = read("components/chat/ChatPanel.tsx")
+
+    assert 'import { createPortal } from "react-dom"' in chat
+    asset_library = chat[chat.index("function AssetLibraryPanel"):chat.index("function AssetLibraryActionDialog")]
+    assert "open ? createPortal((" in asset_library
+    assert "), document.body) : null" in asset_library
+
+
 def test_studio_visual_system_covers_primary_product_surfaces() -> None:
     styles = read("app/globals.css")
     required_selectors = (

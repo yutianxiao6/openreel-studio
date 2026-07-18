@@ -122,7 +122,11 @@ def _local_candidates(project_id: str, value: str) -> list[Path]:
     media_index = text.find(media_prefix)
     upload_index = text.find(upload_prefix)
     if media_index >= 0:
-        candidates.append(_storage_root() / project_id / "generated_images" / text[media_index + len(media_prefix):].lstrip("/"))
+        rel_path = text[media_index + len(media_prefix):].lstrip("/")
+        if rel_path.startswith("generated_images/"):
+            candidates.append(_storage_root() / project_id / rel_path)
+        else:
+            candidates.append(_storage_root() / project_id / "generated_images" / rel_path)
     elif upload_index >= 0:
         candidates.append(_storage_root() / project_id / text[upload_index + len(upload_prefix):].lstrip("/"))
     elif text.startswith("generated_images/"):

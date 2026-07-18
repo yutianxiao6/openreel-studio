@@ -1969,6 +1969,9 @@ async def upload_project_canvas_node_media(
         "size": size,
         "uploaded_at": uploaded_at,
     }
+    for key in ("width", "height", "resolution"):
+        if next_output.get(key) is not None:
+            current_input["uploaded_output"][key] = next_output[key]
     if node.type == "image":
         current_input["render_state"] = "fresh"
 
@@ -1991,6 +1994,9 @@ async def upload_project_canvas_node_media(
         "size": size,
         "mime_type": mime_type,
     }
+    for key in ("width", "height", "resolution"):
+        if next_output.get(key) is not None:
+            payload["uploaded_media"][key] = next_output[key]
     payload["changes"] = [{
         "field": "media_output",
         "label": "节点产物",

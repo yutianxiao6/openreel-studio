@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from PIL import Image
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -1686,6 +1687,36 @@ def test_uploaded_node_media_output_archives_previous_output(tmp_path):
     assert output["video"]["local_url"] == "/api/media/project-1/generated_videos/uploads/clip.mp4"
     assert output["history"][0]["prompt"] == "old prompt"
     assert output["history"][0]["output"]["local_url"] == "/api/media/project-1/generated_videos/old.mp4"
+
+
+def test_uploaded_image_output_keeps_actual_resolution(tmp_path):
+    target = tmp_path / "portrait.png"
+    Image.new("RGB", (321, 654), (20, 40, 60)).save(target)
+    node = WorkflowNode(
+        id="node-image-1",
+        project_id="project-1",
+        display_id=4,
+        type="image",
+        title="Uploaded portrait",
+        status="idle",
+    )
+
+    output = routes_projects._build_uploaded_node_media_output(
+        project_id="project-1",
+        node=node,
+        rel_path="generated_images/uploads/portrait.png",
+        target_path=target,
+        original_filename="portrait.png",
+        mime_type="image/png",
+        size=target.stat().st_size,
+        uploaded_at="2026-07-18T00:00:00",
+        current_output=None,
+        current_input={},
+    )
+
+    assert (output["width"], output["height"], output["resolution"]) == (321, 654, "321x654")
+    assert output["images"][0]["width"] == 321
+    assert output["images"][0]["height"] == 654
 
 
 def test_media_provider_schema_accepts_xai_video_format():

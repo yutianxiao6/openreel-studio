@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from PIL import Image, ImageOps
 
 from app.config import settings
 from app.db.models import WorkflowNode
@@ -128,6 +129,17 @@ def media_url(project_id: str, rel_path: str) -> str:
     return f"/api/media/{project_id}/{rel_path}"
 
 
+def image_dimensions(path: Path) -> tuple[int | None, int | None]:
+    if path.suffix.lower() not in MEDIA_HISTORY_EXTENSIONS["image"] or path.suffix.lower() == ".svg":
+        return None, None
+    try:
+        with Image.open(path) as image:
+            oriented = ImageOps.exif_transpose(image)
+            return int(oriented.width), int(oriented.height)
+    except (OSError, ValueError):
+        return None, None
+
+
 def file_payload(project_id: str, rel_path: str, path: Path) -> dict[str, Any] | None:
     kind = kind_from_rel_path(rel_path)
     if kind not in {"image", "video", "audio"}:
@@ -135,7 +147,7 @@ def file_payload(project_id: str, rel_path: str, path: Path) -> dict[str, Any] |
     stat = path.stat()
     mime_type, _ = mimetypes.guess_type(path.name)
     created_at = datetime.fromtimestamp(stat.st_mtime).isoformat()
-    return {
+    payload: dict[str, Any] = {
         "id": item_id(project_id, rel_path),
         "project_id": project_id,
         "kind": kind,
@@ -152,6 +164,11 @@ def file_payload(project_id: str, rel_path: str, path: Path) -> dict[str, Any] |
         "source_node_title": None,
         "prompt": None,
     }
+    if kind == "image":
+        width, height = image_dimensions(path)
+        if width and height:
+            payload.update({"width": width, "height": height, "resolution": f"{width}x{height}"})
+    return payload
 
 
 def output_for_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -164,7 +181,12 @@ def output_for_item(item: dict[str, Any]) -> dict[str, Any]:
         "local_url": url,
     }
     if kind == "image":
-        output["images"] = [{"url": url, "local_url": url}]
+        image = {"url": url, "local_url": url}
+        for key in ("width", "height", "resolution"):
+            if item.get(key) is not None:
+                output[key] = item[key]
+                image[key] = item[key]
+        output["images"] = [image]
     elif kind == "video":
         output["video"] = {"url": url, "local_url": url}
     elif kind == "audio":
