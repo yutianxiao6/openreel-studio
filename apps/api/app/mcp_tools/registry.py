@@ -1815,8 +1815,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         "新建一个空白项目并自动切换为当前项目。仅在用户明确要求创建/打开新的空项目壳时调用；"
         "用户要制作视频、短剧、分镜、人物或其他创作内容时不要调用。"
         "调用后本轮会立即结束,你只需要回一句\"已为你创建项目 <title>,接下来想做什么?\","
-        "不要继续在本轮里调其他创作工具(此时旧的 project_id 已失效)。"
-        "默认 episode_count=1、format='竖屏短剧'、budget_level='low',用户没明确说就用默认。"
+        "不要继续在本轮里调其他创作工具(此时旧的 project_id 已失效)。只填写会话名字 title。"
       ))
     R("project.get_state", project_tools.project_get_state, tags=["project", "read"],
       description="读取项目完整状态：节点、任务、参考图、确认状态和 token 使用。每轮先读。")

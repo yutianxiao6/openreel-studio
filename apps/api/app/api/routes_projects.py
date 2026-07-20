@@ -13,7 +13,7 @@ from typing import Any, Literal, Optional
 
 from sqlalchemy import or_
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -28,7 +28,7 @@ from app.services.node_service import NodeService, workflow_node_payload
 from app.services.node_ids import next_node_display_id, node_display_id_allocation
 from app.services.node_public_ids import internal_to_public_id_map, publicize_node_refs, resolve_internal_node_id
 from app.services.node_recovery import cleanup_interrupted_media_nodes
-from app.services.project_service import DEFAULT_EPISODE_COUNT, ProjectService
+from app.services.project_service import ProjectService
 from app.services.reference_mentions import refresh_node_reference_mentions
 
 router = APIRouter()
@@ -68,23 +68,15 @@ ACTIVE_WORKFLOW_STATE_KEY = "active_workflow"
 
 
 class CreateProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str
-    description: Optional[str] = None
-    genre: Optional[str] = None
-    format: Optional[str] = "竖屏短剧"
-    episode_count: int = DEFAULT_EPISODE_COUNT
-    duration_per_episode: int = 90
-    budget_level: Optional[str] = "low"
 
 
 class UpdateProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: Optional[str] = None
-    description: Optional[str] = None
-    genre: Optional[str] = None
-    episode_count: Optional[int] = None
-    duration_per_episode: Optional[int] = None
-    budget_level: Optional[str] = None
-    status: Optional[str] = None
 
 
 class PanelLayoutRequest(BaseModel):
@@ -1163,15 +1155,7 @@ async def create_project(
     req: CreateProjectRequest, db: AsyncSession = Depends(get_session)
 ):
     svc = ProjectService(db)
-    project = await svc.create_project(
-        title=req.title,
-        description=req.description,
-        genre=req.genre,
-        format=req.format,
-        episode_count=req.episode_count,
-        duration_per_episode=req.duration_per_episode,
-        budget_level=req.budget_level or "low",
-    )
+    project = await svc.create_project(title=req.title)
     return project.model_dump()
 
 

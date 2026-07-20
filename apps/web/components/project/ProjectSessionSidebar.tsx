@@ -143,9 +143,6 @@ export function ProjectSessionSidebar() {
     try {
       const created = await api.createProject({
         title: "未命名项目",
-        genre: "",
-        episode_count: 1,
-        budget_level: "low",
       }) as unknown as ProjectRecord
       setProjects([created, ...projects.filter((project) => project.id !== created.id)])
       setMultiSelect(false)
@@ -180,9 +177,6 @@ export function ProjectSessionSidebar() {
       if (remaining.length === 0) {
         const created = await api.createProject({
           title: "未命名项目",
-          genre: "",
-          episode_count: 1,
-          budget_level: "low",
         }) as unknown as ProjectRecord
         remaining = [created]
       }
@@ -217,9 +211,6 @@ export function ProjectSessionSidebar() {
       if (remaining.length === 0) {
         const created = await api.createProject({
           title: "未命名项目",
-          genre: "",
-          episode_count: 1,
-          budget_level: "low",
         }) as unknown as ProjectRecord
         remaining = [created]
       }

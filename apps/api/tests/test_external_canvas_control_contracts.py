@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -106,6 +107,11 @@ async def test_direct_node_update_tool_result_is_broadcast(monkeypatch: pytest.M
 
     monkeypatch.setattr(orchestrator, "emit_canvas_event", capture)
 
+    async def missing_node(_node_id: str) -> dict:
+        return {"error": "Node not found"}
+
+    monkeypatch.setattr(routes_tools.canvas_tools, "get_node", missing_node)
+
     await routes_tools._emit_direct_tool_canvas_events(
         "node.update",
         {"project_id": "project-1", "node_id": "#7"},
@@ -156,8 +162,78 @@ async def test_direct_node_update_tool_result_is_broadcast(monkeypatch: pytest.M
     )]
 
 
+@pytest.mark.asyncio
+async def test_direct_node_create_event_hydrates_the_complete_persisted_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[dict, str | None]] = []
+
+    async def capture(event: dict, project_id: str | None = None) -> None:
+        events.append((event, project_id))
+
+    async def get_node(node_id: str) -> dict:
+        assert node_id == "internal-script"
+        return {
+            "id": node_id,
+            "type": "text",
+            "title": "第一集剧本",
+            "status": "idle",
+            "input": {"content": "完整剧本正文"},
+            "output": None,
+            "prompt": None,
+            "position": {"x": 120.0, "y": 90.0},
+        }
+
+    from app.agent import orchestrator
+
+    monkeypatch.setattr(orchestrator, "emit_canvas_event", capture)
+    monkeypatch.setattr(routes_tools.canvas_tools, "get_node", get_node)
+
+    await routes_tools._emit_direct_tool_canvas_events(
+        "node.create",
+        {"project_id": "project-1"},
+        {
+            "id": "#3",
+            "_canvas_id": "internal-script",
+            "type": "text",
+            "title": "第一集剧本",
+            "status": "idle",
+        },
+    )
+
+    assert events == [(
+        {
+            "type": "canvas_action",
+            "action": "create_node",
+            "payload": {
+                "id": "internal-script",
+                "_canvas_id": "internal-script",
+                "type": "text",
+                "title": "第一集剧本",
+                "status": "idle",
+                "input": {"content": "完整剧本正文"},
+                "output": None,
+                "prompt": None,
+                "position": {"x": 120.0, "y": 90.0},
+            },
+        },
+        "project-1",
+    )]
+
+
 def test_edge_update_route_is_part_of_the_public_canvas_api() -> None:
     from app.main import app
 
     operation = app.openapi()["paths"]["/api/projects/{project_id}/edges/{edge_id}"]
     assert set(operation) >= {"patch", "delete"}
+
+
+def test_background_node_events_trigger_a_complete_canvas_reload() -> None:
+    project_root = Path(__file__).resolve().parents[3]
+    source = (
+        project_root / "apps" / "web" / "components" / "canvas" / "WorkflowCanvas.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert 'action === "create_node" || action === "update_node"' in source
+    assert "requestCanvasRefresh({" in source
+    assert "preserveLayout: true" in source

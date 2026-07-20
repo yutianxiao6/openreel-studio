@@ -15,7 +15,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.db.models import Project
 from app.db.session import get_session
-from app.mcp_tools import config_tools, mcp_meta_tools
+from app.mcp_tools import canvas_tools, config_tools, mcp_meta_tools
 from app.mcp_tools.registry import registry
 from app.services import media_provider, node_contract
 
@@ -49,12 +49,22 @@ async def _emit_direct_tool_canvas_events(
     result: Any,
 ) -> None:
     """Mirror direct registry mutations to the project event stream."""
-    if tool_name != "node.update" or not isinstance(result, dict) or result.get("ok") is False:
+    action = {
+        "node.create": "create_node",
+        "node.update": "update_node",
+        "node.run": "update_node",
+    }.get(tool_name)
+    if action is None or not isinstance(result, dict) or result.get("ok") is False:
         return
     project_id = str(args.get("project_id") or "").strip()
     if not project_id:
         return
-    items = result.get("results") if isinstance(result.get("results"), list) else [result]
+    if tool_name == "node.create" and isinstance(result.get("nodes"), list):
+        items = result["nodes"]
+    elif tool_name == "node.update" and isinstance(result.get("results"), list):
+        items = result["results"]
+    else:
+        items = [result]
     try:
         from app.agent.orchestrator import emit_canvas_event
 
@@ -64,10 +74,13 @@ async def _emit_direct_tool_canvas_events(
             node_id = item.get("_canvas_id") or item.get("_canvas_node_id") or item.get("id")
             if not node_id:
                 continue
+            persisted = await canvas_tools.get_node(str(node_id))
             payload = dict(item)
-            payload["id"] = node_id
+            if isinstance(persisted, dict) and not persisted.get("error"):
+                payload.update(persisted)
+            payload["id"] = str(node_id)
             await emit_canvas_event(
-                {"type": "canvas_action", "action": "update_node", "payload": payload},
+                {"type": "canvas_action", "action": action, "payload": payload},
                 project_id=project_id,
             )
             edge_sync = item.get("edge_sync")

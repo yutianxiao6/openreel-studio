@@ -2644,9 +2644,6 @@ export function ChatPanel() {
           try {
             const created = (await api.createProject({
               title: "未命名项目",
-              genre: "",
-              episode_count: 1,
-              budget_level: "low",
             })) as { id: string; title: string }
             try {
               localStorage.setItem("drama.currentProjectId", created.id)

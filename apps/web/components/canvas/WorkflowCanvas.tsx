@@ -49,6 +49,7 @@ import {
   materializeProjectWorkflow,
   pauseProjectWorkflowRun,
   previewProjectWorkflow,
+  requestCanvasRefresh,
   requestWorkflowRefresh,
   runProjectWorkflowAllSteps,
   runProjectWorkflowNextStep,
@@ -13865,7 +13866,15 @@ export default function WorkflowCanvas({
             action: ev.action,
             payload: ev.payload,
           })
-          applyCanvasAction(String(ev.action ?? ""), ev.payload as Record<string, unknown>)
+          const action = String(ev.action ?? "")
+          applyCanvasAction(action, ev.payload as Record<string, unknown>)
+          if (action === "create_node" || action === "update_node") {
+            requestCanvasRefresh({
+              projectId: currentProject.id,
+              preserveOnEmpty: true,
+              preserveLayout: true,
+            })
+          }
         }
       } catch {
         // ignore parse error

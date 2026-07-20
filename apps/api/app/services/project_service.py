@@ -24,21 +24,9 @@ class ProjectStateConflictError(RuntimeError):
 
 def _initial_state(
     title: str,
-    genre: str | None,
-    episode_count: int,
-    budget_level: str,
-    format_: str | None,
-    duration_per_episode: int,
 ) -> dict[str, Any]:
     return {
-        "metadata": {
-            "title": title,
-            "genre": genre or "",
-            "format": format_ or "竖屏短剧",
-            "episode_count": episode_count,
-            "duration_per_episode": duration_per_episode,
-            "budget_level": budget_level,
-        },
+        "metadata": {"title": title},
         "story_bible": {
             "logline": "",
             "theme": "",
@@ -95,26 +83,12 @@ class ProjectService:
     async def create_project(
         self,
         title: str,
-        description: str | None = None,
-        genre: str | None = None,
-        format: str | None = "竖屏短剧",
-        episode_count: int = DEFAULT_EPISODE_COUNT,
-        duration_per_episode: int = 90,
-        budget_level: str = "low",
     ) -> Project:
         now = datetime.utcnow()
-        state = _initial_state(
-            title, genre, episode_count, budget_level, format, duration_per_episode
-        )
+        state = _initial_state(title)
         project = Project(
             id=str(uuid.uuid4()),
             title=title,
-            description=description,
-            genre=genre,
-            format=format,
-            episode_count=episode_count,
-            duration_per_episode=duration_per_episode,
-            budget_level=budget_level,
             status="active",
             state_json=json.dumps(state, ensure_ascii=False),
             created_at=now,

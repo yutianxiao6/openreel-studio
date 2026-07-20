@@ -201,12 +201,6 @@ export function resolveAssetLibraryPreviewUrl(projectId: string, path: string): 
 
 export interface CreateProjectInput {
   title: string
-  description?: string
-  genre?: string
-  format?: string
-  episode_count?: number
-  duration_per_episode?: number
-  budget_level?: 'low' | 'medium' | 'high'
 }
 
 async function asJson<T>(res: Response): Promise<T> {

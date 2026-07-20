@@ -16,7 +16,7 @@ from app.services.node_public_ids import (
     model_visible_edge_payload,
     model_visible_node_payload,
 )
-from app.services.project_service import DEFAULT_EPISODE_COUNT, ProjectService
+from app.services.project_service import ProjectService
 from app.services.version_service import VersionService
 
 
@@ -36,8 +36,6 @@ async def project_list(
             {
                 "id": p.id,
                 "title": p.title,
-                "genre": p.genre,
-                "episode_count": p.episode_count,
                 "status": p.status,
                 "updated_at": p.updated_at.isoformat() if p.updated_at else None,
             }
@@ -60,24 +58,10 @@ async def project_list(
 
 async def project_create(
     title: str,
-    genre: str | None = None,
-    episode_count: int = DEFAULT_EPISODE_COUNT,
-    description: str | None = None,
-    format: str | None = "竖屏短剧",
-    duration_per_episode: int = 90,
-    budget_level: str = "low",
 ) -> dict:
     async with session_scope() as session:
         svc = ProjectService(session)
-        project = await svc.create_project(
-            title=title,
-            description=description,
-            genre=genre,
-            format=format,
-            episode_count=episode_count,
-            duration_per_episode=duration_per_episode,
-            budget_level=budget_level,
-        )
+        project = await svc.create_project(title=title)
         return {"id": project.id, "title": project.title}
 
 

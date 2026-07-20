@@ -33,9 +33,6 @@ async function ensureCurrentProject(): Promise<ProjectRecord> {
   }
   const created = (await api.createProject({
     title: "未命名项目",
-    genre: "",
-    episode_count: 1,
-    budget_level: "low",
   })) as unknown as ProjectRecord
   if (typeof window !== "undefined") {
     localStorage.setItem(LS_KEY, created.id)

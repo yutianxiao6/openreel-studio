@@ -157,14 +157,7 @@ def project_nodes_request():
 async def create_project(client: httpx.AsyncClient, title: str = "Live E2E Backend Test") -> str:
     response = await client.post(
         "/api/projects",
-        json={
-            "title": title,
-            "genre": "都市短剧",
-            "format": "竖屏短剧",
-            "episode_count": 2,
-            "duration_per_episode": 30,
-            "budget_level": "low",
-        },
+        json={"title": title},
     )
     assert response.status_code == 200, response.text
     body = response.json()
