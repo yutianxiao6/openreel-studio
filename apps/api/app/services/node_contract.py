@@ -10,6 +10,7 @@ from copy import deepcopy
 from typing import Any
 
 from app.mcp_tools import node_universal
+from app.services.video_protocol_modes import derive_video_profile_modes
 
 
 CONTRACT_VERSION = "openreel.node-contract.v1"
@@ -217,6 +218,13 @@ def _video_modes(protocol: dict[str, Any] | None, profile: dict[str, Any] | None
             for key, value in profile_modes.items()
             if isinstance(value, dict)
         }
+    elif isinstance(profile, dict):
+        derived_modes = derive_video_profile_modes(profile)
+        if derived_modes:
+            modes = {
+                _canonical_video_mode(key): {**modes.get(_canonical_video_mode(key), {}), **value}
+                for key, value in derived_modes.items()
+            }
     supported = _strings(profile.get("supported_modes")) if isinstance(profile, dict) else []
     if supported:
         allowed = {_canonical_video_mode(item) for item in supported}

@@ -29,6 +29,7 @@ from app.config import settings
 from app.db.models import Asset, MediaProvider, WorkflowNode
 from app.db.session import session_scope
 from app.services.media_url_signing import MediaURLSigningError, sign_media_url
+from app.services.video_protocol_modes import derive_video_profile_modes
 
 
 ProgressCallback = Callable[[dict[str, Any]], Any]
@@ -1386,6 +1387,10 @@ def list_video_http_v1_protocol_catalog() -> dict[str, Any]:
                     }
                     if isinstance(profile.get("modes"), (dict, list)):
                         profile_summary["modes"] = profile.get("modes")
+                    else:
+                        derived_modes = _video_http_v1_derived_profile_modes(profile)
+                        if derived_modes:
+                            profile_summary["modes"] = derived_modes
                     supported_modes = sorted(_string_set(profile.get("supported_modes")))
                     if supported_modes:
                         profile_summary["supported_modes"] = supported_modes
@@ -1955,6 +1960,10 @@ def _video_http_v1_model_profile(protocol: dict[str, Any], model_name: str) -> d
     return {}
 
 
+def _video_http_v1_derived_profile_modes(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return derive_video_profile_modes(profile)
+
+
 def _video_http_v1_mode_config(protocol: dict[str, Any], mode: str, profile: dict[str, Any] | None = None) -> dict[str, Any]:
     modes = protocol.get("modes")
     base_config: dict[str, Any] = {}
@@ -1972,6 +1981,10 @@ def _video_http_v1_mode_config(protocol: dict[str, Any], mode: str, profile: dic
             return {}
         override = profile_modes.get(mode)
         return {**base_config, **override} if isinstance(override, dict) else base_config
+    derived_modes = _video_http_v1_derived_profile_modes(profile)
+    if derived_modes:
+        override = derived_modes.get(mode)
+        return {**base_config, **override} if isinstance(override, dict) else {}
     supported_modes = _string_set(profile.get("supported_modes"))
     if supported_modes and mode not in supported_modes:
         return {}
@@ -2171,6 +2184,7 @@ def _video_http_v1_supported_mode_names(protocol: dict[str, Any], profile: dict[
         modes = source.get("modes") if isinstance(source, dict) else None
         if isinstance(modes, dict):
             names.update(str(key) for key in modes.keys() if str(key).strip())
+    names.update(_video_http_v1_derived_profile_modes(profile))
     return names
 
 
@@ -2760,7 +2774,19 @@ async def _build_video_http_v1_payload(
     audio_urls = [ref.get("url") for ref in resolved_refs if ref.get("kind") == "audio" and ref.get("url")]
     first_frame_image_urls = image_urls if mode == "first_frame" else []
     reference_image_urls = image_urls if mode == "multimodal_reference" else []
+    last_image_url = next(
+        (ref.get("url") for ref in resolved_refs if ref.get("role") == "last_frame" and ref.get("url")),
+        None,
+    )
     output_resolution = _video_http_v1_output_resolution(resolution, protocol, profile, mode_config)
+    request_mode = str(mode_config.get("request_mode") or mode_config.get("generate_type") or "").strip()
+    if not request_mode:
+        request_mode = {
+            "text_to_video": "t2v",
+            "first_frame": "i2v",
+            "first_last_frame": "firstlast",
+            "multimodal_reference": "ref2v",
+        }.get(mode, mode)
 
     context = {
         "model": model_name,
@@ -2782,9 +2808,11 @@ async def _build_video_http_v1_payload(
         "raw_resolution": resolution,
         "video_size": _video_http_v1_video_size(resolution, ratio),
         "first_image_url": image_urls[0] if image_urls else None,
+        "last_image_url": last_image_url,
         "first_video_url": video_urls[0] if video_urls else None,
         "first_audio_url": audio_urls[0] if audio_urls else None,
         "mode": mode,
+        "generate_type": request_mode,
         "generate_audio": _coerce_bool(extra.get("generate_audio")),
         "watermark": _coerce_bool(extra.get("watermark")),
         "return_last_frame": _coerce_bool(extra.get("return_last_frame")),

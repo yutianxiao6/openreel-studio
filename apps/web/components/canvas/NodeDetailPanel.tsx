@@ -308,7 +308,7 @@ const VIDEO_MODE_LABELS: Record<string, string> = {
   text_to_video: "文生视频",
   first_frame: "图生视频",
   first_last_frame: "首尾帧",
-  multimodal_reference: "多参考",
+  multimodal_reference: "全能参考",
 }
 const VIDEO_MODE_ORDER = ["text_to_video", "first_frame", "first_last_frame", "multimodal_reference"]
 
