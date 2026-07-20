@@ -2031,24 +2031,36 @@ async def upload_project_canvas_node_media(
 async def import_project_canvas_image(
     project_id: str,
     file: UploadFile = File(...),
-    title: str = Form(default="Codex 生成图片"),
+    title: str = Form(default="导入图片"),
     prompt: str = Form(default=""),
+    generation_backend: str = Form(default="external_import"),
+    creator: Literal["user", "agent"] = Form(default="user"),
     x: float | None = Form(default=None),
     y: float | None = Form(default=None),
     db: AsyncSession = Depends(get_session),
 ):
-    """Create a completed image node from a Codex-generated local image."""
+    """Create a completed canvas image node from an external image file."""
     if (x is None) != (y is None):
         raise HTTPException(status_code=400, detail="x and y must be provided together")
 
-    clean_title = title.strip() or "Codex 生成图片"
+    clean_title = title.strip() or "导入图片"
     clean_prompt = prompt.strip()
+    clean_backend = generation_backend.strip() or "external_import"
+    if len(clean_backend) > 128:
+        raise HTTPException(status_code=400, detail="generation_backend must be at most 128 characters")
+    clean_creator = creator.strip().lower()
+    if clean_creator not in {"user", "agent"}:
+        raise HTTPException(status_code=400, detail="creator must be user or agent")
     input_data: dict[str, Any] = {
         "surface": "draft_canvas",
-        "generation_backend": "codex_builtin",
+        "generation_backend": clean_backend,
+        "source": {
+            "kind": "external_import",
+            "generation_backend": clean_backend,
+        },
         "fields": {
             "title": clean_title,
-            "generation_backend": "codex_builtin",
+            "generation_backend": clean_backend,
         },
     }
     if clean_prompt:
@@ -2062,8 +2074,8 @@ async def import_project_canvas_image(
         "input_json": input_data,
         "model_config_json": {
             "surface": "draft_canvas",
-            "_ui_creator": "agent",
-            "generation_backend": "codex_builtin",
+            "_ui_creator": clean_creator,
+            "generation_backend": clean_backend,
         },
         "prompt": clean_prompt or None,
         "avoid_position_overlap": True,
@@ -2081,7 +2093,8 @@ async def import_project_canvas_image(
             await db.delete(persisted)
             await db.commit()
         raise
-    result["generation_backend"] = "codex_builtin"
+    result["generation_backend"] = clean_backend
+    result["creator"] = clean_creator
     return result
 
 

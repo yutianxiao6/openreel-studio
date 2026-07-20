@@ -245,7 +245,7 @@ def test_background_node_events_trigger_a_complete_canvas_reload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_codex_image_import_creates_one_complete_node_and_one_event(
+async def test_external_image_import_preserves_caller_provenance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     canvas_session: AsyncSession,
@@ -273,6 +273,8 @@ async def test_codex_image_import_creates_one_complete_node_and_one_event(
         upload,
         title="Codex 概念图",
         prompt="cinematic concept art",
+        generation_backend="codex_builtin",
+        creator="agent",
         x=None,
         y=None,
         db=canvas_session,
@@ -284,10 +286,60 @@ async def test_codex_image_import_creates_one_complete_node_and_one_event(
     assert node.status == "completed"
     assert node.title == "Codex 概念图"
     assert node.prompt == "cinematic concept art"
-    assert json.loads(node.input_json or "{}")["generation_backend"] == "codex_builtin"
+    input_data = json.loads(node.input_json or "{}")
+    assert input_data["generation_backend"] == "codex_builtin"
+    assert input_data["source"] == {
+        "kind": "external_import",
+        "generation_backend": "codex_builtin",
+    }
+    assert json.loads(node.model_config_json or "{}")["_ui_creator"] == "agent"
     assert result["generation_backend"] == "codex_builtin"
+    assert result["creator"] == "agent"
     assert result["uploaded_media"]["mime_type"] == "image/png"
     assert [action for action, _payload in events] == ["update_node"]
     assert events[0][1]["status"] == "completed"
     assert events[0][1]["output"]
     assert events[0][1]["snapshot_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_external_image_import_uses_generic_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    canvas_session: AsyncSession,
+) -> None:
+    async def capture(_project_id: str, _action: str, _payload: dict) -> None:
+        return None
+
+    monkeypatch.setattr(routes_projects, "_emit_project_canvas_action", capture)
+    monkeypatch.setattr(
+        routes_projects.project_media_history,
+        "project_root",
+        lambda _project_id: tmp_path / "project-1",
+    )
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    upload = UploadFile(filename="external.png", file=BytesIO(png))
+    upload.headers = {"content-type": "image/png"}
+
+    result = await routes_projects.import_project_canvas_image(
+        "project-1",
+        upload,
+        title="",
+        prompt="",
+        generation_backend="",
+        creator="user",
+        x=240,
+        y=160,
+        db=canvas_session,
+    )
+
+    node = await canvas_session.get(WorkflowNode, result["id"])
+    assert node is not None
+    assert node.title == "导入图片"
+    assert result["position"] == {"x": node.position_x, "y": node.position_y}
+    assert json.loads(node.input_json or "{}")["generation_backend"] == "external_import"
+    assert json.loads(node.model_config_json or "{}")["_ui_creator"] == "user"
+    assert result["generation_backend"] == "external_import"
+    assert result["creator"] == "user"
