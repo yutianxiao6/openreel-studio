@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
 import { useParams } from "next/navigation"
-import { OptionalAgentChatPanel } from "@/components/chat/OptionalAgentChatPanel"
+import { ChatPanel } from "@/components/chat/ChatPanel"
 import WorkflowCanvas from "@/components/canvas/WorkflowCanvas"
 import { useProjectStore, type ProjectRecord } from "@/stores/projectStore"
 import { useChatStore } from "@/stores/chatStore"
@@ -177,7 +177,7 @@ export default function ProjectWorkspacePage() {
           className={`studio-chat-pane min-h-0 flex-col md:flex md:shrink-0 ${mobilePane === "chat" ? "flex w-full" : "hidden"} md:[width:var(--chat-width)]`}
           style={{ "--chat-width": `${chatWidth}px` } as CSSProperties}
         >
-          <OptionalAgentChatPanel />
+          <ChatPanel />
         </div>
         <div
           role="separator"

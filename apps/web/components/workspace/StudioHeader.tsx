@@ -1,7 +1,6 @@
 "use client"
 
 import { ProjectTitleEditor } from "@/components/project/ProjectTitleEditor"
-import { useCodexBridgeStore } from "@/stores/codexBridgeStore"
 
 interface StudioHeaderProps {
   connected: boolean
@@ -19,24 +18,6 @@ function SettingsIcon() {
 }
 
 export function StudioHeader({ connected, projectFallback, onOpenSettings }: StudioHeaderProps) {
-  const codexStatus = useCodexBridgeStore((state) => state.status)
-  const codexChecking = useCodexBridgeStore((state) => state.checking)
-  const chatAgentMode = useCodexBridgeStore((state) => state.mode)
-  const codexActive = chatAgentMode === "codex"
-  const activeConnected = codexActive ? codexStatus.connected : connected
-  const connectionLabel = codexActive
-    ? codexStatus.connected
-      ? "Codex 已连接"
-      : codexChecking
-        ? "连接 Codex"
-        : codexStatus.state === "login_required"
-          ? "Codex 未登录"
-          : codexStatus.state === "missing_cli"
-            ? "未检测到 Codex"
-            : "Codex 未连接"
-    : connected
-      ? "Agent Online"
-      : "Connecting"
   return (
     <header className="studio-topbar">
       <div className="flex min-w-0 flex-1 items-center gap-2.5 sm:gap-3.5">
@@ -55,12 +36,9 @@ export function StudioHeader({ connected, projectFallback, onOpenSettings }: Stu
       </div>
 
       <div className="ml-auto flex shrink-0 items-center gap-2">
-        <div
-          className={`studio-connection-pill ${activeConnected ? "is-online" : "is-connecting"}`}
-          title={codexActive ? codexStatus.detail || connectionLabel : connected ? "OpenReel Agent 已连接" : "项目连接中"}
-        >
+        <div className={`studio-connection-pill ${connected ? "is-online" : "is-connecting"}`}>
           <span className="studio-connection-indicator"><span /></span>
-          <span className="hidden sm:inline">{connectionLabel}</span>
+          <span className="hidden sm:inline">{connected ? "Agent Online" : "Connecting"}</span>
         </div>
         <button
           type="button"
