@@ -1,0 +1,3 @@
+[submodule "plugins/openreel-codex-plugin"]
+	path = plugins/openreel-codex-plugin
+	url = https://github.com/yutianxiao6/openreel-codex-plugin.git
