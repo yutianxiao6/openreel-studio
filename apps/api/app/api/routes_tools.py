@@ -5,15 +5,19 @@ settings queries do not burn tokens.
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.db.models import Project
+from app.db.session import get_session
 from app.mcp_tools import config_tools, mcp_meta_tools
 from app.mcp_tools.registry import registry
-from app.services import media_provider
+from app.services import media_provider, node_contract
 
 
 router = APIRouter()
@@ -31,6 +35,12 @@ class ConfigPatchRequest(BaseModel):
 
 class ConfigTextRequest(BaseModel):
     content: str
+
+
+class NodeContractRequest(BaseModel):
+    project_id: str
+    type: str
+    fields: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post("/call")
@@ -69,6 +79,34 @@ async def list_tools() -> dict[str, Any]:
         })
     items.sort(key=lambda t: t["name"])
     return {"tools": items, "namespaces": registry.namespaces(), "total": len(items)}
+
+
+@router.post("/node-contract")
+async def describe_node_contract(
+    req: NodeContractRequest,
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Return the current node/provider contract and a side-effect-free preflight."""
+    project = await db.get(Project, req.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        project_state = json.loads(project.state_json or "{}")
+    except (TypeError, ValueError):
+        project_state = {}
+    config = await config_tools.config_read(mask_secrets=True)
+    catalog = {
+        "image": media_provider.list_image_http_v1_protocol_catalog,
+        "video": media_provider.list_video_http_v1_protocol_catalog,
+        "audio": media_provider.list_audio_http_v1_protocol_catalog,
+    }.get(req.type)
+    return node_contract.build_node_contract(
+        node_type=req.type,
+        fields=req.fields,
+        config=config,
+        project_state=project_state,
+        protocol_catalog=catalog() if catalog else {},
+    )
 
 
 @router.get("/mcp/servers")
