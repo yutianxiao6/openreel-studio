@@ -52,6 +52,43 @@ function getDesktopApiBase(): string {
   return base ?? ""
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1" || hostname === "[::1]"
+}
+
+function browserApiCandidates(): string[] {
+  if (typeof window === "undefined") return []
+
+  const { protocol, hostname, port } = window.location
+  const candidates: string[] = []
+  const currentPort = Number.parseInt(port, 10)
+  if (isLoopbackHostname(hostname) && currentPort >= 7861 && currentPort <= 7899) {
+    candidates.push(`${protocol}//${hostname}:${currentPort - 1}`)
+  }
+  candidates.push("")
+
+  if (isLoopbackHostname(hostname)) {
+    for (let candidatePort = 7860; candidatePort <= 7899; candidatePort += 1) {
+      candidates.push(`${protocol}//${hostname}:${candidatePort}`)
+    }
+    for (let candidatePort = 8000; candidatePort < 8020; candidatePort += 1) {
+      candidates.push(`${protocol}//${hostname}:${candidatePort}`)
+    }
+  }
+  return [...new Set(candidates)]
+}
+
+async function isOpenReelApi(base: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(800) })
+    if (!res.ok) return false
+    const data = await res.json()
+    return data?.app === "openreel-studio"
+  } catch {
+    return false
+  }
+}
+
 async function discoverApiBase(): Promise<string> {
   const desktopBase = getDesktopApiBase()
   if (desktopBase) {
@@ -60,28 +97,14 @@ async function discoverApiBase(): Promise<string> {
   if (process.env.NEXT_PUBLIC_API_BASE_URL) {
     return process.env.NEXT_PUBLIC_API_BASE_URL
   }
-  if (process.env.NODE_ENV === 'production') {
-    return ''
+  for (const base of browserApiCandidates()) {
+    if (await isOpenReelApi(base)) return base
   }
-  const startPort = 8000
-  const endPort = 8020
-  for (let port = startPort; port < endPort; port++) {
-    const base = `http://localhost:${port}`
-    try {
-      const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(800) })
-      if (res.ok) {
-        const data = await res.json()
-        if (data?.app === 'openreel-studio') return base
-      }
-    } catch {
-      // port not available or wrong service, try next
-    }
-  }
-  return `http://localhost:${startPort}`
+  return process.env.NODE_ENV === "production" ? "" : "http://localhost:8000"
 }
 
 async function getApiBase(): Promise<string> {
-  if (_cachedApiBase) return _cachedApiBase
+  if (_cachedApiBase !== null) return _cachedApiBase
   _cachedApiBase = await discoverApiBase()
   return _cachedApiBase
 }

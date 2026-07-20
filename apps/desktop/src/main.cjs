@@ -625,6 +625,18 @@ function createWindow({ apiPort, webPort }) {
   });
 
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown" || input.isAutoRepeat) {
+      return;
+    }
+    const key = String(input.key || "").toLowerCase();
+    const isReloadShortcut = key === "f5" || ((input.control || input.meta) && !input.alt && key === "r");
+    if (!isReloadShortcut) {
+      return;
+    }
+    event.preventDefault();
+    mainWindow.webContents.reload();
+  });
   mainWindow.on("close", (event) => {
     if (isQuitting) {
       return;

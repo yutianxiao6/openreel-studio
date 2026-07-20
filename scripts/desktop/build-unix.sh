@@ -81,7 +81,7 @@ cd "$root"
 
 export NEXT_PUBLIC_BASE_PATH=""
 export NEXT_PUBLIC_API_BASE_URL=""
-export INTERNAL_API_BASE_URL="http://127.0.0.1:8000"
+export INTERNAL_API_BASE_URL="http://127.0.0.1:7860"
 
 if [[ "${SKIP_INSTALL:-0}" != "1" ]]; then
   step "Install JavaScript dependencies"

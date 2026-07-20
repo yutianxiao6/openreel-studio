@@ -41,7 +41,7 @@ try {
 
   $env:NEXT_PUBLIC_BASE_PATH = ""
   $env:NEXT_PUBLIC_API_BASE_URL = ""
-  $env:INTERNAL_API_BASE_URL = "http://127.0.0.1:8000"
+  $env:INTERNAL_API_BASE_URL = "http://127.0.0.1:7860"
 
   if (-not $SkipInstall) {
     Invoke-Native "Install JavaScript dependencies" "pnpm" @("install", "--frozen-lockfile")

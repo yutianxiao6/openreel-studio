@@ -20,6 +20,38 @@ def test_windows_packaging_waits_for_windowless_api_smoke_test() -> None:
     assert "Invoke-Native" not in smoke_block
 
 
+def test_packaged_web_routes_and_browser_discovery_use_the_desktop_api() -> None:
+    windows_build = (PROJECT_ROOT / "scripts" / "desktop" / "build-windows.ps1").read_text(
+        encoding="utf-8"
+    )
+    unix_build = (PROJECT_ROOT / "scripts" / "desktop" / "build-unix.sh").read_text(
+        encoding="utf-8"
+    )
+    api_client = (PROJECT_ROOT / "apps" / "web" / "lib" / "api.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert '$env:INTERNAL_API_BASE_URL = "http://127.0.0.1:7860"' in windows_build
+    assert 'export INTERNAL_API_BASE_URL="http://127.0.0.1:7860"' in unix_build
+    assert "function browserApiCandidates()" in api_client
+    assert "currentPort - 1" in api_client
+    assert "if (await isOpenReelApi(base)) return base" in api_client
+    assert "if (_cachedApiBase !== null)" in api_client
+
+
+def test_desktop_window_supports_standard_reload_shortcuts() -> None:
+    main = (PROJECT_ROOT / "apps" / "desktop" / "src" / "main.cjs").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'mainWindow.webContents.on("before-input-event"' in main
+    assert 'key === "f5"' in main
+    assert "input.control || input.meta" in main
+    assert "input.isAutoRepeat" in main
+    assert "event.preventDefault()" in main
+    assert "mainWindow.webContents.reload()" in main
+
+
 def test_desktop_runtime_data_stays_beside_the_packaged_application() -> None:
     main = (PROJECT_ROOT / "apps" / "desktop" / "src" / "main.cjs").read_text(
         encoding="utf-8"
