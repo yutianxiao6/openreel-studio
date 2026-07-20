@@ -43,6 +43,52 @@ class NodeContractRequest(BaseModel):
     fields: dict[str, Any] = Field(default_factory=dict)
 
 
+async def _emit_direct_tool_canvas_events(
+    tool_name: str,
+    args: dict[str, Any],
+    result: Any,
+) -> None:
+    """Mirror direct registry mutations to the project event stream."""
+    if tool_name != "node.update" or not isinstance(result, dict) or result.get("ok") is False:
+        return
+    project_id = str(args.get("project_id") or "").strip()
+    if not project_id:
+        return
+    items = result.get("results") if isinstance(result.get("results"), list) else [result]
+    try:
+        from app.agent.orchestrator import emit_canvas_event
+
+        for item in items:
+            if not isinstance(item, dict) or item.get("ok") is False:
+                continue
+            node_id = item.get("_canvas_id") or item.get("_canvas_node_id") or item.get("id")
+            if not node_id:
+                continue
+            payload = dict(item)
+            payload["id"] = node_id
+            await emit_canvas_event(
+                {"type": "canvas_action", "action": "update_node", "payload": payload},
+                project_id=project_id,
+            )
+            edge_sync = item.get("edge_sync")
+            if not isinstance(edge_sync, dict):
+                continue
+            for edge in edge_sync.get("added_edges") or []:
+                if isinstance(edge, dict):
+                    await emit_canvas_event(
+                        {"type": "canvas_action", "action": "add_edge", "payload": edge},
+                        project_id=project_id,
+                    )
+            for edge in edge_sync.get("removed_edges") or []:
+                if isinstance(edge, dict):
+                    await emit_canvas_event(
+                        {"type": "canvas_action", "action": "delete_edge", "payload": edge},
+                        project_id=project_id,
+                    )
+    except Exception:
+        logger.exception("direct tool canvas event failed tool=%s project=%s", tool_name, project_id)
+
+
 @router.post("/call")
 async def call_tool(req: ToolCallRequest) -> dict[str, Any]:
     spec = registry.get(req.tool)
@@ -64,6 +110,7 @@ async def call_tool(req: ToolCallRequest) -> dict[str, Any]:
             result.get("error"),
             result.get("error_kind"),
         )
+    await _emit_direct_tool_canvas_events(req.tool, req.args, result)
     return {"tool": req.tool, "result": result}
 
 

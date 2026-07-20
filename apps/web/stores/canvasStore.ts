@@ -1523,10 +1523,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         id,
         source,
         target,
+        label: payload.label == null ? undefined : String(payload.label),
       }
       set((s) => {
-        const edges = s.edges.some((edge) => edge.id === id || (edge.source === source && edge.target === target))
-          ? s.edges
+        const existingIndex = s.edges.findIndex((edge) => edge.id === id || (edge.source === source && edge.target === target))
+        const edges = existingIndex >= 0
+          ? s.edges.map((edge, index) => index === existingIndex ? { ...edge, ...newEdge } : edge)
           : [...s.edges, newEdge]
         return {
           ...keepManualCanvas(
@@ -1536,6 +1538,20 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           manualLayout: s.manualLayout,
         }
       })
+      return
+    }
+    if (action === "update_edge") {
+      const id = String(payload.id ?? "")
+      if (!id) return
+      set((s) => ({
+        ...keepManualCanvas(
+          s.nodes,
+          s.edges.map((edge) => edge.id === id
+            ? { ...edge, label: payload.label == null ? undefined : String(payload.label) }
+            : edge),
+        ),
+        manualLayout: s.manualLayout,
+      }))
       return
     }
     if (action === "delete_edge" || action === "remove_edge") {
@@ -1566,8 +1582,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             if (n.id !== id) return n
             const hasPayloadOutput = Object.prototype.hasOwnProperty.call(payload, "output")
             const nextOutput = hasPayloadOutput ? payload.output : n.data.output
+            const nextPosition = payloadPosition(payload)
             return applyAutoMediaNodeDimensions({
               ...n,
+              ...(nextPosition ? { position: nextPosition } : {}),
               data: {
                 ...n.data,
                 ...workflowMetadataFromPayload(payload as Record<string, unknown>),
@@ -1864,7 +1882,12 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
               dataPatch,
             )
           }
-          return applyAutoMediaNodeDimensions({ ...n, data: { ...n.data, ...dataPatch } }, storedDimensions)
+          const nextPosition = payloadPosition(dataPatch)
+          return applyAutoMediaNodeDimensions({
+            ...n,
+            ...(nextPosition ? { position: nextPosition } : {}),
+            data: { ...n.data, ...dataPatch },
+          }, storedDimensions)
         })
 	        return {
 	          ...keepManualCanvas(nodes, s.edges),

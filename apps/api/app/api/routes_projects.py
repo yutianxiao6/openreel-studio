@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import uuid
 import base64
@@ -31,6 +32,24 @@ from app.services.project_service import DEFAULT_EPISODE_COUNT, ProjectService
 from app.services.reference_mentions import refresh_node_reference_mentions
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+async def _emit_project_canvas_action(
+    project_id: str,
+    action: str,
+    payload: dict[str, Any],
+) -> None:
+    """Fan out committed canvas mutations to every open project view."""
+    try:
+        from app.agent.orchestrator import emit_canvas_event
+
+        await emit_canvas_event(
+            {"type": "canvas_action", "action": action, "payload": payload},
+            project_id=project_id,
+        )
+    except Exception:
+        logger.exception("canvas mutation event failed project=%s action=%s", project_id, action)
 
 
 NODE_MEDIA_UPLOAD_MAX_BYTES: dict[str, int] = {
@@ -127,6 +146,10 @@ class CanvasPanoramaCaptureRequest(BaseModel):
 class CanvasEdgeRequest(BaseModel):
     source_node_id: str
     target_node_id: str
+    label: Optional[str] = None
+
+
+class CanvasEdgeUpdateRequest(BaseModel):
     label: Optional[str] = None
 
 
@@ -1810,6 +1833,8 @@ async def create_project_canvas_node(
             },
         },
     )
+    payload = await _node_detail_response(node, project_id, db)
+    await _emit_project_canvas_action(project_id, "create_node", payload)
     return node.model_dump()
 
 
@@ -1893,6 +1918,15 @@ async def update_project_canvas_node_detail(
             payload["edge_sync"] = await canvas_tools.sync_dependency_edges(project_id, node_id, next_input)
         except Exception as exc:
             payload["edge_sync_warning"] = str(exc)[:200]
+    await _emit_project_canvas_action(project_id, "update_node", payload)
+    edge_sync = payload.get("edge_sync")
+    if isinstance(edge_sync, dict):
+        for edge in edge_sync.get("added_edges") or []:
+            if isinstance(edge, dict):
+                await _emit_project_canvas_action(project_id, "add_edge", edge)
+        for edge in edge_sync.get("removed_edges") or []:
+            if isinstance(edge, dict):
+                await _emit_project_canvas_action(project_id, "delete_edge", edge)
     return payload
 
 
@@ -2003,6 +2037,7 @@ async def upload_project_canvas_node_media(
         "before": media_history.media_signature(current_output)[:800],
         "after": media_history.media_signature(next_output)[:800],
     }]
+    await _emit_project_canvas_action(project_id, "update_node", payload)
     return payload
 
 
@@ -2069,6 +2104,7 @@ async def switch_project_canvas_node_history(
             "before": before[:800],
             "after": after[:800],
         }]
+    await _emit_project_canvas_action(project_id, "update_node", payload)
     return payload
 
 
@@ -2462,7 +2498,10 @@ async def delete_project_canvas_nodes(
     req: CanvasNodesDeleteRequest,
     db: AsyncSession = Depends(get_session),
 ):
-    return await _delete_project_canvas_nodes(project_id, req.node_ids, db)
+    result = await _delete_project_canvas_nodes(project_id, req.node_ids, db)
+    for node_id in result.get("deleted_node_ids") or []:
+        await _emit_project_canvas_action(project_id, "delete_node", {"id": node_id})
+    return result
 
 
 @router.delete("/{project_id}/nodes/{node_id}")
@@ -2471,7 +2510,10 @@ async def delete_project_canvas_node(
     node_id: str,
     db: AsyncSession = Depends(get_session),
 ):
-    return await _delete_project_canvas_nodes(project_id, [node_id], db)
+    result = await _delete_project_canvas_nodes(project_id, [node_id], db)
+    for deleted_node_id in result.get("deleted_node_ids") or []:
+        await _emit_project_canvas_action(project_id, "delete_node", {"id": deleted_node_id})
+    return result
 
 
 @router.post("/{project_id}/canvas/restore-snapshot")
@@ -2552,6 +2594,18 @@ async def restore_project_canvas_snapshot(
             restored_edges.append(edge.id)
 
         await db.commit()
+    for node_id in restored_nodes:
+        node = await db.get(WorkflowNode, node_id)
+        if node and node.project_id == project_id:
+            await _emit_project_canvas_action(
+                project_id,
+                "create_node",
+                await _node_detail_response(node, project_id, db),
+            )
+    for edge_id in restored_edges:
+        edge = await db.get(WorkflowEdge, edge_id)
+        if edge and edge.project_id == project_id:
+            await _emit_project_canvas_action(project_id, "add_edge", edge.model_dump())
     return {"ok": True, "nodes": restored_nodes, "edges": restored_edges}
 
 
@@ -2571,11 +2625,15 @@ async def update_project_node_position(
     db.add(node)
     await db.commit()
     await db.refresh(node)
-    return {
+    payload = {
         "ok": True,
         "id": node.id,
         "position": {"x": node.position_x, "y": node.position_y},
+        "position_x": node.position_x,
+        "position_y": node.position_y,
     }
+    await _emit_project_canvas_action(project_id, "update_node", payload)
+    return payload
 
 
 @router.post("/{project_id}/edges")
@@ -2602,7 +2660,9 @@ async def create_project_edge(
         if _add_edge_dependency(target, source):
             db.add(target)
             await db.commit()
-        return existing.model_dump()
+        payload = existing.model_dump()
+        await _emit_project_canvas_action(project_id, "add_edge", payload)
+        return payload
 
     edge = WorkflowEdge(
         id=str(uuid.uuid4()),
@@ -2616,7 +2676,28 @@ async def create_project_edge(
         db.add(target)
     await db.commit()
     await db.refresh(edge)
-    return edge.model_dump()
+    payload = edge.model_dump()
+    await _emit_project_canvas_action(project_id, "add_edge", payload)
+    return payload
+
+
+@router.patch("/{project_id}/edges/{edge_id}")
+async def update_project_edge(
+    project_id: str,
+    edge_id: str,
+    req: CanvasEdgeUpdateRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    edge = await db.get(WorkflowEdge, edge_id)
+    if not edge or edge.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Edge not found")
+    edge.label = req.label
+    db.add(edge)
+    await db.commit()
+    await db.refresh(edge)
+    payload = edge.model_dump()
+    await _emit_project_canvas_action(project_id, "update_edge", payload)
+    return payload
 
 
 @router.delete("/{project_id}/edges/{edge_id}")
@@ -2678,7 +2759,7 @@ async def delete_project_edge(
         deleted_edge_ids.append(item.id)
         await db.delete(item)
     await db.commit()
-    return {
+    result = {
         "ok": True,
         "id": edge_id,
         "deleted_edge_id": deleted_edge_id,
@@ -2687,6 +2768,17 @@ async def delete_project_edge(
         "target_node_id": target_id,
         "dependency_removed": dependency_removed,
     }
+    for deleted_id in deleted_edge_ids or ([deleted_edge_id] if deleted_edge_id else []):
+        await _emit_project_canvas_action(
+            project_id,
+            "delete_edge",
+            {
+                "id": deleted_id,
+                "source_node_id": source_id,
+                "target_node_id": target_id,
+            },
+        )
+    return result
 
 
 @router.get("/{project_id}/panel/layout")
