@@ -13867,8 +13867,12 @@ export default function WorkflowCanvas({
             payload: ev.payload,
           })
           const action = String(ev.action ?? "")
-          applyCanvasAction(action, ev.payload as Record<string, unknown>)
-          if (action === "create_node" || action === "update_node") {
+          const payload = ev.payload as Record<string, unknown>
+          applyCanvasAction(action, payload)
+          if (
+            (action === "create_node" || action === "update_node")
+            && payload.snapshot_complete !== true
+          ) {
             requestCanvasRefresh({
               projectId: currentProject.id,
               preserveOnEmpty: true,

@@ -1723,6 +1723,10 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     } else if (action === "update_node") {
       const id = String(payload.id ?? "")
       if (!id) return
+      if (!get().nodes.some((node) => node.id === id) && payload.snapshot_complete === true && payload.type) {
+        get().applyCanvasAction("create_node", payload)
+        return
+      }
       const storedDimensions = readStoredNodeDimensions()
       set((s) => {
         const nodes = s.nodes.map((n) => {

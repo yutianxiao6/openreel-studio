@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import AsyncIterator
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -8,6 +11,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
+from starlette.datastructures import UploadFile
 
 from app.api import routes_projects, routes_tools
 from app.db.models import Project, WorkflowEdge, WorkflowNode
@@ -215,6 +219,7 @@ async def test_direct_node_create_event_hydrates_the_complete_persisted_node(
                 "output": None,
                 "prompt": None,
                 "position": {"x": 120.0, "y": 90.0},
+                "snapshot_complete": True,
             },
         },
         "project-1",
@@ -237,3 +242,52 @@ def test_background_node_events_trigger_a_complete_canvas_reload() -> None:
     assert 'action === "create_node" || action === "update_node"' in source
     assert "requestCanvasRefresh({" in source
     assert "preserveLayout: true" in source
+
+
+@pytest.mark.asyncio
+async def test_codex_image_import_creates_one_complete_node_and_one_event(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    canvas_session: AsyncSession,
+) -> None:
+    events: list[tuple[str, dict]] = []
+
+    async def capture(project_id: str, action: str, payload: dict) -> None:
+        assert project_id == "project-1"
+        events.append((action, payload))
+
+    monkeypatch.setattr(routes_projects, "_emit_project_canvas_action", capture)
+    monkeypatch.setattr(
+        routes_projects.project_media_history,
+        "project_root",
+        lambda _project_id: tmp_path / "project-1",
+    )
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    upload = UploadFile(filename="codex.png", file=BytesIO(png))
+    upload.headers = {"content-type": "image/png"}
+
+    result = await routes_projects.import_project_canvas_image(
+        "project-1",
+        upload,
+        title="Codex 概念图",
+        prompt="cinematic concept art",
+        x=None,
+        y=None,
+        db=canvas_session,
+    )
+
+    node = await canvas_session.get(WorkflowNode, result["id"])
+    assert node is not None
+    assert node.type == "image"
+    assert node.status == "completed"
+    assert node.title == "Codex 概念图"
+    assert node.prompt == "cinematic concept art"
+    assert json.loads(node.input_json or "{}")["generation_backend"] == "codex_builtin"
+    assert result["generation_backend"] == "codex_builtin"
+    assert result["uploaded_media"]["mime_type"] == "image/png"
+    assert [action for action, _payload in events] == ["update_node"]
+    assert events[0][1]["status"] == "completed"
+    assert events[0][1]["output"]
+    assert events[0][1]["snapshot_complete"] is True

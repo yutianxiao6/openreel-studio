@@ -78,6 +78,7 @@ async def _emit_direct_tool_canvas_events(
             payload = dict(item)
             if isinstance(persisted, dict) and not persisted.get("error"):
                 payload.update(persisted)
+                payload["snapshot_complete"] = True
             payload["id"] = str(node_id)
             await emit_canvas_event(
                 {"type": "canvas_action", "action": action, "payload": payload},

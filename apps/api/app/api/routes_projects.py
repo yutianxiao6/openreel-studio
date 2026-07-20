@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from sqlalchemy import or_
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -1818,6 +1818,7 @@ async def create_project_canvas_node(
         },
     )
     payload = await _node_detail_response(node, project_id, db)
+    payload["snapshot_complete"] = True
     await _emit_project_canvas_action(project_id, "create_node", payload)
     return node.model_dump()
 
@@ -2021,8 +2022,67 @@ async def upload_project_canvas_node_media(
         "before": media_history.media_signature(current_output)[:800],
         "after": media_history.media_signature(next_output)[:800],
     }]
+    payload["snapshot_complete"] = True
     await _emit_project_canvas_action(project_id, "update_node", payload)
     return payload
+
+
+@router.post("/{project_id}/nodes/import-image")
+async def import_project_canvas_image(
+    project_id: str,
+    file: UploadFile = File(...),
+    title: str = Form(default="Codex 生成图片"),
+    prompt: str = Form(default=""),
+    x: float | None = Form(default=None),
+    y: float | None = Form(default=None),
+    db: AsyncSession = Depends(get_session),
+):
+    """Create a completed image node from a Codex-generated local image."""
+    if (x is None) != (y is None):
+        raise HTTPException(status_code=400, detail="x and y must be provided together")
+
+    clean_title = title.strip() or "Codex 生成图片"
+    clean_prompt = prompt.strip()
+    input_data: dict[str, Any] = {
+        "surface": "draft_canvas",
+        "generation_backend": "codex_builtin",
+        "fields": {
+            "title": clean_title,
+            "generation_backend": "codex_builtin",
+        },
+    }
+    if clean_prompt:
+        input_data["prompt"] = clean_prompt
+        input_data["fields"]["prompt"] = clean_prompt
+
+    create_payload: dict[str, Any] = {
+        "type": "image",
+        "title": clean_title,
+        "status": "idle",
+        "input_json": input_data,
+        "model_config_json": {
+            "surface": "draft_canvas",
+            "_ui_creator": "agent",
+            "generation_backend": "codex_builtin",
+        },
+        "prompt": clean_prompt or None,
+        "avoid_position_overlap": True,
+    }
+    if x is not None and y is not None:
+        create_payload["position_x"] = x
+        create_payload["position_y"] = y
+
+    node = await NodeService(db).create_node(project_id, create_payload)
+    try:
+        result = await upload_project_canvas_node_media(project_id, node.id, file, db)
+    except Exception:
+        persisted = await db.get(WorkflowNode, node.id)
+        if persisted is not None:
+            await db.delete(persisted)
+            await db.commit()
+        raise
+    result["generation_backend"] = "codex_builtin"
+    return result
 
 
 @router.post("/{project_id}/nodes/{node_id}/history/switch")
