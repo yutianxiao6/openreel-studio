@@ -136,7 +136,7 @@ def _activity_from_item(item: Any, *, completed: bool) -> dict[str, Any] | None:
 
 
 @router.get("/status")
-async def codex_status(auto_start: bool = Query(default=True)) -> dict[str, Any]:
+async def codex_status(auto_start: bool = Query(default=False)) -> dict[str, Any]:
     if auto_start:
         return await codex_app_server.start()
     return codex_app_server.status_snapshot()
@@ -145,6 +145,12 @@ async def codex_status(auto_start: bool = Query(default=True)) -> dict[str, Any]
 @router.post("/connect")
 async def connect_codex(req: CodexConnectRequest) -> dict[str, Any]:
     return await codex_app_server.start(restart=req.restart)
+
+
+@router.post("/disconnect")
+async def disconnect_codex() -> dict[str, Any]:
+    await codex_app_server.stop()
+    return codex_app_server.status_snapshot(state="disconnected")
 
 
 @router.get("/projects/{project_id}/messages")

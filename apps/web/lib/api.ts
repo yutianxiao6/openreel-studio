@@ -1338,7 +1338,7 @@ export type CodexStreamEvent =
   | { type: "done"; status?: string; content?: string; thread_id?: string; turn_id?: string; message_id?: string | null }
   | { type: "error"; message: string; thread_id?: string; turn_id?: string }
 
-export async function getCodexStatus(autoStart = true): Promise<CodexBridgeStatus> {
+export async function getCodexStatus(autoStart = false): Promise<CodexBridgeStatus> {
   const base = await getApiBase()
   const res = await fetch(`${base}/api/codex/status?auto_start=${autoStart ? "true" : "false"}`, {
     cache: "no-store",
@@ -1352,6 +1352,14 @@ export async function connectCodex(restart = false): Promise<CodexBridgeStatus> 
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ restart }),
+  })
+  return asJson<CodexBridgeStatus>(res)
+}
+
+export async function disconnectCodex(): Promise<CodexBridgeStatus> {
+  const base = await getApiBase()
+  const res = await fetch(`${base}/api/codex/disconnect`, {
+    method: "POST",
   })
   return asJson<CodexBridgeStatus>(res)
 }
@@ -2329,6 +2337,7 @@ export const api = {
   getProjectMessages,
   getCodexStatus,
   connectCodex,
+  disconnectCodex,
   getCodexMessages,
   cancelCodexTurn,
   codexChatStream,

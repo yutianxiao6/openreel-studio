@@ -16,9 +16,16 @@ def test_codex_routes_are_separate_from_openreel_agent_routes() -> None:
     paths = {route.path for route in app.routes}
     assert "/api/codex/status" in paths
     assert "/api/codex/connect" in paths
+    assert "/api/codex/disconnect" in paths
     assert "/api/codex/projects/{project_id}/stream" in paths
     assert "/api/codex/projects/{project_id}/messages" in paths
     assert "/api/codex/projects/{project_id}/cancel" in paths
+
+
+def test_codex_status_does_not_start_bridge_by_default() -> None:
+    operation = app.openapi()["paths"]["/api/codex/status"]["get"]
+    auto_start = next(item for item in operation["parameters"] if item["name"] == "auto_start")
+    assert auto_start["schema"]["default"] is False
 
 
 def test_dynamic_tools_are_project_scoped_and_node_first() -> None:
@@ -52,6 +59,12 @@ async def test_missing_codex_binary_returns_actionable_status(monkeypatch: pytes
     assert status["connected"] is False
     assert status["state"] == "missing_cli"
     assert "OPENREEL_CODEX_BIN" in str(status["detail"])
+
+
+def test_fresh_bridge_is_optional_and_disconnected() -> None:
+    status = CodexAppServerBridge().status_snapshot()
+    assert status["state"] == "disconnected"
+    assert status["app_server_running"] is False
 
 
 @pytest.mark.asyncio

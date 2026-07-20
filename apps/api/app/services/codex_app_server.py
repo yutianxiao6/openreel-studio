@@ -266,6 +266,7 @@ class CodexAppServerBridge:
         self._authenticated = False
         self._external_plugin_installed = False
         self._binary: str | None = None
+        self._binary_checked = False
         self._user_agent = ""
         self._connected_at: str | None = None
         self._last_error: str | None = None
@@ -282,6 +283,7 @@ class CodexAppServerBridge:
                 await self._refresh_connection_metadata()
                 return self.status_snapshot()
 
+            self._binary_checked = True
             binary = find_codex_binary()
             self._binary = binary
             if not binary:
@@ -350,7 +352,9 @@ class CodexAppServerBridge:
     def status_snapshot(self, *, state: str | None = None) -> dict[str, Any]:
         running = self._process is not None and self._process.returncode is None
         if state is None:
-            if not self._binary:
+            if not self._binary_checked:
+                state = "disconnected"
+            elif not self._binary:
                 state = "missing_cli"
             elif not running or not self._initialized:
                 state = "error" if self._last_error else "disconnected"
