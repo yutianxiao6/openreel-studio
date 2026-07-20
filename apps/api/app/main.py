@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes_assets import router as assets_router
 from app.api.routes_agent_debug import router as agent_debug_router
 from app.api.routes_chat import router as chat_router
+from app.api.routes_codex import router as codex_router
 from app.api.routes_media import router as media_router
 from app.api.routes_models import router as models_router
 from app.api.routes_nodes import router as nodes_router
@@ -76,6 +77,11 @@ async def lifespan(app: FastAPI):
         await mcp_client_manager.disconnect_all()
     except Exception:
         pass
+    try:
+        from app.services.codex_app_server import codex_app_server
+        await codex_app_server.stop()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -93,6 +99,7 @@ app.add_middleware(
 )
 
 app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
+app.include_router(codex_router, prefix="/api/codex", tags=["codex"])
 app.include_router(agent_debug_router, prefix="/api/agent", tags=["agent-debug"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
 app.include_router(nodes_router, prefix="/api/nodes", tags=["nodes"])

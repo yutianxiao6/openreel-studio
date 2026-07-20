@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react"
-import { ChatPanel } from "@/components/chat/ChatPanel"
+import { CodexChatPanel } from "@/components/chat/CodexChatPanel"
 import WorkflowCanvas from "@/components/canvas/WorkflowCanvas"
 import { useProjectStore, type ProjectRecord } from "@/stores/projectStore"
 import { useChatStore } from "@/stores/chatStore"
@@ -195,7 +195,7 @@ export default function HomePage() {
           } md:[width:var(--chat-width)]`}
           style={{ "--chat-width": `${chatWidth}px` } as CSSProperties}
         >
-          <ChatPanel />
+          <CodexChatPanel />
         </div>
         <div
           onMouseDown={startDrag}
