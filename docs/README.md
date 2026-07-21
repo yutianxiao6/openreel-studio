@@ -7,7 +7,7 @@
 1. [快速开始](./zh-CN/getting-started.md)：安装桌面版、从源码启动或使用 Docker。
 2. [使用指南](./zh-CN/user-guide.md)：配置模型、创建项目、运行节点、管理历史和剪辑视频。
 3. [工作流指南](./zh-CN/workflows.md)：使用内置模板或搭建可复用流程。
-4. [模型配置与协议接入](./zh-CN/model-providers.md)：前端添加 LLM/媒体 Provider、编写协议 Catalog、验证与排障。
+4. [模型配置与协议接入](./zh-CN/model-providers.md)：配置 LLM/媒体 Provider、使用统一模型适配器、编写协议并完成验证与排障。
 
 ## 开发者文档
 

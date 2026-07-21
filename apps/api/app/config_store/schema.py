@@ -166,7 +166,7 @@ class MediaProviderEntry(BaseModel):
     base_url: str = Field(..., min_length=1)
     api_key: Optional[str] = None
     model_name: str = Field(..., min_length=1)
-    api_format: str = Field("openai", description="openai | raw | raw_post | image_http_v1 | video_http_v1 | audio_http_v1 | volcengine_ark | xai_video | grok_1_5 | t8_grok_video_3 | lingke_media_generate | suno_compatible | openai_tts")
+    api_format: str = Field("openai", description="universal_adapter | legacy provider formats")
     is_active: bool = False
     enabled: bool = True
     notes: Optional[str] = None
@@ -182,12 +182,32 @@ class MediaProviderEntry(BaseModel):
     @field_validator("api_format")
     @classmethod
     def _valid_api_format(cls, v: str) -> str:
-        if v not in ("openai", "raw", "raw_post", "image_http_v1", "video_http_v1", "audio_http_v1", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"):
+        if v not in ("universal_adapter", "openai", "raw", "raw_post", "image_http_v1", "video_http_v1", "audio_http_v1", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"):
             raise ValueError(
-                "api_format must be 'openai', 'raw', 'raw_post', 'image_http_v1', 'video_http_v1', 'audio_http_v1', 'volcengine_ark', 'xai_video', 'grok_1_5', 't8_grok_video_3', 'lingke_media_generate', 'suno_compatible', or 'openai_tts', "
+                "api_format must be 'universal_adapter' or a supported legacy provider format, "
                 f"got {v!r}"
             )
         return v
+
+    @model_validator(mode="after")
+    def _validate_universal_adapter_reference(self) -> "MediaProviderEntry":
+        if self.api_format != "universal_adapter":
+            return self
+        params = self.params if isinstance(self.params, dict) else {}
+        uma = params.get("uma")
+        if not isinstance(uma, dict):
+            raise ValueError("universal_adapter provider 必须设置 params.uma")
+        if any(key in uma for key in ("protocol", "protocol_document", "operations")):
+            raise ValueError("params.uma 只引用协议 ID，不能内嵌协议内容")
+        protocol_id = str(uma.get("protocol_id") or "").strip()
+        if not protocol_id:
+            raise ValueError("universal_adapter provider 必须设置 params.uma.protocol_id")
+        operation = str(uma.get("operation") or f"{self.kind}.{'speech' if self.kind == 'audio' else 'generate'}").strip()
+        if not operation.startswith(f"{self.kind}."):
+            raise ValueError(
+                f"params.uma.operation={operation!r} 必须属于 {self.kind!r} 模态"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_image_protocol_reference(self) -> "MediaProviderEntry":

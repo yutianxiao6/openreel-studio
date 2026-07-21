@@ -133,6 +133,94 @@ Base URL:  https://relay.example.test/v1
 - 视频和音频参考通常也是 URL 输入。服务商无法访问本机或内网地址时，需要公网媒体地址或符合协议的上传步骤。
 - 如果协议的 `upload`、`request` 或 `poll` 使用 `base_url_param`，设置页会自动出现额外 Base URL 必填项。
 
+## 统一模型适配器
+
+OpenReel 已把 `universal-model-adapter` 固定为 `vendor/universal-model-adapter` 子仓。节点和工作流仍调用 OpenReel 的图片、视频、音频生成服务；服务桥接层把请求转换为统一适配器调用，再把进度、标准错误和媒体产物写回现有节点、资产目录与画布事件链路。
+
+```mermaid
+flowchart LR
+  A[node.run / workflow] --> B[OpenReel 媒体服务]
+  B --> C[Universal Adapter bridge]
+  C --> D[不可变 V2 协议]
+  D --> E[服务商 HTTP / 轮询]
+  E --> C
+  C --> F[OpenReel storage / 节点 / SSE]
+```
+
+边界保持清晰：
+
+- OpenReel 管理项目、节点、工作流、账号配置、资产持久化和画布刷新。
+- 统一适配器管理能力校验、请求组织、鉴权、上传、轮询、精确结果解析、标准错误和取消。
+- `runtime.jsonc` 只保存账号、远端模型和 target 配置；V2 协议文件不内嵌到用户配置。
+- Agent LLM 目前继续使用 LiteLLM，因为 OpenReel Agent Loop 依赖同步 tool-call 合同；本次接入范围是图片、视频和音频生成。
+
+### 内置 V2 协议
+
+| 协议 ID | 当前可用于 OpenReel 的操作 |
+| --- | --- |
+| `openai.media` | `image.generate`、`audio.speech` |
+| `stability.stable-image-core` | `image.generate` |
+| `elevenlabs.text-to-speech` | `audio.speech` |
+| `runway.video-task` | `video.generate` |
+
+内置协议来自子仓的 `protocols/common/`。自定义 V2 协议放在 `config/universal_model_adapter/protocols/*.json`；也可以用 `OPENREEL_UMA_PROTOCOLS` 指定一个或多个额外文件/目录，多个路径用系统路径分隔符连接。协议文件修改后，下一次请求会按文件修订重新建立客户端绑定。
+
+媒体设置页会保留已有 `universal_adapter` Provider，但当前新增统一适配器 Provider 使用“设置 → 配置文件”或直接编辑 `config/runtime.jsonc`。原图片/视频/音频协议下拉框继续管理旧 `*_http_v1` Catalog。
+
+### Provider 配置
+
+```jsonc
+{
+  "kind": "image",
+  "name": "openai-image-via-uma",
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "${OPENAI_API_KEY}",
+  "model_name": "gpt-image-1",
+  "api_format": "universal_adapter",
+  "is_active": true,
+  "enabled": true,
+  "params": {
+    "uma": {
+      "protocol_id": "openai.media",
+      "operation": "image.generate",
+      "target_defaults": {
+        "parameters": {"output_format": "png"}
+      }
+    }
+  }
+}
+```
+
+`params.uma` 的常用字段：
+
+| 字段 | 作用 |
+| --- | --- |
+| `protocol_id` | 必填，引用已安装的 V2 协议 ID。 |
+| `operation` | 可省略；默认按媒体类型使用 `image.generate`、`video.generate` 或 `audio.speech`。 |
+| `target_defaults` / `request_schema` / `variants` | 当前远端模型的能力、默认值和变体，属于 target 配置。 |
+| `input_map` / `parameter_map` | OpenReel 标准字段与目标协议字段不同的时候做明确映射。 |
+| `static_input` / `static_parameters` | 给这个远端模型固定的输入或参数。 |
+| `accepted_media_roles` | 声明目标确实接受的媒体角色，例如 `first_frame`、`last_frame`、`reference_image`。有媒体输入但未声明时请求会在访问服务商前失败，避免静默丢图。 |
+| `bases` / `headers` / `provider_parameters` | 额外连接 slot、静态 header 和连接层参数。真实密钥仍写顶层 `api_key`。 |
+| `poll_*` / `task_timeout_seconds` | 调整适配器轮询节奏和任务总超时。 |
+
+协议与用户配置必须分开。Schema 会拒绝在 `params.uma` 中出现 `protocol`、`protocol_document` 或 `operations`。
+
+音频字段名不同时可以显式映射并提供默认值：
+
+```jsonc
+"params": {
+  "uma": {
+    "protocol_id": "openai.media",
+    "operation": "audio.speech",
+    "parameter_map": {"format": "response_format"},
+    "static_parameters": {"voice": "alloy", "response_format": "mp3"}
+  }
+}
+```
+
+统一适配器当前把活动任务句柄保存在 API 进程内。OpenReel 会在任务输出上标记不可跨进程恢复；API 重启后会把该节点安全落为失败并要求用户手动重试，不会自动重复提交可能计费的生成任务。旧 `*_http_v1` Provider 继续使用已有持久化轮询恢复。
+
 ## 高级用户：编写媒体协议
 
 ### 协议文件位置和版本

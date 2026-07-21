@@ -52,7 +52,7 @@ OpenReel Studio organizes that chain around three principles:
 | Generation and history | Run and retry nodes independently and restore previous results without replacing the latest successful preview on failure. |
 | Workflow V2 | Dynamic inputs, `needs`, media `uses`, collection expansion, conditional branches, and bounded feedback loops. |
 | Dynamic media settings | Models, aspect ratios, exact pixels, quality, and frame rate travel with the current front-end run instead of polluting reusable specs. |
-| Provider flexibility | Configure LLM, image, video, and audio services independently through declarative media protocols. |
+| Provider flexibility | Configure LLM, image, video, and audio services independently; the Universal Model Adapter submodule handles media requests, polling, and parsing while legacy declarative protocols remain compatible. |
 | Frame-based editing | Drag-in media, snapping, track arrangement, trims, splits, joins, real filmstrips, and real audio waveforms. |
 | Picture and sound | Position, scale, rotation, opacity, rectangular crop, gain, mute, and fades. |
 | Local and desktop runtime | Run from source, deploy with Docker, or install on Windows, Linux, and macOS. |

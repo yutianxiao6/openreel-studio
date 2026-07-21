@@ -3,6 +3,14 @@ set -e
 
 echo "Installing OpenReel Studio..."
 
+if [ -f .gitmodules ]; then
+  if ! command -v git >/dev/null 2>&1; then
+    echo "Git is required to initialize bundled source dependencies."
+    exit 1
+  fi
+  git submodule update --init --recursive
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js is required. Please install Node.js 20+."
   exit 1

@@ -312,6 +312,17 @@ def _resumable_video_job(
     job_id = str(output.get("job_id") or "").strip()
     if not job_id:
         return None
+    if output.get("adapter_resume_supported") is False:
+        return {
+            "ok": False,
+            "provider": output.get("provider") or model,
+            "model": output.get("model") or model,
+            "status": "failed",
+            "job_id": job_id,
+            "error": "该生成任务所属的适配器进程已经结束，无法在重启后继续轮询；请手动强制重新运行节点。",
+            "error_kind": "adapter_job_unavailable",
+            "adapter_resume_supported": False,
+        }
     status = str(output.get("status") or "").strip().lower()
     error_kind = str(output.get("error_kind") or "").strip().lower()
     if status not in {"queued", "running", "processing"} and error_kind not in {
@@ -520,6 +531,7 @@ def _video_output(
         "resolved_media_references": result.get("resolved_media_references") or [],
         "reference_warnings": result.get("reference_warnings") or [],
         "resumed_existing_job": bool(result.get("resumed_existing_job")),
+        "adapter_resume_supported": result.get("adapter_resume_supported"),
         "async": status in {"queued", "running"},
     }
 
@@ -860,6 +872,9 @@ async def stop_background_media_tasks() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
     _BACKGROUND_VIDEO_TASKS.clear()
     _BACKGROUND_AUDIO_TASKS.clear()
+    from app.services.universal_adapter_service import universal_adapter_service
+
+    await universal_adapter_service.aclose()
 
 
 async def generate_video(
@@ -1038,6 +1053,7 @@ def _audio_output(
         "progress": result.get("progress"),
         "polls": result.get("polls") or [],
         "download_error": result.get("download_error"),
+        "adapter_resume_supported": result.get("adapter_resume_supported"),
         "async": status in {"queued", "running"},
     }
 
@@ -1242,6 +1258,10 @@ async def generate_audio(
 ) -> dict:
     """Delegate pure audio generation to the active audio provider."""
     provider_extra = dict(extra or {})
+    if duration_seconds is not None and "duration_seconds" not in provider_extra:
+        provider_extra["duration_seconds"] = duration_seconds
+    if audio_format and "audio_format" not in provider_extra and "format" not in provider_extra:
+        provider_extra["audio_format"] = audio_format
     result = await generate_audio_with_provider(
         project_id=project_id,
         prompt=prompt,

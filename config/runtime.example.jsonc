@@ -27,23 +27,26 @@
     // or a complete endpoint. Protocol request paths only contain resources.
     // 每个 base_url 都是带版本或命名空间的 API Base URL，不是裸域名或完整接口；
     // 协议中的 request path 只保存资源路径。
-    // Image HTTP v1 keeps runtime connection data here and reads protocol
-    // details from config/image_provider_protocols/catalog.json by id.
-    // image_http_v1 只在这里保存运行时连接信息，协议细节按 id 从
-    // config/image_provider_protocols/catalog.json 读取。
+    // Universal Model Adapter keeps connection/model settings here while the
+    // immutable HTTP protocol comes from the bundled submodule catalog.
     {
       "kind": "image",
-      "name": "image-openai-compatible-example",
+      "name": "image-uma-openai-example",
       "base_url": "https://api.openai.com/v1",
       "api_key": "${IMAGE_API_KEY}",
       "model_name": "gpt-image-1",
-      "api_format": "image_http_v1",
+      "api_format": "universal_adapter",
       "is_active": false,
       "enabled": false,
       "notes": "Example only. Copy and enable after filling a real API key.",
       "params": {
-        "image_protocol_id": "openai_images_generations",
-        "image_transport": "data_url"
+        "uma": {
+          "protocol_id": "openai.media",
+          "operation": "image.generate",
+          "target_defaults": {
+            "parameters": {"output_format": "png"}
+          }
+        }
       }
     },
     // Video HTTP v1 keeps runtime connection data here and reads protocol
@@ -65,22 +68,28 @@
         "image_transport": "data_url"
       }
     },
-    // Audio HTTP v1 keeps runtime connection data here and reads protocol
-    // details from config/audio_provider_protocols/catalog.json by id.
-    // audio_http_v1 只在这里保存运行时连接信息，协议细节按 id 从
-    // config/audio_provider_protocols/catalog.json 读取。
+    // Audio uses its own UMA operation while sharing the OpenAI media HTTP
+    // protocol document with image generation.
     {
       "kind": "audio",
-      "name": "tts-example",
+      "name": "audio-uma-openai-example",
       "base_url": "https://api.openai.com/v1",
       "api_key": "${AUDIO_API_KEY}",
       "model_name": "tts-1",
-      "api_format": "audio_http_v1",
+      "api_format": "universal_adapter",
       "is_active": false,
       "enabled": false,
       "notes": "Example only. Copy and enable after filling a real API key.",
       "params": {
-        "audio_protocol_id": "openai_audio_speech"
+        "uma": {
+          "protocol_id": "openai.media",
+          "operation": "audio.speech",
+          "parameter_map": {"format": "response_format"},
+          "static_parameters": {
+            "voice": "alloy",
+            "response_format": "mp3"
+          }
+        }
       }
     }
   ],

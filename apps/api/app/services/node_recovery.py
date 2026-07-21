@@ -49,6 +49,8 @@ def _resumable_video_output(node: WorkflowNode, output: Any) -> bool:
         return False
     if media_history.is_successful_media_output(output):
         return False
+    if output.get("adapter_resume_supported") is False:
+        return False
     if not str(output.get("job_id") or "").strip():
         return False
     status = str(output.get("status") or "").strip().lower()

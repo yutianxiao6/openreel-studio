@@ -18,6 +18,9 @@ function normalizeMediaProvider(
   videoProtocols: MediaProtocolSummary[] = [],
   audioProtocols: MediaProtocolSummary[] = [],
 ): MediaProviderEntry {
+  if (entry.api_format?.trim() === "universal_adapter") {
+    return { ...entry, api_format: "universal_adapter", params: { ...(entry.params || {}) } }
+  }
   if (entry.kind === "audio") {
     const rawApiFormat = entry.api_format?.trim() || "audio_http_v1"
     const nextParams = { ...(entry.params || {}) }
@@ -280,9 +283,14 @@ function ProviderSummary({
   onRemove: () => void
   onSetActive: () => void
 }) {
+  const uma = entry.params?.uma
+  const umaProtocolId = uma && typeof uma === "object" && "protocol_id" in uma
+    ? String(uma.protocol_id || "")
+    : ""
   const protocolId = String(
     (
-      entry.kind === "image" ? entry.params?.image_protocol_id
+      entry.api_format === "universal_adapter" ? umaProtocolId
+      : entry.kind === "image" ? entry.params?.image_protocol_id
       : entry.kind === "video" ? entry.params?.video_protocol_id
       : entry.params?.audio_protocol_id
     ) || "",

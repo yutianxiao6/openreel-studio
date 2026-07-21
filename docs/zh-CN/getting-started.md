@@ -38,12 +38,12 @@ npx openreel-studio-installer
 ### 安装
 
 ```bash
-git clone https://github.com/yutianxiao6/openreel-studio.git
+git clone --recurse-submodules https://github.com/yutianxiao6/openreel-studio.git
 cd openreel-studio
 bash install.sh
 ```
 
-安装脚本会安装前后端依赖、创建运行目录并初始化 SQLite 数据库。
+安装脚本会初始化 `vendor/universal-model-adapter` 子仓、安装前后端依赖、创建运行目录并初始化 SQLite 数据库。已经用普通 `git clone` 拉取的仓库也可以直接运行 `bash install.sh`，脚本会补齐子仓。
 
 ### 启动
 

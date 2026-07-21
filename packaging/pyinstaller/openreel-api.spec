@@ -15,6 +15,7 @@ datas = [
     (str(API_DIR / "app" / "agent" / "prompts"), "app/agent/prompts"),
 ]
 datas += collect_data_files("litellm")
+datas += collect_data_files("universal_model_adapter")
 
 for protocol_dir_name in (
     "image_provider_protocols",
@@ -55,6 +56,7 @@ hiddenimports = [
 hiddenimports += collect_submodules("tiktoken_ext")
 hiddenimports += collect_submodules("app.agent.prompts")
 hiddenimports += collect_submodules("app.prompts")
+hiddenimports += collect_submodules("universal_model_adapter")
 hiddenimports.append("app.agent.workflow_spec_prompt_contract")
 hiddenimports = sorted(set(hiddenimports))
 

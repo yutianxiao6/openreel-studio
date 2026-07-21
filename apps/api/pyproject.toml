@@ -24,7 +24,11 @@ dependencies = [
     "watchfiles>=1.1.1",
     "pillow>=10.4.0",
     "opencv-python-headless>=4.13.0.92",
+    "universal-model-adapter",
 ]
+
+[tool.uv.sources]
+universal-model-adapter = { path = "../../vendor/universal-model-adapter" }
 
 [project.scripts]
 drama-mcp-server = "app.mcp_server:main"

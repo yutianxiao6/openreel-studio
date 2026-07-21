@@ -1,0 +1,3 @@
+[submodule "vendor/universal-model-adapter"]
+	path = vendor/universal-model-adapter
+	url = https://github.com/yutianxiao6/universal-model-adapter.git

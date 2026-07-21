@@ -133,6 +133,94 @@ Protocol paths contain resources such as `/images/generations`, `/videos`, and `
 - Video and audio references are commonly URL-based as well. A provider cannot read localhost or a private network URL unless the media is uploaded or publicly exposed.
 - When a protocol section declares `base_url_param`, Settings automatically adds the required secondary Base URL field.
 
+## Universal Model Adapter
+
+OpenReel pins `universal-model-adapter` as the `vendor/universal-model-adapter` submodule. Nodes and workflows still call OpenReel image, video, and audio generation services. The service bridge translates each request into an adapter invocation, then writes normalized progress, errors, and media outputs back through the existing node, storage, and canvas-event paths.
+
+```mermaid
+flowchart LR
+  A[node.run / workflow] --> B[OpenReel media service]
+  B --> C[Universal Adapter bridge]
+  C --> D[immutable V2 protocol]
+  D --> E[provider HTTP / polling]
+  E --> C
+  C --> F[OpenReel storage / node / SSE]
+```
+
+The ownership boundary stays explicit:
+
+- OpenReel owns projects, nodes, workflows, account configuration, asset persistence, and canvas refresh.
+- The adapter owns capability validation, request construction, authentication, upload, polling, exact result parsing, normalized errors, and cancellation.
+- `runtime.jsonc` contains account, remote-model, and target configuration. It never embeds a V2 protocol document.
+- Agent LLM calls still use LiteLLM because the OpenReel Agent Loop depends on its synchronous tool-call contract. This integration covers image, video, and audio generation.
+
+### Bundled V2 protocols
+
+| Protocol ID | Operations currently usable by OpenReel |
+| --- | --- |
+| `openai.media` | `image.generate`, `audio.speech` |
+| `stability.stable-image-core` | `image.generate` |
+| `elevenlabs.text-to-speech` | `audio.speech` |
+| `runway.video-task` | `video.generate` |
+
+Bundled protocols come from the submodule's `protocols/common/` directory. Put custom V2 protocols in `config/universal_model_adapter/protocols/*.json`, or point `OPENREEL_UMA_PROTOCOLS` at additional files/directories. Separate multiple paths with the platform path separator. A protocol file revision creates a fresh client binding on the next request.
+
+The media Settings UI preserves existing `universal_adapter` Providers. For now, add a new adapter Provider in **Settings → Configuration file** or directly in `config/runtime.jsonc`; the existing image/video/audio protocol selectors continue to manage legacy `*_http_v1` Catalogs.
+
+### Provider configuration
+
+```jsonc
+{
+  "kind": "image",
+  "name": "openai-image-via-uma",
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "${OPENAI_API_KEY}",
+  "model_name": "gpt-image-1",
+  "api_format": "universal_adapter",
+  "is_active": true,
+  "enabled": true,
+  "params": {
+    "uma": {
+      "protocol_id": "openai.media",
+      "operation": "image.generate",
+      "target_defaults": {
+        "parameters": {"output_format": "png"}
+      }
+    }
+  }
+}
+```
+
+Common `params.uma` fields:
+
+| Field | Purpose |
+| --- | --- |
+| `protocol_id` | Required reference to an installed V2 protocol ID. |
+| `operation` | Optional; defaults to `image.generate`, `video.generate`, or `audio.speech` for the media kind. |
+| `target_defaults` / `request_schema` / `variants` | Capability, defaults, and variants for this concrete remote model. These belong to target configuration. |
+| `input_map` / `parameter_map` | Explicitly map OpenReel normalized fields when the target operation uses different names. |
+| `static_input` / `static_parameters` | Inputs or parameters fixed for this remote model. |
+| `accepted_media_roles` | Declares media roles the target really accepts, such as `first_frame`, `last_frame`, or `reference_image`. Media without a declaration fails before provider I/O instead of being silently dropped. |
+| `bases` / `headers` / `provider_parameters` | Additional connection slots, static headers, and connection-layer parameters. Real credentials remain in top-level `api_key`. |
+| `poll_*` / `task_timeout_seconds` | Adapter polling cadence and total task timeout. |
+
+Protocol and user configuration remain separate. The schema rejects `protocol`, `protocol_document`, and `operations` inside `params.uma`.
+
+For audio APIs with different normalized field names, map the field and provide target defaults explicitly:
+
+```jsonc
+"params": {
+  "uma": {
+    "protocol_id": "openai.media",
+    "operation": "audio.speech",
+    "parameter_map": {"format": "response_format"},
+    "static_parameters": {"voice": "alloy", "response_format": "mp3"}
+  }
+}
+```
+
+The adapter currently keeps active invocation handles in the API process. OpenReel marks adapter jobs as non-resumable across restarts; after a restart it safely settles the node as failed and asks for a manual retry instead of automatically resubmitting a potentially billable request. Legacy `*_http_v1` Providers retain their existing persisted polling recovery.
+
 ## Write a media protocol
 
 ### Files and versions

@@ -8,6 +8,7 @@ RUN ln -s /workspace/data /workspace/apps/api/data
 
 RUN pip install uv
 
+COPY vendor/universal-model-adapter/ /workspace/vendor/universal-model-adapter/
 COPY apps/api/pyproject.toml apps/api/uv.lock apps/api/README.md ./
 RUN uv sync --frozen --no-dev
 

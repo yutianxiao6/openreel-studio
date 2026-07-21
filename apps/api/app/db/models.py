@@ -513,7 +513,7 @@ class ModelConfigRead(ModelConfigBase):
 # ---------------------------------------------------------------------------
 
 MEDIA_KINDS = ["image", "video", "audio"]
-MEDIA_API_FORMATS = ["openai", "raw", "raw_post", "image_http_v1", "video_http_v1", "audio_http_v1", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"]
+MEDIA_API_FORMATS = ["universal_adapter", "openai", "raw", "raw_post", "image_http_v1", "video_http_v1", "audio_http_v1", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"]
 
 
 class MediaProviderBase(SQLModel):

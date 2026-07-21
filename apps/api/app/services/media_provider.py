@@ -6951,6 +6951,21 @@ async def generate_image_with_provider(
     last_attempt_quality = quality
 
     async def _one_call(_size: str, _quality: str | None) -> dict[str, Any]:
+        if provider.api_format == "universal_adapter":
+            from app.services.universal_adapter_service import universal_adapter_service
+
+            return await universal_adapter_service.generate_image(
+                provider=provider,
+                provider_params=_parse_extra(provider),
+                project_id=project_id,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                size=_size,
+                quality=_quality,
+                count=n,
+                reference_images=resolved_refs or None,
+                extra=extra_override,
+            )
         if _image_http_v1_protocol_id_for_provider(provider):
             return await _call_image_http_v1(
                 provider=provider,
@@ -7133,7 +7148,22 @@ async def generate_audio_with_provider(
         }
 
     extra_override = extra or {}
-    if _audio_http_v1_protocol_id_for_provider(provider, extra_override):
+    if provider.api_format == "universal_adapter":
+        from app.services.universal_adapter_service import universal_adapter_service
+
+        result = await universal_adapter_service.submit_audio(
+            provider=provider,
+            provider_params=_parse_extra(provider),
+            project_id=project_id,
+            prompt=prompt,
+            title=title,
+            style=style,
+            instrumental=instrumental,
+            extra=extra_override,
+            save_locally=save_locally,
+            wait_for_completion=wait_for_completion,
+        )
+    elif _audio_http_v1_protocol_id_for_provider(provider, extra_override):
         result = await _call_audio_http_v1(
             provider=provider,
             project_id=project_id,
@@ -7187,7 +7217,16 @@ async def poll_audio_with_provider(
             "job_id": job_id,
         }
 
-    if _audio_http_v1_protocol_id_for_provider(provider, extra or {}):
+    if provider.api_format == "universal_adapter":
+        from app.services.universal_adapter_service import universal_adapter_service
+
+        result = await universal_adapter_service.poll(
+            provider=provider,
+            job_id=job_id,
+            kind="audio",
+            progress_callback=progress_callback,
+        )
+    elif _audio_http_v1_protocol_id_for_provider(provider, extra or {}):
         result = await _poll_audio_http_v1_task(
             provider=provider,
             project_id=project_id,
@@ -7222,6 +7261,14 @@ async def test_provider(provider_id: str) -> dict[str, Any]:
     provider = await _get_provider_by_id(provider_id)
     if not provider:
         return {"ok": False, "error": "Provider not found"}
+
+    if provider.api_format == "universal_adapter":
+        from app.services.universal_adapter_service import universal_adapter_service
+
+        return await universal_adapter_service.inspect_provider(
+            provider=provider,
+            provider_params=_parse_extra(provider),
+        )
 
     if provider.kind == "image":
         result = await generate_image_with_provider(
@@ -7367,30 +7414,47 @@ async def generate_video_with_provider(
             }
 
     extra_override = extra or {}
-    adapter = _video_provider_adapter(provider)
-    if adapter:
-        result = await adapter.generate(
+    if provider.api_format == "universal_adapter":
+        from app.services.universal_adapter_service import universal_adapter_service
+
+        result = await universal_adapter_service.submit_video(
             provider=provider,
+            provider_params=_parse_extra(provider),
             project_id=project_id,
             prompt=prompt,
             first_frame_url=first_frame_url,
             last_frame_url=last_frame_url,
             duration_seconds=duration_seconds,
             reference_images=resolved_refs or None,
-            extra_override=extra_override,
+            extra=extra_override,
             save_locally=save_locally,
             wait_for_completion=wait_for_completion,
         )
     else:
-        result = _with_video_model_doc_hint({
-            "error": (
-                f"Unsupported video provider api_format: {provider.api_format}. "
-                f"Supported video api_format values: {', '.join(_supported_video_api_formats())}."
-            ),
-            "error_kind": "unsupported_provider",
-            "status": "failed",
-            "supported_api_formats": _supported_video_api_formats(),
-        })
+        adapter = _video_provider_adapter(provider)
+        if adapter:
+            result = await adapter.generate(
+                provider=provider,
+                project_id=project_id,
+                prompt=prompt,
+                first_frame_url=first_frame_url,
+                last_frame_url=last_frame_url,
+                duration_seconds=duration_seconds,
+                reference_images=resolved_refs or None,
+                extra_override=extra_override,
+                save_locally=save_locally,
+                wait_for_completion=wait_for_completion,
+            )
+        else:
+            result = _with_video_model_doc_hint({
+                "error": (
+                    f"Unsupported video provider api_format: {provider.api_format}. "
+                    f"Supported video api_format values: {', '.join(_supported_video_api_formats())}."
+                ),
+                "error_kind": "unsupported_provider",
+                "status": "failed",
+                "supported_api_formats": _supported_video_api_formats(),
+            })
 
     ok = bool(result.get("ok"))
     warnings = [
@@ -7437,27 +7501,37 @@ async def poll_video_with_provider(
             "job_id": job_id,
         }
 
-    adapter = _video_provider_adapter(provider)
-    if adapter:
-        result = await adapter.poll(
+    if provider.api_format == "universal_adapter":
+        from app.services.universal_adapter_service import universal_adapter_service
+
+        result = await universal_adapter_service.poll(
             provider=provider,
-            project_id=project_id,
             job_id=job_id,
-            extra_override=extra or {},
-            save_locally=save_locally,
+            kind="video",
             progress_callback=progress_callback,
         )
     else:
-        result = _with_video_model_doc_hint({
-            "error": (
-                f"Unsupported video provider api_format: {provider.api_format}. "
-                f"Supported video api_format values: {', '.join(_supported_video_api_formats())}."
-            ),
-            "error_kind": "unsupported_provider",
-            "status": "failed",
-            "job_id": job_id,
-            "supported_api_formats": _supported_video_api_formats(),
-        })
+        adapter = _video_provider_adapter(provider)
+        if adapter:
+            result = await adapter.poll(
+                provider=provider,
+                project_id=project_id,
+                job_id=job_id,
+                extra_override=extra or {},
+                save_locally=save_locally,
+                progress_callback=progress_callback,
+            )
+        else:
+            result = _with_video_model_doc_hint({
+                "error": (
+                    f"Unsupported video provider api_format: {provider.api_format}. "
+                    f"Supported video api_format values: {', '.join(_supported_video_api_formats())}."
+                ),
+                "error_kind": "unsupported_provider",
+                "status": "failed",
+                "job_id": job_id,
+                "supported_api_formats": _supported_video_api_formats(),
+            })
 
     ok = bool(result.get("ok"))
     return {

@@ -38,12 +38,12 @@ The first launch creates local database, configuration, asset, and log directori
 ### Install
 
 ```bash
-git clone https://github.com/yutianxiao6/openreel-studio.git
+git clone --recurse-submodules https://github.com/yutianxiao6/openreel-studio.git
 cd openreel-studio
 bash install.sh
 ```
 
-The installer resolves frontend and backend dependencies, creates runtime directories, and initializes SQLite.
+The installer initializes the `vendor/universal-model-adapter` submodule, resolves frontend and backend dependencies, creates runtime directories, and initializes SQLite. If the repository was cloned without `--recurse-submodules`, `bash install.sh` initializes the submodule for you.
 
 ### Start
 
