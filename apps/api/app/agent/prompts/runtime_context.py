@@ -85,9 +85,6 @@ def _pending_video_request_summary(pending_request: dict) -> dict:
         "has_basic_answer": bool(pending_request.get("basic_answer")),
         "has_structure_answer": bool(pending_request.get("structure_answer")),
     }
-    method_hint = _legacy_video_method_hint(pending_request.get("selected_mode"))
-    if method_hint:
-        summary["method_hint"] = method_hint
     facts = pending_request.get("collected_facts")
     if isinstance(facts, dict) and facts:
         summary["collected_facts"] = _compact_ref(
@@ -137,20 +134,6 @@ def _pending_video_request_summary(pending_request: dict) -> dict:
         if len(references) > 6:
             summary["reference_images_total"] = len(references)
     return {key: value for key, value in summary.items() if value not in (None, "", [], {})}
-
-
-def _legacy_video_method_hint(selected_mode: object) -> str:
-    """Expose old intake mode values only as a readable hint, not a routing key."""
-    mode = str(selected_mode or "").strip().lower()
-    if mode in {"grid", "story_template", "story-template", "template"}:
-        return "故事模板图"
-    if mode in {"storyboard", "board", "grid_storyboard"}:
-        return "宫格分镜"
-    if mode in {"first_last_frame", "first-last-frame", "keyframes"}:
-        return "首尾帧"
-    if mode in {"text_to_video", "t2v", "direct_video"}:
-        return "文生视频"
-    return ""
 
 
 def _project_snapshot(state: dict) -> str:
