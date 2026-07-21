@@ -37,11 +37,11 @@ The normal sequence is:
 
 1. Enter a versioned API Base URL such as `https://api.example.test/v1`.
 2. Enter the exact provider model ID and API key.
-3. Select the protocol that matches the provider HTTP API.
+3. For video, select the UMA protocol and model target that match the provider API; for image or audio, select the matching Catalog protocol.
 4. Save and confirm that the entry appears in the node model selector.
 5. Make one real node run using a short prompt and protocol defaults.
 
-If the protocol is absent, do not select an approximately similar protocol. Add a Catalog entry from the provider API documentation first. See [Model configuration and provider protocols](./model-providers.md) for every field, complete image/video/audio examples, and troubleshooting.
+If the protocol is absent, do not select an approximately similar protocol. Add a UMA V2 protocol plus video target for video, or a Catalog entry for image/audio, from the provider API documentation first. See [Model configuration and provider protocols](./model-providers.md) for every field and troubleshooting.
 
 Model, ratio, and resolution come from node or workflow-artifact frontend settings. A reusable Workflow Spec does not store Provider secrets or fix these deployment-specific values.
 

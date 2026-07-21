@@ -2,113 +2,85 @@
 
 [English](../en/model-providers.md) · [中文文档首页](../README.md) · [使用指南](./user-guide.md)
 
-这篇文档面向实际使用 OpenReel Studio 的创作者和部署者。普通用户只需要在设置面板里配置账号；只有服务商接口与内置协议不兼容时，才需要编写协议文件。
+本文只说明 OpenReel 的设置页和运行时边界。视频线协议的详细写法统一由
+Universal Model Adapter 子仓维护，请阅读子仓的
+[OpenReel 视频集成指南](https://github.com/yutianxiao6/universal-model-adapter/blob/main/docs/OPENREEL_INTEGRATION.md)。
 
-## 先判断你属于哪种情况
+## 先选择正确的配置路径
 
 | 你的情况 | 应该怎么做 |
 | --- | --- |
-| 配置 LLM | 直接在“设置 → LLM 模型”添加 Provider。 |
-| 图片、视频或音频服务已经出现在协议下拉框 | 直接在对应 Provider 页面填写 Base URL、模型名和 API Key。 |
-| 模型名不同，但 HTTP 接口与已有协议完全一致 | 仍可选择已有协议，模型名填写服务商实际 ID。 |
-| 提交路径、请求字段、鉴权、轮询或结果结构不同 | 先在 `config/*_provider_protocols/catalog.json` 增加协议，再回前端选择它。 |
+| 配置 Agent 使用的 LLM | 在“设置 → LLM 模型”添加。 |
+| 配置已有的视频目标 | 添加视频 Provider，选择对应 UMA 协议和推荐目标。 |
+| 视频 API 的 HTTP 合同与现有协议不同 | 按子仓指南新增 `uma.protocol/v2` 文档和 OpenReel 视频目标。 |
+| 配置已有图片或音频协议 | 在对应设置页添加 Provider。 |
+| 新增图片或音频 HTTP 合同 | 扩展对应的 OpenReel Catalog。 |
 
-模型名相同不代表协议相同。判断能否复用协议时，应对照服务商文档检查 HTTP 方法、路径、鉴权、请求体、异步任务状态和结果字段。
+模型名相同不代表线协议相同。复用协议前应核对 HTTP 方法、路径、鉴权、
+请求体、上传流程、异步任务状态和结果字段。
 
-## 配置的两层结构
+## 配置真相源
 
 ```mermaid
 flowchart LR
-  A[服务商 API 文档] --> B[协议 catalog<br/>请求与响应规则]
-  B --> C[设置面板协议下拉框]
-  D[账号 Base URL<br/>API Key<br/>模型名] --> C
-  C --> E[runtime.jsonc<br/>只保存账号和协议 ID]
-  E --> F[节点模型选择与运行]
+  A[服务商 API 文档] --> B[视频: UMA V2 协议]
+  A --> C[图片/音频: OpenReel Catalog]
+  B --> D[OpenReel 视频目标]
+  D --> E[设置页和 runtime.jsonc]
+  C --> E
+  F[Base URL / API Key / 模型 ID] --> E
+  E --> G[节点选择与运行]
 ```
 
-- `config/runtime.jsonc` 是本机运行配置，保存账号、Base URL、API Key、模型名、启用状态和协议 ID。
-- `config/image_provider_protocols/catalog.json`、`video_provider_protocols/catalog.json`、`audio_provider_protocols/catalog.json` 是可共享的 HTTP 适配规则。
-- Provider 的 `params` 只引用 `image_protocol_id`、`video_protocol_id` 或 `audio_protocol_id`，不能内嵌一整段协议对象。
-- Workflow V2 Spec 只描述输入、步骤和依赖。模型名、比例、分辨率和 Provider 连接信息由前端产物设置与运行配置提供，不写进可复用 Workflow Spec。
+| 真相源 | 作用 |
+| --- | --- |
+| `config/runtime.jsonc` | 本机账号、Base URL、API Key、模型 ID、启用/默认状态以及协议和目标引用。 |
+| `config/universal_model_adapter/protocols/*.json` | 视频 HTTP、鉴权、上传、上游任务轮询、状态/错误判断和产物提取。 |
+| `config/universal_model_adapter/video_targets/catalog.json` | 视频模型匹配、前端名称、模式、参考素材限制、比例、分辨率、时长、默认值和额外 Base URL 槽位。 |
+| `config/image_provider_protocols/catalog.json` | 当前 OpenReel 图片 HTTP 合同。 |
+| `config/audio_provider_protocols/catalog.json` | 当前 OpenReel 音频 HTTP 合同。 |
 
-## 普通用户：在前端配置 LLM
+所有视频 Provider 必须使用 `api_format=universal_adapter`，并显式引用
+`params.uma.protocol_id` 和 `params.uma.target_profile_id`。OpenReel 不根据
+模型名推断协议或目标。图片和音频暂时继续支持现有宿主 Catalog。
 
-打开右上角“设置”，默认进入“LLM 模型”。LLM 与图片、视频、音频服务彼此独立；只配置 LLM 不会自动获得媒体生成能力。
+Workflow V2 Spec 只描述可复用输入、步骤和依赖，不保存 Provider 密钥或
+部署环境的账号选择。
+
+## 配置 LLM
+
+打开“设置 → LLM 模型”。LLM 用于 Agent 对话、推理、提示词准备、评审和
+上下文压缩，不负责直接生成媒体。
 
 ![LLM 模型设置：三档策略、上下文能力和账号字段](../assets/screenshots/model-config-llm.png)
 
-### 三档模型怎么选
+1. 在强、平衡或小模型档位添加 Provider。
+2. 填写本地唯一名称、LiteLLM Provider 前缀、准确模型 ID、Base URL 和 API Key。
+3. 按服务商真实限制填写上下文窗口、最大输入和最大输出。
+4. 只有接口真实支持时才启用 Prompt Cache 和视觉输入。
+5. 保持 Provider 启用，并按需设置档位默认。
 
-| 档位 | 主要用途 | 建议 |
-| --- | --- | --- |
-| 强模型 | 主 Agent、复杂创作、长文本和复杂推理 | 选择能力最完整、上下文较大的模型。 |
-| 平衡模型 | 常规生产、图片提示词、一般 worker | 在质量、速度和成本之间取平衡。 |
-| 小模型 | 审查、摘要和轻量辅助任务 | 选择响应快、成本低的模型。 |
+模型 ID 已包含 `openai/gpt-4.1` 这类前缀时，OpenReel 不会再次拼接。
 
-每个档位可以添加多个 Provider，并指定一个“档位默认”。没有单独任务映射时，后端按任务所属档位选择默认 Provider。
+## 配置媒体 Provider
 
-### 添加步骤
-
-1. 在目标档位点击“添加”。
-2. 填写名称、Provider 前缀、模型名、Base URL 和 API Key。
-3. 按服务商真实能力填写上下文窗口、最大输入和最大输出。
-4. 明确模型是否支持 Prompt Cache 和视觉输入；不确定时保留“未填写”。
-5. 保持“启用”，点击“保存”。
-6. 如果该档位已有多个模型，选择“设为档位默认”。
-
-### LLM 字段说明
-
-| 前端字段 | 怎么填 |
-| --- | --- |
-| 名称 | 本地唯一名称，例如 `studio-strong`。任务映射引用的是这个名称。 |
-| 策略档位 | `strong`、`balanced` 或 `small`。 |
-| Provider 前缀 | LiteLLM Provider，例如 `openai`、`anthropic`、`deepseek`、`dashscope`、`gemini`。 |
-| 模型名 | 服务商实际模型 ID，例如 `gpt-4.1`。已包含 `/` 时后端不会再拼接 Provider 前缀。 |
-| Base URL | 前端当前要求必填。填写服务商或中转站的 API 根地址，不要填写聊天完成的完整资源路径。 |
-| 上下文窗口 tokens | 模型完整上下文容量，用于上下文使用率和压缩监控。 |
-| 最大输入 tokens | 服务商允许的输入上限，不能大于上下文窗口。 |
-| 最大输出 tokens | 默认输出上限，不能大于上下文窗口；不填时默认按 4000 使用。 |
-| Prompt Cache | 只按服务商真实能力选择，用于缓存统计。 |
-| 视觉输入 | 模型能否接收 `image_url`。选“不支持”后，聊天调用不会向它发送图片项。 |
-| API Key | 本机账号密钥。设置页使用密码输入框显示。 |
-
-如果模型 ID 已写成 `openai/gpt-4.1`，Provider 前缀仍可填 `openai`；后端检测到模型名已有 `/` 后不会生成重复前缀。
-
-## 普通用户：在前端配置媒体模型
-
-图片、视频和音频分别维护 Provider。下面以视频为例，图片和音频的操作顺序相同。
+图片、视频和音频账号彼此独立。
 
 ![视频 Provider 设置：普通字段、推荐模型和协议选择](../assets/screenshots/model-config-video-provider.png)
 
-### 添加步骤
+1. 打开对应媒体 Provider 页面，点击“添加 Provider”。
+2. 填写唯一名称、带版本的 API Base URL、服务商准确模型 ID 和 API Key。
+3. 视频选择一个 UMA 协议及其准确模型目标；图片或音频选择对应 OpenReel
+   Catalog 协议。
+4. 选中的目标或协议声明额外 Base URL 时，补齐对应槽位。
+5. 按需设置“默认”和“启用”，然后保存。
+6. 在节点上选择该 Provider，用服务商支持的最小参数做一次真实调用。
 
-1. 打开“设置 → 图片 Provider / 视频 Provider / 音频 Provider”。
-2. 点击“添加 Provider”。
-3. 填写一个便于识别的名称。
-4. 填写带版本或 API 命名空间的 `API Base URL`。
-5. 填写服务商实际接受的模型 ID；视频页也可以从“推荐模型”选择，自动带出模型名和协议 ID。
-6. 从协议下拉框选择与服务商 HTTP 接口匹配的协议。
-7. 填写 API Key，按需勾选“默认”和“启用”，然后保存。
-8. 保存后打开一个对应类型的节点，在节点模型下拉框确认该 Provider 可见，再做一次最小真实运行。
+保存只代表本地 schema 校验通过；最小节点运行才是端到端连接测试。
 
-当前设置页没有独立的“测试连接”按钮。保存只说明配置通过本地 schema 校验，不代表外部服务一定可调用。最终验证以节点的最小真实请求为准。
+### Base URL
 
-### 媒体字段说明
-
-| 前端字段 | 怎么填 |
-| --- | --- |
-| 名称 | 同一媒体类型内唯一，例如 `seedance-production`。 |
-| API Base URL | 带版本的 API 根地址，例如 `https://api.example.test/v1` 或 `https://ark.example.test/api/v3`。 |
-| 推荐模型 | 由视频协议的 `model_profiles` 动态生成；它只帮你填写模型名和协议 ID。 |
-| 模型名 | 中转站或官方接口实际接受的模型 ID，不要按展示名称猜。 |
-| 图片/视频/音频协议 | 从对应 `catalog.json` 动态读取。协议决定请求、轮询和结果解析。 |
-| API Key | 与 Base URL 属于同一服务商或中转站的密钥。 |
-| 默认 | 同一类型最多一个默认 Provider；节点未显式选模型时使用它。 |
-| 启用 | 关闭后不应出现在正常节点模型选择中。 |
-
-### Base URL 最容易填错
-
-后端把 Base URL 按字面使用，只在末尾追加协议资源路径：
+Provider Base URL 是带版本的 API 根地址，资源路径由协议负责：
 
 ```text
 Base URL:  https://relay.example.test/v1
@@ -116,448 +88,125 @@ Base URL:  https://relay.example.test/v1
 最终地址:  https://relay.example.test/v1/videos/generations
 ```
 
-不要只填裸域名，也不要把完整资源路径填进 Base URL：
+不要把完整生成接口填进 Base URL。上传或轮询使用另一主机时，由选中的目标
+暴露命名 Base URL 槽位。
 
-```text
-错误：Base URL https://relay.example.test
-错误：Base URL https://relay.example.test/v1/videos/generations
-正确：Base URL https://relay.example.test/v1
-```
+## 视频统一使用 UMA 子仓
 
-协议 `path` 只写 `/images/generations`、`/videos`、`/audio/speech` 等资源路径，不重复 `/v1`、`/v2` 或 `/api/v3`。
-
-### 高级设置里的图片输入
-
-- `data_url`：默认方式。本地项目图片会转成 Base64/data URL，已有公网 URL 保持 URL。
-- `public_url`：服务商只接受公网图片地址时使用，并填写“公网根地址”。该地址必须能把项目 `/api/media/...` 资源暴露给外部服务商访问。
-- 视频和音频参考通常也是 URL 输入。服务商无法访问本机或内网地址时，需要公网媒体地址或符合协议的上传步骤。
-- 如果协议的 `upload`、`request` 或 `poll` 使用 `base_url_param`，设置页会自动出现额外 Base URL 必填项。
-
-## 统一模型适配器
-
-OpenReel 已把 `universal-model-adapter` 固定为 `vendor/universal-model-adapter` 子仓。节点和工作流仍调用 OpenReel 的图片、视频、音频生成服务；服务桥接层把请求转换为统一适配器调用，再把进度、标准错误和媒体产物写回现有节点、资产目录与画布事件链路。
+OpenReel 固定引用 `vendor/universal-model-adapter` 子仓。生产边界如下：
 
 ```mermaid
 flowchart LR
-  A[node.run / workflow] --> B[OpenReel 媒体服务]
-  B --> C[Universal Adapter bridge]
-  C --> D[不可变 V2 协议]
-  D --> E[服务商 HTTP / 轮询]
-  E --> C
-  C --> F[OpenReel storage / 节点 / SSE]
+  A[node.run / workflow] --> B[OpenReel 视频生命周期]
+  B --> C[UMA AsyncClient]
+  C --> D[UMA V2 协议运行时]
+  D --> E[服务商 HTTP / 上传 / 任务 API]
+  E --> D
+  C --> B
+  B --> F[节点 / SSE / 落盘 / 资产]
 ```
 
-边界保持清晰：
+OpenReel 负责 Provider 选择、节点/任务生命周期、后台调度、SSE、持久化恢复
+信息、本地落盘、资产和旧任务覆盖保护。UMA 负责请求拼装、鉴权、素材上传、
+provider task ID 提取、上游轮询、精确状态/错误解释、产物提取和标准化结果。
 
-- OpenReel 管理项目、节点、工作流、账号配置、资产持久化和画布刷新。
-- 统一适配器管理能力校验、请求组织、鉴权、上传、轮询、精确结果解析、标准错误和取消。
-- `runtime.jsonc` 只保存账号、远端模型和 target 配置；V2 协议文件不内嵌到用户配置。
-- Agent LLM 目前继续使用 LiteLLM，因为 OpenReel Agent Loop 依赖同步 tool-call 合同；本次接入范围是图片、视频和音频生成。
+OpenReel 只把标准化 `InvocationResult` 和 `VideoOutput` 转换成节点字段，
+不读取 provider JSON，也不保留视频 `status_path`、task ID 路径或结果 URL
+解析代码。
 
-### 内置 V2 协议
-
-| 协议 ID | 当前可用于 OpenReel 的操作 |
-| --- | --- |
-| `openai.media` | `image.generate`、`audio.speech` |
-| `stability.stable-image-core` | `image.generate` |
-| `elevenlabs.text-to-speech` | `audio.speech` |
-| `runway.video-task` | `video.generate` |
-
-内置协议来自子仓的 `protocols/common/`。自定义 V2 协议放在 `config/universal_model_adapter/protocols/*.json`；也可以用 `OPENREEL_UMA_PROTOCOLS` 指定一个或多个额外文件/目录，多个路径用系统路径分隔符连接。协议文件修改后，下一次请求会按文件修订重新建立客户端绑定。
-
-媒体设置页会保留已有 `universal_adapter` Provider，但当前新增统一适配器 Provider 使用“设置 → 配置文件”或直接编辑 `config/runtime.jsonc`。原图片/视频/音频协议下拉框继续管理旧 `*_http_v1` Catalog。
-
-### Provider 配置
+### 视频运行配置示例
 
 ```jsonc
 {
-  "kind": "image",
-  "name": "openai-image-via-uma",
-  "base_url": "https://api.openai.com/v1",
-  "api_key": "${OPENAI_API_KEY}",
-  "model_name": "gpt-image-1",
+  "kind": "video",
+  "name": "seedance-production",
+  "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+  "api_key": "${VIDEO_API_KEY}",
+  "model_name": "doubao-seedance-2-0-260128",
   "api_format": "universal_adapter",
   "is_active": true,
   "enabled": true,
   "params": {
     "uma": {
-      "protocol_id": "openai.media",
-      "operation": "image.generate",
-      "target_defaults": {
-        "parameters": {"output_format": "png"}
-      }
+      "protocol_id": "volcengine.seedance-video-task",
+      "operation": "video.generate",
+      "target_profile_id": "volcengine.seedance-video-task:doubao-seedance-2-0-260128"
     }
   }
 }
 ```
 
-`params.uma` 的常用字段：
+运行配置不能内嵌协议文档或响应解析路径。
 
-| 字段 | 作用 |
-| --- | --- |
-| `protocol_id` | 必填，引用已安装的 V2 协议 ID。 |
-| `operation` | 可省略；默认按媒体类型使用 `image.generate`、`video.generate` 或 `audio.speech`。 |
-| `target_defaults` / `request_schema` / `variants` | 当前远端模型的能力、默认值和变体，属于 target 配置。 |
-| `input_map` / `parameter_map` | OpenReel 标准字段与目标协议字段不同的时候做明确映射。 |
-| `static_input` / `static_parameters` | 给这个远端模型固定的输入或参数。 |
-| `accepted_media_roles` | 声明目标确实接受的媒体角色，例如 `first_frame`、`last_frame`、`reference_image`。有媒体输入但未声明时请求会在访问服务商前失败，避免静默丢图。 |
-| `bases` / `headers` / `provider_parameters` | 额外连接 slot、静态 header 和连接层参数。真实密钥仍写顶层 `api_key`。 |
-| `poll_*` / `task_timeout_seconds` | 调整适配器轮询节奏和任务总超时。 |
+### 重启恢复
 
-协议与用户配置必须分开。Schema 会拒绝在 `params.uma` 中出现 `protocol`、`protocol_document` 或 `operations`。
+服务商接受任务后，OpenReel 保存 UMA invocation ID、provider task ID 和一份
+不含密钥的标准化请求。API 重启时调用 UMA
+`resume_task(request, provider_task_id)`；UMA 跳过提交，直接恢复协议定义的
+轮询，因此不会创建第二个计费任务。
 
-音频字段名不同时可以显式映射并提供默认值：
+UMA 的活动 handle 和事件回放仍在内存中；OpenReel 负责持久化节点/任务状态
+以及重启后的任务发现。
 
-```jsonc
-"params": {
-  "uma": {
-    "protocol_id": "openai.media",
-    "operation": "audio.speech",
-    "parameter_map": {"format": "response_format"},
-    "static_parameters": {"voice": "alloy", "response_format": "mp3"}
-  }
-}
-```
+### 视频协议详细指南
 
-统一适配器当前把活动任务句柄保存在 API 进程内。OpenReel 会在任务输出上标记不可跨进程恢复；API 重启后会把该节点安全落为失败并要求用户手动重试，不会自动重复提交可能计费的生成任务。旧 `*_http_v1` Provider 继续使用已有持久化轮询恢复。
+以下内容统一在子仓维护：
 
-## 高级用户：编写媒体协议
+- `uma.protocol/v2` schema 和 JSON Pointer 映射；
+- JSON/form/multipart/raw 请求拼装；
+- upload-first 素材准备；
+- submit、poll、cancel、状态、错误和产物映射；
+- OpenReel 视频目标能力与参考素材角色；
+- 宿主持久化的重启恢复；
+- 校验命令、合同测试和故障归属。
 
-### 协议文件位置和版本
+唯一详细来源：
+[Universal Model Adapter — OpenReel 视频集成指南](https://github.com/yutianxiao6/universal-model-adapter/blob/main/docs/OPENREEL_INTEGRATION.md)。
 
-| 类型 | Catalog 版本 | 单条协议版本 |
-| --- | --- | --- |
-| 图片 | `openreel.image_provider_catalog.v1` | `openreel.image_provider.v1` |
-| 视频 | `openreel.video_provider_catalog.v1` | `openreel.video_provider.v1` |
-| 音频 | `openreel.audio_provider_catalog.v1` | `openreel.audio_provider.v1` |
+## 图片和音频 Catalog
+
+图片和音频尚未强制迁移到 UMA，当前声明式合同仍位于：
 
 ```text
-config/
-  image_provider_protocols/catalog.json
-  video_provider_protocols/catalog.json
-  audio_provider_protocols/catalog.json
+config/image_provider_protocols/catalog.json
+config/audio_provider_protocols/catalog.json
 ```
 
-Catalog 是严格 JSON，不支持注释。根对象使用 `version` 和 `protocols`；推荐让 `protocols` 使用以协议 ID 为 key 的对象。协议 key、协议内部 `id` 和 Provider 保存的 `*_protocol_id` 必须完全一致。
+Catalog 根对象和条目使用各自的 OpenReel v1 schema。Provider 保存
+`params.image_protocol_id` 或 `params.audio_protocol_id`。Catalog 负责请求、
+可选轮询、结果提取和可选上传规则，不能包含真实密钥。
 
-部署时可以用以下环境变量改用另一份单文件 Catalog：
+部署环境可用 `OPENREEL_IMAGE_PROTOCOLS_FILE` 和
+`OPENREEL_AUDIO_PROTOCOLS_FILE` 覆盖这两份文件。视频通过 UMA 路径发现协议，
+并可用 `OPENREEL_UMA_PROTOCOLS` 增加路径列表。
 
-- `OPENREEL_IMAGE_PROTOCOLS_FILE`
-- `OPENREEL_VIDEO_PROTOCOLS_FILE`
-- `OPENREEL_AUDIO_PROTOCOLS_FILE`
+修改图片/音频 Catalog 后刷新设置页并运行最小节点。视频先校验 UMA 协议目录：
 
-设置后应编辑环境变量指向的文件，而不是仓库默认文件。
-
-### 通用协议字段
-
-| 字段 | 作用 |
-| --- | --- |
-| `version` | 单条协议版本，必须与媒体类型对应。 |
-| `id` | 稳定协议 ID，必须与 `protocols` 中的 key 一致。 |
-| `display_name` | 设置页协议下拉框显示名称。 |
-| `default_base_url` | 文档和默认值；用户填写的 Provider Base URL 优先。 |
-| `default_params` | 协议默认请求参数。 |
-| `model_profiles` | 按模型 ID 声明默认参数、比例、分辨率、模式等能力。 |
-| `request` | 提交请求的方法、资源路径、鉴权、请求模板和任务 ID 路径。 |
-| `poll` | 异步任务的轮询路径、状态字段、终态集合、间隔和超时。 |
-| `result` | 图片、视频或音频结果的提取路径。 |
-| `upload` | 可选的先上传步骤。 |
-
-鉴权可在协议或具体 section 中声明：
-
-- `"auth": "bearer"`：发送 `Authorization: Bearer <API Key>`。
-- `"auth": "api_key_header"` 配合 `"api_key_header": "X-API-Key"`：把密钥放入指定 header。
-- `"auth": "raw"`：把 API Key 原样写入 `Authorization`。
-
-不要把真实密钥写入 Catalog 的静态 `headers`。Catalog 可以提交到 Git，密钥只能留在 `runtime.jsonc`、环境变量或部署 Secret。
-
-### 请求模板占位符
-
-`request.body` 会递归替换 `$变量`；空值会被省略，`false` 和 `0` 会保留。常用变量如下：
-
-| 类型 | 常用变量 |
-| --- | --- |
-| 通用 | `$model`、`$prompt` |
-| 图片 | `$size`、`$quality`、`$count`、`$negative_prompt`、`$response_format`、`$reference_image_input`、`$reference_images` |
-| 视频 | `$content`、`$duration_seconds`、`$aspect_ratio`、`$resolution`、`$mode`、`$image_urls`、`$first_image_url`、`$video_urls`、`$audio_urls`、`$generate_audio`、`$watermark` |
-| 音频 | `$input`、`$text`、`$voice`、`$response_format`、`$speed`、`$instructions`、`$title`、`$style`、`$instrumental` |
-
-对象路径使用点号和数组下标，例如 `data.task.id`、`data.0.url`。应根据真实响应填写多条候选路径，先写最准确的路径。
-
-### 图片协议最小示例
-
-下面的例子适用于同步返回 URL 或 Base64 的 OpenAI-compatible 接口：
-
-```json
-{
-  "version": "openreel.image_provider_catalog.v1",
-  "protocols": {
-    "example_images": {
-      "version": "openreel.image_provider.v1",
-      "id": "example_images",
-      "display_name": "Example images API",
-      "default_base_url": "https://api.example.test/v1",
-      "default_params": {
-        "size": "1024x1024"
-      },
-      "model_profiles": [
-        {
-          "match": "example-image-model",
-          "default_params": {
-            "size": "1024x1024"
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "path": "/images/generations",
-        "auth": "bearer",
-        "merge_extra": true,
-        "body": {
-          "model": "$model",
-          "prompt": "$prompt",
-          "n": "$count",
-          "size": "$size",
-          "quality": "$quality",
-          "image": "$reference_image_input"
-        }
-      },
-      "result": {
-        "images_path": "data",
-        "url_path": "url",
-        "b64_path": "b64_json",
-        "image_url_paths": ["data.0.url", "images.0.url", "url"],
-        "b64_paths": ["data.0.b64_json", "b64_json"]
-      }
-    }
-  }
-}
+```bash
+cd apps/api
+uv run uma protocols validate ../../config/universal_model_adapter/protocols
 ```
 
-如果接口先返回任务 ID，可以在 `request.task_id_paths` 声明任务字段，再增加与视频类似的 `poll` 和结果路径。
-
-### 视频异步协议完整示例
-
-假设服务商的创建响应是 `{"data":{"id":"job_123"}}`，轮询响应是 `{"data":{"status":"succeeded","video_url":"https://..."}}`：
-
-```json
-{
-  "version": "openreel.video_provider_catalog.v1",
-  "protocols": {
-    "example_video_task": {
-      "version": "openreel.video_provider.v1",
-      "id": "example_video_task",
-      "display_name": "Example async video",
-      "default_base_url": "https://api.example.test/v1",
-      "image_transport": "data_url",
-      "supported_ratios": ["16:9", "9:16", "1:1"],
-      "duration": {
-        "min": 5,
-        "max": 10
-      },
-      "model_profiles": [
-        {
-          "match": "example-video-model",
-          "label": "Standard",
-          "supported_resolutions": ["720p", "1080p"],
-          "default_resolution": "720p"
-        }
-      ],
-      "modes": {
-        "text_to_video": {
-          "label": "Text to video",
-          "prompt_required": true,
-          "max_images": 0,
-          "max_videos": 0,
-          "max_audios": 0
-        },
-        "first_frame": {
-          "label": "First frame to video",
-          "prompt_required": true,
-          "required_roles": ["first_frame"],
-          "allowed_roles": ["first_frame"],
-          "min_images": 1,
-          "max_images": 1
-        }
-      },
-      "request": {
-        "method": "POST",
-        "path": "/videos/generations",
-        "auth": "bearer",
-        "task_id_paths": ["data.id", "id"],
-        "body": {
-          "model": "$model",
-          "prompt": "$prompt",
-          "image": "$first_image_url",
-          "duration": "$duration_seconds",
-          "aspect_ratio": "$aspect_ratio",
-          "resolution": "$resolution"
-        }
-      },
-      "poll": {
-        "method": "GET",
-        "path": "/videos/generations/{task_id}",
-        "status_path": "data.status",
-        "succeeded": ["succeeded"],
-        "failed": ["failed", "cancelled", "expired"],
-        "running": ["queued", "running", "processing"],
-        "interval_seconds": 10,
-        "timeout_seconds": 1200
-      },
-      "result": {
-        "video_url_paths": ["data.video_url", "video_url", "url"]
-      }
-    }
-  }
-}
-```
-
-视频能力应写在协议、`model_profiles` 或具体 `modes` 中。前端只展示当前协议明确声明的比例、分辨率和模式；不要把模型能力硬编码进 Workflow Spec。
-
-当上传接口使用另一个 API 版本时，在 section 中声明额外 Base URL：
-
-```json
-{
-  "upload": {
-    "method": "POST",
-    "base_url_param": "upload_base_url",
-    "base_url_label": "上传 API Base URL",
-    "base_url_hint": "填写上传接口使用的版本化 API 根地址",
-    "path": "/files",
-    "auth": "bearer"
-  }
-}
-```
-
-保存 Provider 时，设置页会自动要求填写 `params.upload_base_url`。
-
-### 音频协议最小示例
-
-同步返回二进制音频的接口可以这样写：
-
-```json
-{
-  "version": "openreel.audio_provider_catalog.v1",
-  "protocols": {
-    "example_audio_speech": {
-      "version": "openreel.audio_provider.v1",
-      "id": "example_audio_speech",
-      "display_name": "Example audio speech",
-      "default_base_url": "https://api.example.test/v1",
-      "default_params": {
-        "voice": "alloy",
-        "response_format": "mp3"
-      },
-      "model_profiles": [
-        {
-          "match": "example-tts-model"
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "path": "/audio/speech",
-        "auth": "bearer",
-        "required_context": ["input"],
-        "body": {
-          "model": "$model",
-          "input": "$input",
-          "voice": "$voice",
-          "response_format": "$response_format",
-          "speed": "$speed"
-        }
-      },
-      "result": {
-        "type": "binary",
-        "format_param": "response_format"
-      }
-    }
-  }
-}
-```
-
-如果服务商返回音频 URL 或异步任务，改用 URL 结果路径或增加 `request.task_id_paths`、`poll` 和状态集合。
-
-## 协议写完后如何让前端使用
-
-1. 把协议加入正确类型的 `catalog.json`，保持文件为合法 JSON。
-2. 检查根 Catalog 版本、单条协议版本，以及 key 与 `id` 是否一致。
-3. 打开设置面板并点击右上角“刷新”。后端会重新读取 Catalog，通常不需要重启。
-4. 进入对应媒体 Provider，点击“添加 Provider”。
-5. 填写 Base URL、模型名和 API Key，并从下拉框选择刚添加的协议。
-6. 保存后创建最小节点，选择该 Provider，使用服务商明确支持的最小参数运行一次。
-7. 验证成功后再增加参考图、多媒体输入、长时长、高分辨率或批量工作流。
-
-“配置文件”标签页编辑的是 `runtime.jsonc`，不是协议 Catalog。它适合批量修改账号或使用 `${ENV_VAR}`，不能代替新增协议。
-
-## 文件配置示例
-
-普通用户优先使用前端。需要部署 Secret 或批量配置时，可以复制 `config/runtime.example.jsonc`，并让密钥引用环境变量：
-
-```jsonc
-{
-  "$schema_version": 1,
-  "llm_providers": [],
-  "media_providers": [
-    {
-      "kind": "video",
-      "name": "example-video",
-      "base_url": "https://api.example.test/v1",
-      "api_key": "${VIDEO_API_KEY}",
-      "model_name": "example-video-model",
-      "api_format": "video_http_v1",
-      "is_active": true,
-      "enabled": true,
-      "notes": "",
-      "params": {
-        "video_protocol_id": "example_video_task",
-        "image_transport": "data_url"
-      }
-    }
-  ],
-  "model_tier_defaults": {
-    "strong": null,
-    "balanced": null,
-    "small": null
-  },
-  "model_assignments": {},
-  "app_settings": {}
-}
-```
-
-`runtime.jsonc` 支持注释，Catalog 只支持严格 JSON。配置文件校验失败时，旧的已生效配置会保留。
-
-## 最小验证与排障
-
-### 建议的验证顺序
-
-1. 先保存并启用 Provider。
-2. 确认节点模型下拉框能看到 Provider 或模型。
-3. 图片先用单句提示词和协议默认尺寸。
-4. 视频先用协议支持的最短时长、默认分辨率和文生视频模式；确认后再加首帧或多模态参考。
-5. 音频先用短文本和默认 voice/format。
-6. 查看节点错误中的 endpoint、HTTP 状态、provider 响应摘要和任务 ID。
-
-### 常见错误定位
+## 排障
 
 | 现象 | 优先检查 |
 | --- | --- |
-| 保存按钮不可用 | 名称、Base URL、模型名、API Key、协议 ID或协议要求的额外 Base URL是否缺失。 |
-| 协议不在下拉框 | Catalog 路径、JSON 语法、Catalog 版本、协议 key/id，或环境变量是否指向另一文件。 |
-| 401 / 403 | API Key、鉴权形式和 Base URL 是否属于同一服务商。 |
-| 404 | Base URL 是否缺版本，或协议 `path` 是否重复 `/v1`、`/v2`、`/api/v3`。 |
-| 400 / 422 | `request.body` 字段名、模型名、模式、比例、时长、分辨率和媒体数量。 |
-| 创建成功但没有任务 ID | `request.task_id_paths` 与创建响应不一致。 |
-| 一直轮询 | `poll.path`、`status_path`、running/succeeded/failed 状态值不一致。 |
-| 显示成功但没有媒体 | `result.*_url_paths`、图片 Base64 路径或二进制结果类型不一致。 |
-| 本地参考图无法发送 | `image_transport`、`public_base_url`、服务商是否支持 data URL，或是否需要 `upload`。 |
-| `bad response body` | 服务商响应结构与协议结果提取规则不一致。 |
+| 视频无法保存 | `api_format`、Base URL、模型 ID、API Key、显式 `protocol_id`、准确 `target_profile_id` 和额外 Base URL。 |
+| 视频协议或目标缺失 | UMA 协议 JSON、视频目标 Catalog、协议/目标 ID 是否匹配，以及 `OPENREEL_UMA_PROTOCOLS`。 |
+| 视频模式或素材在 HTTP 前被拒绝 | 目标声明的模式、素材角色/数量、时长、比例和分辨率。 |
+| 视频请求、轮询状态或结果错误 | 修复 UMA V2 协议，不要在 OpenReel 增加解析。 |
+| 视频重启后未恢复 | 持久化 provider task ID、恢复请求、Provider 选择和 OpenReel recovery 日志。 |
+| 图片/音频协议缺失 | 对应宿主 Catalog 路径、JSON 语法/版本、ID 和环境覆盖。 |
+| 401 / 403 | API Key、鉴权合同以及 Base URL 与账号是否匹配。 |
+| 404 | Base URL 版本以及协议资源路径是否重复或缺失。 |
+| 400 / 422 | 服务商模型 ID、模式、字段、时长、比例、分辨率和素材数量。 |
 
-修复配置后重试原节点。一次生成失败不会删除最近一次成功预览，不需要为了排障清空画布。
+修复配置后重跑原节点。失败尝试会保留最近一次成功预览。
 
 ## 安全边界
 
-- 前端设置会把账号配置保存到本机 `config/runtime.jsonc`；只在可信设备和受保护的 Studio 服务上使用设置页。
-- 公网部署必须先加访问控制，不要把未鉴权的设置 API 暴露给互联网。
-- 不要提交 `runtime.jsonc`、`.env`、真实 API Key、完整请求头、服务商私有响应或用户素材。
-- 可提交的协议示例使用 `example.test`、占位模型名和环境变量。
-- 新协议进入仓库前，应增加 endpoint、请求体、轮询、结果提取、错误状态和 Base URL 合同测试。
+- 只在可信设备和有鉴权的部署中使用设置页。
+- 不要提交 `runtime.jsonc`、`.env`、API Key、完整私有请求头、provider
+  响应或用户素材。
+- 协议和目标文件只有在示例与 fixture 已脱敏且允许再分发时才能提交。
+- 密钥只放运行配置、环境变量或部署 Secret，不写进协议 JSON。
