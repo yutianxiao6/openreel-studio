@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,7 @@ class UniversalAdapterProviderOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     protocol_id: str = Field(min_length=1)
+    target_profile_id: str | None = None
     operation: str | None = None
     base_slot: str = Field(default="api", min_length=1)
     credential_slot: str | None = "api_key"
@@ -58,6 +60,7 @@ class UniversalAdapterProviderOptions(BaseModel):
     logical_defaults: dict[str, Any] = Field(default_factory=dict)
     request_schema: dict[str, Any] = Field(default_factory=dict)
     variants: dict[str, Any] = Field(default_factory=dict)
+    target_metadata: dict[str, Any] = Field(default_factory=dict)
     accepted_media_roles: tuple[str, ...] = ()
     input_map: dict[str, str] = Field(default_factory=dict)
     parameter_map: dict[str, str] = Field(default_factory=dict)
@@ -73,7 +76,13 @@ class UniversalAdapterProviderOptions(BaseModel):
     max_media_bytes: int = Field(default=100 * 1024 * 1024, ge=1)
     max_output_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=1)
 
-    @field_validator("protocol_id", "operation", "base_slot", "credential_slot")
+    @field_validator(
+        "protocol_id",
+        "target_profile_id",
+        "operation",
+        "base_slot",
+        "credential_slot",
+    )
     @classmethod
     def strip_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -151,7 +160,42 @@ def parse_universal_adapter_options(
         raise ValueError(
             "params.uma contains inline protocol fields; keep protocol documents in the protocol catalog"
         )
-    return UniversalAdapterProviderOptions.model_validate(raw)
+    merged = dict(raw)
+    if str(getattr(provider, "kind", "") or "").strip() == "video":
+        from app.services.video_target_catalog import (
+            compile_video_target_options,
+            resolve_video_target,
+        )
+
+        protocol_id = str(raw.get("protocol_id") or "").strip()
+        profile_id = str(raw.get("target_profile_id") or "").strip()
+        if not profile_id:
+            raise ValueError(
+                "video universal_adapter provider requires an explicit target_profile_id"
+            )
+        model_name = str(getattr(provider, "model_name", "") or "").strip()
+        target = resolve_video_target(
+            protocol_id=protocol_id,
+            model_name=model_name,
+            profile_id=profile_id,
+        )
+        if target is None:
+            raise ValueError(
+                "video universal_adapter provider must reference a matching target_profile_id"
+            )
+        merged = _deep_merge_dict(compile_video_target_options(target), raw)
+        merged.setdefault("target_profile_id", target["id"])
+    return UniversalAdapterProviderOptions.model_validate(merged)
+
+
+def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
 
 
 def universal_adapter_protocol_paths() -> tuple[Path, ...]:
@@ -243,6 +287,7 @@ def create_universal_adapter_binding(
             "request_schema": options.request_schema,
             "defaults": options.target_defaults,
             "variants": options.variants,
+            "metadata": options.target_metadata,
         }
     )
     paths = universal_adapter_protocol_paths()
@@ -272,6 +317,7 @@ def create_universal_adapter_binding(
                 kind=kind,
                 operations={operation: target_operation},
                 parameters=options.target_parameters,
+                metadata=options.target_metadata,
             ),
         ),
         models=(

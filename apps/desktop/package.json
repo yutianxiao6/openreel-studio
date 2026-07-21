@@ -55,8 +55,8 @@
         "to": "defaults/config/image_provider_protocols"
       },
       {
-        "from": "../../config/video_provider_protocols",
-        "to": "defaults/config/video_provider_protocols"
+        "from": "../../config/universal_model_adapter",
+        "to": "defaults/config/universal_model_adapter"
       },
       {
         "from": "../../config/audio_provider_protocols",

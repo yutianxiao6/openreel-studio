@@ -23,7 +23,7 @@ def _tool_names(events: list[dict[str, Any]]) -> list[str]:
     ]
 
 
-async def test_project_panel_layout_node_detail_and_debug_trace_use_web_endpoints(
+async def test_node_detail_and_debug_trace_use_web_endpoints(
     api_client: httpx.AsyncClient,
     project_id: str,
     send_chat_request: Callable[..., Awaitable[list[dict[str, Any]]]],
@@ -33,7 +33,7 @@ async def test_project_panel_layout_node_detail_and_debug_trace_use_web_endpoint
         api_client,
         project_id,
         (
-            "创建一个工程面板用的文本节点，标题叫「Live E2E 工程面板剧」。"
+            "创建一个文本节点，标题叫「Live E2E 测试剧」。"
             "直接创建节点，然后运行节点生成文字大纲。"
             "不要生成图片，不要生成视频。"
         ),
@@ -52,26 +52,6 @@ async def test_project_panel_layout_node_detail_and_debug_trace_use_web_endpoint
     ]
     assert create_actions
     node_id = str(create_actions[-1]["payload"]["id"])
-
-    tier_response = await api_client.post(
-        f"/api/projects/{project_id}/panel/layout",
-        json={"mode": "tier"},
-    )
-    assert tier_response.status_code == 200, tier_response.text
-    tier = tier_response.json()
-    assert tier["ok"] is True
-    assert tier["mode"] == "tier"
-    assert tier["node_count"] >= 1
-
-    by_type_response = await api_client.post(
-        f"/api/projects/{project_id}/panel/layout",
-        json={"mode": "type"},
-    )
-    assert by_type_response.status_code == 200, by_type_response.text
-    by_type = by_type_response.json()
-    assert by_type["ok"] is True
-    assert by_type["mode"] == "type"
-    assert "text" in by_type["grid"]
 
     detail = await call_tool_request(api_client, "node.get", {"node_id": node_id})
     assert detail["id"] == node_id

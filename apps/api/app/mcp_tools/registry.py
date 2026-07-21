@@ -43,8 +43,6 @@ UNREGISTERED_MODEL_CONFIG_TOOL_NAMES: tuple[str, ...] = (
     "model.set_config",
 )
 
-UNREGISTERED_DRAMA_SEGMENT_TOOL_NAMES: tuple[str, ...] = ()
-
 UNREGISTERED_CANVAS_CRUD_TOOL_NAMES: tuple[str, ...] = (
     "canvas.create_node",
     "canvas.update_node",
@@ -168,8 +166,6 @@ UNREGISTERED_TEAM_TOOL_NAMES: tuple[str, ...] = (
     "team.restore",
 )
 
-UNREGISTERED_DRAMA_DELETE_TOOL_NAMES: tuple[str, ...] = ()
-
 UNREGISTERED_MCP_META_TOOL_NAMES: tuple[str, ...] = (
     "mcp.list_servers",
     "mcp.list_external_tools",
@@ -187,11 +183,6 @@ UNREGISTERED_SESSION_TOOL_NAMES: tuple[str, ...] = (
     "session.set_focus",
     "session.get_focus",
     "session.clear_focus",
-)
-
-UNREGISTERED_PANEL_TOOL_NAMES: tuple[str, ...] = (
-    "panel.get_layout",
-    "panel.set_layout",
 )
 
 UNREGISTERED_SCENE_SHOT_ASSET_WRITE_TOOL_NAMES: tuple[str, ...] = (
@@ -1820,22 +1811,10 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
     R("project.get_state", project_tools.project_get_state, tags=["project", "read"],
       description="读取项目完整状态：节点、任务、参考图、确认状态和 token 使用。每轮先读。")
 
-    # blueprint.* tools are intentionally not registered for the Agent surface.
-    # Current production works directly on canvas nodes; legacy blueprint helpers
-    # remain importable Python functions for old data migration and focused tests.
-
     # drama.* raw runners are intentionally unregistered. node.run calls the
     # internal Python functions directly; prompt templates may still use these
     # names as LLM task keys.
     R("drama.parse_uploaded_script", drama_tools.parse_uploaded_script, tags=["drama", "ingest"])
-
-    # drama.* legacy segment wrappers live in app.services.drama_legacy and are
-    # intentionally unregistered.
-    # Additional drama raw runners, including segment/storyboard/prompt runners,
-    # are intentionally unregistered.
-
-    # Legacy drama destructive wrappers are intentionally unregistered.
-    # canvas.delete is the single agent-facing canvas deletion primitive.
     R("project.reset", drama_tools.reset_project,
       tags=["project", "destructive"],
       description=(

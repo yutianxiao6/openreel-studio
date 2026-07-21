@@ -56,6 +56,7 @@ export interface MediaProtocolSummary {
   display_name?: string
   additional_base_urls?: Array<{
     param: string
+    slot?: string
     label?: string
     hint?: string
     section?: string
@@ -65,6 +66,7 @@ export interface MediaProtocolSummary {
   model_profiles?: Array<{
     match?: string
     label?: string
+    target_profile_id?: string
     supported_ratios?: string[]
     supported_resolutions?: string[]
     default_ratio?: string

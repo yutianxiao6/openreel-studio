@@ -75,7 +75,6 @@ _REFERENCES = {
     "production_audit_guide": [
         "apps/api/app/agent/prompts/audit_rule.py",
         "apps/api/app/agent/prompts/runtime_context.py",
-        "apps/api/app/agent/prompt_synthesizer.py",
         "apps/api/app/mcp_tools/node_universal.py",
         "apps/api/app/api/routes_agent_debug.py",
     ],

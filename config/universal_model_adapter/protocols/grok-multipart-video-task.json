@@ -1,0 +1,95 @@
+{
+  "format": "uma.protocol/v2",
+  "id": "grok.multipart-video-task",
+  "version": "2.0.0",
+  "kind": ["video"],
+  "metadata": {"title": "Grok multipart video task"},
+  "bases": {
+    "api": {"$ref": "provider:/bases/api"}
+  },
+  "auth": {
+    "api": {"type": "bearer", "credential": {"$ref": "credential:/api_key"}}
+  },
+  "media": {
+    "images": {"encode": {"$ref": "item:/file"}}
+  },
+  "operations": {
+    "submit": {
+      "base": "api",
+      "auth": "api",
+      "method": "POST",
+      "path": "/videos",
+      "encoding": "multipart",
+      "form": {
+        "model": {"$ref": "target:/remote_model"},
+        "prompt": {"$ref": "request:/input/prompt"},
+        "size": {"$ref": "request:/parameters/video_size"}
+      },
+      "files": {"input_reference": {"$ref": "media:/images/first/file"}},
+      "accept_http": [200, 201, 202],
+      "read": {
+        "task_id": "/json/request_id",
+        "provider_request_id": "/headers/x-request-id",
+        "error_message": "/json/error/message",
+        "error_code": "/json/error/code"
+      }
+    },
+    "poll": {
+      "base": "api",
+      "auth": "api",
+      "method": "GET",
+      "path": {"$concat": ["/videos/", {"$ref": "task:/id"}]},
+      "accept_http": [200],
+      "read": {
+        "status": "/json/status",
+        "success": ["done", "completed", "succeeded"],
+        "failure": ["failed", "expired", "cancelled", "canceled"],
+        "progress": "/json/progress",
+        "error_message": "/json/error/message",
+        "error_code": "/json/error/code",
+        "artifacts": {
+          "video": {
+            "kind": "video",
+            "path": "/json/video/url",
+            "required": true,
+            "mime_type": "video/mp4",
+            "attributes": {
+              "duration_seconds": {"$ref": "request:/parameters/duration_seconds"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "entrypoints": {
+    "video.generate": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "prompt": {"type": "string", "minLength": 1},
+              "mode": {"const": "first_frame"}
+            },
+            "required": ["prompt", "mode"]
+          },
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+              "video_size": {"type": "string", "minLength": 1}
+            },
+            "required": ["duration_seconds", "video_size"]
+          },
+          "media": {"type": "array", "minItems": 1, "maxItems": 1}
+        },
+        "required": ["input", "parameters", "media"]
+      },
+      "selector": {"$ref": "request:/input/mode"},
+      "variants": {
+        "first_frame": {"submit": "submit", "poll": "poll"}
+      }
+    }
+  }
+}

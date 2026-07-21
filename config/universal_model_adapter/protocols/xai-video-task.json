@@ -1,0 +1,128 @@
+{
+  "format": "uma.protocol/v2",
+  "id": "xai.video-task",
+  "version": "2.0.0",
+  "kind": ["video"],
+  "metadata": {"title": "xAI video generation task"},
+  "bases": {
+    "api": {
+      "default": "https://api.x.ai/v1",
+      "$ref": "provider:/bases/api"
+    }
+  },
+  "auth": {
+    "api": {"type": "bearer", "credential": {"$ref": "credential:/api_key"}}
+  },
+  "media": {
+    "images": {
+      "encode": {
+        "$concat": [
+          "data:",
+          {"$ref": "item:/mime_type"},
+          ";base64,",
+          {"$ref": "item:/data", "transform": "base64_encode"}
+        ]
+      }
+    }
+  },
+  "operations": {
+    "submit": {
+      "base": "api",
+      "auth": "api",
+      "method": "POST",
+      "path": "/videos/generations",
+      "encoding": "json",
+      "body": {
+        "model": {"$ref": "target:/remote_model"},
+        "prompt": {"$ref": "request:/input/prompt"},
+        "image": {
+          "$switch": [
+            {
+              "when": {"equals": [{"$ref": "entry:/variant"}, "first_frame"]},
+              "value": {"url": {"$ref": "media:/roles/first_frame/encoded"}}
+            }
+          ]
+        },
+        "reference_images": {
+          "$switch": [
+            {
+              "when": {"equals": [{"$ref": "entry:/variant"}, "multimodal_reference"]},
+              "value": {
+                "$each": {"$ref": "media:/images/encoded"},
+                "as": "image_url",
+                "value": {"url": {"$ref": "context:/vars/image_url"}}
+              }
+            }
+          ]
+        },
+        "duration": {"$ref": "request:/parameters/duration_seconds"},
+        "aspect_ratio": {"$ref": "request:/parameters/aspect_ratio", "omit_if": "missing"},
+        "resolution": {"$ref": "request:/parameters/resolution", "omit_if": "missing"},
+        "seed": {"$ref": "request:/parameters/seed", "omit_if": "missing"}
+      },
+      "accept_http": [200, 201, 202],
+      "read": {
+        "task_id": "/json/request_id",
+        "provider_request_id": "/headers/x-request-id",
+        "error_message": "/json/error/message",
+        "error_code": "/json/error/code"
+      }
+    },
+    "poll": {
+      "base": "api",
+      "auth": "api",
+      "method": "GET",
+      "path": {"$concat": ["/videos/", {"$ref": "task:/id"}]},
+      "accept_http": [200],
+      "read": {
+        "status": "/json/status",
+        "success": ["done", "completed", "succeeded"],
+        "failure": ["failed", "expired", "cancelled", "canceled"],
+        "progress": "/json/progress",
+        "error_message": "/json/error/message",
+        "error_code": "/json/error/code",
+        "artifacts": {
+          "video": {
+            "kind": "video",
+            "path": "/json/video/url",
+            "required": true,
+            "mime_type": "video/mp4",
+            "attributes": {
+              "duration_seconds": {"$ref": "request:/parameters/duration_seconds"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "entrypoints": {
+    "video.generate": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "prompt": {"type": "string", "minLength": 1},
+              "mode": {"type": "string", "minLength": 1}
+            },
+            "required": ["prompt", "mode"]
+          },
+          "parameters": {
+            "type": "object",
+            "properties": {"duration_seconds": {"type": "number", "exclusiveMinimum": 0}},
+            "required": ["duration_seconds"]
+          },
+          "media": {"type": "array"}
+        },
+        "required": ["input", "parameters"]
+      },
+      "selector": {"$ref": "request:/input/mode"},
+      "variants": {
+        "text_to_video": {"submit": "submit", "poll": "poll"},
+        "first_frame": {"submit": "submit", "poll": "poll"},
+        "multimodal_reference": {"submit": "submit", "poll": "poll"}
+      }
+    }
+  }
+}

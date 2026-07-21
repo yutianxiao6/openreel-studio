@@ -22,11 +22,7 @@ from app.agent import prompts as prompt_sections_pkg
 
 from app.agent import orchestrator as orchestrator_module
 
-from app.agent import panel_layout
-
 from app.agent import parallel_executor
-
-from app.agent import prompt_synthesizer
 
 from app.agent import project_blueprint
 
@@ -127,9 +123,7 @@ from app.mcp_tools.registry import (
     UNREGISTERED_CONFIG_WRITE_TOOL_NAMES,
     UNREGISTERED_DEPRECATED_ALIAS_TOOL_NAMES,
     UNREGISTERED_DOMAIN_SKILL_TOOL_NAMES,
-    UNREGISTERED_DRAMA_DELETE_TOOL_NAMES,
     UNREGISTERED_DRAMA_RAW_RUNNER_TOOL_NAMES,
-    UNREGISTERED_DRAMA_SEGMENT_TOOL_NAMES,
     UNREGISTERED_FILE_WRITE_TOOL_NAMES,
     UNREGISTERED_GENERIC_SKILL_TOOL_NAMES,
     UNREGISTERED_MEDIA_RUNNER_TOOL_NAMES,
@@ -140,7 +134,6 @@ from app.mcp_tools.registry import (
     UNREGISTERED_MODEL_CONFIG_TOOL_NAMES,
     UNREGISTERED_MEMORY_LOW_LEVEL_TOOL_NAMES,
     UNREGISTERED_NODE_HELPER_TOOL_NAMES,
-    UNREGISTERED_PANEL_TOOL_NAMES,
     UNREGISTERED_PLAN_CONTROL_TOOL_NAMES,
     UNREGISTERED_PROMPT_TOOL_NAMES,
     UNREGISTERED_PROJECT_LOW_LEVEL_TOOL_NAMES,
@@ -154,7 +147,7 @@ from app.mcp_tools.registry import (
     registry,
 )
 
-from app.services import drama_legacy, media_generation
+from app.services import media_generation
 
 from app.services import media_provider
 

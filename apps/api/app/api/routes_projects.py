@@ -22,7 +22,7 @@ from app.db.models import Asset, Message, WorkflowEdge, WorkflowNode
 from app.db.session import get_session
 from app.agent import canvas_workflow_templates, workflow_spec_artifacts, workflow_template_store
 from app.agent.workflow_audit import WorkflowAuditError
-from app.mcp_tools import canvas_tools, panel_tools, workflow_tools
+from app.mcp_tools import canvas_tools, workflow_tools
 from app.services import image_operations, media_history, media_operations, project_media_history
 from app.services.node_service import NodeService, workflow_node_payload
 from app.services.node_ids import next_node_display_id, node_display_id_allocation
@@ -77,10 +77,6 @@ class UpdateProjectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: Optional[str] = None
-
-
-class PanelLayoutRequest(BaseModel):
-    mode: str = "tier"
 
 
 class NodePositionRequest(BaseModel):
@@ -1562,7 +1558,6 @@ async def preview_project_workflow(
         raise HTTPException(status_code=400, detail=result)
     return result
 
-
 @router.post("/{project_id}/workflow/materialize")
 async def materialize_project_workflow(
     project_id: str,
@@ -2835,23 +2830,4 @@ async def delete_project_edge(
                 "target_node_id": target_id,
             },
         )
-    return result
-
-
-@router.get("/{project_id}/panel/layout")
-async def get_project_panel_layout(project_id: str):
-    try:
-        return await panel_tools.panel_get_layout(project_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-@router.post("/{project_id}/panel/layout")
-async def set_project_panel_layout(project_id: str, req: PanelLayoutRequest):
-    try:
-        result = await panel_tools.panel_set_layout(project_id, mode=req.mode)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
     return result

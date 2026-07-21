@@ -18,7 +18,16 @@ from app.db.session import session_scope
 from app.services.media_provider import test_provider as _test_provider
 
 
-_MEDIA_API_FORMATS = {"openai", "raw", "raw_post", "image_http_v1", "video_http_v1", "audio_http_v1", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"}
+_MEDIA_API_FORMATS = {
+    "universal_adapter",
+    "openai",
+    "raw",
+    "raw_post",
+    "image_http_v1",
+    "audio_http_v1",
+    "suno_compatible",
+    "openai_tts",
+}
 _MEDIA_KINDS = {"image", "video", "audio"}
 
 
@@ -70,7 +79,7 @@ async def media_add_provider(
     base_url: versioned or namespaced API base, e.g. 'https://api.openai.com/v1'; do not include resource paths such as /images or /videos
     api_key: provider API key
     model_name: model identifier sent to the API
-    api_format: use image_http_v1, video_http_v1, or audio_http_v1 with the matching protocol id in params.
+    api_format: video uses universal_adapter; image/audio use their matching configured formats.
     set_active: if True, mark this as the active provider for this kind
     params: extra default parameters (size, quality, steps, etc.)
     """

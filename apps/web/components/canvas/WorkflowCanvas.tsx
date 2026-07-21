@@ -375,7 +375,6 @@ const WORKFLOW_PHASE_LABELS: Record<string, string> = {
   structure: "结构",
   script: "剧本",
   story: "剧本",
-  episode_script: "剧本",
   segment_script: "分段剧本",
   character: "人物",
   characters: "人物",

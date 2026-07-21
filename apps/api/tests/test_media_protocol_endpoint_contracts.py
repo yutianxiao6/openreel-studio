@@ -1,89 +1,18 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
+from universal_model_adapter import ProtocolCatalog
 
+from app.config import settings
 from app.config_store.schema import MediaProviderEntry
 from app.services import media_provider
-
-
-CATALOG_PROTOCOLS = [
-    (media_provider._image_http_v1_protocol_from_catalog, [
-        "openai_images_generations",
-    ]),
-    (media_provider._video_http_v1_protocol_from_catalog, [
-        "seedance_2_0",
-        "lingke_media_generate_json_task",
-        "t8_grok_video_3_json_task",
-        "xai_grok_imagine_video",
-        "xai_grok_imagine_video_1_5",
-        "grok_1_5_multipart",
-    ]),
-    (media_provider._audio_http_v1_protocol_from_catalog, [
-        "openai_audio_speech",
-        "newapi_suno_music",
-        "suno_compatible_generate",
-    ]),
-]
-
-
-@pytest.mark.parametrize(
-    ("kind", "api_format", "catalog_dir", "param_name", "protocol_id", "version"),
-    [
-        (
-            "image",
-            "image_http_v1",
-            "image_provider_protocols",
-            "image_protocol_id",
-            "test-image",
-            "openreel.image_provider_catalog.v1",
-        ),
-        (
-            "video",
-            "video_http_v1",
-            "video_provider_protocols",
-            "video_protocol_id",
-            "test-video",
-            "openreel.video_provider_catalog.v1",
-        ),
-        (
-            "audio",
-            "audio_http_v1",
-            "audio_provider_protocols",
-            "audio_protocol_id",
-            "test-audio",
-            "openreel.audio_provider_catalog.v1",
-        ),
-    ],
+from app.services.video_target_catalog import (
+    list_video_model_targets,
+    load_video_target_catalog,
 )
-def test_media_provider_schema_reads_catalog_from_runtime_project_root(
-    monkeypatch,
-    tmp_path,
-    kind: str,
-    api_format: str,
-    catalog_dir: str,
-    param_name: str,
-    protocol_id: str,
-    version: str,
-) -> None:
-    catalog_path = tmp_path / "config" / catalog_dir / "catalog.json"
-    catalog_path.parent.mkdir(parents=True)
-    catalog_path.write_text(
-        json.dumps({"version": version, "protocols": {protocol_id: {"id": protocol_id}}}),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
-
-    entry = MediaProviderEntry(
-        kind=kind,
-        name=f"runtime-root-{kind}",
-        base_url="https://example.test/v1",
-        model_name="test-model",
-        api_format=api_format,
-        params={param_name: protocol_id},
-    )
-
-    assert entry.params[param_name] == protocol_id
 
 
 def _protocol(loader, protocol_id: str) -> dict:
@@ -93,206 +22,170 @@ def _protocol(loader, protocol_id: str) -> dict:
     return protocol
 
 
-@pytest.mark.parametrize(("loader", "protocol_ids"), CATALOG_PROTOCOLS)
-def test_media_protocol_catalogs_do_not_rewrite_provider_base_urls(loader, protocol_ids) -> None:
+@pytest.mark.parametrize(
+    ("loader", "protocol_ids"),
+    [
+        (media_provider._image_http_v1_protocol_from_catalog, ["openai_images_generations"]),
+        (
+            media_provider._audio_http_v1_protocol_from_catalog,
+            ["openai_audio_speech", "newapi_suno_music", "suno_compatible_generate"],
+        ),
+    ],
+)
+def test_host_catalogs_are_limited_to_image_and_audio(loader, protocol_ids) -> None:
     for protocol_id in protocol_ids:
         protocol = _protocol(loader, protocol_id)
-        assert "strip_base_suffixes" not in protocol
-        for section_name in ("request", "poll", "upload"):
-            section = protocol.get(section_name)
-            if isinstance(section, dict):
-                assert "strip_base_suffixes" not in section
+        assert protocol["id"] == protocol_id
 
 
-def test_media_endpoint_builder_treats_provider_base_url_as_literal() -> None:
+def test_host_endpoint_builder_treats_provider_base_url_as_literal() -> None:
     provider = SimpleNamespace(base_url="https://relay.example/api/v3", params_json="{}")
-    protocol = {
-        "default_base_url": "https://ignored.example/v1",
-        "strip_base_suffixes": ["/api/v3"],
-    }
-
-    endpoint = media_provider._video_http_v1_endpoint_for(
+    endpoint = media_provider._protocol_endpoint_for(
         provider,
-        protocol,
+        {"default_base_url": "https://ignored.example/v1"},
         {"path": "/jobs"},
     )
-
     assert endpoint == "https://relay.example/api/v3/jobs"
 
 
-def test_protocol_paths_only_contain_resources_not_api_versions() -> None:
-    for loader, protocol_ids in CATALOG_PROTOCOLS:
-        for protocol_id in protocol_ids:
-            protocol = _protocol(loader, protocol_id)
-            for section_name in ("request", "poll", "upload"):
-                section = protocol.get(section_name)
-                if not isinstance(section, dict):
-                    continue
-                path = str(section.get("path") or "")
-                assert not path.startswith("/v1/")
-                assert not path.startswith("/v2/")
-                assert not path.startswith("/api/v")
-
-
-def test_legacy_endpoint_helpers_use_versioned_api_base_literally() -> None:
-    assert media_provider._ark_video_tasks_endpoint("https://ark.example/api/v3") == (
-        "https://ark.example/api/v3/contents/generations/tasks"
-    )
-    assert media_provider._xai_video_generations_endpoint("https://xai.example/v1") == (
-        "https://xai.example/v1/videos/generations"
-    )
-    assert media_provider._grok_1_5_video_endpoint("https://relay.example/v1") == (
-        "https://relay.example/v1/videos"
-    )
-    assert media_provider._lingke_media_generate_endpoint("https://lingke.example/v1") == (
-        "https://lingke.example/v1/media/generate"
-    )
-    assert media_provider._t8_grok_video_3_endpoint("https://t8.example/v2") == (
-        "https://t8.example/v2/videos/generations"
-    )
-
-
-def test_t8_protocol_requires_explicit_versioned_upload_api_base() -> None:
-    with pytest.raises(ValueError, match="upload_base_url"):
-        MediaProviderEntry(
-            kind="video",
-            name="t8-video",
-            base_url="https://ai.t8star.org/v2",
-            api_key="test-key",
-            model_name="grok-video-3",
-            api_format="video_http_v1",
-            params={"video_protocol_id": "t8_grok_video_3_json_task"},
-        )
-
-    entry = MediaProviderEntry(
-        kind="video",
-        name="t8-video",
-        base_url="https://ai.t8star.org/v2",
-        api_key="test-key",
-        model_name="grok-video-3",
-        api_format="video_http_v1",
-        params={
-            "video_protocol_id": "t8_grok_video_3_json_task",
-            "upload_base_url": "https://ai.t8star.org/v1",
-        },
-    )
-
-    assert entry.params["upload_base_url"] == "https://ai.t8star.org/v1"
-
-
 @pytest.mark.parametrize(
-    ("loader", "protocol_id", "base_url", "params", "section_name", "task_id", "expected"),
+    ("loader", "protocol_id", "base_url", "section_name", "task_id", "expected"),
     [
         (
             media_provider._image_http_v1_protocol_from_catalog,
             "openai_images_generations",
-            "https://ark.cn-beijing.volces.com/api/v3",
-            {},
+            "https://provider.example/v1",
             "request",
             None,
-            "https://ark.cn-beijing.volces.com/api/v3/images/generations",
-        ),
-        (
-            media_provider._video_http_v1_protocol_from_catalog,
-            "seedance_2_0",
-            "https://ark.cn-beijing.volces.com/api/v3",
-            {},
-            "request",
-            None,
-            "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks",
-        ),
-        (
-            media_provider._video_http_v1_protocol_from_catalog,
-            "lingke_media_generate_json_task",
-            "https://api.lk888.ai/v1",
-            {},
-            "request",
-            None,
-            "https://api.lk888.ai/v1/media/generate",
-        ),
-        (
-            media_provider._video_http_v1_protocol_from_catalog,
-            "t8_grok_video_3_json_task",
-            "https://ai.t8star.org/v2",
-            {"upload_base_url": "https://ai.t8star.org/v1"},
-            "upload",
-            None,
-            "https://ai.t8star.org/v1/files",
-        ),
-        (
-            media_provider._video_http_v1_protocol_from_catalog,
-            "t8_grok_video_3_json_task",
-            "https://ai.t8star.org/v2",
-            {"upload_base_url": "https://ai.t8star.org/v1"},
-            "request",
-            None,
-            "https://ai.t8star.org/v2/videos/generations",
-        ),
-        (
-            media_provider._video_http_v1_protocol_from_catalog,
-            "xai_grok_imagine_video",
-            "https://api.x.ai/v1",
-            {},
-            "poll",
-            "job-1",
-            "https://api.x.ai/v1/videos/job-1",
-        ),
-        (
-            media_provider._video_http_v1_protocol_from_catalog,
-            "grok_1_5_multipart",
-            "https://ai.t8star.org/v1",
-            {},
-            "request",
-            None,
-            "https://ai.t8star.org/v1/videos",
+            "https://provider.example/v1/images/generations",
         ),
         (
             media_provider._audio_http_v1_protocol_from_catalog,
             "openai_audio_speech",
-            "https://ai.t8star.org/v1",
-            {},
+            "https://provider.example/v1",
             "request",
             None,
-            "https://ai.t8star.org/v1/audio/speech",
-        ),
-        (
-            media_provider._audio_http_v1_protocol_from_catalog,
-            "newapi_suno_music",
-            "https://ai.t8star.org/suno",
-            {},
-            "request",
-            None,
-            "https://ai.t8star.org/suno/submit/music",
+            "https://provider.example/v1/audio/speech",
         ),
         (
             media_provider._audio_http_v1_protocol_from_catalog,
             "suno_compatible_generate",
-            "https://suno.example/api/v1",
-            {},
+            "https://provider.example/v1",
             "poll",
             "task-1",
-            "https://suno.example/api/v1/generate/record-info?taskId=task-1",
+            "https://provider.example/v1/generate/record-info?taskId=task-1",
         ),
     ],
 )
-def test_media_protocol_endpoint_contracts(
+def test_remaining_host_protocol_endpoints(
     loader,
     protocol_id: str,
     base_url: str,
-    params: dict,
     section_name: str,
     task_id: str | None,
     expected: str,
 ) -> None:
     protocol = _protocol(loader, protocol_id)
-    provider = SimpleNamespace(base_url=base_url, params_json=json.dumps(params))
-    section = protocol[section_name]
-
-    endpoint = media_provider._video_http_v1_endpoint_for(
+    provider = SimpleNamespace(base_url=base_url, params_json="{}")
+    endpoint = media_provider._protocol_endpoint_for(
         provider,
         protocol,
-        section,
+        protocol[section_name],
         task_id=task_id,
     )
-
     assert endpoint == expected
+
+
+def test_every_openreel_video_protocol_loads_through_uma_v2() -> None:
+    protocol_dir = Path(settings.PROJECT_ROOT) / "config" / "universal_model_adapter" / "protocols"
+    catalog = ProtocolCatalog.load([protocol_dir])
+    assert {item.document.id for item in catalog.list()} == {
+        "volcengine.seedance-video-task",
+        "lingke.media-video-task",
+        "t8.grok-video-task",
+        "xai.video-task",
+        "grok.multipart-video-task",
+        "dramaagent.updream-video-task",
+    }
+    assert all(item.document.format == "uma.protocol/v2" for item in catalog.list())
+    assert all(item.document.version == "2.0.0" for item in catalog.list())
+
+
+def test_video_targets_keep_capabilities_separate_from_wire_protocols() -> None:
+    catalog = load_video_target_catalog()
+    targets = catalog["targets"]
+    assert len(targets) == 25
+    assert {target["match"] for target in targets} >= {
+        "doubao-seedance-2-0-260128",
+        "grok-video-3",
+        "sed2",
+        "vidu-q2-pro",
+        "wan-2.7",
+    }
+    for target in targets:
+        serialized = json.dumps(target, ensure_ascii=False)
+        assert '"request"' not in serialized
+        assert '"response"' not in serialized
+        assert '"request_mode"' not in serialized
+        assert '"status_path"' not in serialized
+        assert '"result_url_paths"' not in serialized
+
+    public = list_video_model_targets()
+    dramaagent = next(
+        item for item in public["protocols"] if item["id"] == "dramaagent.updream-video-task"
+    )
+    profiles = {item["match"]: item for item in dramaagent["model_profiles"]}
+    assert profiles["sed2"]["modes"]["first_frame"]["max_images"] == 1
+    assert profiles["sed2"]["modes"]["multimodal_reference"]["max_images"] == 9
+    assert profiles["wan-2.7"]["modes"]["video_continuation"]["min_videos"] == 1
+
+    protocol_dir = Path(settings.PROJECT_ROOT) / "config" / "universal_model_adapter" / "protocols"
+    protocol = ProtocolCatalog.load([protocol_dir]).get("dramaagent.updream-video-task")
+    continuation = protocol.document.entrypoints["video.generate"].variants["video_continuation"]
+    assert continuation.bind["generate_type"] == "clip2v"
+
+
+def test_video_provider_schema_requires_universal_adapter() -> None:
+    entry = MediaProviderEntry(
+        kind="video",
+        name="video-uma",
+        base_url="https://provider.example/v1",
+        api_key="secret",
+        model_name="doubao-seedance-2-0-260128",
+        api_format="universal_adapter",
+        params={
+            "uma": {
+                "protocol_id": "volcengine.seedance-video-task",
+                "operation": "video.generate",
+                "target_profile_id": ("volcengine.seedance-video-task:doubao-seedance-2-0-260128"),
+            }
+        },
+    )
+    assert entry.api_format == "universal_adapter"
+
+    with pytest.raises(ValidationError, match="universal_adapter"):
+        MediaProviderEntry(
+            kind="video",
+            name="unsupported-video",
+            base_url="https://provider.example/v1",
+            api_key="secret",
+            model_name="doubao-seedance-2-0-260128",
+            api_format="raw",
+            params={},
+        )
+
+    with pytest.raises(ValidationError, match="target_profile_id"):
+        MediaProviderEntry(
+            kind="video",
+            name="video-without-target",
+            base_url="https://provider.example/v1",
+            api_key="secret",
+            model_name="doubao-seedance-2-0-260128",
+            api_format="universal_adapter",
+            params={
+                "uma": {
+                    "protocol_id": "volcengine.seedance-video-task",
+                    "operation": "video.generate",
+                }
+            },
+        )

@@ -1,0 +1,172 @@
+{
+  "format": "uma.protocol/v2",
+  "id": "volcengine.seedance-video-task",
+  "version": "2.0.0",
+  "kind": ["video"],
+  "metadata": {"title": "Volcengine Seedance video task"},
+  "bases": {
+    "api": {
+      "default": "https://ark.cn-beijing.volces.com/api/v3",
+      "$ref": "provider:/bases/api"
+    }
+  },
+  "auth": {
+    "api": {"type": "bearer", "credential": {"$ref": "credential:/api_key"}}
+  },
+  "media": {
+    "images": {
+      "encode": {
+        "$concat": [
+          "data:",
+          {"$ref": "item:/mime_type"},
+          ";base64,",
+          {"$ref": "item:/data", "transform": "base64_encode"}
+        ]
+      }
+    },
+    "videos": {
+      "encode": {
+        "$concat": [
+          "data:",
+          {"$ref": "item:/mime_type"},
+          ";base64,",
+          {"$ref": "item:/data", "transform": "base64_encode"}
+        ]
+      }
+    },
+    "audios": {
+      "encode": {
+        "$concat": [
+          "data:",
+          {"$ref": "item:/mime_type"},
+          ";base64,",
+          {"$ref": "item:/data", "transform": "base64_encode"}
+        ]
+      }
+    }
+  },
+  "operations": {
+    "submit": {
+      "base": "api",
+      "auth": "api",
+      "method": "POST",
+      "path": "/contents/generations/tasks",
+      "encoding": "json",
+      "body": {
+        "model": {"$ref": "target:/remote_model"},
+        "content": {
+          "$concat": [
+            [
+              {
+                "type": "text",
+                "text": {"$ref": "request:/input/prompt"}
+              }
+            ],
+            {
+              "$each": {"$ref": "media:/images/items", "default": []},
+              "as": "media_item",
+              "value": {
+                "type": "image_url",
+                "image_url": {"url": {"$ref": "context:/vars/media_item/encoded"}},
+                "role": {"$ref": "context:/vars/media_item/role"}
+              }
+            },
+            {
+              "$each": {"$ref": "media:/videos/items", "default": []},
+              "as": "media_item",
+              "value": {
+                "type": "video_url",
+                "video_url": {"url": {"$ref": "context:/vars/media_item/encoded"}},
+                "role": {"$ref": "context:/vars/media_item/role"}
+              }
+            },
+            {
+              "$each": {"$ref": "media:/audios/items", "default": []},
+              "as": "media_item",
+              "value": {
+                "type": "audio_url",
+                "audio_url": {"url": {"$ref": "context:/vars/media_item/encoded"}},
+                "role": {"$ref": "context:/vars/media_item/role"}
+              }
+            }
+          ]
+        },
+        "duration": {"$ref": "request:/parameters/duration_seconds"},
+        "ratio": {"$ref": "request:/parameters/aspect_ratio", "omit_if": "missing"},
+        "resolution": {"$ref": "request:/parameters/resolution", "omit_if": "missing"},
+        "generate_audio": {"$ref": "request:/parameters/generate_audio", "omit_if": "missing"},
+        "watermark": {"$ref": "request:/parameters/watermark", "omit_if": "missing"},
+        "return_last_frame": {"$ref": "request:/parameters/return_last_frame", "omit_if": "missing"},
+        "priority": {"$ref": "request:/parameters/priority", "omit_if": "missing"},
+        "execution_expires_after": {"$ref": "request:/parameters/execution_expires_after", "omit_if": "missing"},
+        "safety_identifier": {"$ref": "request:/parameters/safety_identifier", "omit_if": "missing"},
+        "tools": {"$ref": "request:/parameters/tools", "omit_if": ["missing", "empty"]}
+      },
+      "accept_http": [200, 201, 202],
+      "read": {
+        "task_id": "/json/id",
+        "provider_request_id": "/headers/x-request-id",
+        "error_message": "/json/error/message",
+        "error_code": "/json/error/code"
+      }
+    },
+    "poll": {
+      "base": "api",
+      "auth": "api",
+      "method": "GET",
+      "path": {"$concat": ["/contents/generations/tasks/", {"$ref": "task:/id"}]},
+      "accept_http": [200],
+      "read": {
+        "status": "/json/status",
+        "success": ["succeeded"],
+        "failure": ["failed", "cancelled", "canceled", "expired"],
+        "progress": "/json/progress",
+        "error_message": "/json/error/message",
+        "error_code": "/json/error/code",
+        "artifacts": {
+          "video": {
+            "kind": "video",
+            "path": "/json/content/video_url",
+            "required": true,
+            "mime_type": "video/mp4",
+            "attributes": {
+              "duration_seconds": {"$ref": "request:/parameters/duration_seconds"}
+            }
+          },
+          "last_frame": {
+            "kind": "image",
+            "path": "/json/content/last_frame_url",
+            "required": false
+          }
+        }
+      }
+    }
+  },
+  "entrypoints": {
+    "video.generate": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "prompt": {"type": "string", "minLength": 1},
+              "mode": {"type": "string", "minLength": 1}
+            },
+            "required": ["prompt", "mode"]
+          },
+          "parameters": {"type": "object"},
+          "media": {"type": "array"}
+        },
+        "required": ["input", "parameters"]
+      },
+      "selector": {"$ref": "request:/input/mode"},
+      "variants": {
+        "text_to_video": {"submit": "submit", "poll": "poll"},
+        "first_frame": {"submit": "submit", "poll": "poll"},
+        "first_last_frame": {"submit": "submit", "poll": "poll"},
+        "multimodal_reference": {"submit": "submit", "poll": "poll"}
+      }
+    }
+  }
+}

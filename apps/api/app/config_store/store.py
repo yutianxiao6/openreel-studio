@@ -27,8 +27,6 @@ from app.config_store.schema import (
     ALLOWED_TASK_TYPES,
     DEFAULT_APP_SETTINGS,
     DEFAULT_MODEL_TASK_TIERS,
-    LlmProviderEntry,
-    MediaProviderEntry,
     RuntimeConfig,
 )
 from app.db.models import AppSetting, LlmProvider, MediaProvider, ModelConfig
@@ -221,6 +219,8 @@ class ConfigStore:
             cfg = RuntimeConfig.model_validate(parsed)
         except ValidationError as exc:
             return False, _format_validation_errors(exc)
+        except Exception as exc:
+            return False, [f"config validation error: {exc}"]
         await _sync_to_db(cfg)
         self._cached = cfg
         self._raw_text = raw_text

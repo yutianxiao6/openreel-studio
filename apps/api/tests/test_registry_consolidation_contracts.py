@@ -712,28 +712,6 @@ async def test_config_write_tools_are_unregistered_and_rest_control_plane_remain
     validate = await routes_tools.validate_config_text(routes_tools.ConfigTextRequest(content="{}"))
     assert set(validate) == {"ok", "errors"}
 
-@pytest.mark.asyncio
-async def test_drama_segment_wrappers_are_unregistered_after_service_extraction() -> None:
-    visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_search(query="", limit=0)
-    listed_names = {item["name"] for item in listed["tools"]}
-
-    assert not set(UNREGISTERED_DRAMA_SEGMENT_TOOL_NAMES) & visible
-    assert not set(UNREGISTERED_DRAMA_SEGMENT_TOOL_NAMES) & listed_names
-    for name in UNREGISTERED_DRAMA_SEGMENT_TOOL_NAMES:
-        assert registry.get(name) is None, name
-
-    described = await tool_meta_tools.tool_describe(list(UNREGISTERED_DRAMA_SEGMENT_TOOL_NAMES))
-    assert described["tools"] == []
-    assert set(described["not_found"]) == set(UNREGISTERED_DRAMA_SEGMENT_TOOL_NAMES)
-
-    for name in UNREGISTERED_DRAMA_SEGMENT_TOOL_NAMES:
-        result = await tool_meta_tools.tool_execute(
-            project_id="test",
-            name=name,
-            input={},
-        )
-        assert result["error_kind"] == "unknown_deferred_tool"
 
 @pytest.mark.asyncio
 async def test_canvas_crud_wrappers_are_unregistered_after_node_convergence() -> None:
@@ -1070,37 +1048,13 @@ async def test_team_protocol_tools_are_unregistered_after_collab_consolidation()
     assert {"agent.run", "agent.map_reduce", "agent.pipeline", "agent.hierarchical"} <= collab_names
     assert not set(UNREGISTERED_TEAM_TOOL_NAMES) & collab_names
 
-@pytest.mark.asyncio
-async def test_legacy_drama_delete_wrappers_are_unregistered_and_canvas_delete_remains() -> None:
+def test_canvas_delete_is_the_registered_canvas_deletion_primitive() -> None:
     visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_search(query="", limit=0)
-    listed_names = {item["name"] for item in listed["tools"]}
 
     assert "canvas.delete" in visible
     assert registry.get("canvas.delete") is not None
     assert registry.get("node.delete") is None
     assert registry.get("canvas.clear_all") is None
-    assert not set(UNREGISTERED_DRAMA_DELETE_TOOL_NAMES) & visible
-    assert not set(UNREGISTERED_DRAMA_DELETE_TOOL_NAMES) & listed_names
-    for name in UNREGISTERED_DRAMA_DELETE_TOOL_NAMES:
-        assert registry.get(name) is None, name
-
-    described = await tool_meta_tools.tool_describe(list(UNREGISTERED_DRAMA_DELETE_TOOL_NAMES))
-    assert described["tools"] == []
-    assert set(described["not_found"]) == set(UNREGISTERED_DRAMA_DELETE_TOOL_NAMES)
-
-    for name in UNREGISTERED_DRAMA_DELETE_TOOL_NAMES:
-        result = await tool_meta_tools.tool_execute(
-            project_id="test",
-            name=name,
-            input={},
-        )
-        assert result["error_kind"] == "unknown_deferred_tool"
-
-    delete_tools = await tool_meta_tools.tool_search(query="reset clear", category="delete")
-    delete_names = {item["name"] for item in delete_tools["tools"]}
-    assert delete_names == set()
-    assert not set(UNREGISTERED_DRAMA_DELETE_TOOL_NAMES) & delete_names
 
 @pytest.mark.asyncio
 async def test_node_helper_tools_are_unregistered_after_node_protocol_consolidation() -> None:
@@ -1148,80 +1102,6 @@ async def test_session_focus_tools_are_unregistered_after_runtime_context_consol
         )
         assert result["error_kind"] == "unknown_deferred_tool"
 
-@pytest.mark.asyncio
-async def test_panel_layout_tools_are_unregistered_after_rest_api_migration() -> None:
-    visible = _visible_tools(None)
-    listed = await tool_meta_tools.tool_search(query="", limit=0)
-    listed_names = {item["name"] for item in listed["tools"]}
-
-    assert not set(UNREGISTERED_PANEL_TOOL_NAMES) & visible
-    assert not set(UNREGISTERED_PANEL_TOOL_NAMES) & listed_names
-    for name in UNREGISTERED_PANEL_TOOL_NAMES:
-        assert registry.get(name) is None, name
-
-    described = await tool_meta_tools.tool_describe(list(UNREGISTERED_PANEL_TOOL_NAMES))
-    assert described["tools"] == []
-    assert set(described["not_found"]) == set(UNREGISTERED_PANEL_TOOL_NAMES)
-
-    for name in UNREGISTERED_PANEL_TOOL_NAMES:
-        result = await tool_meta_tools.tool_execute(
-            project_id="test",
-            name=name,
-            input={},
-        )
-        assert result["error_kind"] == "unknown_deferred_tool"
-
-def test_panel_layout_keeps_episode_scene_assets_with_preview() -> None:
-    grid = panel_layout.bucket_nodes([
-        {
-            "id": "scene-1",
-            "type": "scene",
-            "title": "场景：九天仙台",
-            "status": "completed",
-            "version": 1,
-            "input_json": json.dumps(
-                {
-                    "episode_number": 1,
-                    "blueprint_id": "bp-1",
-                    "prompt": "场景概念图，九天仙台。",
-                },
-                ensure_ascii=False,
-            ),
-            "output_json": json.dumps(
-                {
-                    "type": "fusion",
-                    "subject": "scene",
-                    "stages": [
-                        {
-                            "name": "场景图",
-                            "status": "completed",
-                            "local_url": "/api/media/p/scene.png",
-                        }
-                    ],
-                },
-                ensure_ascii=False,
-            ),
-            "preview": {
-                "type": "fusion",
-                "subject": "scene",
-                "stages": [
-                    {
-                        "name": "场景图",
-                        "status": "completed",
-                        "local_url": "/api/media/p/scene.png",
-                    }
-                ],
-            },
-            "prompt": "场景概念图，九天仙台。",
-            "created_at": "2026-06-05T00:00:00",
-        }
-    ])
-
-    episode = grid["episodes"]["1"]
-    assert len(episode["scenes"]) == 1
-    assert episode["scenes"][0]["id"] == "scene-1"
-    assert episode["scenes"][0]["preview"]["stages"][0]["name"] == "场景图"
-    assert grid["unbucketed"] == []
 
 @pytest.mark.asyncio
 async def test_scene_shot_asset_write_tools_are_unregistered_after_node_consolidation() -> None:
@@ -1461,8 +1341,6 @@ def test_node_universal_uses_media_generation_service_for_media_runners() -> Non
     assert node_universal.media_generation is media_generation
     assert not hasattr(node_universal, "media_tools")
 
-def test_node_universal_removed_drama_legacy_segment_fallbacks() -> None:
-    assert not hasattr(node_universal, "drama_legacy")
 
 @pytest.mark.asyncio
 async def test_media_raw_tool_wrapper_delegates_to_media_generation_service(monkeypatch) -> None:
@@ -1529,34 +1407,6 @@ def test_image_provider_does_not_auto_downgrade_resolution() -> None:
     assert media_provider._downgrade_size("3840x2160") is None
     assert media_provider._downgrade_size("2560x1440") is None
 
-@pytest.mark.asyncio
-async def test_drama_segment_tool_wrapper_delegates_to_drama_legacy_service(monkeypatch) -> None:
-    calls: dict[str, Any] = {}
-
-    async def fake_update_segment(**kwargs):
-        calls.update(kwargs)
-        return {"ok": True, "segment": {"index": kwargs["segment_index"]}}
-
-    monkeypatch.setattr(drama_legacy, "update_segment", fake_update_segment)
-
-    result = await drama_tools.update_segment(
-        project_id="project-1",
-        episode_number=1,
-        segment_index=2,
-        plot="雨夜桥头反击",
-    )
-
-    assert result == {"ok": True, "segment": {"index": 2}}
-    assert calls == {
-        "project_id": "project-1",
-        "episode_number": 1,
-        "segment_index": 2,
-        "plot": "雨夜桥头反击",
-        "characters": None,
-        "scene_refs": None,
-        "duration_seconds": None,
-        "segment_arc": None,
-    }
 
 @pytest.mark.asyncio
 async def test_reference_character_skill_calls_internal_runner_without_registry(monkeypatch) -> None:
@@ -1620,10 +1470,6 @@ def test_main_loop_raw_fusion_compatibility_helpers_are_removed() -> None:
     assert not hasattr(orchestrator_module, "_FUSION_STAGES")
     assert not hasattr(orchestrator_module, "_fusion_context")
     assert not hasattr(orchestrator_module.AgentOrchestrator, "_rebuild_fusion_lookup")
-
-def test_script_collection_runner_is_removed_from_node_surface() -> None:
-    assert "script_collection" not in node_universal._RUNNERS
-    assert not hasattr(node_universal, "_run_script_collection")
 
 @pytest.mark.asyncio
 async def test_tool_execute_blocks_hidden_and_core_targets() -> None:

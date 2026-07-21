@@ -5,22 +5,6 @@ from app.agent.feature_flags import evaluate_feature_flags, is_feature_enabled_f
 from app.mcp_tools.registry import registry
 
 
-LEGACY_DRAW_TOOL_NAMES: tuple[str, ...] = (
-    "node.draw_character",
-    "node.draw_outline",
-    "node.draw_script_collection",
-    "node.draw_episode_script",
-    "node.draw_review",
-    "node.draw_storyboard",
-    "node.draw_image_prompt",
-    "node.draw_video_prompt",
-    "node.draw_image",
-    "node.draw_first_frame",
-    "node.draw_last_frame",
-    "node.draw_video",
-)
-
-
 def test_feature_flags_use_code_defaults() -> None:
     states = evaluate_feature_flags({}, env={})
 
@@ -101,19 +85,6 @@ async def test_feature_tools_are_registered() -> None:
     assert unknown["ok"] is False
     assert unknown["enabled"] is False
     assert "agent.deferred_tools" in unknown["known"]
-
-
-def test_legacy_draw_tools_are_not_registered() -> None:
-    states = evaluate_feature_flags({}, env={})
-    assert "compat.legacy_draw_tools" not in states
-    assert all(registry.get(name) is None for name in LEGACY_DRAW_TOOL_NAMES)
-
-    visible = {
-        tool["function"]["name"].replace("__", ".")
-        for tool in registry.get_tools_for_agent_loop()
-    }
-
-    assert not set(LEGACY_DRAW_TOOL_NAMES) & visible
 
 
 @pytest.mark.asyncio

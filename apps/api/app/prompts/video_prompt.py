@@ -1,4 +1,4 @@
-"""视频提示词 — drama.generate_video_prompt / drama.generate_shot_video_prompt / drama.generate_segment_video_prompt"""
+"""视频提示词 — drama.generate_video_prompt / drama.generate_shot_video_prompt"""
 from __future__ import annotations
 
 from app.prompts._section import WorkerContext
@@ -6,7 +6,6 @@ from app.prompts._section import WorkerContext
 ALIASES = [
     "drama.generate_video_prompt",
     "drama.generate_shot_video_prompt",
-    "drama.generate_segment_video_prompt",
 ]
 ORDER = 100
 

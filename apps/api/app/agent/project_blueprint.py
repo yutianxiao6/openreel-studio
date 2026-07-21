@@ -1,14 +1,4 @@
-"""Project Blueprint persistence and state helpers.
-
-DEPRECATED (2026-06): BLUEPRINT_SECTION_ORDER, BLUEPRINT_OUTPUT_CONTRACTS,
-and section-based blueprint generation are replaced by the tree-based blueprint
-(blueprint_tree.py + blueprint_materializer.py).  This module is kept for
-backward compatibility reading old blueprint_draft.json files.
-
-The blueprint is the project-level creative source of truth. Chat history,
-pending plans, compact summaries, and canvas nodes are derived from it; they do
-not replace it.
-"""
+"""Project Blueprint persistence and state helpers."""
 from __future__ import annotations
 
 import hashlib
@@ -532,62 +522,6 @@ def _mode_strategy(mode: str, shots: list[dict[str, Any]] | None = None) -> dict
     }
 
 
-def _node_projection() -> dict[str, Any]:
-    return {
-        "script_collection": {
-            "mode": "copy_from_blueprint",
-            "source_paths": ["story.global_outline", "story.episodes"],
-        },
-        "episode_script": {
-            "mode": "copy_from_blueprint",
-            "source_paths": ["story.episodes[].summary", "story.episodes[].script"],
-        },
-        "episode_segment_plan": {
-            "mode": "copy_from_blueprint",
-            "source_paths": ["story.episodes[].segments"],
-        },
-        "episode_cast_scene_plan": {
-            "mode": "copy_from_blueprint",
-            "source_paths": ["story.episodes[].segments[].cast_refs", "story.episodes[].segments[].scene_refs"],
-        },
-        "character": {
-            "mode": "template_from_blueprint",
-            "source_paths": ["characters[]"],
-            "template_category": "character_image",
-        },
-        "scene": {
-            "mode": "template_from_blueprint",
-            "source_paths": ["scenes[]"],
-            "template_category": "scene_image",
-        },
-        "segment_storyboard": {
-            "mode": "template_from_blueprint",
-            "source_paths": ["story.episodes[].segments[]", "characters[]", "scenes[]"],
-            "template_category": "storyboard_image",
-        },
-        "shot_first_frame": {
-            "mode": "template_from_blueprint",
-            "source_paths": ["story.episodes[].segments[]", "characters[]", "scenes[]"],
-            "template_category": "first_frame_image",
-        },
-        "shot_last_frame": {
-            "mode": "template_from_blueprint",
-            "source_paths": ["story.episodes[].segments[]", "characters[]", "scenes[]"],
-            "template_category": "last_frame_image",
-        },
-        "segment_story_template": {
-            "mode": "template_from_blueprint",
-            "source_paths": ["story.episodes[].segments[]", "characters[]", "scenes[]", "visual_strategy"],
-            "template_category": "story_template",
-        },
-        "segment_video_prompt": {
-            "mode": "template_from_blueprint",
-            "source_paths": ["story.episodes[].segments[]", "visual_strategy"],
-            "template_category": "video_prompt",
-        },
-    }
-
-
 def _completed_generation_sections() -> list[dict[str, Any]]:
     return [{"section_id": section_id, "status": "completed"} for section_id in BLUEPRINT_SECTION_ORDER]
 
@@ -692,7 +626,6 @@ def build_blueprint_document_from_plan(
         "reference_bindings": state_reference_bindings,
         "shots": shots,
         "visual_strategy": _mode_strategy(str(selected_mode), shots),
-        "node_projection": _node_projection(),
         "outline_document": {
             "format": "markdown",
             "generated_from_json": True,
@@ -705,7 +638,6 @@ def build_blueprint_document_from_plan(
             "reference_images": reference_images,
             "model_assumptions": model_assumptions,
         },
-        "legacy_creative_blueprint": blueprint,
         "sections": plan.get("sections") or [],
     }
     sync_blueprint_outline_document(doc)
@@ -1782,7 +1714,6 @@ def creative_plan_from_blueprint_document(doc: dict[str, Any]) -> dict[str, Any]
     theme = doc.get("theme") if isinstance(doc.get("theme"), dict) else {}
     production = doc.get("production") if isinstance(doc.get("production"), dict) else {}
     story = doc.get("story") if isinstance(doc.get("story"), dict) else {}
-    legacy = doc.get("legacy_creative_blueprint") if isinstance(doc.get("legacy_creative_blueprint"), dict) else {}
     episodes = story.get("episodes") if isinstance(story.get("episodes"), list) else []
     characters = doc.get("characters") if isinstance(doc.get("characters"), list) else []
     scenes = doc.get("scenes") if isinstance(doc.get("scenes"), list) else []
@@ -1793,15 +1724,14 @@ def creative_plan_from_blueprint_document(doc: dict[str, Any]) -> dict[str, Any]
         markdown = "### 详细剧本大纲\n蓝图草稿已恢复，请继续生成后续章节。"
 
     blueprint = {
-        **legacy,
-        "duration_seconds": theme.get("duration_seconds") or production.get("duration_seconds") or legacy.get("duration_seconds") or 15,
-        "episode_count": production.get("episode_count") or legacy.get("episode_count") or 1,
-        "segment_seconds": production.get("segment_seconds") or legacy.get("segment_seconds") or 15,
-        "mode": production.get("video_mode") or legacy.get("mode") or "grid",
-        "theme_title": theme.get("title") or legacy.get("theme_title") or "项目蓝图",
-        "video_type": theme.get("genre") or legacy.get("video_type") or "",
-        "basic_answer": theme.get("style") or legacy.get("basic_answer") or "",
-        "global_outline": story.get("global_outline") or legacy.get("global_outline") or "",
+        "duration_seconds": theme.get("duration_seconds") or production.get("duration_seconds") or 15,
+        "episode_count": production.get("episode_count") or 1,
+        "segment_seconds": production.get("segment_seconds") or 15,
+        "mode": production.get("video_mode") or "grid",
+        "theme_title": theme.get("title") or "项目蓝图",
+        "video_type": theme.get("genre") or "",
+        "basic_answer": theme.get("style") or "",
+        "global_outline": story.get("global_outline") or "",
         "episodes": episodes,
         "characters": characters,
         "scenes": scenes,
@@ -1812,7 +1742,7 @@ def creative_plan_from_blueprint_document(doc: dict[str, Any]) -> dict[str, Any]
         "title": f"{blueprint['theme_title']}创意大纲",
         "summary": theme.get("logline") or story.get("global_outline") or doc.get("source_request") or "项目蓝图草稿",
         "source_request": doc.get("source_request") or "",
-        "selected_video_mode": production.get("video_mode") or legacy.get("mode") or "grid",
+        "selected_video_mode": production.get("video_mode") or "grid",
         "blueprint": blueprint,
         "sections": [
             {"type": "markdown", "content": markdown},
@@ -1875,19 +1805,16 @@ def recover_pending_blueprint_section_review_state(
         plan["_blueprint_window_progress"] = dict(window_progress)
     theme = doc.get("theme") if isinstance(doc.get("theme"), dict) else {}
     production = doc.get("production") if isinstance(doc.get("production"), dict) else {}
-    legacy = doc.get("legacy_creative_blueprint") if isinstance(doc.get("legacy_creative_blueprint"), dict) else {}
     pending = {
         "stage": "structure",
         "raw_request": doc.get("source_request") or "",
-        "basic_answer": theme.get("style") or legacy.get("basic_answer") or "",
-        "selected_mode": production.get("video_mode") or legacy.get("mode") or "grid",
+        "basic_answer": theme.get("style") or "",
+        "selected_mode": production.get("video_mode") or "grid",
         "duration_seconds": theme.get("duration_seconds") or production.get("duration_seconds") or 15,
     }
-    structure_answer = str(legacy.get("structure_answer") or "").strip()
-    if not structure_answer:
-        constraints = doc.get("constraints") if isinstance(doc.get("constraints"), dict) else {}
-        requirements = constraints.get("user_requirements") if isinstance(constraints.get("user_requirements"), list) else []
-        structure_answer = "\n".join(str(item) for item in requirements if item) or "继续生成蓝图"
+    constraints = doc.get("constraints") if isinstance(doc.get("constraints"), dict) else {}
+    requirements = constraints.get("user_requirements") if isinstance(constraints.get("user_requirements"), list) else []
+    structure_answer = "\n".join(str(item) for item in requirements if item) or "继续生成蓝图"
     return {
         "pending": pending,
         "structure_answer": structure_answer,

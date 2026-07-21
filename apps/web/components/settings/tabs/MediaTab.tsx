@@ -15,9 +15,16 @@ function normalizeVideoImageTransport(value?: unknown): string {
 function normalizeMediaProvider(
   entry: MediaProviderEntry,
   imageProtocols: MediaProtocolSummary[] = [],
-  videoProtocols: MediaProtocolSummary[] = [],
+  _videoProtocols: MediaProtocolSummary[] = [],
   audioProtocols: MediaProtocolSummary[] = [],
 ): MediaProviderEntry {
+  if (entry.kind === "video") {
+    return {
+      ...entry,
+      api_format: entry.api_format?.trim() || "universal_adapter",
+      params: { ...(entry.params || {}) },
+    }
+  }
   if (entry.api_format?.trim() === "universal_adapter") {
     return { ...entry, api_format: "universal_adapter", params: { ...(entry.params || {}) } }
   }
@@ -52,34 +59,7 @@ function normalizeMediaProvider(
       params: nextParams,
     }
   }
-  const rawApiFormat = entry.api_format?.trim() || "video_http_v1"
-  const nextParams = { ...(entry.params || {}) }
-  delete nextParams.video_protocol
-  delete nextParams.protocol
-  const catalogProtocolId = String(
-    nextParams.video_protocol_id
-    || protocolIdForVideoModel(entry.model_name, videoProtocols)
-    || "",
-  ).trim()
-  const apiFormat = rawApiFormat === "video_http_v1" || catalogProtocolId ? "video_http_v1" : rawApiFormat
-  if (apiFormat === "video_http_v1" && catalogProtocolId) {
-    nextParams.video_protocol_id = catalogProtocolId
-  }
-  return {
-    ...entry,
-    api_format: apiFormat,
-    params: nextParams,
-  }
-}
-
-function protocolIdForVideoModel(modelName: string, protocols: MediaProtocolSummary[]): string {
-  const name = modelName.trim()
-  if (!name) return ""
-  const matched = protocols.find((protocol) =>
-    protocol.model_names?.includes(name)
-    || protocol.model_profiles?.some((profile) => profile.match === name),
-  )
-  return matched?.id || ""
+  return { ...entry, params: { ...(entry.params || {}) } }
 }
 
 function videoModelTemplateOptions(protocols: MediaProtocolSummary[]): Array<{
@@ -87,14 +67,15 @@ function videoModelTemplateOptions(protocols: MediaProtocolSummary[]): Array<{
   value: string
   modelName: string
   protocolId: string
+  targetProfileId: string
 }> {
-  const options: Array<{ label: string; value: string; modelName: string; protocolId: string }> = []
+  const options: Array<{ label: string; value: string; modelName: string; protocolId: string; targetProfileId: string }> = []
   const seen = new Set<string>()
   for (const protocol of protocols) {
     const protocolLabel = protocol.display_name || protocol.id
-    const add = (modelName: string, label?: string) => {
+    const add = (modelName: string, label?: string, targetProfileId = "") => {
       const clean = modelName.trim()
-      if (!clean) return
+      if (!clean || clean === "*") return
       const key = `${protocol.id}:${clean}`
       if (seen.has(key)) return
       seen.add(key)
@@ -103,9 +84,14 @@ function videoModelTemplateOptions(protocols: MediaProtocolSummary[]): Array<{
         value: key,
         modelName: clean,
         protocolId: protocol.id,
+        targetProfileId,
       })
     }
-    protocol.model_profiles?.forEach((profile) => add(profile.match || "", profile.label))
+    protocol.model_profiles?.forEach((profile) => add(
+      profile.match || "",
+      profile.label,
+      profile.target_profile_id,
+    ))
     protocol.model_names?.forEach((modelName) => add(modelName))
   }
   return options
@@ -287,11 +273,15 @@ function ProviderSummary({
   const umaProtocolId = uma && typeof uma === "object" && "protocol_id" in uma
     ? String(uma.protocol_id || "")
     : ""
+  const umaBases = uma && typeof uma === "object" && "bases" in uma
+    && uma.bases && typeof uma.bases === "object"
+    ? uma.bases as Record<string, unknown>
+    : null
   const protocolId = String(
     (
       entry.api_format === "universal_adapter" ? umaProtocolId
       : entry.kind === "image" ? entry.params?.image_protocol_id
-      : entry.kind === "video" ? entry.params?.video_protocol_id
+      : entry.kind === "video" ? ""
       : entry.params?.audio_protocol_id
     ) || "",
   )
@@ -320,9 +310,10 @@ function ProviderSummary({
       </div>
       <div className="grid gap-3 px-4 py-4 sm:grid-cols-2">
         <SummaryField label="API Base URL" value={entry.base_url} mono />
-        {entry.kind === "video" && String(entry.params?.upload_base_url || "").trim() && (
-          <SummaryField label="上传 API Base URL" value={String(entry.params?.upload_base_url)} mono />
-        )}
+        {entry.kind === "video" && umaBases
+          && Object.entries(umaBases).map(([slot, value]) => (
+            <SummaryField key={slot} label={`${slot} Base URL`} value={String(value)} mono />
+          ))}
         <SummaryField label="协议 ID" value={protocolId || "未设置"} mono />
         <SummaryField label="API Key" value={entry.api_key ? "已配置" : "未配置"} />
         {entry.notes && <SummaryField label="备注" value={entry.notes} />}
@@ -347,7 +338,7 @@ function blank(kind: MediaKind): MediaProviderEntry {
     base_url: "",
     api_key: "",
     model_name: kind === "audio" ? "tts-1" : "",
-    api_format: kind === "video" ? "video_http_v1" : kind === "audio" ? "audio_http_v1" : "image_http_v1",
+    api_format: kind === "video" ? "universal_adapter" : kind === "audio" ? "audio_http_v1" : "image_http_v1",
     is_active: false, enabled: true, notes: "", params: {},
   }
 }
@@ -413,6 +404,21 @@ function Row({
     else delete nextParams[key]
     setDraft({ ...draft, params: nextParams })
   }
+  const setVideoBaseField = (slot: string, value: string) => {
+    const nextParams = { ...(draft.params || {}) }
+    const uma = nextParams.uma && typeof nextParams.uma === "object"
+      ? { ...(nextParams.uma as Record<string, unknown>) }
+      : {}
+    const bases = uma.bases && typeof uma.bases === "object"
+      ? { ...(uma.bases as Record<string, unknown>) }
+      : {}
+    const clean = value.trim()
+    if (clean) bases[slot] = clean
+    else delete bases[slot]
+    uma.bases = bases
+    nextParams.uma = uma
+    setDraft({ ...draft, params: nextParams })
+  }
   const setImageProtocolId = (value: string) => {
     const nextParams = { ...(draft.params || {}) }
     delete nextParams.image_protocol
@@ -424,12 +430,42 @@ function Row({
   }
   const setVideoProtocolId = (value: string) => {
     const nextParams = { ...(draft.params || {}) }
-    delete nextParams.video_protocol
-    delete nextParams.protocol
+    const currentUma = nextParams.uma && typeof nextParams.uma === "object"
+      ? { ...(nextParams.uma as Record<string, unknown>) }
+      : {}
     const clean = value.trim()
-    if (clean) nextParams.video_protocol_id = clean
-    else delete nextParams.video_protocol_id
-    setDraft({ ...draft, params: nextParams })
+    if (clean) currentUma.protocol_id = clean
+    else delete currentUma.protocol_id
+    const selectedProtocol = videoProtocols.find((item) => item.id === clean)
+    const matchedProfile = selectedProtocol?.model_profiles?.find(
+      (item) => item.match === draft.model_name,
+    ) || selectedProtocol?.model_profiles?.find((item) => item.match === "*")
+    if (matchedProfile?.target_profile_id) {
+      currentUma.target_profile_id = matchedProfile.target_profile_id
+    } else {
+      delete currentUma.target_profile_id
+    }
+    currentUma.operation = "video.generate"
+    nextParams.uma = currentUma
+    setDraft({ ...draft, api_format: "universal_adapter", params: nextParams })
+  }
+  const setVideoModelName = (value: string) => {
+    const nextParams = { ...(draft.params || {}) }
+    const currentUma = nextParams.uma && typeof nextParams.uma === "object"
+      ? { ...(nextParams.uma as Record<string, unknown>) }
+      : {}
+    const protocol = videoProtocols.find(
+      (item) => item.id === String(currentUma.protocol_id || ""),
+    )
+    const matchedProfile = protocol?.model_profiles?.find((item) => item.match === value)
+      || protocol?.model_profiles?.find((item) => item.match === "*")
+    if (matchedProfile?.target_profile_id) {
+      currentUma.target_profile_id = matchedProfile.target_profile_id
+    } else {
+      delete currentUma.target_profile_id
+    }
+    nextParams.uma = currentUma
+    setDraft({ ...draft, model_name: value, params: nextParams })
   }
   const setAudioProtocolId = (value: string) => {
     const nextParams = { ...(draft.params || {}) }
@@ -446,19 +482,30 @@ function Row({
     const template = videoModelTemplates.find((item) => item.value === templateKey)
     if (!template) return
     const nextParams = { ...(draft.params || {}) }
-    delete nextParams.video_protocol
-    delete nextParams.protocol
-    nextParams.video_protocol_id = template.protocolId
+    const currentUma = nextParams.uma && typeof nextParams.uma === "object"
+      ? { ...(nextParams.uma as Record<string, unknown>) }
+      : {}
+    nextParams.uma = {
+      ...currentUma,
+      protocol_id: template.protocolId,
+      operation: "video.generate",
+      target_profile_id: template.targetProfileId,
+    }
     setDraft({
       ...draft,
       model_name: template.modelName,
-      api_format: "video_http_v1",
+      api_format: "universal_adapter",
       params: nextParams,
     })
   }
+  const draftUma = draft.params?.uma && typeof draft.params.uma === "object"
+    ? draft.params.uma as Record<string, unknown>
+    : {}
   const selectedVideoTemplate = entry.kind === "video"
     ? videoModelTemplates.find((item) =>
-      item.modelName === draft.model_name && item.protocolId === String(draft.params?.video_protocol_id || ""),
+      item.modelName === draft.model_name
+      && item.protocolId === String(draftUma.protocol_id || "")
+      && (!item.targetProfileId || item.targetProfileId === String(draftUma.target_profile_id || "")),
     )?.value || ""
     : ""
   const imageInputTransport = normalizeVideoImageTransport(draft.params?.image_transport)
@@ -473,7 +520,7 @@ function Row({
     ? imageProtocolId
     : ""
   const canSaveImageProtocol = draft.api_format !== "image_http_v1" || Boolean(selectedCatalogImageProtocolId)
-  const videoProtocolId = String(draft.params?.video_protocol_id || "")
+  const videoProtocolId = String(draftUma.protocol_id || "")
   const videoProtocolOptions = videoProtocols.map((item) => ({
     label: item.display_name && item.display_name !== item.id
       ? `${item.display_name} · ${item.id}`
@@ -485,11 +532,18 @@ function Row({
     : ""
   const selectedVideoProtocol = videoProtocols.find((item) => item.id === selectedCatalogProtocolId)
   const additionalVideoBaseUrls = selectedVideoProtocol?.additional_base_urls || []
+  const videoBases = draftUma.bases && typeof draftUma.bases === "object"
+    ? draftUma.bases as Record<string, unknown>
+    : {}
   const hasRequiredVideoBaseUrls = additionalVideoBaseUrls.every((item) =>
-    !item.required || Boolean(String(draft.params?.[item.param] || "").trim()),
+    !item.required || Boolean(String(videoBases[item.slot || item.param] || "").trim()),
   )
-  const canSaveVideoProtocol = draft.api_format !== "video_http_v1"
-    || (Boolean(selectedCatalogProtocolId) && hasRequiredVideoBaseUrls)
+  const canSaveVideoProtocol = draft.kind !== "video"
+    || (
+      Boolean(selectedCatalogProtocolId)
+      && Boolean(String(draftUma.target_profile_id || "").trim())
+      && hasRequiredVideoBaseUrls
+    )
   const audioProtocolId = String(draft.params?.audio_protocol_id || "")
   const audioProtocolOptions = audioProtocols.map((item) => ({
     label: item.display_name && item.display_name !== item.id
@@ -596,18 +650,16 @@ function Row({
                 })),
               ]}
               defaultText="可手填"
-              hint="这些选项来自视频协议配置的 model_profiles；选择后只填模型名和协议 ID。"
+              hint="这些选项来自独立的视频 target 配置；选择后会同时绑定模型名、协议 ID 和 target profile。"
             />
             <F
               label="模型名"
               required
               value={draft.model_name}
-              onChange={(v) => setField("model_name", v)}
+              onChange={setVideoModelName}
               hint="填写当前中转站或官方接口实际支持的模型 ID。"
             />
-            {draft.api_format === "video_http_v1" && (
-              <>
-                <SelectField
+            <SelectField
                   label="视频协议"
                   value={selectedCatalogProtocolId}
                   onChange={setVideoProtocolId}
@@ -616,55 +668,23 @@ function Row({
                     ...videoProtocolOptions,
                   ]}
                   required
-                  hint="从 config/video_provider_protocols/catalog.json 动态读取；选择协议后系统按该协议构造请求、轮询和解析结果。"
+                  hint="模型能力来自独立 target 配置；请求、轮询和结果读取由 Universal Model Adapter V2 协议执行。"
                 />
-                {videoProtocolId && !selectedCatalogProtocolId && (
-                  <div className="col-span-2 rounded border border-amber-800 bg-amber-950/30 px-2 py-1 text-[10px] text-amber-200">
-                    当前保存的协议 ID「{videoProtocolId}」不在配置文件中，请先在 catalog 中加入该协议，或改选已有协议。
-                  </div>
-                )}
-                {additionalVideoBaseUrls.map((item) => (
-                  <F
-                    key={item.param}
-                    label={item.label || item.param}
-                    required={item.required}
-                    value={String(draft.params?.[item.param] || "")}
-                    onChange={(value) => setParamField(item.param, value)}
-                    hint={item.hint || "该协议的这个操作使用独立的版本化 API Base URL。"}
-                  />
-                ))}
-              </>
+            {videoProtocolId && !selectedCatalogProtocolId && (
+              <div className="col-span-2 rounded border border-amber-800 bg-amber-950/30 px-2 py-1 text-[10px] text-amber-200">
+                当前保存的协议 ID「{videoProtocolId}」不在 UMA V2 协议目录中，请改选已有协议。
+              </div>
             )}
-            <div className="col-span-2 rounded border border-gray-800 bg-gray-950/35 p-2">
-              <button
-                type="button"
-                onClick={() => setAdvancedOpen((value) => !value)}
-                className="flex w-full items-center justify-between text-left text-[11px] text-gray-300"
-              >
-                <span>高级设置</span>
-                <span className="text-gray-500">{advancedOpen ? "收起" : "展开"}</span>
-              </button>
-              {advancedOpen && (
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <SelectField
-                    label="图片输入"
-                    value={imageInputTransport}
-                    onChange={(v) => setParamField("image_transport", v)}
-                    options={VIDEO_IMAGE_TRANSPORT_OPTIONS}
-                    hint="默认本地项目图转 Base64/data URL，已有公网 URL 原样传；公网 URL 模式需要服务商能直接访问图片地址。"
-                  />
-                  {imageInputTransport === "public_url" && (
-                    <F
-                      label="公网根地址"
-                      value={String(draft.params?.public_base_url || "")}
-                      onChange={(v) => setParamField("public_base_url", v)}
-                      defaultText="默认空"
-                      hint="用于把 /api/media/... 项目图片转成外网可访问 URL，例如 https://example.com。"
-                    />
-                  )}
-                </div>
-              )}
-            </div>
+            {additionalVideoBaseUrls.map((item) => (
+              <F
+                key={item.param}
+                label={item.label || item.param}
+                required={item.required}
+                value={String(videoBases[item.slot || item.param] || "")}
+                onChange={(value) => setVideoBaseField(item.slot || item.param, value)}
+                hint={item.hint || "该协议的这个操作使用独立的版本化 API Base URL。"}
+              />
+            ))}
           </>
         ) : entry.kind === "audio" ? (
           <>

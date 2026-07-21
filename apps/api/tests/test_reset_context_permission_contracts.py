@@ -211,7 +211,6 @@ def test_full_reset_context_keys_cover_model_visible_project_state() -> None:
         "pending_blueprint_revision",
         "blueprint_generation_progress",
         "blueprint_window_progress",
-        "panel_layout",
         "agent_token_usage",
         "_mentor_guides_loaded",
         "_skills_loaded",
@@ -247,7 +246,6 @@ def test_full_reset_state_cleanup_removes_prompt_visible_project_context() -> No
             ]
         },
         "project_sub_mode": None,
-        "panel_layout": {"mode": "old"},
         "_pending_reset_confirm": {"scope": "full"},
         "_pending_tool_confirm": {"target": "canvas.delete", "reason": "旧清空画布确认"},
         "story_bible": {

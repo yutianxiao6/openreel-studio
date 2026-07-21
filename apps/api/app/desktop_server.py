@@ -86,6 +86,7 @@ def _run_packaging_smoke() -> None:
     from app.agent.workflow_spec_prompt_contract import WORKFLOW_SPEC_V2_GUIDE
     from app.config_store.schema import MediaProviderEntry
     from app.services import media_operations, subprocess_utils
+    from app.services.video_target_catalog import load_video_target_catalog
 
     if not WORKFLOW_SPEC_V2_GUIDE.strip():
         raise RuntimeError("workflow spec prompt contract is empty")
@@ -104,20 +105,45 @@ def _run_packaging_smoke() -> None:
         raise RuntimeError("Windows media subprocesses are not configured to hide command windows")
     if not callable(media_operations.split_video_tracks):
         raise RuntimeError("video split operation was not bundled")
+    if not load_video_target_catalog().get("targets"):
+        raise RuntimeError("UMA video target catalog was not bundled")
 
     samples = (
-        ("image", "image_http_v1", "image_protocol_id", "openai_images_generations"),
-        ("video", "video_http_v1", "video_protocol_id", "seedance_2_0"),
-        ("audio", "audio_http_v1", "audio_protocol_id", "openai_audio_speech"),
+        (
+            "image",
+            "packaging-smoke-image",
+            "image_http_v1",
+            {"image_protocol_id": "openai_images_generations"},
+        ),
+        (
+            "video",
+            "doubao-seedance-2-0-260128",
+            "universal_adapter",
+            {
+                "uma": {
+                    "protocol_id": "volcengine.seedance-video-task",
+                    "operation": "video.generate",
+                    "target_profile_id": (
+                        "volcengine.seedance-video-task:doubao-seedance-2-0-260128"
+                    ),
+                }
+            },
+        ),
+        (
+            "audio",
+            "packaging-smoke-audio",
+            "audio_http_v1",
+            {"audio_protocol_id": "openai_audio_speech"},
+        ),
     )
-    for kind, api_format, param_name, protocol_id in samples:
+    for kind, model_name, api_format, params in samples:
         MediaProviderEntry(
             kind=kind,
             name=f"packaging-smoke-{kind}",
             base_url="https://example.test/v1",
-            model_name="packaging-smoke-model",
+            model_name=model_name,
             api_format=api_format,
-            params={param_name: protocol_id},
+            params=params,
         )
 
     print("OpenReel desktop packaging smoke passed", flush=True)

@@ -171,27 +171,12 @@ def _node_surface(node: dict[str, Any]) -> str:
     return _node_surface_from_model_config(node.get("model_config"))
 
 
-def _has_video_project_context(state: dict) -> bool:
-    # A remembered mode selection by itself is not a formal production chain.
-    # Formal video context begins only once there is a blueprint or pending
-    # blueprint state. This lets standalone visual
-    # asset requests keep using draft_canvas without relying on language
-    # shortcuts.
-    return bool(
-        state.get("project_blueprint")
-        or state.get("pending_blueprint_draft")
-        or state.get("pending_blueprint_review")
-        or state.get("pending_blueprint_section_review")
-        or state.get("pending_blueprint_confirmation")
-    )
-
-
 def _preferred_mode_for_node_type(
     state: dict,
     target_type: str,
     fields: dict[str, Any] | None = None,
 ) -> tuple[str, str | None]:
-    if _has_video_project_context(state):
+    if state.get("project_mode") == "video_production":
         return "video_production", None
     if target_type in _MODE_ALLOWED_TYPES["single_node"]:
         return "single_node", None
@@ -1863,7 +1848,6 @@ async def _write_project_state_patch(project_id: str, patch: dict) -> None:
 
 async def node_list_creatable_types(project_id: str) -> dict:
     """看当前项目状态下能建哪些 type,以及每种 type 的依赖前置。"""
-    from app.services.project_service import ProjectService
     state = await _read_project_state(project_id)
     mode = state.get("project_mode")
     sub_mode = state.get("project_sub_mode")
@@ -2101,7 +2085,7 @@ async def _scan_unfinished_nodes(project_id: str) -> list[dict]:
             })
             continue
 
-        # 只处理 12 类节点
+        # Only current generic canvas node types participate in readiness checks.
         if ntype not in NODE_TYPES:
             continue
 
@@ -4914,8 +4898,15 @@ async def _run_video_node(project_id: str, node_id: str, f: dict) -> dict:
             "reference_videos",
             "reference_audios",
             "generate_audio",
+            "cfg_scale",
+            "enhance_prompt",
+            "shot_type",
+            "bitrate_mode",
+            "keep_original_sound",
+            "target_fps",
             "watermark",
             "return_last_frame",
+            "negative_prompt",
             "seed",
             "priority",
             "execution_expires_after",

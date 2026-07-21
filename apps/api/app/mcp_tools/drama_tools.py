@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 from pathlib import Path
 
@@ -14,15 +13,13 @@ from app.agent.project_blueprint import (
     delete_blueprint_files_report,
 )
 from app.config import settings
-from app.db.models import Character, Episode, Message, Project
+from app.db.models import Character, Episode, Message, Project, WorkflowEdge, WorkflowNode
 from app.db.session import session_scope
 from app.prompts import resolve_prompt
 from app.prompts._section import WorkerContext
 from app.services.llm_service import LLMService
 from app.services.node_public_ids import public_node_id_from_model
 
-
-_VALID_WORKFLOW_MODES = ("grid", "frames", "story_template")
 
 _FULL_RESET_CONTEXT_KEYS = (
     "characters",
@@ -59,7 +56,6 @@ _FULL_RESET_CONTEXT_KEYS = (
     "last_finished_plan_id",
     "last_finished_plan_status",
     "last_finished_plan_at",
-    "panel_layout",
     "_pending_reset_confirm",
     "_pending_tool_confirm",
     "agent_token_usage",
@@ -106,19 +102,6 @@ def _normalize_requirements(requirements: list[str] | str | None) -> list[str]:
     ]
 
 
-def _legacy_prompt_hint(category: str, query: str = "") -> str:
-    return ""
-
-
-def _default_segment_workflow_mode(state: dict) -> str:
-    mode = (
-        state.get("selected_video_mode")
-        or state.get("project_sub_mode")
-        or "grid"
-    )
-    return mode if mode in _VALID_WORKFLOW_MODES else "grid"
-
-
 async def _archive_project_chat_messages(session, project_id: str) -> int:
     """Hide old project chat from future prompt assembly after full reset."""
     result = await session.exec(
@@ -142,34 +125,6 @@ def _project_episode_duration_seconds(project: Project, state: dict) -> int | No
     except (TypeError, ValueError):
         return None
     return duration if duration > 0 else None
-
-
-def _normalize_episode_segments(
-    segments: list,
-    *,
-    episode_number: int,
-    target_duration_seconds: int,
-    workflow_mode: str,
-    episode_duration_seconds: int | None,
-) -> list[dict]:
-    normalized = [dict(seg) for seg in segments if isinstance(seg, dict)]
-    target = max(1, int(target_duration_seconds or 15))
-    max_segments = None
-    if episode_duration_seconds:
-        max_segments = max(1, math.ceil(episode_duration_seconds / target))
-        normalized = normalized[:max_segments]
-
-    for i, seg in enumerate(normalized):
-        seg["index"] = i + 1
-        seg["episode_number"] = episode_number
-        seg["id"] = f"seg-{episode_number}-{i + 1}"
-        seg["workflow_mode"] = workflow_mode
-        if episode_duration_seconds:
-            remaining = max(1, episode_duration_seconds - (target * i))
-            seg["duration_seconds"] = min(target, remaining)
-        else:
-            seg.setdefault("duration_seconds", target)
-    return normalized
 
 
 def _extract_single_character(data: object, requirements: list[str] | str | None = None) -> dict:
@@ -719,17 +674,6 @@ async def generate_image_prompt(
             f"人物外貌：{appearance}\n"
         )
 
-        # Route to appropriate template category based on context:
-        # - character_name given → character_image
-        # - shot with shot_type → storyboard_image
-        # - else (pure description) → scene_image
-        if character_name:
-            template_category = "character_image"
-        elif shot is not None:
-            template_category = "storyboard_image"
-        else:
-            template_category = "scene_image"
-
         system_prompt = await resolve_prompt(
             "drama.generate_image_prompt", project_id, node_id,
             ctx=WorkerContext(
@@ -738,11 +682,6 @@ async def generate_image_prompt(
                 extras={"character_name": character_name, "shot_id": shot_id},
             ),
         )
-        system_prompt = system_prompt + _legacy_prompt_hint(
-            template_category,
-            query=" ".join([description or "", appearance or "", shot.content if shot else ""]),
-        )
-
         svc = LLMService(session)
         result = await svc.generate(
             task_type="image_prompt_generation",
@@ -801,14 +740,6 @@ async def generate_video_prompt(
                 duration_seconds=int(shot.duration) if shot and shot.duration else None,
                 extras={"shot_id": shot_id},
             ),
-        )
-        system_prompt = system_prompt + _legacy_prompt_hint(
-            "video_prompt",
-            query=" ".join([
-                description or "",
-                first_frame_description or "",
-                last_frame_description or "",
-            ]),
         )
         result = await svc.generate(
             task_type="video_prompt_generation",
@@ -1136,92 +1067,6 @@ async def generate_shot_video_prompt(
 # segments, not directly to episodes.
 # ─────────────────────────────────────────────────────────────────────────
 
-async def plan_episode_segments(
-    project_id: str,
-    episode_number: int,
-    target_duration_seconds: int = 15,
-    episode_duration_seconds: int | None = None,
-    node_id: str | None = None,
-) -> dict:
-    """Slice an episode's script into ~target_duration_seconds segments.
-
-    Output: list of segments with plot, characters, scene_refs (may be multiple
-    if action moves locations within one segment), duration, segment_arc.
-    """
-    from app.services import drama_legacy
-
-    return await drama_legacy.plan_episode_segments(
-        project_id=project_id,
-        episode_number=episode_number,
-        target_duration_seconds=target_duration_seconds,
-        episode_duration_seconds=episode_duration_seconds,
-        node_id=node_id,
-    )
-
-
-async def update_segment(
-    project_id: str,
-    episode_number: int,
-    segment_index: int,
-    plot: str | None = None,
-    characters: list[str] | None = None,
-    scene_refs: list[str] | None = None,
-    duration_seconds: int | None = None,
-    segment_arc: str | None = None,
-) -> dict:
-    """Edit one segment in-place inside state.segments[episode]."""
-    from app.services import drama_legacy
-
-    return await drama_legacy.update_segment(
-        project_id=project_id,
-        episode_number=episode_number,
-        segment_index=segment_index,
-        plot=plot,
-        characters=characters,
-        scene_refs=scene_refs,
-        duration_seconds=duration_seconds,
-        segment_arc=segment_arc,
-    )
-
-
-async def set_segment_workflow_mode(
-    project_id: str,
-    episode_number: int,
-    segment_index: int,
-    mode: str,
-) -> dict:
-    """切换某个段落的视觉路径（grid 多宫格 / frames 首尾帧 / story_template 故事模板）。
-
-    三模式互斥,每段只能选一种。切换后,已经按旧 mode 生成的产物保留在画布上,
-    但后续工具调用按新 mode 校验。
-    """
-    from app.services import drama_legacy
-
-    return await drama_legacy.set_segment_workflow_mode(
-        project_id=project_id,
-        episode_number=episode_number,
-        segment_index=segment_index,
-        mode=mode,
-    )
-
-
-async def assign_segment_scene(
-    project_id: str,
-    episode_number: int,
-    segment_index: int,
-    scene_id: str,
-) -> dict:
-    """Attach an existing scene (by id) to a segment's scene_refs."""
-    from app.services import drama_legacy
-
-    return await drama_legacy.assign_segment_scene(
-        project_id=project_id,
-        episode_number=episode_number,
-        segment_index=segment_index,
-        scene_id=scene_id,
-    )
-
-
 async def generate_segment_shots(
     project_id: str,
     episode_number: int,
@@ -1326,60 +1171,6 @@ async def generate_segment_shots(
         }
 
 
-async def generate_storyboard_grid(
-    project_id: str,
-    episode_number: int,
-    segment_index: int | None = None,
-    layout: int = 4,
-    node_id: str | None = None,
-) -> dict:
-    """STUB — generate a multi-cell storyboard grid image (4/6/9 cells).
-
-    Preview-only. Does not feed downstream shot generation. Real backend
-    (ComfyUI / Fal / MidJourney composite) is wired in P3.
-    """
-    if layout not in {4, 6, 9}:
-        layout = 4
-    return {
-        "status": "stub",
-        "layout": layout,
-        "episode_number": episode_number,
-        "segment_index": segment_index,
-        "note": "storyboard_grid 是预览专用产物,不接入分镜生产链。后端待接入,当前返回占位。",
-        "url": None,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Coordinated delete: keep state.* and the canvas graph in sync.
-#
-# These tools are the *only* sanctioned way to remove a character / episode /
-# outline. They:
-#   1. Strip the entry out of project.state_json
-#   2. Remove the matching DB rows (Character / Episode / Shot)
-#   3. Walk workflow_nodes by input_json link keys and delete the matching
-#      nodes (plus their supersedes-chain children and any edges referencing
-#      them).
-#
-# The orchestrator translates the returned `deleted_node_ids` into
-# `canvas_action: delete_node` SSE events so the frontend store stays in sync.
-# ---------------------------------------------------------------------------
-
-from app.db.models import WorkflowEdge, WorkflowNode  # noqa: E402
-
-
-def _node_input_field(node: WorkflowNode, key: str):
-    if not node.input_json:
-        return None
-    try:
-        data = json.loads(node.input_json)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    return data.get(key)
-
-
 async def _delete_nodes_by_ids(session, node_ids: set[str]) -> list[str]:
     """Delete nodes + their supersedes chain + edges. Returns deleted ids."""
     if not node_ids:
@@ -1409,204 +1200,6 @@ async def _delete_nodes_by_ids(session, node_ids: set[str]) -> list[str]:
         deleted.append(node.id)
         await session.delete(node)
     return deleted
-
-
-_CHARACTER_NODE_TYPES = {
-    "character",
-    "character_generation",
-    "character_image_prompt",
-    "character_reference_image",
-    "character_relationship",
-}
-
-_EPISODE_NODE_TYPES = {
-    "episode_script",
-    "episode_review",
-    "episode_segment_plan",
-    "episode_export",
-    "script_generation",
-    "script_review",
-    "storyboard_generation",
-    "storyboard_grid",
-    "segment",
-    "scene",
-    "scene_image",
-    "scene_image_prompt",
-    "shot",
-    "shot_list",
-    "shot_image_prompt",
-    "shot_reference_image",
-    "shot_first_frame",
-    "shot_last_frame",
-    "shot_video_prompt",
-    "shot_video_clip",
-    "image_prompt_generation",
-    "image_generation",
-    "video_prompt_generation",
-    "video_generation",
-}
-
-
-async def delete_character(project_id: str, name: str) -> dict:
-    """Remove a character from state + DB + canvas in one transaction.
-
-    Matches canvas nodes by either input.character_name == name OR
-    (for character_generation nodes) title startswith name.
-    """
-    if not name:
-        return {"error": "name is required"}
-
-    async with session_scope() as session:
-        project = await session.get(Project, project_id)
-        if not project:
-            return {"error": "Project not found"}
-
-        # 1. Strip from state.characters
-        state = json.loads(project.state_json or "{}")
-        chars = state.get("characters", []) or []
-        kept = [
-            c for c in chars
-            if not (isinstance(c, dict) and c.get("name") == name)
-        ]
-        removed_state = len(chars) - len(kept)
-        if removed_state:
-            state["characters"] = kept
-            project.state_json = json.dumps(state, ensure_ascii=False)
-            session.add(project)
-
-        # 2. Delete Character rows
-        char_stmt = select(Character).where(
-            Character.project_id == project_id,
-            Character.name == name,
-        )
-        char_rows = (await session.exec(char_stmt)).all()
-        char_ids = {c.id for c in char_rows}
-        for c in char_rows:
-            await session.delete(c)
-
-        # 3. Find matching canvas nodes
-        node_stmt = select(WorkflowNode).where(
-            WorkflowNode.project_id == project_id,
-            WorkflowNode.type.in_(_CHARACTER_NODE_TYPES),
-        )
-        candidate_ids: set[str] = set()
-        for node in (await session.exec(node_stmt)).all():
-            cname = _node_input_field(node, "character_name")
-            cid = _node_input_field(node, "character_id")
-            if cname == name or (cid and cid in char_ids):
-                candidate_ids.add(node.id)
-                continue
-            # Fallback for fusion character nodes where the name is in title.
-            if node.type == "character" and node.title == name:
-                candidate_ids.add(node.id)
-
-        deleted_node_ids = await _delete_nodes_by_ids(session, candidate_ids)
-
-        await session.commit()
-
-        return {
-            "ok": True,
-            "name": name,
-            "removed_from_state": removed_state,
-            "deleted_character_rows": len(char_rows),
-            "deleted_node_ids": deleted_node_ids,
-        }
-
-
-async def delete_episode_script(project_id: str, episode_number: int) -> dict:
-    """Remove a single episode: state.episodes[N], Episode + Shot rows, and
-    every canvas node whose input links to that episode number."""
-    if episode_number is None:
-        return {"error": "episode_number is required"}
-
-    ep_key = str(episode_number)
-
-    async with session_scope() as session:
-        project = await session.get(Project, project_id)
-        if not project:
-            return {"error": "Project not found"}
-
-        # 1. Strip from state
-        state = json.loads(project.state_json or "{}")
-        mutated = False
-        for section in ("episodes", "reviews", "storyboards", "segments"):
-            sec = state.get(section)
-            if isinstance(sec, dict) and ep_key in sec:
-                sec.pop(ep_key, None)
-                mutated = True
-        if mutated:
-            project.state_json = json.dumps(state, ensure_ascii=False)
-            session.add(project)
-
-        # 2. Drop DB rows. Episode → Shot (FK) order.
-        ep_stmt = select(Episode).where(
-            Episode.project_id == project_id,
-            Episode.episode_number == episode_number,
-        )
-        episodes = (await session.exec(ep_stmt)).all()
-        episode_ids = {e.id for e in episodes}
-
-        from app.db.models import Shot  # local import to dodge cycle
-        if episode_ids:
-            shot_stmt = select(Shot).where(Shot.episode_id.in_(episode_ids))
-            for shot in (await session.exec(shot_stmt)).all():
-                await session.delete(shot)
-        for ep in episodes:
-            await session.delete(ep)
-
-        # 3. Match canvas nodes by input.episode_number
-        node_stmt = select(WorkflowNode).where(
-            WorkflowNode.project_id == project_id,
-            WorkflowNode.type.in_(_EPISODE_NODE_TYPES),
-        )
-        candidate_ids: set[str] = set()
-        for node in (await session.exec(node_stmt)).all():
-            ep_num = _node_input_field(node, "episode_number")
-            if ep_num == episode_number:
-                candidate_ids.add(node.id)
-
-        deleted_node_ids = await _delete_nodes_by_ids(session, candidate_ids)
-
-        await session.commit()
-
-        return {
-            "ok": True,
-            "episode_number": episode_number,
-            "removed_from_state": mutated,
-            "deleted_episode_rows": len(episodes),
-            "deleted_node_ids": deleted_node_ids,
-        }
-
-
-async def delete_outline(project_id: str) -> dict:
-    """Clear state.outline and delete outline-generation nodes. Episodes are
-    preserved so the user doesn't lose their scripts by accident."""
-    async with session_scope() as session:
-        project = await session.get(Project, project_id)
-        if not project:
-            return {"error": "Project not found"}
-
-        state = json.loads(project.state_json or "{}")
-        had_outline = "outline" in state
-        if had_outline:
-            state.pop("outline", None)
-            project.state_json = json.dumps(state, ensure_ascii=False)
-            session.add(project)
-
-        node_stmt = select(WorkflowNode).where(
-            WorkflowNode.project_id == project_id,
-            WorkflowNode.type.in_({"outline", "outline_generation"}),
-        )
-        candidate_ids = {n.id for n in (await session.exec(node_stmt)).all()}
-
-        deleted_node_ids = await _delete_nodes_by_ids(session, candidate_ids)
-
-        await session.commit()
-        return {
-            "ok": True,
-            "had_outline": had_outline,
-            "deleted_node_ids": deleted_node_ids,
-        }
 
 
 async def reset_project(
@@ -1868,163 +1461,3 @@ async def reset_project(
             "archived_messages": archived_messages,
             "title": applied_theme.get("title") or UNTITLED_PROJECT_TITLE,
         }
-
-
-async def plan_episode_cast_scene(
-    project_id: str,
-    episode_number: int,
-    node_id: str | None = None,
-) -> dict:
-    """规划一集的出场人物 + 场景 + 段落分配。
-
-    输入：剧本 + 切段方案。
-    输出：{cast: [...], scenes: [...], segment_assignments: {seg_index: {cast: [...], scenes: [...]}}}
-    并落到 state.episodes[N].cast_scene_plan，方便后续段落级工具读取。
-    """
-    from app.services import drama_legacy
-
-    return await drama_legacy.plan_episode_cast_scene(
-        project_id=project_id,
-        episode_number=episode_number,
-        node_id=node_id,
-    )
-
-
-async def generate_segment_video_prompt(
-    project_id: str,
-    segment_id: str,
-    node_id: str | None = None,
-) -> dict:
-    """段落级视频提示词生成。
-
-    引用该段落的图清单（多宫格 / 首尾帧 / 故事模板，三选一已落到节点）+ 段落剧情,
-    产出 image-to-video 的 prompt 数据,后续由 segment_video_clip / media_generation service 使用。
-    """
-    async with session_scope() as session:
-        project = await session.get(Project, project_id)
-        if not project:
-            return {"error": "Project not found"}
-        state = json.loads(project.state_json or "{}")
-
-        target_seg = None
-        target_episode = None
-        for ep_num, segs in (state.get("segments") or {}).items():
-            if not isinstance(segs, list):
-                continue
-            for seg in segs:
-                if isinstance(seg, dict) and seg.get("id") == segment_id:
-                    target_seg = seg
-                    target_episode = ep_num
-                    break
-            if target_seg:
-                break
-        if not target_seg:
-            return {"error": f"找不到段落 {segment_id}"}
-
-        workflow_mode = target_seg.get("workflow_mode") or "grid"
-        plot = target_seg.get("plot", "")
-        duration = target_seg.get("duration_seconds", 15)
-
-        # 把该段落的分镜内容(cells / shots / 整段 prompt)拉出来塞进 user_prompt
-        # —— LLM 看不到分镜表就只能空洞地写镜头,根因是这里没投喂
-        from app.db.models import WorkflowNode
-        from sqlmodel import select as _select
-        storyboard_block = ""
-        sb_stmt = _select(WorkflowNode).where(
-            WorkflowNode.project_id == project_id,
-            WorkflowNode.type == "segment_storyboard",
-        )
-        sb_rows = (await session.exec(sb_stmt)).all()
-        for sb in sb_rows:
-            try:
-                sb_input = json.loads(sb.input_json or "{}")
-            except (json.JSONDecodeError, TypeError):
-                sb_input = {}
-            same_ep = str(sb_input.get("episode_number")) == str(target_episode)
-            same_idx = sb_input.get("segment_index") == target_seg.get("index")
-            if same_ep and same_idx:
-                try:
-                    sb_out = json.loads(sb.output_json or "{}")
-                except (json.JSONDecodeError, TypeError):
-                    sb_out = {}
-                sb_prompt = (sb_out.get("prompt") or sb_input.get("prompt") or sb.prompt or "")
-                cells = sb_out.get("cells") or []
-                shots = sb_out.get("shots") or []
-                parts = []
-                if sb_prompt:
-                    parts.append(f"分镜整体描述:\n{sb_prompt[:2000]}")
-                if cells:
-                    parts.append("逐格(grid 模式):\n" + "\n".join(
-                        f"  - {c.get('row','?')}行{c.get('col','?')}列 [{c.get('shot_type','')}]: "
-                        f"{c.get('content','')}"
-                        + (f" 台词「{c.get('dialogue')}」" if c.get('dialogue') else "")
-                        for c in cells
-                    ))
-                if shots:
-                    parts.append("逐镜(shot_list 模式):\n" + "\n".join(
-                        f"  - 镜 {s.get('index', i+1)} [{s.get('shot_type','')}] "
-                        f"持续 {s.get('duration', '?')}s: {s.get('action','')}"
-                        + (f" 台词「{s.get('dialogue')}」" if s.get('dialogue') else "")
-                        for i, s in enumerate(shots)
-                    ))
-                if parts:
-                    storyboard_block = "\n\n".join(parts)
-                break
-
-        user_prompt = (
-            f"段落 ID:{segment_id}(第 {target_episode} 集第 {target_seg.get('index')} 段)\n"
-            f"工作流模式:{workflow_mode}(grid=多宫格 / frames=首尾帧 / story_template=故事模板)\n"
-            f"剧情:{plot}\n"
-            f"段落总时长:约 {duration} 秒\n\n"
-            + (f"### 分镜表(必须按这个写视频提示词)\n{storyboard_block}\n\n" if storyboard_block else "")
-            + "### 输出要求(铁律)\n"
-            "video_prompt 必须**按分镜逐镜**写成一段连续的文字脚本,**每镜必含**:\n"
-            "  1) 景别(特写/中景/远景/全景/航拍)\n"
-            "  2) 主体动作(动词主导,具体到肢体或表情)\n"
-            "  3) 摄影机运动(推/拉/摇/移/跟/升降/环绕/手持/Steadicam,任何一个明确的运动)\n"
-            "  4) 持续秒数(N.Ns,所有镜头加总要严格等于段落总时长)\n"
-            "  5) 转场到下一镜的方式(直切/淡入淡出/匹配剪辑/划像 等)\n"
-            "如果有台词必须保留;不要写画风/颜色/光影(这些已经在分镜图里),只关注**动作和镜头**。\n\n"
-            "输出 JSON {\n"
-            '  "prompt": "镜1 [中景] [推镜头] [3.0s] ...; 镜2 [特写] ...; 镜3 [...] ...",\n'
-            '  "motion_hints": ["推镜头","横摇","跟移"],\n'
-            '  "camera": "整段摄影风格说明",\n'
-            '  "audio_hint": "环境音/配乐/SFX",\n'
-            '  "shots": [{"index":1,"shot_type":"中景","action":"...","camera":"推镜头","duration":3.0,"transition":"直切"}, ...]\n'
-            "}\n仅 JSON,不要任何额外文字。"
-        )
-        svc = LLMService(session)
-        result = await svc.generate(
-            task_type="video_prompt_generation",
-            messages=[{"role": "user", "content": user_prompt}],
-            system=await resolve_prompt(
-                "drama.generate_segment_video_prompt", project_id, node_id,
-                ctx=WorkerContext(
-                    project_id=project_id, node_id=node_id,
-                    episode_number=int(target_episode) if target_episode else None,
-                    segment_index=target_seg.get("index"),
-                    workflow_mode=workflow_mode,
-                    grid=target_seg.get("grid"),
-                    duration_seconds=duration,
-                    extras={"segment_id": segment_id},
-                ),
-            ),
-            project_id=project_id,
-        )
-        data = _extract_json(result["content"], default={"prompt": result["content"]})
-        if not isinstance(data, dict):
-            data = {"prompt": str(data)}
-
-        target_seg["video_prompt"] = data.get("prompt")
-        target_seg["video_prompt_meta"] = data
-        project.state_json = json.dumps(state, ensure_ascii=False)
-        session.add(project)
-        await session.commit()
-
-        return {
-            "segment_id": segment_id,
-            "episode_number": int(target_episode) if target_episode else None,
-            "workflow_mode": workflow_mode,
-            **data,
-        }
-

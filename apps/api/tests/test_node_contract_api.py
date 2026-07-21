@@ -31,10 +31,16 @@ def _video_config() -> dict:
                 "kind": "video",
                 "name": "video-active",
                 "model_name": "video-v2",
-                "api_format": "video_http_v1",
+                "api_format": "universal_adapter",
                 "enabled": True,
                 "is_active": True,
-                "params": {"video_protocol_id": "video-contract"},
+                "params": {
+                    "uma": {
+                        "protocol_id": "test.video-task",
+                        "operation": "video.generate",
+                        "target_profile_id": "test.video-task:video-v2",
+                    }
+                },
             }
         ]
     }
@@ -45,21 +51,26 @@ def _video_catalog() -> dict:
         "ok": True,
         "protocols": [
             {
-                "id": "video-contract",
-                "supported_ratios": ["16:9"],
-                "supported_resolutions": ["720p"],
-                "default_ratio": "16:9",
-                "default_resolution": "720p",
-                "duration": {"allowed_values": [5, 10]},
-                "modes": {
-                    "text_to_video": {"max_images": 0},
-                    "first_frame": {"min_images": 1, "max_images": 1},
-                    "multimodal_reference": {"min_total_media": 1, "max_images": 2},
-                },
-                "model_profiles": [
+                "id": "test.video-task",
+                "targets": [
                     {
-                        "match": "video-v2",
-                        "supported_modes": ["text_to_video", "first_frame", "multimodal_reference"],
+                        "id": "test.video-task:video-v2",
+                        "model_match": "video-v2",
+                        "capabilities": {
+                            "supported_ratios": ["16:9"],
+                            "supported_resolutions": ["720p"],
+                            "default_ratio": "16:9",
+                            "default_resolution": "720p",
+                            "duration": {"allowed_values": [5, 10]},
+                            "modes": {
+                                "text_to_video": {"max_images": 0},
+                                "first_frame": {"min_images": 1, "max_images": 1},
+                                "multimodal_reference": {
+                                    "min_total_media": 1,
+                                    "max_images": 2,
+                                },
+                            },
+                        },
                     }
                 ],
             }
@@ -123,8 +134,8 @@ def test_video_contract_resolves_provider_protocol_and_reference_mode() -> None:
     assert result["provider"] == {
         "name": "video-active",
         "model_name": "video-v2",
-        "api_format": "video_http_v1",
-        "protocol_id": "video-contract",
+        "api_format": "universal_adapter",
+        "protocol_id": "test.video-task",
         "selection": "active_or_first_enabled",
     }
     assert result["effective_video_mode"] == "multimodal_reference"

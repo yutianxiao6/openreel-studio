@@ -18,6 +18,7 @@ from app.db.session import get_session
 from app.mcp_tools import canvas_tools, config_tools, mcp_meta_tools
 from app.mcp_tools.registry import registry
 from app.services import media_provider, node_contract
+from app.services.video_target_catalog import list_video_model_targets
 
 
 router = APIRouter()
@@ -158,7 +159,7 @@ async def describe_node_contract(
     config = await config_tools.config_read(mask_secrets=True)
     catalog = {
         "image": media_provider.list_image_http_v1_protocol_catalog,
-        "video": media_provider.list_video_http_v1_protocol_catalog,
+        "video": list_video_model_targets,
         "audio": media_provider.list_audio_http_v1_protocol_catalog,
     }.get(req.type)
     return node_contract.build_node_contract(
@@ -198,9 +199,9 @@ async def read_config_summary() -> dict[str, Any]:
     return await config_tools.config_list_all()
 
 
-@router.get("/config/video-protocols")
-async def read_video_protocols() -> dict[str, Any]:
-    return media_provider.list_video_http_v1_protocol_catalog()
+@router.get("/config/video-model-targets")
+async def read_video_model_targets() -> dict[str, Any]:
+    return list_video_model_targets()
 
 
 @router.get("/config/image-protocols")

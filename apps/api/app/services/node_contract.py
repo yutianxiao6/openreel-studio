@@ -170,8 +170,12 @@ def _protocol_id(provider: dict[str, Any] | None, node_type: str) -> str:
     if not provider:
         return ""
     params = provider.get("params") if isinstance(provider.get("params"), dict) else {}
+    uma = params.get("uma") if isinstance(params.get("uma"), dict) else {}
+    if node_type == "video":
+        return str(uma.get("protocol_id") or "").strip()
     return str(
-        params.get(f"{node_type}_protocol_id")
+        uma.get("protocol_id")
+        or params.get(f"{node_type}_protocol_id")
         or params.get("protocol_id")
         or params.get("protocol")
         or ""
@@ -188,6 +192,28 @@ def _protocol_for(catalog: dict[str, Any], protocol_id: str) -> dict[str, Any] |
 
 
 def _profile_for(protocol: dict[str, Any] | None, model_name: str) -> dict[str, Any] | None:
+    targets = protocol.get("targets") if isinstance(protocol, dict) else None
+    if isinstance(targets, list):
+        target = next(
+            (
+                item
+                for item in targets
+                if isinstance(item, dict)
+                and str(item.get("model_match") or "").strip() in {model_name, "*"}
+            ),
+            None,
+        )
+        if target is None:
+            return None
+        capabilities = target.get("capabilities")
+        if not isinstance(capabilities, dict):
+            return None
+        return {
+            **deepcopy(capabilities),
+            "match": target.get("model_match"),
+            "label": target.get("label"),
+            "target_profile_id": target.get("id"),
+        }
     profiles = protocol.get("model_profiles") if isinstance(protocol, dict) else None
     if not isinstance(profiles, list):
         return None
@@ -476,7 +502,6 @@ def build_node_contract(
                 available=[item["name"] for item in available_providers],
             ))
         else:
-            params = provider.get("params") if isinstance(provider.get("params"), dict) else {}
             protocol_id = _protocol_id(provider, node_type)
             protocol = _protocol_for(protocol_catalog or {}, protocol_id)
             profile = _profile_for(protocol, str(provider.get("model_name") or ""))

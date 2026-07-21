@@ -1,0 +1,2025 @@
+{
+  "version": "openreel.uma_video_targets.v1",
+  "targets": [
+    {
+      "id": "volcengine.seedance-video-task:doubao-seedance-2-0-260128",
+      "protocol_id": "volcengine.seedance-video-task",
+      "match": "doubao-seedance-2-0-260128",
+      "label": "Standard",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16",
+          "21:9",
+          "adaptive"
+        ],
+        "supported_resolutions": [
+          "480p",
+          "720p",
+          "1080p",
+          "4k"
+        ],
+        "default_resolution": "720p",
+        "duration": {
+          "min": 4,
+          "max": 15,
+          "allowed_values": [
+            -1
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "Text to video",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "First frame to video",
+            "prompt_required": false,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "label": "First and last frame to video",
+            "prompt_required": false,
+            "required_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "Multimodal reference to video",
+            "prompt_required": false,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 9,
+            "max_videos": 3,
+            "max_audios": 3,
+            "audio_requires_visual": true
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "volcengine.seedance-video-task:doubao-seedance-2-0-fast-260128",
+      "protocol_id": "volcengine.seedance-video-task",
+      "match": "doubao-seedance-2-0-fast-260128",
+      "label": "Fast",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16",
+          "21:9",
+          "adaptive"
+        ],
+        "supported_resolutions": [
+          "480p",
+          "720p"
+        ],
+        "default_resolution": "720p",
+        "duration": {
+          "min": 4,
+          "max": 15,
+          "allowed_values": [
+            -1
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "Text to video",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "First frame to video",
+            "prompt_required": false,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "label": "First and last frame to video",
+            "prompt_required": false,
+            "required_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "Multimodal reference to video",
+            "prompt_required": false,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 9,
+            "max_videos": 3,
+            "max_audios": 3,
+            "audio_requires_visual": true
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "volcengine.seedance-video-task:doubao-seedance-2-0-mini-260615",
+      "protocol_id": "volcengine.seedance-video-task",
+      "match": "doubao-seedance-2-0-mini-260615",
+      "label": "Mini",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16",
+          "21:9",
+          "adaptive"
+        ],
+        "supported_resolutions": [
+          "480p",
+          "720p"
+        ],
+        "default_resolution": "720p",
+        "duration": {
+          "min": 4,
+          "max": 15,
+          "allowed_values": [
+            -1
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "Text to video",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "First frame to video",
+            "prompt_required": false,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "label": "First and last frame to video",
+            "prompt_required": false,
+            "required_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "Multimodal reference to video",
+            "prompt_required": false,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 9,
+            "max_videos": 3,
+            "max_audios": 3,
+            "audio_requires_visual": true
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "lingke.media-video-task:generic",
+      "protocol_id": "lingke.media-video-task",
+      "match": "*",
+      "label": "Lingke media.generate JSON task",
+      "capabilities": {
+        "supported_ratios": [
+          "2:3",
+          "3:2",
+          "1:1"
+        ],
+        "supported_resolutions": [
+          "720p",
+          "1080p"
+        ],
+        "default_resolution": "720p",
+        "duration": {
+          "min": 6,
+          "max": 60
+        },
+        "modes": {
+          "text_to_video": {
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "prompt_required": true,
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "prompt_required": true,
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 1,
+            "max_images": 12,
+            "max_videos": 0,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 8,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 900
+      }
+    },
+    {
+      "id": "t8.grok-video-task:grok-video-3",
+      "protocol_id": "t8.grok-video-task",
+      "match": "grok-video-3",
+      "label": "T8 Grok Video 3 JSON task",
+      "capabilities": {
+        "supported_ratios": [
+          "2:3",
+          "3:2",
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "supported_resolutions": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "720p",
+        "duration": {
+          "min": 6,
+          "max": 30
+        },
+        "resolution_rules": [
+          {
+            "duration_gt": 15,
+            "supported_resolutions": [
+              "720p"
+            ],
+            "message": "T8 Grok Video 3 16-30 秒视频只支持 720p"
+          }
+        ],
+        "modes": {
+          "text_to_video": {
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "prompt_required": true,
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "prompt_required": true,
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 1,
+            "max_images": 7,
+            "max_videos": 0,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      },
+      "additional_bases": [
+        {
+          "slot": "uploads",
+          "runtime_param": "upload_base_url",
+          "label": "上传 API Base URL",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "xai.video-task:grok-imagine-video",
+      "protocol_id": "xai.video-task",
+      "match": "grok-imagine-video",
+      "label": "xAI Grok Imagine Video",
+      "capabilities": {
+        "supported_ratios": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4",
+          "3:2",
+          "2:3"
+        ],
+        "supported_resolutions": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "480p",
+        "duration": {
+          "min": 1,
+          "max": 15
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "参考图生视频",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image"
+            ],
+            "min_images": 1,
+            "max_images": 7,
+            "max_videos": 0,
+            "max_audios": 0,
+            "duration": {
+              "min": 1,
+              "max": 10
+            }
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "reference_image"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "xai.video-task:grok-imagine-video-1.5",
+      "protocol_id": "xai.video-task",
+      "match": "grok-imagine-video-1.5",
+      "label": "xAI Grok Imagine Video 1.5",
+      "capabilities": {
+        "supported_ratios": [
+          "1:1",
+          "16:9",
+          "9:16",
+          "4:3",
+          "3:4",
+          "3:2",
+          "2:3"
+        ],
+        "supported_resolutions": [
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "default_resolution": "480p",
+        "duration": {
+          "min": 1,
+          "max": 15
+        },
+        "modes": {
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "grok.multipart-video-task:grok-1.5-video-15s",
+      "protocol_id": "grok.multipart-video-task",
+      "match": "grok-1.5-video-15s",
+      "label": "Grok 1.5 Multipart",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16"
+        ],
+        "supported_resolutions": [
+          "480p",
+          "720p"
+        ],
+        "default_resolution": "720p",
+        "duration": {
+          "min": 1,
+          "max": 15
+        },
+        "modes": {
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:sed2",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "sed2",
+      "label": "Seedance 2.0",
+      "capabilities": {
+        "supported_ratios": [
+          "21:9",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16",
+          "adaptive"
+        ],
+        "supported_resolutions": [
+          "480p",
+          "720p",
+          "1080p",
+          "4k"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "720p",
+        "duration": {
+          "allowed_values": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "label": "首尾帧",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "全能参考",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 9,
+            "max_videos": 3,
+            "max_audios": 1,
+            "audio_requires_visual": true
+          },
+          "video_edit": {
+            "label": "视频编辑",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_videos": 1,
+            "max_images": 9,
+            "max_videos": 1,
+            "max_audios": 1
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:sed2-fast",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "sed2-fast",
+      "label": "Seedance 2.0 Fast",
+      "capabilities": {
+        "supported_ratios": [
+          "21:9",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16",
+          "adaptive"
+        ],
+        "supported_resolutions": [
+          "480p",
+          "720p",
+          "1080p",
+          "2k",
+          "4k"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "720p",
+        "duration": {
+          "allowed_values": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "label": "首尾帧",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "全能参考",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 3,
+            "max_videos": 3,
+            "max_audios": 1,
+            "audio_requires_visual": true
+          },
+          "video_edit": {
+            "label": "视频编辑",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_videos": 1,
+            "max_images": 3,
+            "max_videos": 1,
+            "max_audios": 1
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:sed2-mini",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "sed2-mini",
+      "label": "Seedance 2.0 Mini",
+      "capabilities": {
+        "supported_ratios": [
+          "21:9",
+          "16:9",
+          "4:3",
+          "1:1",
+          "3:4",
+          "9:16"
+        ],
+        "supported_resolutions": [
+          "480p",
+          "720p"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "720p",
+        "duration": {
+          "allowed_values": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "label": "首尾帧",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "全能参考",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 12,
+            "max_videos": 3,
+            "max_audios": 1,
+            "audio_requires_visual": true
+          },
+          "video_edit": {
+            "label": "视频编辑",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_videos": 1,
+            "max_images": 12,
+            "max_videos": 1,
+            "max_audios": 1
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:happyhorse",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "happyhorse",
+      "label": "Happyhorse",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "4:3",
+          "3:4"
+        ],
+        "supported_resolutions": [
+          "720p",
+          "1080p"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "1080p",
+        "duration": {
+          "allowed_values": [
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "全能参考",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "video_edit": {
+            "label": "视频编辑",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_videos": 1,
+            "max_images": 1,
+            "max_videos": 1,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:gemini-omni-flash",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "gemini-omni-flash",
+      "label": "Omni Flash",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16"
+        ],
+        "supported_resolutions": [
+          "720p"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "720p",
+        "duration": {
+          "allowed_values": [
+            5
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "全能参考",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 4,
+            "max_videos": 1,
+            "max_audios": 0
+          },
+          "video_edit": {
+            "label": "视频编辑",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_videos": 1,
+            "max_images": 4,
+            "max_videos": 1,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:happyhorse-1.1",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "happyhorse-1.1",
+      "label": "Happyhorse 1.1",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "4:3",
+          "3:4"
+        ],
+        "supported_resolutions": [
+          "720p",
+          "1080p"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "1080p",
+        "duration": {
+          "allowed_values": [
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "全能参考",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "video_edit": {
+            "label": "视频编辑",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_videos": 1,
+            "max_images": 1,
+            "max_videos": 1,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:kling-o1",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "kling-o1",
+      "label": "Kling O1",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "default_ratio": "16:9",
+        "duration": {
+          "allowed_values": [
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "label": "首尾帧",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "全能参考",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 7,
+            "max_videos": 1,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:kling-v2-5-turbo",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "kling-v2-5-turbo",
+      "label": "Kling 2.5 Turbo",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "default_ratio": "16:9",
+        "duration": {
+          "allowed_values": [
+            5,
+            10
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:kling-v3.0-std",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "kling-v3.0-std",
+      "label": "Kling 3.0 Standard",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "default_ratio": "16:9",
+        "duration": {
+          "allowed_values": [
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "label": "首尾帧",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:kling-v3-omni",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "kling-v3-omni",
+      "label": "Kling 3.0 Omni",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "default_ratio": "16:9",
+        "duration": {
+          "allowed_values": [
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "label": "首尾帧",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "全能参考",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 7,
+            "max_videos": 1,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:vidu-q2-pro",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "vidu-q2-pro",
+      "label": "Vidu Q2 Pro",
+      "capabilities": {
+        "supported_resolutions": [
+          "540p",
+          "720p",
+          "1080p"
+        ],
+        "default_resolution": "720p",
+        "modes": {
+          "first_last_frame": {
+            "label": "首尾帧",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0,
+            "duration": {
+              "min": 1,
+              "max": 8
+            }
+          },
+          "multimodal_reference": {
+            "label": "全能参考",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 20,
+            "max_videos": 0,
+            "max_audios": 0,
+            "duration": {
+              "min": 1,
+              "max": 10
+            }
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:hailuo-2.3",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "hailuo-2.3",
+      "label": "Hailuo 2.3",
+      "capabilities": {
+        "supported_resolutions": [
+          "768p",
+          "1080p"
+        ],
+        "default_resolution": "768p",
+        "duration": {
+          "allowed_values": [
+            6,
+            10
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:veo-3.1-preview",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "veo-3.1-preview",
+      "label": "Veo 3.1 Preview",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16"
+        ],
+        "supported_resolutions": [
+          "720p",
+          "1080p"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "720p",
+        "duration": {
+          "allowed_values": [
+            4,
+            6,
+            8
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:wan-2.2",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "wan-2.2",
+      "label": "Wan 2.2",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "4:3",
+          "3:4"
+        ],
+        "supported_resolutions": [
+          "720p",
+          "1080p"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "1080p",
+        "duration": {
+          "allowed_values": [
+            5
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:wan-2.5-preview",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "wan-2.5-preview",
+      "label": "Wan 2.5 Preview",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "4:3",
+          "3:4"
+        ],
+        "supported_resolutions": [
+          "720p",
+          "1080p"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "720p",
+        "duration": {
+          "allowed_values": [
+            5,
+            10
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:wan-2.6",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "wan-2.6",
+      "label": "Wan 2.6",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "4:3",
+          "3:4"
+        ],
+        "supported_resolutions": [
+          "720p",
+          "1080p"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "720p",
+        "duration": {
+          "allowed_values": [
+            5,
+            10,
+            15
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "dramaagent.updream-video-task:wan-2.7",
+      "protocol_id": "dramaagent.updream-video-task",
+      "match": "wan-2.7",
+      "label": "Wan 2.7",
+      "capabilities": {
+        "supported_ratios": [
+          "16:9",
+          "9:16",
+          "1:1",
+          "4:3",
+          "3:4"
+        ],
+        "supported_resolutions": [
+          "720p",
+          "1080p"
+        ],
+        "default_ratio": "16:9",
+        "default_resolution": "1080p",
+        "duration": {
+          "allowed_values": [
+            5,
+            10,
+            15
+          ]
+        },
+        "modes": {
+          "text_to_video": {
+            "label": "文生视频",
+            "prompt_required": true,
+            "max_images": 0,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_frame": {
+            "label": "图生视频",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame"
+            ],
+            "allowed_roles": [
+              "first_frame"
+            ],
+            "min_images": 1,
+            "max_images": 1,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "first_last_frame": {
+            "label": "首尾帧",
+            "prompt_required": true,
+            "required_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "allowed_roles": [
+              "first_frame",
+              "last_frame"
+            ],
+            "min_images": 2,
+            "max_images": 2,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "multimodal_reference": {
+            "label": "全能参考",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_total_media": 1,
+            "max_images": 5,
+            "max_videos": 0,
+            "max_audios": 0
+          },
+          "video_edit": {
+            "label": "视频编辑",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ],
+            "min_videos": 1,
+            "max_images": 5,
+            "max_videos": 1,
+            "max_audios": 0
+          },
+          "video_continuation": {
+            "label": "视频续写",
+            "prompt_required": true,
+            "allowed_roles": [
+              "reference_video"
+            ],
+            "min_videos": 1,
+            "max_images": 0,
+            "max_videos": 1,
+            "max_audios": 0
+          }
+        }
+      },
+      "accepted_media_roles": [
+        "first_frame",
+        "last_frame",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
+      ],
+      "poll_policy": {
+        "poll_interval_seconds": 10,
+        "poll_max_interval_seconds": 60,
+        "task_timeout_seconds": 1200
+      }
+    }
+  ]
+}

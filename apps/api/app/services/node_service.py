@@ -238,7 +238,7 @@ class NodeService:
             id=str(uuid.uuid4()),
             project_id=project_id,
             display_id=None if surface == "workflow_runtime" else await next_node_display_id(self.db, project_id),
-            type=payload.get("type", "script_generation"),
+            type=payload.get("type", "text"),
             title=payload.get("title", ""),
             status=payload.get("status", "idle"),
             position_x=position_x,

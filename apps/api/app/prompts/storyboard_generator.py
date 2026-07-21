@@ -1,4 +1,4 @@
-"""分镜生成 — drama.generate_storyboard / drama.generate_shot / drama.generate_segment_shots / drama.plan_episode_segments / drama.plan_episode_cast_scene"""
+"""分镜生成 — internal storyboard and shot runners."""
 from __future__ import annotations
 
 from app.prompts._section import WorkerContext
@@ -7,8 +7,6 @@ ALIASES = [
     "drama.generate_storyboard",
     "drama.generate_shot",
     "drama.generate_segment_shots",
-    "drama.plan_episode_segments",
-    "drama.plan_episode_cast_scene",
 ]
 ORDER = 100
 
@@ -85,26 +83,23 @@ def build(ctx: WorkerContext) -> str:
 ```
 """
     else:
-        grid_block = "## 输出场景级分镜规划\n\n按场景输出粗粒度的分镜与人物出场规划。"
+        grid_block = "## 输出逐镜分镜规划\n\n按场景输出镜头描述、人物动作和镜头运动。"
         output_format = """\
-## 输出格式(严格 JSON,按工具语义)
+## 输出格式(严格 JSON)
 
-如果是 plan_episode_segments:
 ```json
 {
-  "episode_number": 1,
-  "segments": [
-    {"index": 1, "duration_seconds": 15, "plot": "...", "characters": ["..."], "scene_refs": ["..."], "segment_arc": "起"}
+  "shots": [
+    {
+      "shot_number": 1,
+      "shot_type": "特写/中景/远景",
+      "camera_movement": "推/拉/摇/跟/手持",
+      "duration_seconds": 5,
+      "content": "画面内容",
+      "dialogue": "台词",
+      "characters": ["..."]
+    }
   ]
-}
-```
-
-如果是 plan_episode_cast_scene:
-```json
-{
-  "episode_number": 1,
-  "cast": [{"character_name": "...", "appears_in_segments": [1, 2]}],
-  "scenes": [{"name": "...", "location": "...", "used_in_segments": [1]}]
 }
 ```"""
 

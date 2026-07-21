@@ -53,7 +53,7 @@ async def test_node_creation_guide_only_exposes_generic_types(monkeypatch):
     monkeypatch.setattr(node_universal, "_write_project_state_patch", fake_write_patch)
 
     ok = await node_universal.node_get_creation_guide("proj-1", "image")
-    bad = await node_universal.node_get_creation_guide("proj-1", "segment_storyboard")
+    bad = await node_universal.node_get_creation_guide("proj-1", "unsupported")
 
     assert ok["ok"] is True
     assert ok["type"] == "image"

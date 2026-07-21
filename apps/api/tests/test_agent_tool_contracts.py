@@ -960,7 +960,6 @@ def test_generation_prompt_bodies_do_not_advertise_retired_tool_names() -> None:
     prompt_text = "\n".join(
         [
             default_prompt_for("drama.generate_image_prompt", ctx),
-            default_prompt_for("drama.generate_storyboard_grid", ctx),
             default_prompt_for("drama.generate_segment_shots", ctx),
         ]
     )

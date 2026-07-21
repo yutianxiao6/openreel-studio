@@ -1137,64 +1137,6 @@ function parseOutputPreview(outputJson: unknown, nodeType?: unknown): Record<str
         stages: data.stages,
       })
     }
-    // Characters
-    if (Array.isArray(data.characters)) {
-      return {
-        type: "characters",
-        items: data.characters.slice(0, 6).map((c: Record<string, unknown>) => ({
-          name: c.name || "", role_type: c.role_type || "", identity: c.identity || "",
-        })),
-      }
-    }
-    if (data.character && typeof data.character === "object") {
-      const c = data.character as Record<string, unknown>
-      return { type: "character", name: c.name, role_type: c.role_type, identity: c.identity, traits: (c.traits as string[] || []).slice(0, 3) }
-    }
-    // Outline
-    if (data.outline && typeof data.outline === "object") {
-      const o = data.outline as Record<string, unknown>
-      const eps = Array.isArray(o.episodes) ? o.episodes : []
-      return {
-        type: "outline", episode_count: eps.length,
-        episodes: eps.slice(0, 5).map((ep: Record<string, unknown>, i: number) => ({ num: ep.episode_number || i + 1, title: ep.title || "" })),
-      }
-    }
-    // Script
-    if (data.script && typeof data.script === "object") {
-      const s = data.script as Record<string, unknown>
-      return { type: "script", summary: ((s.summary as string) || "").slice(0, 120), scene_count: Array.isArray(s.scenes) ? s.scenes.length : undefined }
-    }
-    // Review
-    if (data.review && typeof data.review === "object") {
-      const r = data.review as Record<string, unknown>
-      return { type: "review", score: r.score, summary: ((r.summary as string) || "").slice(0, 120) }
-    }
-    // Storyboard with grid image / shot list
-    if (data.type === "storyboard" || (Array.isArray(data.shots) && data.mode)) {
-      return {
-        type: "storyboard",
-        mode: data.mode,
-        shot_count: data.shot_count,
-        shots: data.shots,
-        url: data.url,
-        local_url: data.local_url,
-        remote_url: data.remote_url,
-        ...mediaPreviewHints(data),
-      }
-    }
-    // Storyboard with grid image / shot list
-    if (data.type === "storyboard" || (Array.isArray(data.shots) && data.mode)) {
-      return {
-        type: "storyboard",
-        mode: data.mode,
-        shot_count: data.shot_count,
-        shots: data.shots,
-        url: data.url,
-        local_url: data.local_url,
-        remote_url: data.remote_url,
-        ...mediaPreviewHints(data),
-      }
-    }
     // Standalone image preview from node/media service output
     if (data.type === "image" && (data.url || data.local_url)) {
       return {

@@ -19,8 +19,8 @@ datas += collect_data_files("universal_model_adapter")
 
 for protocol_dir_name in (
     "image_provider_protocols",
-    "video_provider_protocols",
     "audio_provider_protocols",
+    "universal_model_adapter",
 ):
     protocol_dir = ROOT / "config" / protocol_dir_name
     if protocol_dir.exists():

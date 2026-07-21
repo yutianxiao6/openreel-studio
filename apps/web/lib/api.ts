@@ -1300,22 +1300,6 @@ export async function listProjectAssets(projectId: string) {
   return asJson<{ project_id: string; assets: ProjectAsset[] }>(res)
 }
 
-export async function getPanelLayout<T = unknown>(projectId: string): Promise<T> {
-  const base = await getApiBase()
-  const res = await fetch(`${base}/api/projects/${projectId}/panel/layout`)
-  return asJson<T>(res)
-}
-
-export async function setPanelLayout<T = unknown>(projectId: string, mode: string): Promise<T> {
-  const base = await getApiBase()
-  const res = await fetch(`${base}/api/projects/${projectId}/panel/layout`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode }),
-  })
-  return asJson<T>(res)
-}
-
 export async function getProjectMessages(projectId: string) {
   const base = await getApiBase()
   const res = await fetch(`${base}/api/projects/${projectId}/messages`)
@@ -2133,7 +2117,7 @@ export async function getRuntimeConfigSummary<T = unknown>(): Promise<T> {
 
 export async function getVideoProviderProtocols<T = unknown>(): Promise<T> {
   const base = await getApiBase()
-  const res = await fetch(`${base}/api/tools/config/video-protocols`)
+  const res = await fetch(`${base}/api/tools/config/video-model-targets`)
   return asJson<T>(res)
 }
 
@@ -2203,8 +2187,6 @@ export const api = {
   updateNodePosition,
   createProjectEdge,
   deleteProjectEdge,
-  getPanelLayout,
-  setPanelLayout,
   getProjectMessages,
   getModelConfigs,
   getProviders,

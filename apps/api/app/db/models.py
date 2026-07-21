@@ -199,50 +199,10 @@ class ShotRead(ShotBase):
 # ---------------------------------------------------------------------------
 
 NODE_TYPES = [
-    # ── 12 类收敛后的画布节点（2026-05-21）──
-    "script_collection",          # 全剧剧本根（脑图 root）
-    "episode_script",             # 单集剧本
-    "episode_segment_plan",       # 该集切段方案
-    "episode_cast_scene_plan",    # 该集出场人物+场景+段落分配
-    "character",                  # 人物（融合 prompt + image）
-    "scene",                      # 场景（融合 prompt + image）
-    "segment_storyboard",         # 段落分镜（mode = grid | shot_list）
-    "shot_first_frame",           # 镜头首帧（融合 prompt + image）
-    "shot_last_frame",            # 镜头尾帧（融合 prompt + image）
-    "segment_story_template",     # 段落故事模板（融合 prompt + 一张大图）
-    "segment_video_prompt",       # 段落视频提示词（引用图清单 + prompt）
-    "segment_video_clip",         # 段落视频片段
-    # ── 旧 type 保留（DB 数据兼容，前端 nodeStyles 重定向到 12 类风格）──
-    "project_setting",
-    "outline",
-    "character_image_prompt",
-    "character_reference_image",
-    "character_relationship",
-    "episode_review",
-    "segment",
-    "scene_image",
-    "scene_image_prompt",
-    "panorama",
-    "panorama_view",
-    "shot_list",
-    "storyboard_grid",
-    "shot",
-    "shot_image_prompt",
-    "shot_reference_image",
-    "shot_video_prompt",
-    "shot_video_clip",
-    "episode_export",
-    "project_export",
-    "character_generation",
-    "outline_generation",
-    "script_generation",
-    "script_review",
-    "storyboard_generation",
-    "image_prompt_generation",
-    "image_generation",
-    "video_prompt_generation",
-    "video_generation",
-    "export",
+    "text",
+    "image",
+    "video",
+    "audio",
 ]
 
 CHARACTER_TIERS = ["main", "recurring", "guest"]
@@ -513,7 +473,7 @@ class ModelConfigRead(ModelConfigBase):
 # ---------------------------------------------------------------------------
 
 MEDIA_KINDS = ["image", "video", "audio"]
-MEDIA_API_FORMATS = ["universal_adapter", "openai", "raw", "raw_post", "image_http_v1", "video_http_v1", "audio_http_v1", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"]
+MEDIA_API_FORMATS = ["universal_adapter", "openai", "raw", "raw_post", "image_http_v1", "audio_http_v1", "suno_compatible", "openai_tts"]
 
 
 class MediaProviderBase(SQLModel):
@@ -522,7 +482,7 @@ class MediaProviderBase(SQLModel):
     base_url: str
     api_key: Optional[str] = None
     model_name: str                          # model id sent in payload
-    api_format: str = "openai"               # openai | raw | raw_post | image_http_v1 | video_http_v1 | audio_http_v1 | volcengine_ark | xai_video | grok_1_5 | t8_grok_video_3 | lingke_media_generate | suno_compatible | openai_tts
+    api_format: str = "openai"  # video uses universal_adapter; image/audio retain their current formats
     params_json: Optional[str] = None        # default extra params JSON (size, steps, etc.)
     is_active: bool = False
     enabled: bool = True

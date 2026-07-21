@@ -93,11 +93,11 @@ export function videoProtocolForProvider(
   provider: MediaProviderSummary | undefined,
   protocols: VideoProtocolSummary[],
 ): VideoProtocolSummary | undefined {
+  const uma = provider?.params?.uma
   const protocolId = String(
-    provider?.params?.video_protocol_id
-    || provider?.params?.protocol_id
-    || provider?.params?.protocol
-    || "",
+    uma && typeof uma === "object" && "protocol_id" in uma
+      ? (uma as Record<string, unknown>).protocol_id
+      : "",
   ).trim()
   if (protocolId) {
     const exact = protocols.find((protocol) => protocol.id === protocolId)

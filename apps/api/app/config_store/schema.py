@@ -52,13 +52,6 @@ def _protocol_ids_from_catalog(env_name: str, relative_path: str) -> set[str]:
     return set(_protocols_from_catalog(env_name, relative_path))
 
 
-def _video_protocol_ids_from_catalog() -> set[str]:
-    return _protocol_ids_from_catalog(
-        "OPENREEL_VIDEO_PROTOCOLS_FILE",
-        "config/video_provider_protocols/catalog.json",
-    )
-
-
 def _image_protocol_ids_from_catalog() -> set[str]:
     return _protocol_ids_from_catalog(
         "OPENREEL_IMAGE_PROTOCOLS_FILE",
@@ -166,7 +159,7 @@ class MediaProviderEntry(BaseModel):
     base_url: str = Field(..., min_length=1)
     api_key: Optional[str] = None
     model_name: str = Field(..., min_length=1)
-    api_format: str = Field("openai", description="universal_adapter | legacy provider formats")
+    api_format: str = Field("openai", description="provider transport contract")
     is_active: bool = False
     enabled: bool = True
     notes: Optional[str] = None
@@ -182,12 +175,18 @@ class MediaProviderEntry(BaseModel):
     @field_validator("api_format")
     @classmethod
     def _valid_api_format(cls, v: str) -> str:
-        if v not in ("universal_adapter", "openai", "raw", "raw_post", "image_http_v1", "video_http_v1", "audio_http_v1", "volcengine_ark", "xai_video", "grok_1_5", "t8_grok_video_3", "lingke_media_generate", "suno_compatible", "openai_tts"):
+        if v not in ("universal_adapter", "openai", "raw", "raw_post", "image_http_v1", "audio_http_v1", "suno_compatible", "openai_tts"):
             raise ValueError(
-                "api_format must be 'universal_adapter' or a supported legacy provider format, "
+                "api_format must be 'universal_adapter' or a supported image/audio format, "
                 f"got {v!r}"
             )
         return v
+
+    @model_validator(mode="after")
+    def _validate_video_adapter(self) -> "MediaProviderEntry":
+        if self.kind == "video" and self.api_format != "universal_adapter":
+            raise ValueError("video provider 只支持 api_format='universal_adapter'")
+        return self
 
     @model_validator(mode="after")
     def _validate_universal_adapter_reference(self) -> "MediaProviderEntry":
@@ -202,6 +201,10 @@ class MediaProviderEntry(BaseModel):
         protocol_id = str(uma.get("protocol_id") or "").strip()
         if not protocol_id:
             raise ValueError("universal_adapter provider 必须设置 params.uma.protocol_id")
+        if self.kind == "video" and not str(uma.get("target_profile_id") or "").strip():
+            raise ValueError(
+                "video universal_adapter provider 必须设置 params.uma.target_profile_id"
+            )
         operation = str(uma.get("operation") or f"{self.kind}.{'speech' if self.kind == 'audio' else 'generate'}").strip()
         if not operation.startswith(f"{self.kind}."):
             raise ValueError(
@@ -228,41 +231,6 @@ class MediaProviderEntry(BaseModel):
             raise ValueError(
                 f"params.image_protocol_id={protocol_id!r} 不在 config/image_provider_protocols/catalog.json 的 protocols 中"
             )
-        return self
-
-    @model_validator(mode="after")
-    def _validate_video_protocol_reference(self) -> "MediaProviderEntry":
-        if self.kind != "video" or self.api_format != "video_http_v1":
-            return self
-        params = self.params if isinstance(self.params, dict) else {}
-        if "video_protocol" in params or isinstance(params.get("protocol"), dict):
-            raise ValueError(
-                "video_http_v1 provider 只保存 params.video_protocol_id；协议 JSON 必须写在 config/video_provider_protocols/catalog.json"
-            )
-        protocol_id = str(params.get("video_protocol_id") or "").strip()
-        if not protocol_id:
-            raise ValueError("video_http_v1 provider 必须设置 params.video_protocol_id")
-        catalog_ids = _video_protocol_ids_from_catalog()
-        if not catalog_ids:
-            raise ValueError("video_http_v1 protocol catalog 缺失或没有可用协议")
-        if protocol_id not in catalog_ids:
-            raise ValueError(
-                f"params.video_protocol_id={protocol_id!r} 不在 config/video_provider_protocols/catalog.json 的 protocols 中"
-            )
-        protocols = _protocols_from_catalog(
-            "OPENREEL_VIDEO_PROTOCOLS_FILE",
-            "config/video_provider_protocols/catalog.json",
-        )
-        protocol = protocols.get(protocol_id) or {}
-        required_base_url_params = {
-            str(section.get("base_url_param") or "").strip()
-            for section_name in ("upload", "request", "poll")
-            for section in [protocol.get(section_name)]
-            if isinstance(section, dict) and str(section.get("base_url_param") or "").strip()
-        }
-        missing = sorted(key for key in required_base_url_params if not str(params.get(key) or "").strip())
-        if missing:
-            raise ValueError(f"协议 {protocol_id!r} 缺少独立 API Base URL 参数: {', '.join(missing)}")
         return self
 
     @model_validator(mode="after")

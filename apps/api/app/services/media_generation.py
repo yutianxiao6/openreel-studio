@@ -312,15 +312,21 @@ def _resumable_video_job(
     job_id = str(output.get("job_id") or "").strip()
     if not job_id:
         return None
-    if output.get("adapter_resume_supported") is False:
+    provider_task_id = str(output.get("provider_task_id") or "").strip()
+    adapter_resume_request = output.get("adapter_resume_request")
+    if (
+        output.get("adapter_resume_supported") is False
+        or not provider_task_id
+        or not isinstance(adapter_resume_request, dict)
+    ):
         return {
             "ok": False,
             "provider": output.get("provider") or model,
             "model": output.get("model") or model,
             "status": "failed",
             "job_id": job_id,
-            "error": "该生成任务所属的适配器进程已经结束，无法在重启后继续轮询；请手动强制重新运行节点。",
-            "error_kind": "adapter_job_unavailable",
+            "error": "该生成任务缺少适配器恢复信息，无法继续轮询；请手动强制重新运行节点。",
+            "error_kind": "adapter_resume_data_missing",
             "adapter_resume_supported": False,
         }
     status = str(output.get("status") or "").strip().lower()
@@ -364,6 +370,9 @@ def _resumable_video_job(
         "model": previous_model or requested_model,
         "status": "running",
         "job_id": job_id,
+        "provider_task_id": provider_task_id,
+        "adapter_resume_request": adapter_resume_request,
+        "adapter_resume_supported": True,
         "mode": output.get("mode") or output.get("video_mode"),
         "resolution": output.get("resolution") or resolution,
         "resolved_reference_images": output.get("resolved_reference_images") or [],
@@ -513,6 +522,8 @@ def _video_output(
         "mode": result.get("mode"),
         "video_mode": result.get("mode"),
         "job_id": result.get("job_id"),
+        "provider_task_id": result.get("provider_task_id"),
+        "adapter_resume_request": result.get("adapter_resume_request"),
         "url": _video_display_url(result),
         "local_url": result.get("local_url"),
         "local_path": result.get("local_path"),
@@ -643,6 +654,12 @@ async def _background_video_poll(
         extra=provider_extra,
         save_locally=True,
         progress_callback=progress_callback,
+        provider_task_id=queued_result.get("provider_task_id"),
+        adapter_resume_request=(
+            queued_result.get("adapter_resume_request")
+            if isinstance(queued_result.get("adapter_resume_request"), dict)
+            else None
+        ),
     )
     result["reference_images"] = refs_provided
     result["resolved_reference_images"] = queued_result.get("resolved_reference_images") or []
@@ -783,6 +800,9 @@ async def resume_persisted_video_poll(
 
     job_id = str(output.get("job_id") or "").strip()
     if not job_id or _video_display_url(output):
+        return False
+    provider_task_id = str(output.get("provider_task_id") or "").strip()
+    if not provider_task_id or not isinstance(output.get("adapter_resume_request"), dict):
         return False
     fields = dict(input_data or {})
     nested_fields = fields.get("fields")

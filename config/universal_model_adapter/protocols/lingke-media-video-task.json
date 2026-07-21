@@ -1,0 +1,108 @@
+{
+  "format": "uma.protocol/v2",
+  "id": "lingke.media-video-task",
+  "version": "2.0.0",
+  "kind": ["video"],
+  "metadata": {"title": "Lingke media.generate video task"},
+  "bases": {
+    "api": {"$ref": "provider:/bases/api"}
+  },
+  "auth": {
+    "api": {"type": "bearer", "credential": {"$ref": "credential:/api_key"}}
+  },
+  "media": {
+    "images": {
+      "encode": {
+        "$concat": [
+          "data:",
+          {"$ref": "item:/mime_type"},
+          ";base64,",
+          {"$ref": "item:/data", "transform": "base64_encode"}
+        ]
+      }
+    }
+  },
+  "operations": {
+    "submit": {
+      "base": "api",
+      "auth": "api",
+      "method": "POST",
+      "path": "/media/generate",
+      "encoding": "json",
+      "body": {
+        "model": {"$ref": "target:/remote_model"},
+        "params": {
+          "prompt": {"$ref": "request:/input/prompt"},
+          "images": {"$ref": "media:/images/encoded", "omit_if": "empty"},
+          "aspect_ratio": {"$ref": "request:/parameters/aspect_ratio", "omit_if": "missing"},
+          "duration": {"$ref": "request:/parameters/duration_seconds", "transform": "string"},
+          "resolution": {"$ref": "request:/parameters/resolution", "omit_if": "missing"},
+          "seed": {"$ref": "request:/parameters/seed", "omit_if": "missing"}
+        }
+      },
+      "accept_http": [200, 201, 202],
+      "read": {
+        "task_id": "/json/data/task_id",
+        "error_message": "/json/message",
+        "error_code": "/json/code"
+      }
+    },
+    "poll": {
+      "base": "api",
+      "auth": "api",
+      "method": "GET",
+      "path": "/skills/task-status",
+      "query": {"task_id": {"$ref": "task:/id"}},
+      "accept_http": [200],
+      "read": {
+        "status": "/json/state",
+        "success": ["success", "succeeded", "completed", "complete", "done"],
+        "failure": ["failure", "failed", "error", "expired", "cancelled", "canceled"],
+        "progress": "/json/progress",
+        "error_message": "/json/error",
+        "artifacts": {
+          "video": {
+            "kind": "video",
+            "path": "/json/result_url",
+            "required": true,
+            "mime_type": "video/mp4",
+            "attributes": {
+              "duration_seconds": {"$ref": "request:/parameters/duration_seconds"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "entrypoints": {
+    "video.generate": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "prompt": {"type": "string", "minLength": 1},
+              "mode": {"type": "string", "minLength": 1}
+            },
+            "required": ["prompt", "mode"]
+          },
+          "parameters": {
+            "type": "object",
+            "properties": {"duration_seconds": {"type": "number", "exclusiveMinimum": 0}},
+            "required": ["duration_seconds"]
+          },
+          "media": {"type": "array"}
+        },
+        "required": ["input", "parameters"]
+      },
+      "selector": {"$ref": "request:/input/mode"},
+      "variants": {
+        "text_to_video": {"submit": "submit", "poll": "poll"},
+        "first_frame": {"submit": "submit", "poll": "poll"},
+        "first_last_frame": {"submit": "submit", "poll": "poll"},
+        "multimodal_reference": {"submit": "submit", "poll": "poll"}
+      }
+    }
+  }
+}

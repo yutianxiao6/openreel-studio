@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from pathlib import Path
@@ -18,6 +19,7 @@ from app.services.universal_adapter_config import (
     universal_adapter_cache_key,
 )
 from app.services.universal_adapter_service import UniversalAdapterService
+from app.services.video_target_catalog import load_video_target_catalog
 
 
 def _provider(
@@ -112,6 +114,50 @@ def test_runtime_config_rejects_blank_universal_adapter_protocol_id() -> None:
         )
 
 
+def test_video_binding_requires_explicit_target_profile() -> None:
+    provider, provider_params = _provider(
+        kind="video",
+        protocol_id="volcengine.seedance-video-task",
+        operation="video.generate",
+        model="doubao-seedance-2-0-260128",
+    )
+
+    with pytest.raises(ValueError, match="explicit target_profile_id"):
+        create_universal_adapter_binding(provider, provider_params)
+
+
+@pytest.mark.asyncio
+async def test_every_video_target_compiles_against_its_uma_protocol() -> None:
+    for target in load_video_target_catalog()["targets"]:
+        model_name = target["match"] if target["match"] != "*" else "generic-video-model"
+        provider = SimpleNamespace(
+            kind="video",
+            name=f"compile-{target['id']}",
+            base_url="https://provider.example.invalid/v1",
+            api_key="secret-test-key",
+            model_name=model_name,
+            api_format="universal_adapter",
+        )
+        bases = {
+            item["slot"]: "https://uploads.example.invalid/v1"
+            for item in target.get("additional_bases") or []
+        }
+        params = {
+            "uma": {
+                "protocol_id": target["protocol_id"],
+                "operation": "video.generate",
+                "target_profile_id": target["id"],
+                **({"bases": bases} if bases else {}),
+            }
+        }
+        binding = create_universal_adapter_binding(provider, params)
+        try:
+            assert binding.options.target_profile_id == target["id"]
+            assert binding.options.protocol_id == target["protocol_id"]
+        finally:
+            await binding.client.aclose()
+
+
 @pytest.mark.asyncio
 async def test_image_provider_calls_uma_image_backend() -> None:
     image_bytes = b"openreel-image"
@@ -166,37 +212,36 @@ async def test_image_provider_calls_uma_image_backend() -> None:
 @pytest.mark.asyncio
 async def test_video_provider_uses_uma_handle_and_progress_events() -> None:
     polls = 0
+    submitted_body: dict[str, Any] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal polls
-        if request.url.path == "/v1/image_to_video":
-            body = json.loads(request.content)
-            assert body == {
-                "model": "video-v1",
-                "promptText": "A train crossing a valley",
-                "ratio": "16:9",
-                "duration": 10,
-            }
+        if request.url.path == "/videos/generations":
+            submitted_body.update(json.loads(request.content))
             return httpx.Response(200, json={"id": "provider-task-7"}, request=request)
-        assert request.url.path == "/v1/tasks/provider-task-7"
+        assert request.url.path == "/videos/tasks/provider-task-7"
         polls += 1
         if polls == 1:
-            return httpx.Response(200, json={"status": "RUNNING"}, request=request)
+            return httpx.Response(
+                200,
+                json={"provider_response": {"status": "processing"}},
+                request=request,
+            )
         return httpx.Response(
             200,
             json={
-                "status": "SUCCEEDED",
-                "output": ["https://assets.example.invalid/video.mp4"],
+                "provider_response": {"status": "succeeded"},
+                "video_url": "https://assets.example.invalid/video.mp4",
             },
             request=request,
         )
 
     provider, provider_params = _provider(
         kind="video",
-        protocol_id="runway.video-task",
+        protocol_id="dramaagent.updream-video-task",
         operation="video.generate",
-        model="video-v1",
-        uma={"parameter_map": {"aspect_ratio": "ratio"}},
+        model="sed2",
+        uma={"target_profile_id": "dramaagent.updream-video-task:sed2"},
     )
     service, _ = _service_with_binding(provider, provider_params, handler)
     progress: list[dict[str, Any]] = []
@@ -223,13 +268,98 @@ async def test_video_provider_uses_uma_handle_and_progress_events() -> None:
     finally:
         await service.aclose()
 
-    assert queued["ok"] is True
+    assert queued["ok"] is True, (queued, submitted_body, polls, result)
+    assert submitted_body == {
+        "provider": "updream",
+        "model": "sed2",
+        "prompt": "A train crossing a valley",
+        "provider_payload": {
+            "prompt": "A train crossing a valley",
+            "model_name": "sed2",
+            "generate_type": "t2v",
+            "duration": 10,
+            "aspect_ratio": "16:9",
+            "resolution": "720p",
+        },
+    }
     assert queued["job_id"] != "provider-task-7"
     assert result["ok"] is True, result
     assert result["remote_url"] == "https://assets.example.invalid/video.mp4"
     assert result["adapter_route"]["target_id"].endswith("/target")
     assert polls == 2
     assert any(update.get("status") == "running" for update in progress)
+
+
+@pytest.mark.asyncio
+async def test_video_poll_resumes_from_persisted_provider_task_after_restart() -> None:
+    poll_started = asyncio.Event()
+
+    async def first_process_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/videos/generations":
+            return httpx.Response(200, json={"id": "provider-task-resume"}, request=request)
+        poll_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    provider, provider_params = _provider(
+        kind="video",
+        protocol_id="dramaagent.updream-video-task",
+        operation="video.generate",
+        model="sed2",
+        uma={"target_profile_id": "dramaagent.updream-video-task:sed2"},
+    )
+    first_service, _ = _service_with_binding(provider, provider_params, first_process_handler)
+    queued = await first_service.submit_video(
+        provider=provider,
+        provider_params=provider_params,
+        project_id="project-video",
+        prompt="Resume this render",
+        first_frame_url=None,
+        last_frame_url=None,
+        duration_seconds=8,
+        reference_images=None,
+        extra=None,
+        save_locally=False,
+        wait_for_completion=False,
+    )
+    await poll_started.wait()
+    await first_service.aclose()
+
+    requests: list[tuple[str, str]] = []
+
+    async def restarted_process_handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        assert request.url.path == "/videos/tasks/provider-task-resume"
+        return httpx.Response(
+            200,
+            json={
+                "provider_response": {"status": "succeeded"},
+                "video_url": "https://assets.example.invalid/resumed.mp4",
+            },
+            request=request,
+        )
+
+    restarted_service, _ = _service_with_binding(
+        provider, provider_params, restarted_process_handler
+    )
+    try:
+        result = await restarted_service.poll(
+            provider=provider,
+            provider_params=provider_params,
+            project_id="project-video",
+            job_id=queued["job_id"],
+            kind="video",
+            save_locally=False,
+            provider_task_id=queued["provider_task_id"],
+            resume_request=queued["adapter_resume_request"],
+        )
+    finally:
+        await restarted_service.aclose()
+
+    assert queued["adapter_resume_supported"] is True
+    assert result["ok"] is True, result
+    assert result["remote_url"] == "https://assets.example.invalid/resumed.mp4"
+    assert requests == [("GET", "/videos/tasks/provider-task-resume")]
 
 
 @pytest.mark.asyncio

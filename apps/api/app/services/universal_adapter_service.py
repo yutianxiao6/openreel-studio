@@ -21,6 +21,7 @@ from universal_model_adapter import (
     FileOutput,
     ImageOutput,
     InvocationHandle,
+    InvocationRequest,
     InvocationResult,
     MediaInput,
     VideoOutput,
@@ -57,7 +58,41 @@ class _AdapterJob:
     save_locally: bool
     last_sequence: int = 0
     result: dict[str, Any] | None = None
+    provider_task_id: str | None = None
+    resume_request: dict[str, Any] | None = None
     poll_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+def _resume_request_payload(request: InvocationRequest) -> dict[str, Any]:
+    """Return a compact, credential-free request sufficient to reselect the route."""
+    payload = request.model_dump(mode="json", exclude_none=True)
+    payload.pop("id", None)
+    compact_media: list[dict[str, Any]] = []
+    for index, item in enumerate(request.media):
+        compact_media.append(
+            {
+                "id": item.id,
+                "role": item.role,
+                "source": {
+                    "type": "url",
+                    "url": f"https://resume.invalid/media/{index + 1}",
+                },
+            }
+        )
+    payload["media"] = compact_media
+    return payload
+
+
+async def _wait_until_provider_accepted(handle: InvocationHandle) -> int:
+    """Wait through submission so the host can persist the provider task id."""
+    last_sequence = 0
+    async for event in handle.events():
+        last_sequence = event.sequence
+        if event.type in _TERMINAL_EVENT_TYPES:
+            break
+        if event.type == "stage.changed" and event.stage == "running":
+            break
+    return last_sequence
 
 
 def _without_none(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -71,12 +106,36 @@ def _mapped_values(
     return {mapping.get(key, key): value for key, value in values.items() if value is not None}
 
 
-def _media_source(value: str) -> dict[str, Any]:
+def _local_media_path(project_id: str, value: str) -> Path | None:
+    text = value.split("?", 1)[0].strip()
+    media_prefix = f"/api/media/{project_id}/"
+    upload_prefix = f"/api/uploads/{project_id}/file/"
+    if text.startswith(media_prefix):
+        relative = text[len(media_prefix) :].lstrip("/")
+    elif text.startswith(upload_prefix):
+        relative = text[len(upload_prefix) :].lstrip("/")
+    elif text.startswith(
+        ("generated_images/", "generated_videos/", "generated_audio/", "uploads/")
+    ):
+        relative = text
+    else:
+        return None
+    candidate = (settings.storage_path_resolved / project_id / relative).resolve()
+    project_root = (settings.storage_path_resolved / project_id).resolve()
+    if candidate.is_relative_to(project_root) and candidate.exists() and candidate.is_file():
+        return candidate
+    return None
+
+
+def _media_source(project_id: str, value: str) -> dict[str, Any]:
     text = value.strip()
     if text.startswith("data:"):
         return {"type": "data_url", "data_url": text}
     if text.startswith(("http://", "https://")):
         return {"type": "url", "url": text}
+    local_media = _local_media_path(project_id, text)
+    if local_media is not None:
+        return {"type": "path", "path": local_media}
     path = Path(text).expanduser()
     if path.exists():
         return {"type": "path", "path": path.resolve()}
@@ -88,6 +147,7 @@ def _media_source(value: str) -> dict[str, Any]:
 
 def _media_inputs(
     binding: UniversalAdapterBinding,
+    project_id: str,
     values: list[tuple[str, str]],
 ) -> list[MediaInput]:
     if not values:
@@ -105,7 +165,7 @@ def _media_inputs(
         MediaInput(
             id=f"{role}-{index + 1}",
             role=role,
-            source=_media_source(value),
+            source=_media_source(project_id, value),
         )
         for index, (role, value) in enumerate(values)
     ]
@@ -225,6 +285,20 @@ def _suffix_for_output(kind: str, output: VideoOutput | AudioOutput | FileOutput
     return ".mp4" if kind == "video" else ".mp3" if kind == "audio" else ".bin"
 
 
+def _video_size(resolution: Any, aspect_ratio: Any) -> str:
+    raw = str(resolution or "").strip().lower().replace("×", "x")
+    parts = raw.split("x", 1)
+    if len(parts) == 2 and all(part.isdigit() and 0 < int(part) <= 99999 for part in parts):
+        return raw
+    portrait = str(aspect_ratio or "16:9").strip() == "9:16"
+    sizes = {
+        "480p": "480x854" if portrait else "854x480",
+        "720p": "720x1280" if portrait else "1280x720",
+        "1080p": "1080x1920" if portrait else "1920x1080",
+    }
+    return sizes.get(raw or "720p", sizes["720p"])
+
+
 class UniversalAdapterService:
     """Long-lived UMA clients and in-process job handles owned by OpenReel."""
 
@@ -279,6 +353,7 @@ class UniversalAdapterService:
             )
             media = _media_inputs(
                 binding,
+                project_id,
                 [("reference_image", value) for value in (reference_images or [])],
             )
             result = await binding.client.images.invoke(
@@ -310,8 +385,10 @@ class UniversalAdapterService:
                 "protocol_id": binding.options.protocol_id,
                 "operation": binding.operation,
                 "accepted_media_roles": list(binding.options.accepted_media_roles),
+                "target_profile_id": binding.options.target_profile_id,
+                "target_metadata": binding.options.target_metadata,
                 "check": "configuration_only",
-                "adapter_resume_supported": False,
+                "adapter_resume_supported": True,
             }
         except Exception as exc:
             return self._configuration_failure(provider, exc)
@@ -330,12 +407,30 @@ class UniversalAdapterService:
         extra: dict[str, Any] | None,
         save_locally: bool,
         wait_for_completion: bool,
+        reference_videos: list[str] | None = None,
+        reference_audios: list[str] | None = None,
     ) -> dict[str, Any]:
-        input_values = {"prompt": prompt}
+        requested_mode = str(
+            (extra or {}).get("video_mode") or (extra or {}).get("mode") or ""
+        ).strip()
+        if not requested_mode:
+            if reference_videos or reference_audios or reference_images:
+                requested_mode = "multimodal_reference"
+            elif first_frame_url and last_frame_url:
+                requested_mode = "first_last_frame"
+            elif first_frame_url:
+                requested_mode = "first_frame"
+            else:
+                requested_mode = "text_to_video"
+        input_values = {"prompt": prompt, "mode": requested_mode}
         parameters = {
             "duration_seconds": duration_seconds,
             "aspect_ratio": (extra or {}).get("aspect_ratio"),
             "resolution": (extra or {}).get("resolution"),
+            "video_size": _video_size(
+                (extra or {}).get("resolution"),
+                (extra or {}).get("aspect_ratio"),
+            ),
         }
         media_values = []
         if first_frame_url:
@@ -343,6 +438,8 @@ class UniversalAdapterService:
         if last_frame_url:
             media_values.append(("last_frame", last_frame_url))
         media_values.extend(("reference_image", value) for value in (reference_images or []))
+        media_values.extend(("reference_video", value) for value in (reference_videos or []))
+        media_values.extend(("reference_audio", value) for value in (reference_audios or []))
         return await self._submit_media(
             provider=provider,
             provider_params=provider_params,
@@ -424,9 +521,9 @@ class UniversalAdapterService:
                 parameter_values=parameter_values,
                 extra=extra,
             )
-            media = _media_inputs(binding, media_values)
+            media = _media_inputs(binding, project_id, media_values)
             backend = binding.client.backends.for_kind(kind)
-            handle = await backend.submit(
+            request = backend.create_request(
                 operation=binding.operation,
                 model=binding.logical_model,
                 input=request_input,
@@ -434,6 +531,8 @@ class UniversalAdapterService:
                 media=media,
                 metadata={"project_id": project_id, "openreel_provider": binding.provider_name},
             )
+            handle = await binding.client.submit(request)
+            await _wait_until_provider_accepted(handle)
             job = _AdapterJob(
                 binding=binding,
                 handle=handle,
@@ -447,13 +546,15 @@ class UniversalAdapterService:
                 if not (await oldest.handle.status()).terminal:
                     break
                 self._jobs.pop(oldest_id, None)
-            if wait_for_completion:
+            snapshot = await handle.snapshot()
+            job.provider_task_id = snapshot.provider_task_id
+            job.resume_request = _resume_request_payload(request)
+            if wait_for_completion or snapshot.status.terminal:
                 return await self.poll(
                     provider=provider,
                     job_id=handle.id,
                     kind=kind,
                 )
-            snapshot = await handle.snapshot()
             route = snapshot.route
             return {
                 "ok": True,
@@ -464,7 +565,8 @@ class UniversalAdapterService:
                 "model": binding.remote_model,
                 "progress": snapshot.progress,
                 "adapter_route": route.model_dump(mode="json") if route else None,
-                "adapter_resume_supported": False,
+                "adapter_resume_request": job.resume_request,
+                "adapter_resume_supported": bool(snapshot.provider_task_id),
             }
         except Exception as exc:
             return self._configuration_failure(provider, exc)
@@ -476,21 +578,46 @@ class UniversalAdapterService:
         job_id: str,
         kind: str,
         progress_callback: ProgressCallback | None = None,
+        provider_params: dict[str, Any] | None = None,
+        project_id: str | None = None,
+        save_locally: bool = True,
+        provider_task_id: str | None = None,
+        resume_request: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         job = self._jobs.get(job_id)
         if job is None:
-            return {
-                "ok": False,
-                "status": "failed",
-                "error": (
-                    "UMA invocation is not available in this process; restart recovery is not "
-                    "supported for universal_adapter jobs yet"
-                ),
-                "error_kind": "adapter_job_unavailable",
-                "provider": str(getattr(provider, "name", "") or ""),
-                "job_id": job_id,
-                "adapter_resume_supported": False,
-            }
+            if not provider_task_id or not isinstance(resume_request, dict):
+                return {
+                    "ok": False,
+                    "status": "failed",
+                    "error": "UMA 任务恢复缺少 provider_task_id 或 adapter_resume_request",
+                    "error_kind": "adapter_resume_data_missing",
+                    "provider": str(getattr(provider, "name", "") or ""),
+                    "job_id": job_id,
+                    "adapter_resume_supported": True,
+                }
+            try:
+                binding = await self._binding(provider, provider_params or {})
+                request = InvocationRequest.model_validate(resume_request)
+                handle = await binding.client.resume_task(request, provider_task_id)
+                job = _AdapterJob(
+                    binding=binding,
+                    handle=handle,
+                    project_id=str(project_id or ""),
+                    save_locally=save_locally,
+                    provider_task_id=provider_task_id,
+                    resume_request=resume_request,
+                )
+                self._jobs[job_id] = job
+            except Exception as exc:
+                failure = self._configuration_failure(provider, exc)
+                failure.update(
+                    {
+                        "job_id": job_id,
+                        "adapter_resume_supported": True,
+                    }
+                )
+                return failure
         if job.binding.kind != kind:
             return {
                 "ok": False,
@@ -515,7 +642,9 @@ class UniversalAdapterService:
             result = await job.handle.result()
             mapped = await self._media_result(job, result)
             mapped["job_id"] = job_id
-            mapped["adapter_resume_supported"] = False
+            mapped["provider_task_id"] = job.provider_task_id
+            mapped["adapter_resume_request"] = job.resume_request
+            mapped["adapter_resume_supported"] = True
             job.result = mapped
             return dict(mapped)
 
@@ -596,6 +725,15 @@ class UniversalAdapterService:
         }
         if binding.kind == "audio":
             response["audios"] = materialized
+        elif binding.kind == "video":
+            last_frame = next(
+                (output for output in result.outputs if isinstance(output, ImageOutput)),
+                None,
+            )
+            if last_frame is not None:
+                response["last_frame_url"] = last_frame.url or (
+                    str(last_frame.path) if last_frame.path else None
+                )
         return response
 
     async def _materialize_output(

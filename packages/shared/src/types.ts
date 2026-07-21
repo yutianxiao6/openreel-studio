@@ -21,47 +21,15 @@ export interface Project {
   updated_at: string;
 }
 
-export interface Character {
-  id: ID;
-  project_id: ID;
-  name: string;
-  role_type?: string;
-  age?: string;
-  identity?: string;
-  personality?: string;
-  appearance?: string;
-  motivation?: string;
-  visual_prompt?: string;
-  locked?: boolean;
-}
-
-export interface Episode {
-  id: ID;
-  project_id: ID;
-  episode_number: number;
-  title?: string;
-  hook?: string;
-  summary?: string;
-  script?: string;
-  cliffhanger?: string;
-  status?: "draft" | "generated" | "reviewed" | "locked";
-}
-
 export type WorkflowNodeType =
-  | "project_setting"
-  | "character_generation"
-  | "outline_generation"
-  | "script_generation"
-  | "script_review"
-  | "storyboard_generation"
-  | "image_prompt_generation"
-  | "image_generation"
-  | "video_prompt_generation"
-  | "video_generation"
-  | "export";
+  | "text"
+  | "image"
+  | "video"
+  | "audio";
 
 export type WorkflowNodeStatus =
   | "idle"
+  | "queued"
   | "running"
   | "completed"
   | "failed"
