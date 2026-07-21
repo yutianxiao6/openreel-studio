@@ -27,7 +27,7 @@ from app.services import media_history
 
 _MAX_N = 10
 logger = logging.getLogger(__name__)
-_BACKGROUND_VIDEO_TASKS: set[asyncio.Task] = set()
+_BACKGROUND_VIDEO_TASKS: dict[tuple[str, str, str], asyncio.Task] = {}
 _BACKGROUND_AUDIO_TASKS: set[asyncio.Task] = set()
 
 
@@ -297,6 +297,71 @@ def _video_display_url(result: dict[str, Any]) -> str | None:
     return result.get("local_url") or result.get("remote_url") or result.get("url")
 
 
+def _resumable_video_job(
+    output: Any,
+    *,
+    prompt: str,
+    model: str | None,
+    duration_seconds: int,
+    aspect_ratio: str | None,
+    resolution: str | None,
+    reference_images: list[str] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(output, dict) or _video_display_url(output):
+        return None
+    job_id = str(output.get("job_id") or "").strip()
+    if not job_id:
+        return None
+    status = str(output.get("status") or "").strip().lower()
+    error_kind = str(output.get("error_kind") or "").strip().lower()
+    if status not in {"queued", "running", "processing"} and error_kind not in {
+        "network",
+        "rate_limit",
+        "server_error",
+        "timeout",
+    }:
+        return None
+
+    previous_prompt = str(output.get("prompt") or "").strip()
+    if previous_prompt and previous_prompt != prompt.strip():
+        return None
+    requested_model = str(model or "").strip()
+    previous_provider = str(output.get("provider") or "").strip()
+    previous_model = str(output.get("model") or "").strip()
+    if requested_model and requested_model not in {previous_provider, previous_model}:
+        return None
+    previous_duration = output.get("duration_seconds")
+    if previous_duration not in (None, ""):
+        try:
+            if int(float(str(previous_duration))) != duration_seconds:
+                return None
+        except (TypeError, ValueError):
+            return None
+    for previous, current in (
+        (output.get("aspect_ratio"), aspect_ratio),
+        (output.get("resolution"), resolution),
+    ):
+        if previous not in (None, "") and current not in (None, "") and str(previous) != str(current):
+            return None
+    previous_references = output.get("reference_images")
+    if isinstance(previous_references, list) and list(previous_references) != list(reference_images or []):
+        return None
+
+    return {
+        "ok": True,
+        "provider": previous_provider or requested_model,
+        "model": previous_model or requested_model,
+        "status": "running",
+        "job_id": job_id,
+        "mode": output.get("mode") or output.get("video_mode"),
+        "resolution": output.get("resolution") or resolution,
+        "resolved_reference_images": output.get("resolved_reference_images") or [],
+        "resolved_media_references": output.get("resolved_media_references") or [],
+        "reference_warnings": output.get("reference_warnings") or [],
+        "resumed_existing_job": True,
+    }
+
+
 def _merge_progress_output(
     *,
     current_output: Any,
@@ -320,9 +385,34 @@ def _merge_progress_output(
         output["progress"] = update.get("progress")
     if update.get("poll_count") is not None:
         output["poll_count"] = update.get("poll_count")
+    if update.get("retrying"):
+        output["poll_retrying"] = True
+        output["poll_error"] = update.get("error")
+        output["poll_error_kind"] = update.get("error_kind")
+        output["poll_http_code"] = update.get("http_code")
+        output["poll_retry_count"] = update.get("retry_count")
+        output["poll_retry_in_seconds"] = update.get("retry_in_seconds")
+    else:
+        output.pop("poll_retrying", None)
+        output.pop("poll_error", None)
+        output.pop("poll_error_kind", None)
+        output.pop("poll_http_code", None)
+        output.pop("poll_retry_count", None)
+        output.pop("poll_retry_in_seconds", None)
     last_poll = {
         key: update.get(key)
-        for key in ("status", "progress", "poll_count", "updated_at")
+        for key in (
+            "status",
+            "progress",
+            "poll_count",
+            "updated_at",
+            "retrying",
+            "error_kind",
+            "http_code",
+            "error",
+            "retry_count",
+            "retry_in_seconds",
+        )
         if update.get(key) is not None
     }
     if last_poll:
@@ -345,6 +435,18 @@ async def _emit_media_progress_update(
     try:
         current_node = await canvas_tools.get_node(node_id)
         current_output = current_node.get("output") if isinstance(current_node, dict) else None
+        current_job_id = str(
+            current_output.get("job_id") if isinstance(current_output, dict) else ""
+        ).strip()
+        expected_job_id = str(base_output.get("job_id") or update.get("job_id") or "").strip()
+        if current_job_id and expected_job_id and current_job_id != expected_job_id:
+            logger.info(
+                "skip stale video progress node_id=%s current_job_id=%s polled_job_id=%s",
+                node_id,
+                current_job_id,
+                expected_job_id,
+            )
+            return
         output = _merge_progress_output(
             current_output=current_output,
             base_output=base_output,
@@ -417,6 +519,7 @@ def _video_output(
         "resolved_reference_images": result.get("resolved_reference_images") or [],
         "resolved_media_references": result.get("resolved_media_references") or [],
         "reference_warnings": result.get("reference_warnings") or [],
+        "resumed_existing_job": bool(result.get("resumed_existing_job")),
         "async": status in {"queued", "running"},
     }
 
@@ -532,6 +635,7 @@ async def _background_video_poll(
     result["reference_images"] = refs_provided
     result["resolved_reference_images"] = queued_result.get("resolved_reference_images") or []
     result["resolved_media_references"] = queued_result.get("resolved_media_references") or result.get("resolved_media_references") or []
+    result["resumed_existing_job"] = bool(queued_result.get("resumed_existing_job"))
     result["reference_warnings"] = [
         *(
             queued_result.get("reference_warnings")
@@ -544,6 +648,25 @@ async def _background_video_poll(
             else []
         ),
     ]
+
+    if node_id:
+        try:
+            current_node = await canvas_tools.get_node(node_id)
+            current_output = current_node.get("output") if isinstance(current_node, dict) else None
+            current_job_id = str(
+                current_output.get("job_id") if isinstance(current_output, dict) else ""
+            ).strip()
+            if current_job_id and current_job_id != job_id:
+                logger.info(
+                    "discard stale video result node_id=%s current_job_id=%s polled_job_id=%s",
+                    node_id,
+                    current_job_id,
+                    job_id,
+                )
+                return
+        except Exception:
+            logger.exception("verify video job ownership failed node_id=%s job_id=%s", node_id, job_id)
+            return
 
     asset_id = None
     if record_asset:
@@ -605,12 +728,24 @@ async def _background_video_poll(
             logger.exception("background video node update failed node_id=%s job_id=%s", node_id, job_id)
 
 
-def _schedule_background_video_poll(**kwargs: Any) -> None:
+def _schedule_background_video_poll(**kwargs: Any) -> bool:
+    project_id = str(kwargs.get("project_id") or "").strip()
+    node_id = str(kwargs.get("node_id") or "").strip()
+    queued_result = kwargs.get("queued_result")
+    job_id = str(queued_result.get("job_id") if isinstance(queued_result, dict) else "").strip()
+    if not project_id or not job_id:
+        return False
+    task_key = (project_id, node_id, job_id)
+    existing = _BACKGROUND_VIDEO_TASKS.get(task_key)
+    if existing and not existing.done():
+        return False
+
     task = asyncio.create_task(_background_video_poll(**kwargs))
-    _BACKGROUND_VIDEO_TASKS.add(task)
+    _BACKGROUND_VIDEO_TASKS[task_key] = task
 
     def _done(done: asyncio.Task) -> None:
-        _BACKGROUND_VIDEO_TASKS.discard(done)
+        if _BACKGROUND_VIDEO_TASKS.get(task_key) is done:
+            _BACKGROUND_VIDEO_TASKS.pop(task_key, None)
         try:
             done.result()
         except asyncio.CancelledError:
@@ -619,6 +754,112 @@ def _schedule_background_video_poll(**kwargs: Any) -> None:
             logger.exception("background video poll task failed")
 
     task.add_done_callback(_done)
+    return True
+
+
+async def resume_persisted_video_poll(
+    *,
+    project_id: str,
+    node_id: str,
+    prompt: str,
+    input_data: dict[str, Any] | None,
+    output: dict[str, Any],
+) -> bool:
+    """Resume one provider task recorded on a video node without resubmitting it."""
+
+    from app.mcp_tools import canvas_tools
+
+    job_id = str(output.get("job_id") or "").strip()
+    if not job_id or _video_display_url(output):
+        return False
+    fields = dict(input_data or {})
+    nested_fields = fields.get("fields")
+    if isinstance(nested_fields, dict):
+        fields = {**nested_fields, **fields}
+
+    provider_name = str(output.get("provider") or fields.get("provider") or "").strip()
+    model_name = str(output.get("model") or fields.get("model") or provider_name).strip()
+    if not provider_name and not model_name:
+        return False
+
+    try:
+        duration_seconds = int(float(str(output.get("duration_seconds") or fields.get("duration_seconds") or 4)))
+    except (TypeError, ValueError):
+        duration_seconds = 4
+    aspect_ratio = output.get("aspect_ratio") or fields.get("aspect_ratio")
+    resolution = output.get("resolution") or fields.get("resolution")
+    refs = output.get("reference_images")
+    if not isinstance(refs, list):
+        refs = fields.get("reference_images") if isinstance(fields.get("reference_images"), list) else []
+
+    queued_result = dict(output)
+    queued_result.update({
+        "ok": True,
+        "status": "running",
+        "job_id": job_id,
+        "provider": provider_name or model_name,
+        "model": model_name or provider_name,
+        "resumed_existing_job": True,
+        "recovered_after_restart": True,
+    })
+    resumed_output = _video_output(
+        queued_result,
+        asset_id=None,
+        asset_ids=[],
+        duration_seconds=duration_seconds,
+        aspect_ratio=str(aspect_ratio) if aspect_ratio is not None else None,
+        resolution=str(resolution) if resolution is not None else None,
+        reference_images=list(refs),
+    )
+    resumed_output["prompt"] = str(output.get("prompt") or prompt or "").strip()
+    resumed_output["recovered_after_restart"] = True
+    for key in (
+        "error",
+        "error_message",
+        "error_kind",
+        "poll_error",
+        "poll_error_kind",
+        "poll_http_code",
+    ):
+        resumed_output.pop(key, None)
+
+    await canvas_tools.update_node(
+        node_id,
+        {"status": "running", "error_message": None, "output_data": resumed_output},
+    )
+    provider_extra = {
+        key: fields[key]
+        for key in ("_poll_interval_seconds", "_poll_timeout_seconds")
+        if fields.get(key) is not None
+    }
+    scheduled = _schedule_background_video_poll(
+        project_id=project_id,
+        prompt=resumed_output["prompt"],
+        shot_id=fields.get("shot_id"),
+        node_id=node_id,
+        model=model_name or provider_name,
+        queued_result=queued_result,
+        refs_provided=list(refs),
+        first_frame_asset_id=fields.get("first_frame_asset_id"),
+        last_frame_asset_id=fields.get("last_frame_asset_id"),
+        duration_seconds=duration_seconds,
+        aspect_ratio=str(aspect_ratio) if aspect_ratio is not None else None,
+        resolution=str(resolution) if resolution is not None else None,
+        provider_extra=provider_extra,
+        record_asset=True,
+    )
+    return scheduled or (project_id, node_id, job_id) in _BACKGROUND_VIDEO_TASKS
+
+
+async def stop_background_media_tasks() -> None:
+    tasks = [*_BACKGROUND_VIDEO_TASKS.values(), *_BACKGROUND_AUDIO_TASKS]
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _BACKGROUND_VIDEO_TASKS.clear()
+    _BACKGROUND_AUDIO_TASKS.clear()
 
 
 async def generate_video(
@@ -635,6 +876,7 @@ async def generate_video(
     reference_images: list[str] | None = None,
     extra: dict[str, Any] | None = None,
     record_asset: bool = False,
+    resume_existing_job: bool = False,
 ) -> dict:
     """Resolve frame assets and delegate to the active video provider."""
     first_url = last_url = None
@@ -653,19 +895,38 @@ async def generate_video(
     if resolution and "resolution" not in provider_extra:
         provider_extra["resolution"] = resolution
 
-    result = await generate_video_with_provider(
-        project_id=project_id,
-        prompt=prompt,
-        first_frame_url=first_url,
-        last_frame_url=last_url,
-        duration_seconds=duration_seconds,
-        model_name=model,
-        extra=provider_extra,
-        reference_images=reference_images,
-        save_locally=True,
-        wait_for_completion=False,
-    )
     refs_provided = list(reference_images) if reference_images else []
+    result: dict[str, Any] | None = None
+    if resume_existing_job and node_id:
+        from app.mcp_tools import canvas_tools
+
+        try:
+            current_node = await canvas_tools.get_node(node_id)
+            result = _resumable_video_job(
+                current_node.get("output") if isinstance(current_node, dict) else None,
+                prompt=prompt,
+                model=model,
+                duration_seconds=duration_seconds,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+                reference_images=refs_provided,
+            )
+        except Exception:
+            logger.exception("inspect resumable video job failed node_id=%s", node_id)
+
+    if result is None:
+        result = await generate_video_with_provider(
+            project_id=project_id,
+            prompt=prompt,
+            first_frame_url=first_url,
+            last_frame_url=last_url,
+            duration_seconds=duration_seconds,
+            model_name=model,
+            extra=provider_extra,
+            reference_images=reference_images,
+            save_locally=True,
+            wait_for_completion=False,
+        )
 
     ok = bool(result.get("ok"))
     status = result.get("status") or ("completed" if ok else "failed")

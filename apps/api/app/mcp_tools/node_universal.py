@@ -4889,6 +4889,7 @@ async def _run_image_node(project_id: str, node_id: str, f: dict) -> dict:
 
 
 async def _run_video_node(project_id: str, node_id: str, f: dict) -> dict:
+    force_new_generation = bool(f.pop("_force_new_video_generation", False))
     prompt = str(f.get("prompt") or "").strip()
     if not prompt:
         return {
@@ -4938,6 +4939,7 @@ async def _run_video_node(project_id: str, node_id: str, f: dict) -> dict:
         reference_images=reference_images,
         extra=video_extra,
         record_asset=True,
+        resume_existing_job=not force_new_generation,
     )
     if isinstance(result, dict):
         resolved_mode = str(result.get("video_mode") or result.get("mode") or "").strip()
@@ -5514,6 +5516,8 @@ async def node_run(
 
     if action == "force":
         await canvas_tools.update_node(node_id, {"status": "idle", "error_message": None})
+        if node_type == "video":
+            fields["_force_new_video_generation"] = True
 
     await canvas_tools.update_node(node_id, {"status": "running", "error_message": None})
     try:

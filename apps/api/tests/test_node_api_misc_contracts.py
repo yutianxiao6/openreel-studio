@@ -2253,6 +2253,7 @@ async def test_video_runner_passes_resolved_reference_images(monkeypatch):
     assert captured["generate"]["aspect_ratio"] == "9:16"
     assert captured["generate"]["resolution"] == "1440x2560"
     assert captured["generate"]["extra"]["generate_audio"] is False
+    assert captured["generate"]["resume_existing_job"] is True
     assert result["reference_warnings"] == ["跳过未完成参考图"]
     assert updates[0]["input_data"]["video_mode"] == "multimodal_reference"
 
@@ -2366,6 +2367,61 @@ async def test_media_generation_video_queues_background_poll(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_media_generation_video_resumes_transiently_failed_existing_job(monkeypatch):
+    captured: dict = {}
+
+    async def fake_get_node(node_id: str):
+        assert node_id == "video-1"
+        return {
+            "id": node_id,
+            "output": {
+                "type": "video",
+                "status": "processing",
+                "error_kind": "server_error",
+                "job_id": "existing-task-1",
+                "provider": "dramaagent-sed2-mini",
+                "model": "sed2-mini",
+                "prompt": "video prompt",
+                "duration_seconds": 15,
+                "aspect_ratio": "16:9",
+                "resolution": "720p",
+                "reference_images": ["node:image-1"],
+                "resolved_reference_images": ["/tmp/ref.png"],
+            },
+        }
+
+    async def fail_if_submitted(**kwargs):
+        raise AssertionError("existing provider task must be resumed instead of submitted again")
+
+    def fake_schedule_background_video_poll(**kwargs):
+        captured["background"] = kwargs
+
+    monkeypatch.setattr(canvas_tools, "get_node", fake_get_node)
+    monkeypatch.setattr(media_generation, "generate_video_with_provider", fail_if_submitted)
+    monkeypatch.setattr(media_generation, "_schedule_background_video_poll", fake_schedule_background_video_poll)
+
+    result = await media_generation.generate_video(
+        project_id="proj-1",
+        prompt="video prompt",
+        node_id="video-1",
+        model="dramaagent-sed2-mini",
+        duration_seconds=15,
+        aspect_ratio="16:9",
+        resolution="720p",
+        reference_images=["node:image-1"],
+        record_asset=True,
+        resume_existing_job=True,
+    )
+
+    queued = captured["background"]["queued_result"]
+    assert queued["job_id"] == "existing-task-1"
+    assert queued["resumed_existing_job"] is True
+    assert result["status"] == "running"
+    assert result["resumed_existing_job"] is True
+    assert result["job_id"] == "existing-task-1"
+
+
+@pytest.mark.asyncio
 async def test_background_video_poll_updates_node_progress(monkeypatch):
     updates: list[dict] = []
     events: list[tuple[dict, str | None]] = []
@@ -2427,6 +2483,7 @@ async def test_background_video_poll_updates_node_progress(monkeypatch):
             "model": "doubao-seedance-2-0-260128",
             "status": "queued",
             "job_id": "ark-task-1",
+            "resumed_existing_job": True,
         },
         refs_provided=[],
         first_frame_asset_id=None,
@@ -2447,6 +2504,7 @@ async def test_background_video_poll_updates_node_progress(monkeypatch):
     assert events[0][0]["payload"]["progress"] == 42
     assert events[0][1] == "proj-1"
     assert updates[-1]["status"] == "completed"
+    assert updates[-1]["output_data"]["resumed_existing_job"] is True
 
 
 @pytest.mark.asyncio

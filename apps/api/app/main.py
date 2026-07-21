@@ -27,7 +27,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         import logging
         logging.getLogger(__name__).exception("Interrupted workflow runtime recovery failed")
-    from app.services.node_recovery import cleanup_interrupted_media_nodes
+    from app.services.node_recovery import cleanup_interrupted_media_nodes, recover_interrupted_video_polls
+    try:
+        await recover_interrupted_video_polls()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Interrupted video poll recovery failed")
     try:
         await cleanup_interrupted_media_nodes(
             stale_after_seconds=None,
@@ -68,6 +73,11 @@ async def lifespan(app: FastAPI):
         pass
     yield
     # Cleanup
+    try:
+        from app.services.media_generation import stop_background_media_tasks
+        await stop_background_media_tasks()
+    except Exception:
+        pass
     try:
         await store.stop_watcher()
     except Exception:

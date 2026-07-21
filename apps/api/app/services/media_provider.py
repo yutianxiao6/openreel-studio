@@ -2905,6 +2905,11 @@ def _video_http_v1_progress(protocol: dict[str, Any], data: dict[str, Any]) -> A
 
 def _video_http_v1_result_url(protocol: dict[str, Any], data: dict[str, Any]) -> str | None:
     result = _video_http_v1_result_section(protocol)
+    path = str(result.get("video_url_path") or result.get("url_path") or "").strip()
+    if path:
+        value = _lookup_path(data, path)
+        text = str(value or "").strip()
+        return text or None
     paths = result.get("video_url_paths") or result.get("url_paths") or result.get("result_url_paths")
     if isinstance(paths, str):
         paths = [paths]
@@ -2926,13 +2931,30 @@ def _video_http_v1_last_frame_url(protocol: dict[str, Any], data: dict[str, Any]
     return _first_text(content.get("last_frame_url"), data.get("last_frame_url"))
 
 
-def _video_http_v1_provider_message(data: dict[str, Any]) -> str:
-    err = data.get("error")
-    if isinstance(err, dict):
-        return str(err.get("message") or err.get("error") or err)
-    if err:
-        return str(err)
-    return str(data.get("message") or data.get("msg") or data.get("reason") or "视频生成任务失败")
+def _video_http_v1_provider_error(
+    protocol: dict[str, Any],
+    data: dict[str, Any],
+) -> tuple[str, str | None]:
+    error_config = protocol.get("error")
+    if not isinstance(error_config, dict):
+        error_config = {}
+    poll_config = _video_http_v1_poll_section(protocol)
+    message_path = str(
+        error_config.get("message_path")
+        or poll_config.get("error_message_path")
+        or "error"
+    ).strip()
+    code_path = str(
+        error_config.get("code_path")
+        or poll_config.get("error_code_path")
+        or "error_code"
+    ).strip()
+    value = _lookup_path(data, message_path)
+    if isinstance(value, dict):
+        value = value.get("message") or value.get("error") or value.get("detail")
+    message = str(value or "").strip()
+    code = str(_lookup_path(data, code_path) or "").strip() or None
+    return message or "视频生成任务失败", code
 
 
 async def _video_http_v1_completed_result(
@@ -3090,14 +3112,17 @@ async def _call_video_http_v1(
         completed.setdefault("resolved_media_references", (payload_meta or {}).get("resolved_media_references") or [])
         return completed
     if status in failed:
+        provider_msg, provider_error_code = _video_http_v1_provider_error(protocol, create_data or {})
         return {
-            "error": _video_http_v1_provider_message(create_data or {}),
+            "error": provider_msg,
             "error_kind": "provider_failed",
             "provider": provider.name,
             "model": provider.model_name,
             "job_id": task_id,
             "status": status,
             "endpoint": endpoint,
+            "provider_msg": provider_msg,
+            "provider_error_code": provider_error_code,
             "raw": create_data,
         }
     if not wait_for_completion:
@@ -3147,24 +3172,100 @@ async def _poll_video_http_v1_task(
     status = "queued"
     succeeded, failed, _running = _video_http_v1_status_sets(protocol)
     latest_data: dict[str, Any] = {}
+    last_poll_error: dict[str, Any] | None = None
+    consecutive_poll_errors = 0
+    max_retry_interval = max(
+        poll_interval,
+        _coerce_float(poll.get("max_retry_interval_seconds") or 60, 60.0),
+    )
+
+    async def retry_transient_poll_error(error: dict[str, Any]) -> dict[str, Any] | None:
+        nonlocal consecutive_poll_errors, last_poll_error
+        consecutive_poll_errors += 1
+        last_poll_error = dict(error)
+        retry_in_seconds = min(
+            max_retry_interval,
+            poll_interval * (2 ** min(consecutive_poll_errors - 1, 6)),
+        )
+        poll_record = {
+            "status": status or "unknown",
+            "retrying": True,
+            "error_kind": error.get("error_kind"),
+            "http_code": error.get("http_code"),
+            "error": error.get("error"),
+            "retry_count": consecutive_poll_errors,
+            "retry_in_seconds": retry_in_seconds,
+        }
+        polls.append({key: value for key, value in poll_record.items() if value is not None})
+        await _notify_progress(progress_callback, {
+            "job_id": task_id,
+            "status": status or "unknown",
+            "progress": _video_http_v1_progress(protocol, latest_data),
+            "poll_count": len(polls),
+            "provider": provider.name,
+            "model": provider.model_name,
+            "endpoint": query_endpoint,
+            "retrying": True,
+            "error_kind": error.get("error_kind"),
+            "http_code": error.get("http_code"),
+            "error": error.get("error"),
+            "retry_count": consecutive_poll_errors,
+            "retry_in_seconds": retry_in_seconds,
+        })
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {
+                "error": f"视频任务轮询持续失败，已超过本地轮询超时 {int(poll_timeout)} 秒",
+                "error_kind": "timeout",
+                "provider": provider.name,
+                "model": provider.model_name,
+                "job_id": task_id,
+                "status": status or "unknown",
+                "endpoint": query_endpoint,
+                "raw": latest_data,
+                "polls": polls,
+                "last_poll_error": last_poll_error,
+            }
+        await asyncio.sleep(min(retry_in_seconds, remaining))
+        return None
 
     try:
         async with httpx.AsyncClient(timeout=_media_video_timeout()) as client:
             while True:
-                if method == "POST":
-                    queried = await client.post(query_endpoint, json={}, headers=headers)
-                else:
-                    queried = await client.get(query_endpoint, headers=headers)
+                try:
+                    if method == "POST":
+                        queried = await client.post(query_endpoint, json={}, headers=headers)
+                    else:
+                        queried = await client.get(query_endpoint, headers=headers)
+                except httpx.HTTPError as exc:
+                    terminal = await retry_transient_poll_error({
+                        "error": f"视频任务轮询网络异常: {exc}",
+                        "error_kind": "network",
+                        "endpoint": query_endpoint,
+                    })
+                    if terminal:
+                        return terminal
+                    continue
                 if queried.status_code >= 400:
                     err = _make_http_error(queried.status_code, queried.text, query_endpoint)
                     err.update({"job_id": task_id, "status": status or "unknown"})
+                    if queried.status_code in {408, 425, 429, 500, 502, 503, 504}:
+                        terminal = await retry_transient_poll_error(err)
+                        if terminal:
+                            return terminal
+                        continue
                     return err
                 query_data, query_error = _response_json(queried, query_endpoint)
                 if query_error:
                     query_error.update({"job_id": task_id, "status": status or "unknown"})
-                    return query_error
+                    terminal = await retry_transient_poll_error(query_error)
+                    if terminal:
+                        return terminal
+                    continue
 
                 latest_data = query_data or {}
+                last_poll_error = None
+                consecutive_poll_errors = 0
                 status = _video_http_v1_status(protocol, latest_data, status)
                 progress = _video_http_v1_progress(protocol, latest_data)
                 polls.append({"status": status, "progress": progress, "updated_at": latest_data.get("updated_at")})
@@ -3192,7 +3293,7 @@ async def _poll_video_http_v1_task(
                         save_locally=save_locally,
                     )
                 if status in failed:
-                    provider_msg = _video_http_v1_provider_message(latest_data)
+                    provider_msg, provider_error_code = _video_http_v1_provider_error(protocol, latest_data)
                     return {
                         "error": provider_msg,
                         "error_kind": "provider_failed",
@@ -3202,6 +3303,7 @@ async def _poll_video_http_v1_task(
                         "status": status,
                         "endpoint": query_endpoint,
                         "provider_msg": provider_msg,
+                        "provider_error_code": provider_error_code,
                         "raw": latest_data,
                         "polls": polls,
                     }
@@ -3807,9 +3909,18 @@ async def _download_audio_result(project_id: str, remote_url: str) -> dict[str, 
 def _lookup_path(data: Any, path: str) -> Any:
     current = data
     for part in path.split("."):
-        if not isinstance(current, dict):
+        if isinstance(current, dict):
+            current = current.get(part)
+            continue
+        if isinstance(current, list):
+            try:
+                current = current[int(part)]
+            except (IndexError, TypeError, ValueError):
+                return None
+            continue
+        if current is None:
             return None
-        current = current.get(part)
+        return None
     return current
 
 
@@ -6493,7 +6604,7 @@ async def _poll_image_http_v1_task(
                     return {"error": "image_http_v1 任务成功但响应缺少图片", "error_kind": "bad_response", "raw": latest, "job_id": task_id, "polls": polls}
                 if status in failed:
                     return {
-                        "error": _video_http_v1_provider_message(latest),
+                        "error": _video_http_v1_provider_error(protocol, latest)[0],
                         "error_kind": "provider_failed",
                         "raw": latest,
                         "job_id": task_id,
