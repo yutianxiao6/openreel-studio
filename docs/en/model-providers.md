@@ -4,7 +4,7 @@ English · [简体中文](../zh-CN/model-providers.md) · [Documentation home](.
 
 This guide covers the OpenReel settings and runtime boundary. Detailed video
 wire-protocol authoring belongs to the Universal Model Adapter submodule and is
-documented in its [OpenReel video integration guide](https://github.com/yutianxiao6/universal-model-adapter/blob/main/docs/OPENREEL_INTEGRATION.md).
+documented in its [OpenReel video integration guide](https://github.com/yutianxiao6/universal-model-adapter/blob/main/docs/en/openreel-integration.md).
 
 ## Choose the correct configuration path
 
@@ -171,7 +171,7 @@ Use the submodule guide for:
 - host-supplied restart recovery;
 - validation commands, contract tests, and troubleshooting ownership.
 
-Source of truth: [Universal Model Adapter — OpenReel video integration guide](https://github.com/yutianxiao6/universal-model-adapter/blob/main/docs/OPENREEL_INTEGRATION.md).
+Source of truth: [Universal Model Adapter — OpenReel video integration guide](https://github.com/yutianxiao6/universal-model-adapter/blob/main/docs/en/openreel-integration.md).
 
 ## Image and audio Catalogs
 
