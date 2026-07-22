@@ -101,6 +101,8 @@ Standalone 节点运行使用 `node.run`；graph workflow 运行使用 `workflow
 
 外部执行客户端运行媒体节点后，通过同一节点的服务端终态事件等待取得结果；供应商轮询由后台 UMA 承担，客户端不重复查询节点状态，也不因等待超时再次调用 `node.run`。
 
+视频参考素材统一在 `fields.references` 中各写一次，不把同一图片重复写入 `reference_images` 或 `depends_on`。`video_mode=first_frame` 时，后端会把第一张已解析图片参考作为首帧；可见节点编号 `0` 可直接引用。
+
 Standalone 节点仍要写清：
 
 - `fields.purpose`

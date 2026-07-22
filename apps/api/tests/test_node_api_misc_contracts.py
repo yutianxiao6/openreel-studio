@@ -2544,6 +2544,27 @@ async def test_node_run_audio_queue_keeps_node_running(monkeypatch):
     assert updates[-1]["output_data"]["job_id"] == "audio-task-1"
 
 
+def test_node_run_business_error_hints_prevent_duplicate_video_submissions():
+    existing_task_hint = node_universal._run_business_error_hint({
+        "error_kind": "server_error",
+        "provider_task_id": "provider-task-1",
+    })
+    unavailable_hint = node_universal._run_business_error_hint({
+        "error_kind": "provider_unavailable",
+        "provider_msg": "UPDREAM_UNREACHABLE",
+    })
+    invalid_request_hint = node_universal._run_business_error_hint({
+        "error_kind": "invalid_request",
+    })
+
+    assert "只等待这个节点" in existing_task_hint
+    assert "不要再次 node.run" in existing_task_hint
+    assert "没有 provider_task_id" in unavailable_hint
+    assert "不要立即重复 node.run" in unavailable_hint
+    assert "参数校验拒绝" in invalid_request_hint
+    assert "contract" in invalid_request_hint
+
+
 def test_public_url_mode_requires_public_base_for_local_media():
     url, warning = media_provider._public_media_url_for_ref(
         "proj-1",
@@ -2752,6 +2773,7 @@ async def test_video_reference_resolver_maps_blueprint_ids_to_completed_image_no
     rows = [
         SimpleNamespace(
             id="image-node-1",
+            display_id=0,
             title="宫格分镜图",
             type="image",
             status="completed",
@@ -2759,6 +2781,7 @@ async def test_video_reference_resolver_maps_blueprint_ids_to_completed_image_no
         ),
         SimpleNamespace(
             id="image-node-2",
+            display_id=1,
             title="未完成角色图",
             type="image",
             status="idle",
@@ -2766,6 +2789,7 @@ async def test_video_reference_resolver_maps_blueprint_ids_to_completed_image_no
         ),
         SimpleNamespace(
             id="text-node-1",
+            display_id=2,
             title="分段剧本",
             type="text",
             status="completed",
@@ -2792,7 +2816,7 @@ async def test_video_reference_resolver_maps_blueprint_ids_to_completed_image_no
 
     resolved, warnings = await node_universal._image_node_reference_images_for_video(
         "proj-1",
-        ["@storyboard_grid_01", "@character_mo_ying", "@segment_01"],
+        ["0", "@character_mo_ying", "@segment_01"],
     )
 
     assert resolved == ["node:image-node-1"]

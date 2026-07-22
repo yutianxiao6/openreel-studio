@@ -54,9 +54,13 @@ Example / 示例：
 ## Runtime contract / 运行合同
 
 1. The video node supplies prompt, selected model, `video_mode`, duration,
-   aspect ratio, resolution, and structured references.
+   aspect ratio, resolution, and structured references. Each media source is
+   declared once in `fields.references`; compatibility alias fields are not
+   duplicated.
 2. OpenReel resolves node/asset references to media sources and submits a UMA
-   invocation.
+   invocation. Visible node `0` resolves normally. In `first_frame` mode, the
+   first resolved image is promoted to the UMA `first_frame` role when no
+   explicit first-frame asset field is present.
 3. UMA selects the declared target and protocol variant, validates capabilities,
    uploads media when required, creates the provider task, and polls it.
 4. OpenReel persists the UMA invocation id, provider task id, and a credential-free
@@ -67,6 +71,10 @@ Example / 示例：
 6. UMA returns one normalized `InvocationResult`; OpenReel updates the video node,
    optionally downloads the result, publishes the terminal canvas event, and
    resolves the waiting request.
+
+Codex-facing create, update, run, and wait responses contain compact identity,
+status, task, URL, and error fields. Full prompts, adapter resume requests, poll
+history, and media history remain persisted and require an explicit node read.
 
 ## Modes and references / 模式与参考素材
 

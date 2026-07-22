@@ -114,6 +114,44 @@ def test_runtime_config_rejects_blank_universal_adapter_protocol_id() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_first_frame_mode_promotes_the_first_image_reference(monkeypatch) -> None:
+    service = UniversalAdapterService()
+    captured: dict[str, Any] = {}
+
+    async def fake_submit_media(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"ok": True, "status": "queued"}
+
+    monkeypatch.setattr(service, "_submit_media", fake_submit_media)
+    provider, provider_params = _provider(
+        kind="video",
+        protocol_id="dramaagent.updream-video-task",
+        operation="video.generate",
+        model="sed2",
+    )
+    try:
+        result = await service.submit_video(
+            provider=provider,
+            provider_params=provider_params,
+            project_id="project-video",
+            prompt="A goddess walks toward the camera",
+            first_frame_url=None,
+            last_frame_url=None,
+            duration_seconds=10,
+            reference_images=["node:0"],
+            extra={"video_mode": "first_frame"},
+            save_locally=False,
+            wait_for_completion=False,
+        )
+    finally:
+        await service.aclose()
+
+    assert result["ok"] is True
+    assert captured["input_values"]["mode"] == "first_frame"
+    assert captured["media_values"] == [("first_frame", "node:0")]
+
+
 def test_video_binding_requires_explicit_target_profile() -> None:
     provider, provider_params = _provider(
         kind="video",

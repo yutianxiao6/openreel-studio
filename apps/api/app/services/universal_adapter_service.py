@@ -432,12 +432,28 @@ class UniversalAdapterService:
                 (extra or {}).get("aspect_ratio"),
             ),
         }
+        remaining_reference_images = list(reference_images or [])
+        if requested_mode in {"first_frame", "first_last_frame"}:
+            if not first_frame_url and remaining_reference_images:
+                first_frame_url = remaining_reference_images.pop(0)
+            elif first_frame_url:
+                remaining_reference_images = [
+                    value for value in remaining_reference_images if value != first_frame_url
+                ]
+        if requested_mode == "first_last_frame":
+            if not last_frame_url and remaining_reference_images:
+                last_frame_url = remaining_reference_images.pop(0)
+            elif last_frame_url:
+                remaining_reference_images = [
+                    value for value in remaining_reference_images if value != last_frame_url
+                ]
+
         media_values = []
         if first_frame_url:
             media_values.append(("first_frame", first_frame_url))
         if last_frame_url:
             media_values.append(("last_frame", last_frame_url))
-        media_values.extend(("reference_image", value) for value in (reference_images or []))
+        media_values.extend(("reference_image", value) for value in remaining_reference_images)
         media_values.extend(("reference_video", value) for value in (reference_videos or []))
         media_values.extend(("reference_audio", value) for value in (reference_audios or []))
         return await self._submit_media(

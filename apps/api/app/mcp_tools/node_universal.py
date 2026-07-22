@@ -1305,7 +1305,7 @@ def _reference_lookup_key(value: Any) -> str:
 
 
 def _add_node_reference_lookup(lookup: dict[str, WorkflowNode], key: Any, node: WorkflowNode) -> None:
-    text = str(key or "").strip()
+    text = "" if key is None else str(key).strip()
     if not text:
         return
     for candidate in {text, text.lstrip("@"), f"@{text.lstrip('@')}"}:
@@ -5048,6 +5048,49 @@ _RUNNERS: dict[str, NodeRunner] = {
 }
 
 
+def _run_business_error_hint(result: dict[str, Any]) -> str:
+    provider_task_id = str(
+        result.get("provider_task_id") or result.get("job_id") or ""
+    ).strip()
+    if provider_task_id:
+        return (
+            "供应商任务已经创建。保留当前节点，只等待这个节点的后台结果；"
+            "不要再次 node.run、不要新建节点，也不要修改参考素材。"
+        )
+
+    error_kind = str(result.get("error_kind") or "").strip().lower()
+    provider_msg = str(result.get("provider_msg") or "").strip()
+    transient_provider_kinds = {
+        "network",
+        "network_error",
+        "provider_unavailable",
+        "rate_limit",
+        "server_error",
+        "timeout",
+    }
+    if (
+        error_kind in transient_provider_kinds
+        or provider_msg.upper().endswith("_UNREACHABLE")
+    ):
+        return (
+            "供应商提交失败，当前没有 provider_task_id，因此后台没有可等待的任务。"
+            "这不是参考素材字段错误；保留原节点，不要新建节点或改引用，也不要立即重复 node.run。"
+            "供应商恢复后，如需重试，只对原节点运行一次。"
+        )
+
+    if error_kind in {"invalid_request", "validation_error"}:
+        return (
+            "请求在创建供应商任务前被参数校验拒绝。按 error 修复原节点字段；"
+            "只有字段约束不明确时才查询一次节点 contract，然后对原节点重试一次。"
+            "不要新建重复节点。"
+        )
+
+    return (
+        "runner 返回业务错误。检查节点 input 字段是否完整、依赖产物是否生成。"
+        "用 node.get 看完整 input,node.list 看同 episode/segment 是否缺前置节点。"
+    )
+
+
 async def node_run(
     project_id: str,
     node_id: str,
@@ -5624,10 +5667,7 @@ async def node_run(
             "ok": False,
             "error": err_text,
             "node_type": node_type,
-            "hint": result.get("hint") or (
-                "runner 返回业务错误。检查节点 input 字段是否完整、依赖产物是否生成。"
-                "用 node.get 看完整 input,node.list 看同 episode/segment 是否缺前置节点。"
-            ),
+            "hint": result.get("hint") or _run_business_error_hint(result),
             **{k: v for k, v in result.items() if k not in ("error", "hint", "ok")},
         })
 

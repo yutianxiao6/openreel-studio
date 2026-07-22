@@ -250,27 +250,48 @@ def _video_modes(protocol: dict[str, Any] | None, profile: dict[str, Any] | None
     return modes
 
 
+def _reference_identity(item: Any) -> str:
+    candidate = node_universal._reference_candidate(item)
+    text = "" if candidate is None else str(candidate).strip()
+    return node_universal._reference_lookup_key(text) or text
+
+
 def _reference_counts(fields: dict[str, Any]) -> dict[str, int]:
-    counts = {
-        "images": len(fields.get("reference_images") or []) if isinstance(fields.get("reference_images"), list) else 0,
-        "videos": len(fields.get("reference_videos") or []) if isinstance(fields.get("reference_videos"), list) else 0,
-        "audios": len(fields.get("reference_audios") or []) if isinstance(fields.get("reference_audios"), list) else 0,
-    }
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(kind: str, item: Any, *, role: str = "") -> None:
+        identity = _reference_identity(item)
+        if not identity:
+            return
+        slot = role if role in {"first_frame", "last_frame"} else ""
+        seen.add((kind, identity, slot))
+
+    for key, kind in (
+        ("reference_images", "images"),
+        ("reference_videos", "videos"),
+        ("reference_audios", "audios"),
+    ):
+        values = fields.get(key)
+        if isinstance(values, list):
+            for item in values:
+                add(kind, item)
+
     for key in ("references", "media_references"):
         values = fields.get(key)
         if not isinstance(values, list):
             continue
         for item in values:
-            if not isinstance(item, dict):
-                counts["images"] += 1
-                continue
-            role = str(item.get("role") or item.get("kind") or item.get("type") or "").lower()
+            role = node_universal._reference_role(item)
             if "audio" in role:
-                counts["audios"] += 1
+                add("audios", item, role=role)
             elif "video" in role:
-                counts["videos"] += 1
+                add("videos", item, role=role)
             else:
-                counts["images"] += 1
+                add("images", item, role=role)
+    counts = {
+        kind: sum(1 for seen_kind, _, _ in seen if seen_kind == kind)
+        for kind in ("images", "videos", "audios")
+    }
     counts["total"] = counts["images"] + counts["videos"] + counts["audios"]
     return counts
 

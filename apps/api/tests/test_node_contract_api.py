@@ -155,6 +155,31 @@ def test_video_contract_resolves_provider_protocol_and_reference_mode() -> None:
     ]
 
 
+def test_video_contract_deduplicates_the_same_reference_across_alias_fields() -> None:
+    result = node_contract.build_node_contract(
+        node_type="video",
+        fields={
+            "prompt": "slow camera push-in",
+            "video_mode": "first_frame",
+            "references": ["0"],
+            "reference_images": ["node:0"],
+            "duration_seconds": 10,
+        },
+        config=_video_config(),
+        project_state={},
+        protocol_catalog=_video_catalog(),
+    )
+
+    assert result["ready"] is True
+    assert result["effective_video_mode"] == "first_frame"
+    assert result["reference_counts"] == {
+        "images": 1,
+        "videos": 0,
+        "audios": 0,
+        "total": 1,
+    }
+
+
 def test_video_contract_returns_field_level_errors_before_creation() -> None:
     result = node_contract.build_node_contract(
         node_type="video",
