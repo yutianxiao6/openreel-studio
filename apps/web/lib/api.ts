@@ -1427,7 +1427,7 @@ export type ChatStreamEvent =
   | { type: 'step_done'; step_index: number; tool: string; status: string }
   | { type: 'canvas_action'; action: string; payload: Record<string, unknown> }
   | { type: 'project_update'; project_id: string; updates: Record<string, unknown> }
-  | { type: 'project_switch'; project_id: string; title?: string }
+  | { type: 'project_switch'; project_id: string; title?: string; refresh_page?: boolean }
   | { type: 'project_reset'; project_id: string; scope: 'full'; title?: string; cleared_all?: boolean; message?: string | null }
   | { type: 'subscribed'; project_id: string }
   | { type: 'proposed_plan'; project_id?: string; plan: Record<string, unknown> }

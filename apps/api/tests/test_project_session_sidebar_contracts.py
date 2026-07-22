@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from app.api import routes_projects
 from app.api.routes_projects import CreateProjectRequest, UpdateProjectRequest
 from app.mcp_tools.project_tools import project_create
 from app.services.project_service import _initial_state
@@ -46,8 +47,6 @@ def test_project_management_uses_the_left_session_sidebar() -> None:
     assert "api.deleteProject" in sidebar
     assert "router.push(path)" in sidebar
     assert "router.replace(path)" in sidebar
-    assert "window.location.assign(path)" in sidebar
-    assert "navigateToProject(created, false, true)" in sidebar
     assert "<ProjectSessionSidebar />" in home
     assert "<ProjectSessionSidebar />" in project_page
 
@@ -108,3 +107,51 @@ def test_frontend_new_session_calls_only_send_the_title() -> None:
         assert 'genre: ""' not in text
         assert "episode_count: 1" not in text
         assert 'budget_level: "low"' not in text
+
+
+@pytest.mark.asyncio
+async def test_plugin_project_creation_can_activate_and_reload_the_open_ui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    class CreatedProject:
+        id = "project-new"
+        title = "插件新项目"
+
+        def model_dump(self) -> dict[str, object]:
+            return {"id": self.id, "title": self.title}
+
+    class FakeProjectService:
+        def __init__(self, _db: object) -> None:
+            pass
+
+        async def create_project(self, *, title: str) -> CreatedProject:
+            assert title == "插件新项目"
+            return CreatedProject()
+
+    async def capture(source_project_id: str, project: dict[str, object]) -> None:
+        emitted.append((source_project_id, project))
+
+    monkeypatch.setattr(routes_projects, "ProjectService", FakeProjectService)
+    monkeypatch.setattr(routes_projects, "_emit_project_ui_switch", capture)
+
+    result = await routes_projects.create_project(
+        CreateProjectRequest(title="插件新项目"),
+        db=object(),
+        activate_ui=True,
+        source_project_id="project-old",
+    )
+
+    assert result == {"id": "project-new", "title": "插件新项目"}
+    assert emitted == [("project-old", result)]
+
+    chat_panel = (
+        PROJECT_ROOT / "apps" / "web" / "components" / "chat" / "ChatPanel.tsx"
+    ).read_text(encoding="utf-8")
+    web_api = (PROJECT_ROOT / "apps" / "web" / "lib" / "api.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "event.refresh_page === true" in chat_panel
+    assert "window.location.assign(`/projects/${encodeURIComponent(newId)}`)" in chat_panel
+    assert "refresh_page?: boolean" in web_api

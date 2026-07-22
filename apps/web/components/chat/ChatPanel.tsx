@@ -2613,6 +2613,10 @@ export function ChatPanel() {
       setCurrentProject({ id: newId, title })
       window.dispatchEvent(new CustomEvent("openreel:projects-changed"))
       setViewMode("canvas")
+      if (event.refresh_page === true) {
+        window.location.assign(`/projects/${encodeURIComponent(newId)}`)
+        return
+      }
       appendMessage({
         id: `${Date.now()}-project-switch`,
         role: "assistant",

@@ -111,6 +111,7 @@ class ProjectSwitchEvent(ChatEvent):
     type: Literal["project_switch"]
     project_id: str
     title: str = ""
+    refresh_page: bool = False
 
 
 class ProjectResetEvent(ChatEvent):

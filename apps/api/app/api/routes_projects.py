@@ -53,6 +53,32 @@ async def _emit_project_canvas_action(
         logger.exception("canvas mutation event failed project=%s action=%s", project_id, action)
 
 
+async def _emit_project_ui_switch(
+    source_project_id: str,
+    project: dict[str, Any],
+) -> None:
+    """Ask an already-open project page to activate a newly created project."""
+    try:
+        from app.agent.orchestrator import emit_canvas_event
+
+        await emit_canvas_event(
+            {
+                "type": "project_switch",
+                "project_id": str(project.get("id") or ""),
+                "title": str(project.get("title") or "新项目"),
+                "refresh_page": True,
+                "source": "external_control",
+            },
+            project_id=source_project_id,
+        )
+    except Exception:
+        logger.exception(
+            "project UI switch event failed source=%s target=%s",
+            source_project_id,
+            project.get("id"),
+        )
+
+
 NODE_MEDIA_UPLOAD_MAX_BYTES: dict[str, int] = {
     "image": 50 * 1024 * 1024,
     "video": 1024 * 1024 * 1024,
@@ -1150,11 +1176,17 @@ async def _archive_active_project_messages(db: AsyncSession, project_id: str) ->
 
 @router.post("")
 async def create_project(
-    req: CreateProjectRequest, db: AsyncSession = Depends(get_session)
+    req: CreateProjectRequest,
+    db: AsyncSession = Depends(get_session),
+    activate_ui: bool = Query(default=False),
+    source_project_id: str | None = Query(default=None),
 ):
     svc = ProjectService(db)
     project = await svc.create_project(title=req.title)
-    return project.model_dump()
+    payload = project.model_dump()
+    if activate_ui:
+        await _emit_project_ui_switch(source_project_id or project.id, payload)
+    return payload
 
 
 @router.get("")
