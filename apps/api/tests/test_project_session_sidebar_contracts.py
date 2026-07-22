@@ -46,6 +46,8 @@ def test_project_management_uses_the_left_session_sidebar() -> None:
     assert "api.deleteProject" in sidebar
     assert "router.push(path)" in sidebar
     assert "router.replace(path)" in sidebar
+    assert "window.location.assign(path)" in sidebar
+    assert "navigateToProject(created, false, true)" in sidebar
     assert "<ProjectSessionSidebar />" in home
     assert "<ProjectSessionSidebar />" in project_page
 

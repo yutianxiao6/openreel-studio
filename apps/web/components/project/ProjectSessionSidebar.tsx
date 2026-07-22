@@ -124,11 +124,16 @@ export function ProjectSessionSidebar() {
     setBatchDeleteConfirm(false)
   }
 
-  const navigateToProject = (project: ProjectRecord, replace = false) => {
+  const navigateToProject = (project: ProjectRecord, replace = false, reloadPage = false) => {
     window.localStorage.setItem(LS_CURRENT_PROJECT, project.id)
     setCurrentProject(project)
     setPendingDeleteId(null)
     const path = `/projects/${encodeURIComponent(project.id)}`
+    if (reloadPage) {
+      if (replace) window.location.replace(path)
+      else window.location.assign(path)
+      return
+    }
     if (replace) router.replace(path)
     else router.push(path)
     if (window.innerWidth < 768) {
@@ -149,7 +154,7 @@ export function ProjectSessionSidebar() {
       setSelectedIds(new Set())
       setBatchDeleteConfirm(false)
       window.dispatchEvent(new CustomEvent("openreel:projects-changed"))
-      navigateToProject(created)
+      navigateToProject(created, false, true)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "新建项目失败")
     } finally {
