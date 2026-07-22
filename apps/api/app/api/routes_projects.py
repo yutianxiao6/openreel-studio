@@ -1,6 +1,7 @@
 """Project CRUD endpoints."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -19,7 +20,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.config import settings
 from app.db.models import Asset, Message, WorkflowEdge, WorkflowNode
-from app.db.session import get_session
+from app.db.session import get_session, session_scope
 from app.agent import canvas_workflow_templates, workflow_spec_artifacts, workflow_template_store
 from app.agent.workflow_audit import WorkflowAuditError
 from app.mcp_tools import canvas_tools, workflow_tools
@@ -65,6 +66,7 @@ NODE_MEDIA_UPLOAD_FALLBACK_EXTENSION = {
     "video": ".mp4",
 }
 ACTIVE_WORKFLOW_STATE_KEY = "active_workflow"
+TERMINAL_NODE_STATUSES = {"completed", "failed", "cancelled", "canceled"}
 
 
 class CreateProjectRequest(BaseModel):
@@ -1828,6 +1830,76 @@ async def get_project_canvas_node_detail(
     if not node or node.project_id != project_id:
         raise HTTPException(status_code=404, detail="Node not found")
     return await _node_detail_response(node, project_id, db)
+
+
+@router.get("/{project_id}/nodes/{node_id}/wait")
+async def wait_project_canvas_node_terminal(
+    project_id: str,
+    node_id: str,
+    timeout_seconds: float = Query(default=1200.0, ge=1.0, le=1200.0),
+):
+    """Wait on project canvas events until one node reaches a terminal state."""
+    from app.agent.orchestrator import _add_subscriber, _remove_subscriber
+
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    deadline = started_at + timeout_seconds
+    queue = _add_subscriber(project_id)
+
+    async def read_node() -> dict[str, Any]:
+        async with session_scope() as db:
+            node = await db.get(WorkflowNode, node_id)
+            if not node or node.project_id != project_id:
+                raise HTTPException(status_code=404, detail="Node not found")
+            await db.refresh(node)
+            return await _node_detail_response(node, project_id, db)
+
+    def response(node: dict[str, Any], *, terminal: bool) -> dict[str, Any]:
+        status = str(node.get("status") or "unknown").strip().lower()
+        return {
+            "ok": status == "completed" if terminal else True,
+            "terminal": terminal,
+            "generation_failed": terminal and status == "failed",
+            "run_continues": not terminal,
+            "status": status,
+            "elapsed_seconds": round(loop.time() - started_at, 1),
+            "node": node,
+        }
+
+    try:
+        node = await read_node()
+        if str(node.get("status") or "").strip().lower() in TERMINAL_NODE_STATUSES:
+            return response(node, terminal=True)
+
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                node = await read_node()
+                status = str(node.get("status") or "").strip().lower()
+                return response(node, terminal=status in TERMINAL_NODE_STATUSES)
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                node = await read_node()
+                status = str(node.get("status") or "").strip().lower()
+                return response(node, terminal=status in TERMINAL_NODE_STATUSES)
+
+            if not isinstance(event, dict) or event.get("type") != "canvas_action":
+                continue
+            if event.get("action") != "update_node":
+                continue
+            payload = event.get("payload")
+            if not isinstance(payload, dict) or str(payload.get("id") or "") != node_id:
+                continue
+            if str(payload.get("status") or "").strip().lower() not in TERMINAL_NODE_STATUSES:
+                continue
+
+            node = await read_node()
+            status = str(node.get("status") or "").strip().lower()
+            if status in TERMINAL_NODE_STATUSES:
+                return response(node, terminal=True)
+    finally:
+        _remove_subscriber(project_id, queue)
 
 
 @router.patch("/{project_id}/nodes/{node_id}")

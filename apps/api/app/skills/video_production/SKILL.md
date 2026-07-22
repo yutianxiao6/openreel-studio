@@ -99,6 +99,8 @@ workflow.runtime_status
 
 Standalone 节点运行使用 `node.run`；graph workflow 运行使用 `workflow.run_step`、`workflow.run_next` 或 `workflow.run_all`，由 workflow runner 按步骤调用节点 runner。
 
+外部执行客户端运行媒体节点后，通过同一节点的服务端终态事件等待取得结果；供应商轮询由后台 UMA 承担，客户端不重复查询节点状态，也不因等待超时再次调用 `node.run`。
+
 Standalone 节点仍要写清：
 
 - `fields.purpose`

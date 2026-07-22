@@ -2,12 +2,15 @@
 
 OpenReel video generation uses Universal Model Adapter (UMA) exclusively.
 OpenReel manages node state, background jobs, SSE progress, local materialization,
-and restart recovery. UMA owns provider HTTP requests, uploads, task polling,
-status interpretation, and output extraction.
+restart recovery, and a server-side terminal-node event wait for execution clients.
+UMA owns provider HTTP requests, uploads, task polling, status interpretation, and
+output extraction. An execution client holds one wait request instead of polling
+node status or submitting the same run again.
 
 OpenReel 的视频生成统一使用 Universal Model Adapter。OpenReel 负责节点状态、
-后台任务、SSE 进度、本地落盘和重启恢复；UMA 负责供应商 HTTP 请求、素材上传、
-任务轮询、状态解释以及结果地址提取。
+后台任务、SSE 进度、本地落盘、重启恢复和面向执行客户端的服务端终态事件等待；
+UMA 负责供应商 HTTP 请求、素材上传、任务轮询、状态解释以及结果地址提取。执行
+客户端只保持一个等待请求，不轮询节点状态，也不重复提交同一次运行。
 
 ## Configuration layers / 配置分层
 
@@ -59,8 +62,11 @@ Example / 示例：
 4. OpenReel persists the UMA invocation id, provider task id, and a credential-free
    resume descriptor. After a restart it calls `resume_task`; UMA continues polling
    without submitting the generation again.
-5. UMA returns one normalized `InvocationResult`; OpenReel updates the video node
-   and optionally downloads the result.
+5. An execution client may hold one OpenReel node-wait request while the background
+   job runs; the request sleeps on project canvas events and does not poll the node.
+6. UMA returns one normalized `InvocationResult`; OpenReel updates the video node,
+   optionally downloads the result, publishes the terminal canvas event, and
+   resolves the waiting request.
 
 ## Modes and references / 模式与参考素材
 
