@@ -3935,18 +3935,31 @@ function ToggleControl({
   hint?: string
 }) {
   return (
-    <label className="flex items-start justify-between gap-3 rounded-md border border-white/[0.08] bg-black/25 px-2.5 py-2">
+    <div className="flex min-h-8 items-center justify-between gap-3 py-1">
       <span className="min-w-0">
         <span className="block text-[10px] font-medium uppercase tracking-[0.12em] text-zinc-500">{label}</span>
         {hint && <span className="mt-1 block text-[10px] leading-4 text-zinc-600">{hint}</span>}
       </span>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-        className="mt-0.5 h-4 w-4 accent-cyan-400"
-      />
-    </label>
+      <button
+        type="button"
+        role="switch"
+        aria-label={label}
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 ${
+          checked
+            ? "border-cyan-300/60 bg-cyan-400/85"
+            : "border-white/[0.12] bg-white/[0.08]"
+        }`}
+      >
+        <span
+          aria-hidden="true"
+          className={`h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform duration-150 ${
+            checked ? "translate-x-[17px]" : "translate-x-[2px]"
+          }`}
+        />
+      </button>
+    </div>
   )
 }
 
@@ -4842,7 +4855,6 @@ function NodeEditView({
                 label="生成声音"
                 checked={activeVideoGenerateAudio}
                 onChange={(generate_audio) => onChange({ generate_audio })}
-                hint="开启后由当前视频模型生成对白、环境声或音效；关闭后生成静音视频。"
               />
             )}
             {videoDurationConfigured ? (
@@ -5098,7 +5110,6 @@ function NodeEditView({
                       label="生成声音"
                       checked={activeVideoGenerateAudio}
                       onChange={(generate_audio) => onChange({ generate_audio })}
-                      hint="开启后由当前视频模型生成对白、环境声或音效；关闭后生成静音视频。"
                     />
                   )}
                   <DraftField label="时长">
@@ -5969,7 +5980,6 @@ function MediaParameterDialog({
                   label="生成声音"
                   checked={videoGenerateAudio}
                   onChange={(generate_audio) => onChange({ generate_audio })}
-                  hint="开启后由当前视频模型生成对白、环境声或音效；关闭后生成静音视频。"
                 />
               )}
               {videoDurationConfigured ? (

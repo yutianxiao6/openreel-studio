@@ -77,6 +77,14 @@ def test_video_sound_control_follows_the_selected_protocol_capability() -> None:
 
     assert details.count("{videoNativeAudio.supported && (") == 2
     assert details.count("label=\"生成声音\"") == 3
+    toggle = details[
+        details.index("function ToggleControl"):
+        details.index("function normalizeReferenceForCanvas")
+    ]
+    assert 'role="switch"' in toggle
+    assert 'aria-checked={checked}' in toggle
+    assert 'type="checkbox"' not in toggle
+    assert "rounded-md border border-white" not in toggle
     audio_settings = details[
         details.index("function videoNativeAudioSettings"):
         details.index("function audioProviderModeFromFormat")
