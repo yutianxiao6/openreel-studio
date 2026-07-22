@@ -3045,7 +3045,7 @@ function normalizeVideoDraftForMode(
   protocol: VideoProtocolSummary | undefined,
   profile: VideoProtocolProfileSummary | undefined,
   mode: string,
-): Pick<EditableNodeDraft, "video_mode" | "resolution" | "aspect_ratio" | "duration_seconds"> {
+): Pick<EditableNodeDraft, "video_mode" | "resolution" | "aspect_ratio" | "duration_seconds" | "generate_audio"> {
   const supported = videoSupportedResolutionsForProvider(provider, protocol, profile, mode)
   const draftResolution = draft.resolution.trim().toLowerCase()
   const resolution = supported.length === 0 || supported.includes(draftResolution)
@@ -3061,7 +3061,16 @@ function normalizeVideoDraftForMode(
     draft.duration_seconds,
     videoDurationRuleForProvider(provider, protocol, profile, mode),
   )
-  return { video_mode: mode, resolution, aspect_ratio, duration_seconds }
+  const audio = videoNativeAudioSettings(
+    provider,
+    protocol,
+    profile,
+    videoModeConfig(protocol, mode, profile),
+  )
+  const generate_audio = audio.supported
+    ? draft.generate_audio ?? audio.defaultEnabled
+    : null
+  return { video_mode: mode, resolution, aspect_ratio, duration_seconds, generate_audio }
 }
 
 function videoReferenceLimitForDraft(
@@ -4828,6 +4837,14 @@ function NodeEditView({
               onChange={(resolution) => onChange({ resolution })}
               columns="grid-cols-4"
             />
+            {videoNativeAudio.supported && (
+              <ToggleControl
+                label="生成声音"
+                checked={activeVideoGenerateAudio}
+                onChange={(generate_audio) => onChange({ generate_audio })}
+                hint="开启后由当前视频模型生成对白、环境声或音效；关闭后生成静音视频。"
+              />
+            )}
             {videoDurationConfigured ? (
               <DraftField label="时长">
                 <input

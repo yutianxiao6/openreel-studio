@@ -72,6 +72,25 @@ def test_node_preview_surfaces_escape_the_workspace_stacking_context() -> None:
     assert 'className="openreel-image-edit-panel fixed' in image_editor
 
 
+def test_video_sound_control_follows_the_selected_protocol_capability() -> None:
+    details = read("components/canvas/NodeDetailPanel.tsx")
+
+    assert details.count("{videoNativeAudio.supported && (") == 2
+    assert details.count("label=\"生成声音\"") == 3
+    audio_settings = details[
+        details.index("function videoNativeAudioSettings"):
+        details.index("function audioProviderModeFromFormat")
+    ]
+    assert "supports_native_audio" in audio_settings
+    assert ") === true" in audio_settings
+    normalize = details[
+        details.index("function normalizeVideoDraftForMode"):
+        details.index("function videoReferenceLimitForDraft")
+    ]
+    assert "const generate_audio = audio.supported" in normalize
+    assert ": null" in normalize
+
+
 def test_asset_library_escapes_the_chat_pane_stacking_context() -> None:
     chat = read("components/chat/ChatPanel.tsx")
 
