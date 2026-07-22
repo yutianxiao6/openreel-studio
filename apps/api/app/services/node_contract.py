@@ -24,6 +24,10 @@ _FIELD_TYPES: dict[str, dict[str, Any]] = {
     "resolution": {"type": "string"},
     "quality": {"type": "string"},
     "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+    "generate_audio": {
+        "type": "boolean",
+        "description": "Generate a native soundtrack when the selected video model supports it.",
+    },
     "production_path": {"type": "string"},
     "purpose": {"type": "string"},
     "model": {"type": "string", "description": "Configured provider name or model name."},
@@ -49,6 +53,7 @@ _DYNAMIC_DEFAULT_FIELDS = (
     "resolution",
     "quality",
     "duration_seconds",
+    "generate_audio",
     "model",
     "provider",
     "video_mode",
@@ -79,6 +84,18 @@ def _nonnegative_number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return result if result >= 0 else None
+
+
+def _boolean(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return None
 
 
 def _canonical_video_mode(value: Any) -> str:
@@ -377,12 +394,26 @@ def _video_capabilities(
         profile.get("default_resolution"),
         protocol.get("default_resolution"),
     )
+    supports_native_audio = _boolean(_first_nonempty(
+        params.get("supports_native_audio"),
+        mode_config.get("supports_native_audio"),
+        profile.get("supports_native_audio"),
+        protocol.get("supports_native_audio"),
+    ))
+    default_generate_audio = _boolean(_first_nonempty(
+        params.get("default_generate_audio"),
+        mode_config.get("default_generate_audio"),
+        profile.get("default_generate_audio"),
+        protocol.get("default_generate_audio"),
+    ))
     return {
         "supported_modes": list(modes),
         "supported_aspect_ratios": supported_ratios,
         "supported_resolutions": supported_resolutions,
         "default_aspect_ratio": default_ratio,
         "default_resolution": str(default_resolution or "").lower() or None,
+        "supports_native_audio": supports_native_audio,
+        "default_generate_audio": default_generate_audio,
         "duration": duration,
         "reference_limits": {
             key: mode_config.get(key)
@@ -406,6 +437,11 @@ def _validate_video(
     counts: dict[str, int],
 ) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
+    if "generate_audio" in fields and not isinstance(fields.get("generate_audio"), bool):
+        errors.append(_field_error(
+            "generate_audio", "invalid_type", "生成声音必须是布尔值",
+            actual=fields.get("generate_audio"), expected="boolean",
+        ))
     ratios = capabilities.get("supported_aspect_ratios") or []
     ratio = str(fields.get("aspect_ratio") or "").strip()
     if ratio and ratios and ratio not in ratios:
@@ -564,6 +600,13 @@ def build_node_contract(
                     if not _filled(normalized.get(field)) and _filled(default_value):
                         normalized[field] = default_value
                         field_sources[field] = f"provider_protocol.{default_key}"
+                if (
+                    capabilities.get("supports_native_audio") is True
+                    and "generate_audio" not in normalized
+                    and isinstance(capabilities.get("default_generate_audio"), bool)
+                ):
+                    normalized["generate_audio"] = capabilities["default_generate_audio"]
+                    field_sources["generate_audio"] = "provider_protocol.default_generate_audio"
                 errors.extend(_validate_video(normalized, capabilities, mode_config, reference_counts))
             elif node_type == "image":
                 capabilities = {

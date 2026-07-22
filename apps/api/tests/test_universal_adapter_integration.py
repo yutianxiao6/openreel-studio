@@ -318,6 +318,8 @@ async def test_video_provider_uses_uma_handle_and_progress_events() -> None:
             "duration": 10,
             "aspect_ratio": "16:9",
             "resolution": "720p",
+            "supports_audio": True,
+            "sound": True,
         },
     }
     assert queued["job_id"] != "provider-task-7"
@@ -326,6 +328,53 @@ async def test_video_provider_uses_uma_handle_and_progress_events() -> None:
     assert result["adapter_route"]["target_id"].endswith("/target")
     assert polls == 2
     assert any(update.get("status") == "running" for update in progress)
+
+
+@pytest.mark.asyncio
+async def test_video_provider_preserves_explicit_generate_audio_false() -> None:
+    submitted_body: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/videos/generations":
+            submitted_body.update(json.loads(request.content))
+            return httpx.Response(200, json={"id": "provider-task-silent"}, request=request)
+        return httpx.Response(
+            200,
+            json={
+                "provider_response": {"status": "succeeded"},
+                "video_url": "https://assets.example.invalid/silent.mp4",
+            },
+            request=request,
+        )
+
+    provider, provider_params = _provider(
+        kind="video",
+        protocol_id="dramaagent.updream-video-task",
+        operation="video.generate",
+        model="sed2",
+        uma={"target_profile_id": "dramaagent.updream-video-task:sed2"},
+    )
+    service, _ = _service_with_binding(provider, provider_params, handler)
+    try:
+        queued = await service.submit_video(
+            provider=provider,
+            provider_params=provider_params,
+            project_id="project-video",
+            prompt="A deliberately silent shot",
+            first_frame_url=None,
+            last_frame_url=None,
+            duration_seconds=5,
+            reference_images=None,
+            extra={"generate_audio": False},
+            save_locally=False,
+            wait_for_completion=False,
+        )
+    finally:
+        await service.aclose()
+
+    assert queued["ok"] is True
+    assert submitted_body["provider_payload"]["supports_audio"] is False
+    assert submitted_body["provider_payload"]["sound"] is False
 
 
 @pytest.mark.asyncio

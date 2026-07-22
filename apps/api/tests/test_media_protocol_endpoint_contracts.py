@@ -10,6 +10,7 @@ from app.config import settings
 from app.config_store.schema import MediaProviderEntry
 from app.services import media_provider
 from app.services.video_target_catalog import (
+    compile_video_target_options,
     list_video_model_targets,
     load_video_target_catalog,
 )
@@ -137,7 +138,16 @@ def test_video_targets_keep_capabilities_separate_from_wire_protocols() -> None:
     profiles = {item["match"]: item for item in dramaagent["model_profiles"]}
     assert profiles["sed2"]["modes"]["first_frame"]["max_images"] == 1
     assert profiles["sed2"]["modes"]["multimodal_reference"]["max_images"] == 9
+    assert profiles["sed2"]["supports_native_audio"] is True
+    assert profiles["sed2"]["default_generate_audio"] is True
     assert profiles["wan-2.7"]["modes"]["video_continuation"]["min_videos"] == 1
+
+    sed2_target = next(target for target in targets if target["match"] == "sed2")
+    sed2_options = compile_video_target_options(sed2_target)
+    assert sed2_options["target_defaults"]["parameters"]["generate_audio"] is True
+    assert sed2_options["request_schema"]["properties"]["parameters"]["properties"][
+        "generate_audio"
+    ] == {"type": "boolean"}
 
     protocol_dir = Path(settings.PROJECT_ROOT) / "config" / "universal_model_adapter" / "protocols"
     protocol = ProtocolCatalog.load([protocol_dir]).get("dramaagent.updream-video-task")

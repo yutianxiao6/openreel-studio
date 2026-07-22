@@ -139,6 +139,8 @@ def _parameter_schema(capabilities: dict[str, Any]) -> dict[str, Any]:
         properties["aspect_ratio"] = {"enum": ratios}
     if resolutions:
         properties["resolution"] = {"enum": resolutions}
+    if capabilities.get("supports_native_audio") is True:
+        properties["generate_audio"] = {"type": "boolean"}
     return {"type": "object", "properties": properties}
 
 
@@ -214,6 +216,10 @@ def compile_video_target_options(target: dict[str, Any]) -> dict[str, Any]:
         parameter_defaults["aspect_ratio"] = default_ratio
     if default_resolution:
         parameter_defaults["resolution"] = str(default_resolution).lower()
+    if capabilities.get("supports_native_audio") is True and isinstance(
+        capabilities.get("default_generate_audio"), bool
+    ):
+        parameter_defaults["generate_audio"] = capabilities["default_generate_audio"]
     request_schema: dict[str, Any] = {
         "type": "object",
         "properties": {

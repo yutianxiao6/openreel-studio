@@ -150,7 +150,10 @@
           },
           "parameters": {
             "type": "object",
-            "properties": {"duration_seconds": {"type": "number", "exclusiveMinimum": 0}},
+            "properties": {
+              "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+              "generate_audio": {"type": "boolean"}
+            },
             "required": ["duration_seconds"]
           },
           "media": {"type": "array"}

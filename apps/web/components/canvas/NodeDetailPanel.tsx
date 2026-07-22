@@ -64,6 +64,7 @@ interface EditableNodeDraft {
   clarity: string
   duration_seconds: string
   video_mode: string
+  generate_audio: boolean | null
   instrumental: boolean
   custom_mode: boolean
   reference_images: string[]
@@ -128,6 +129,8 @@ interface VideoProtocolModeSummary {
   supported_resolutions?: string[]
   default_ratio?: string
   default_resolution?: string
+  supports_native_audio?: boolean
+  default_generate_audio?: boolean
   duration?: VideoDurationSummary
 }
 
@@ -138,6 +141,8 @@ interface VideoProtocolProfileSummary {
   supported_resolutions?: string[]
   default_ratio?: string
   default_resolution?: string
+  supports_native_audio?: boolean
+  default_generate_audio?: boolean
   duration?: VideoDurationSummary
   modes?: Record<string, VideoProtocolModeSummary> | string[]
   supported_modes?: string[]
@@ -153,6 +158,8 @@ interface VideoProtocolSummary {
   supported_resolutions?: string[]
   default_ratio?: string
   default_resolution?: string
+  supports_native_audio?: boolean
+  default_generate_audio?: boolean
   duration?: VideoDurationSummary
 }
 
@@ -281,6 +288,7 @@ const EMPTY_DRAFT: EditableNodeDraft = {
   clarity: "",
   duration_seconds: "",
   video_mode: "",
+  generate_audio: null,
   instrumental: true,
   custom_mode: false,
   reference_images: [],
@@ -2435,7 +2443,7 @@ function TextHistorySection({
   )
 }
 
-function firstBool(defaultValue: boolean, ...values: unknown[]): boolean {
+function firstOptionalBool(...values: unknown[]): boolean | null {
   for (const value of values) {
     if (typeof value === "boolean") return value
     if (typeof value === "number") return value !== 0
@@ -2444,7 +2452,32 @@ function firstBool(defaultValue: boolean, ...values: unknown[]): boolean {
     if (["1", "true", "yes", "y", "on", "是"].includes(text)) return true
     if (["0", "false", "no", "n", "off", "否"].includes(text)) return false
   }
-  return defaultValue
+  return null
+}
+
+function firstBool(defaultValue: boolean, ...values: unknown[]): boolean {
+  return firstOptionalBool(...values) ?? defaultValue
+}
+
+function videoNativeAudioSettings(
+  provider: MediaProviderOption | undefined,
+  protocol: VideoProtocolSummary | undefined,
+  profile: VideoProtocolProfileSummary | undefined,
+  modeConfig: VideoProtocolModeSummary | undefined,
+): { supported: boolean; defaultEnabled: boolean } {
+  const supported = firstOptionalBool(
+    provider?.params?.supports_native_audio,
+    modeConfig?.supports_native_audio,
+    profile?.supports_native_audio,
+    protocol?.supports_native_audio,
+  ) === true
+  const defaultEnabled = firstOptionalBool(
+    provider?.params?.default_generate_audio,
+    modeConfig?.default_generate_audio,
+    profile?.default_generate_audio,
+    protocol?.default_generate_audio,
+  ) ?? false
+  return { supported, defaultEnabled: supported && defaultEnabled }
 }
 
 function audioProviderModeFromFormat(apiFormat?: string | null): AudioProviderMode {
@@ -3225,6 +3258,7 @@ function draftFromNode(node: NodeFull): EditableNodeDraft {
     clarity: firstText(input.clarity, output.clarity) || (node.type === "image" ? "detailed" : ""),
     duration_seconds: firstText(input.duration_seconds, input.duration, output.duration_seconds, output.duration),
     video_mode: firstText(input.video_mode, input.mode, output.video_mode, output.mode),
+    generate_audio: firstOptionalBool(input.generate_audio, output.generate_audio),
     instrumental: firstBool(true, input.instrumental, output.instrumental),
     custom_mode: firstBool(false, input.custom_mode, input.customMode, output.custom_mode, output.customMode),
     reference_images: Array.from(new Set(referenceImages.filter(isPersistableReferenceImageValue))),
@@ -3406,6 +3440,10 @@ function payloadFromDraft(
     else {
       delete nextInput.duration_seconds
       delete nextInput.duration
+    }
+    if (shouldPersistField("generate_audio", "generate_audio")) {
+      if (draft.generate_audio !== null) nextInput.generate_audio = draft.generate_audio
+      else delete nextInput.generate_audio
     }
     const referenceVideos = Array.from(new Set(draft.reference_videos.map((item) => item.trim()).filter(Boolean)))
     if (referenceVideos.length > 0) nextInput.reference_videos = referenceVideos
@@ -4490,6 +4528,13 @@ function NodeEditView({
     activeVideoMode,
   ))
   const activeVideoModeConfig = videoModeConfig(selectedVideoProtocol, activeVideoMode, selectedVideoProfile)
+  const videoNativeAudio = videoNativeAudioSettings(
+    selectedVideoProvider,
+    selectedVideoProtocol,
+    selectedVideoProfile,
+    activeVideoModeConfig,
+  )
+  const activeVideoGenerateAudio = draft.generate_audio ?? videoNativeAudio.defaultEnabled
   const activeVideoDurationRule = videoDurationRuleForProvider(selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
   const activeVideoDurationBounds = videoDurationBounds(activeVideoDurationRule)
   const videoDurationConfigured = activeVideoDurationBounds.min !== undefined
@@ -5031,6 +5076,14 @@ function NodeEditView({
                     options={videoResolutionOptions}
                     onChange={(resolution) => onChange({ resolution })}
                   />
+                  {videoNativeAudio.supported && (
+                    <ToggleControl
+                      label="生成声音"
+                      checked={activeVideoGenerateAudio}
+                      onChange={(generate_audio) => onChange({ generate_audio })}
+                      hint="开启后由当前视频模型生成对白、环境声或音效；关闭后生成静音视频。"
+                    />
+                  )}
                   <DraftField label="时长">
                     <input
                       type="number"
@@ -5709,6 +5762,8 @@ function MediaParameterDialog({
   videoDurationMax,
   videoDurationStep,
   videoDurationRule,
+  videoGenerateAudioSupported,
+  videoGenerateAudio,
   onClose,
   onChange,
   onImageAspectRatio,
@@ -5731,6 +5786,8 @@ function MediaParameterDialog({
   videoDurationMax: number
   videoDurationStep: number
   videoDurationRule: VideoDurationSummary
+  videoGenerateAudioSupported: boolean
+  videoGenerateAudio: boolean
   onClose: () => void
   onChange: (patch: Partial<EditableNodeDraft>) => void
   onImageAspectRatio: (value: string) => void
@@ -5890,6 +5947,14 @@ function MediaParameterDialog({
                 columns="grid-cols-4"
                 compact
               />
+              {videoGenerateAudioSupported && (
+                <ToggleControl
+                  label="生成声音"
+                  checked={videoGenerateAudio}
+                  onChange={(generate_audio) => onChange({ generate_audio })}
+                  hint="开启后由当前视频模型生成对白、环境声或音效；关闭后生成静音视频。"
+                />
+              )}
               {videoDurationConfigured ? (
                 <DraftField label="视频时长">
                   <div className="flex items-center gap-2">
@@ -6085,6 +6150,13 @@ function NodeCanvasContextPanel({
     activeVideoMode,
   ))
   const activeVideoModeConfig = videoModeConfig(selectedVideoProtocol, activeVideoMode, selectedVideoProfile)
+  const videoNativeAudio = videoNativeAudioSettings(
+    selectedVideoProvider,
+    selectedVideoProtocol,
+    selectedVideoProfile,
+    activeVideoModeConfig,
+  )
+  const activeVideoGenerateAudio = draft.generate_audio ?? videoNativeAudio.defaultEnabled
   const activeVideoDurationRule = videoDurationRuleForProvider(selectedVideoProvider, selectedVideoProtocol, selectedVideoProfile, activeVideoMode)
   const activeVideoDurationBounds = videoDurationBounds(activeVideoDurationRule)
   const videoReferenceRule = videoReferenceRuleHint(
@@ -6123,7 +6195,12 @@ function NodeCanvasContextPanel({
   const mediaParameterSummary = isImage
     ? [imageAspectRatio, imageQualityLabel(draft.quality), imageResolutionTierLabel].filter(Boolean).join(" · ")
     : isVideo
-      ? [activeVideoAspectRatio, videoResolutionLabel, mediaDurationLabel(draft.duration_seconds)].filter(Boolean).join(" · ")
+      ? [
+        activeVideoAspectRatio,
+        videoResolutionLabel,
+        mediaDurationLabel(draft.duration_seconds),
+        videoNativeAudio.supported ? (activeVideoGenerateAudio ? "有声" : "静音") : "",
+      ].filter(Boolean).join(" · ")
       : isAudio
         ? [
           selectedAudioMode === "music" ? "音乐" : selectedAudioMode === "tts" ? "语音" : "音频",
@@ -6412,6 +6489,8 @@ function NodeCanvasContextPanel({
           videoDurationMax={videoDurationMax}
           videoDurationStep={videoDurationStep}
           videoDurationRule={activeVideoDurationRule}
+          videoGenerateAudioSupported={videoNativeAudio.supported}
+          videoGenerateAudio={activeVideoGenerateAudio}
           onClose={() => setMediaParameterDialogOpen(false)}
           onChange={onChange}
           onImageAspectRatio={updateImageAspectRatio}

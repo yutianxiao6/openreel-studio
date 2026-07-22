@@ -109,6 +109,7 @@ Standalone 节点仍要写清：
 - `fields.stage`
 - `fields.references`
 - `fields.video_mode` 与媒体引用一致：留空可由后端推断；显式 `text_to_video` 不携带图片、视频或音频参考
+- 当前视频 target 支持原生声音时，`fields.generate_audio` 采用模型默认值；用户明确要求有声或静音时分别写 `true` 或 `false`
 - prompt 中每个需要明确指代的参考图都使用对应的精确 `@参考图标签`
 - image/video 的可执行 prompt
 - video 的 `duration_seconds`、`aspect_ratio` 和 `production_path`

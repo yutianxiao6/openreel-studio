@@ -57,6 +57,8 @@ def _video_catalog() -> dict:
                         "id": "test.video-task:video-v2",
                         "model_match": "video-v2",
                         "capabilities": {
+                            "supports_native_audio": True,
+                            "default_generate_audio": True,
                             "supported_ratios": ["16:9"],
                             "supported_resolutions": ["720p"],
                             "default_ratio": "16:9",
@@ -147,12 +149,35 @@ def test_video_contract_resolves_provider_protocol_and_reference_mode() -> None:
         "video_mode": "multimodal_reference",
         "aspect_ratio": "16:9",
         "resolution": "720p",
+        "generate_audio": True,
     }
+    assert result["field_schema"]["properties"]["generate_audio"]["type"] == "boolean"
+    assert result["field_sources"]["generate_audio"] == "provider_protocol.default_generate_audio"
+    assert result["capabilities"]["supports_native_audio"] is True
+    assert result["capabilities"]["default_generate_audio"] is True
     assert result["capabilities"]["supported_modes"] == [
         "text_to_video",
         "first_frame",
         "multimodal_reference",
     ]
+
+
+def test_video_contract_preserves_explicit_silent_video_choice() -> None:
+    result = node_contract.build_node_contract(
+        node_type="video",
+        fields={
+            "prompt": "silent tracking shot",
+            "duration_seconds": 10,
+            "generate_audio": False,
+        },
+        config=_video_config(),
+        project_state={},
+        protocol_catalog=_video_catalog(),
+    )
+
+    assert result["ready"] is True
+    assert result["normalized_fields"]["generate_audio"] is False
+    assert result["field_sources"]["generate_audio"] == "request.fields"
 
 
 def test_video_contract_deduplicates_the_same_reference_across_alias_fields() -> None:

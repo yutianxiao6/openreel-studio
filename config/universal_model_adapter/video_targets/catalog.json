@@ -620,6 +620,8 @@
       "match": "sed2",
       "label": "Seedance 2.0",
       "capabilities": {
+        "supports_native_audio": true,
+        "default_generate_audio": true,
         "supported_ratios": [
           "21:9",
           "16:9",
