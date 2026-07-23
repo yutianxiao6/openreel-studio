@@ -626,6 +626,24 @@ async def emit_canvas_event(event: dict, project_id: str | None = None) -> None:
                 pass  # 慢消费端不阻塞投递
 
 
+async def emit_project_ui_event(event: dict) -> int:
+    """Broadcast one external UI-control event to every open project view."""
+    delivered = 0
+    seen_queues: set[int] = set()
+    for subscribers in list(_project_subscribers.values()):
+        for q in list(subscribers):
+            marker = id(q)
+            if marker in seen_queues:
+                continue
+            seen_queues.add(marker)
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                continue
+            delivered += 1
+    return delivered
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _format_size(size: int | None) -> str:

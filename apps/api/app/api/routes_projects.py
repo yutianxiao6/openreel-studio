@@ -56,20 +56,20 @@ async def _emit_project_canvas_action(
 async def _emit_project_ui_switch(
     source_project_id: str,
     project: dict[str, Any],
-) -> None:
-    """Ask an already-open project page to activate a newly created project."""
+) -> int:
+    """Ask every already-open project page to activate the selected project."""
     try:
-        from app.agent.orchestrator import emit_canvas_event
+        from app.agent.orchestrator import emit_project_ui_event
 
-        await emit_canvas_event(
+        return await emit_project_ui_event(
             {
                 "type": "project_switch",
                 "project_id": str(project.get("id") or ""),
                 "title": str(project.get("title") or "新项目"),
                 "refresh_page": True,
                 "source": "external_control",
+                "source_project_id": source_project_id,
             },
-            project_id=source_project_id,
         )
     except Exception:
         logger.exception(
@@ -77,6 +77,7 @@ async def _emit_project_ui_switch(
             source_project_id,
             project.get("id"),
         )
+        return 0
 
 
 NODE_MEDIA_UPLOAD_MAX_BYTES: dict[str, int] = {
@@ -1207,6 +1208,33 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_session)):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project.model_dump()
+
+
+@router.post("/{project_id}/activate-ui")
+async def activate_project_ui(
+    project_id: str,
+    db: AsyncSession = Depends(get_session),
+    source_project_id: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Activate a project in every currently open OpenReel project view."""
+    svc = ProjectService(db)
+    project = await svc.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    payload = project.model_dump()
+    subscribers_notified = await _emit_project_ui_switch(
+        source_project_id or project_id,
+        payload,
+    )
+    return {
+        "ok": True,
+        "project": payload,
+        "ui_activation": {
+            "requested": True,
+            "refresh_page": True,
+            "subscribers_notified": subscribers_notified,
+        },
+    }
 
 
 @router.patch("/{project_id}")

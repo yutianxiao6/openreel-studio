@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from app.agent import orchestrator
 from app.api import routes_projects
 from app.api.routes_projects import CreateProjectRequest, UpdateProjectRequest
 from app.mcp_tools.project_tools import project_create
@@ -130,8 +131,9 @@ async def test_plugin_project_creation_can_activate_and_reload_the_open_ui(
             assert title == "插件新项目"
             return CreatedProject()
 
-    async def capture(source_project_id: str, project: dict[str, object]) -> None:
+    async def capture(source_project_id: str, project: dict[str, object]) -> int:
         emitted.append((source_project_id, project))
+        return 2
 
     monkeypatch.setattr(routes_projects, "ProjectService", FakeProjectService)
     monkeypatch.setattr(routes_projects, "_emit_project_ui_switch", capture)
@@ -155,3 +157,69 @@ async def test_plugin_project_creation_can_activate_and_reload_the_open_ui(
     assert "event.refresh_page === true" in chat_panel
     assert "window.location.assign(`/projects/${encodeURIComponent(newId)}`)" in chat_panel
     assert "refresh_page?: boolean" in web_api
+
+
+@pytest.mark.asyncio
+async def test_plugin_project_selection_activates_the_open_ui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    class ExistingProject:
+        id = "project-target"
+        title = "目标项目"
+
+        def model_dump(self) -> dict[str, object]:
+            return {"id": self.id, "title": self.title}
+
+    class FakeProjectService:
+        def __init__(self, _db: object) -> None:
+            pass
+
+        async def get_project(self, project_id: str) -> ExistingProject | None:
+            assert project_id == "project-target"
+            return ExistingProject()
+
+    async def capture(source_project_id: str, project: dict[str, object]) -> int:
+        emitted.append((source_project_id, project))
+        return 3
+
+    monkeypatch.setattr(routes_projects, "ProjectService", FakeProjectService)
+    monkeypatch.setattr(routes_projects, "_emit_project_ui_switch", capture)
+
+    result = await routes_projects.activate_project_ui(
+        "project-target",
+        db=object(),
+        source_project_id="project-browser",
+    )
+
+    assert result == {
+        "ok": True,
+        "project": {"id": "project-target", "title": "目标项目"},
+        "ui_activation": {
+            "requested": True,
+            "refresh_page": True,
+            "subscribers_notified": 3,
+        },
+    }
+    assert emitted == [("project-browser", result["project"])]
+
+
+@pytest.mark.asyncio
+async def test_external_project_switch_reaches_every_open_project_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(orchestrator, "_project_subscribers", {})
+    first = orchestrator._add_subscriber("project-browser-a")
+    second = orchestrator._add_subscriber("project-browser-b")
+    event = {
+        "type": "project_switch",
+        "project_id": "project-target",
+        "refresh_page": True,
+    }
+
+    delivered = await orchestrator.emit_project_ui_event(event)
+
+    assert delivered == 2
+    assert first.get_nowait() == event
+    assert second.get_nowait() == event
