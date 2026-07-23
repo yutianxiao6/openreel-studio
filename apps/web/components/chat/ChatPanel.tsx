@@ -2614,7 +2614,7 @@ export function ChatPanel() {
       window.dispatchEvent(new CustomEvent("openreel:projects-changed"))
       setViewMode("canvas")
       if (event.refresh_page === true) {
-        window.location.assign(`/projects/${encodeURIComponent(newId)}`)
+        window.location.assign(`${APP_BASE_PATH}/projects/${encodeURIComponent(newId)}`)
         return
       }
       appendMessage({

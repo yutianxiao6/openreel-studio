@@ -155,7 +155,10 @@ async def test_plugin_project_creation_can_activate_and_reload_the_open_ui(
         encoding="utf-8"
     )
     assert "event.refresh_page === true" in chat_panel
-    assert "window.location.assign(`/projects/${encodeURIComponent(newId)}`)" in chat_panel
+    assert (
+        "window.location.assign(`${APP_BASE_PATH}/projects/${encodeURIComponent(newId)}`)"
+        in chat_panel
+    )
     assert "refresh_page?: boolean" in web_api
 
 
