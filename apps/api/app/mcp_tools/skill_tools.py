@@ -390,9 +390,9 @@ async def skills_read(
 
 
 def _catalog_description(item: dict[str, Any]) -> str:
-    interface = item.get("interface") if isinstance(item.get("interface"), dict) else {}
-    short = str(interface.get("short_description") or item.get("short_description") or "").strip()
-    return (short or str(item.get("description") or "").strip())[:_MAX_CATALOG_DESCRIPTION_CHARS]
+    # Codex selects Skills from SKILL.md frontmatter. agents/openai.yaml is
+    # product/UI metadata and must never replace the trigger description.
+    return str(item.get("description") or "").strip()[:_MAX_CATALOG_DESCRIPTION_CHARS]
 
 
 def _render_catalog_line(item: dict[str, Any], description_chars: int) -> str:

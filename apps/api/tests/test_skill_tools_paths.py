@@ -432,6 +432,31 @@ def test_runtime_catalog_keeps_all_locators_and_description_prefixes() -> None:
     assert "### How to use skills" in catalog
 
 
+def test_runtime_catalog_uses_skill_description_not_ui_short_description(
+    tmp_path, monkeypatch
+) -> None:
+    skills_root = tmp_path / "skills"
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+    skill_dir = _write_skill(
+        skills_root,
+        "release_brief",
+        name="release_brief",
+        description="Use when the user asks to turn completed changes into release notes.",
+    )
+    metadata_dir = skill_dir / "agents"
+    metadata_dir.mkdir()
+    (metadata_dir / "openai.yaml").write_text(
+        "interface:\n"
+        '  display_name: "Release Brief"\n'
+        '  short_description: "Short UI label that is not a trigger"\n',
+        encoding="utf-8",
+    )
+
+    catalog = skill_tools.render_available_skills_context()
+    assert "Use when the user asks to turn completed changes into release notes." in catalog
+    assert "Short UI label that is not a trigger" not in catalog
+
+
 def test_skills_usage_protocol_matches_codex_source_contract() -> None:
     # Hashes pin the exact upstream Codex constants without duplicating the
     # complete 3K usage protocol in the test body.
