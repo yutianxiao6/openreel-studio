@@ -264,46 +264,15 @@ def test_runtime_context_omits_node_refs_and_prompt_body() -> None:
     assert "LEAK_PROMPT_BODY" not in context
 
 
-def test_runtime_context_omits_project_mentor_digest() -> None:
-    context = runtime_context.build({
-        "_mentor_guides_loaded": {
-            "debugging": {
-                "topic": "debugging",
-                "guidance_summary": "先检查 trace、SSE 和工具结果。",
-                "guidance_hash": "abc123def456",
-                "references_count": 3,
-                "loaded_at": 1234567890,
-            }
-        }
-    })
-
-    assert "指南复用缓存" not in context
-    assert "debugging" not in context
-    assert "abc123def456" not in context
-    assert "先检查 trace" not in context
-    assert "loaded_at" not in context
-    assert "1234567890" not in context
-
-def test_runtime_context_shows_skill_catalog_without_loaded_skill_cache() -> None:
-    context = runtime_context.build({
-        "_skills_loaded": {
-            "video_production": {
-                "skill": "video_production",
-                "tool": "skill.get",
-                "detail": "summary",
-                "summary": "视频制作先写剧本，再做人设、场景、分镜和视频节点。",
-                "guidance_hash": "skill123",
-                "guidance_chars": 1234,
-            }
-        }
-    })
+def test_runtime_context_shows_only_codex_style_skill_catalog() -> None:
+    context = runtime_context.build({})
 
     assert "## Skills" in context
     assert "video_production" in context
-    assert "skill123" not in context
-    assert "视频制作先写剧本" not in context
-    assert "用户换流程" not in context
-    assert "read every `content_page` through EOF" in context
+    assert "### Available skills" in context
+    assert "orchestrator resource" in context
+    assert "skill://builtin/video_production/SKILL.md" in context
+    assert "content_page" not in context
     assert len(context) <= 1_900
 
 def test_deferred_file_tool_cannot_be_called_directly_by_agent_loop() -> None:

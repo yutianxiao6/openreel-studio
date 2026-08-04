@@ -54,7 +54,7 @@ async def test_node_get_rejects_unbounded_id_batches_before_database_reads(monke
 def test_long_source_tools_share_resumable_document_policy() -> None:
     names = {
         "node.get",
-        "skill.get",
+        "skills.read",
         "file.read_text",
         "file.extract_text_from_upload",
         "file.workspace_read",
@@ -85,7 +85,7 @@ def test_collection_and_delegated_tools_use_executable_output_profiles() -> None
         "file.workspace_list",
         "file.workspace_search",
         "node.list",
-        "skill.search",
+        "skills.list",
         "assets.list_project",
         "assets.list_shared",
         "workflow.runtime_status",

@@ -1130,8 +1130,6 @@ def _session_clear_state_patch(state: dict, *, cleared_at: str) -> tuple[dict, i
     return (
         {
             "session": {},
-            "_mentor_guides_loaded": {},
-            "_skills_loaded": {},
             "_last_agent_review": None,
             ACTIVE_WORKFLOW_STATE_KEY: None,
             "workflow_runtime": {},
@@ -1288,8 +1286,6 @@ async def clear_project_session(
         "cleared": [
             "messages",
             "session",
-            "_mentor_guides_loaded",
-            "_skills_loaded",
             "_last_agent_review",
             "active_workflow",
             "workflow_runtime",

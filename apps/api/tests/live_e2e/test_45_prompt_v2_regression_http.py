@@ -87,11 +87,6 @@ def _prompt_snapshot(record: dict[str, Any]) -> dict[str, Any]:
             if isinstance(section, dict)
         },
         "tool_namespaces": prompt_assembly.get("tool_namespaces"),
-        "guide_sections": [
-            section.get("name")
-            for section in sections
-            if isinstance(section, dict) and section.get("source") == "guide"
-        ],
     }
 
 

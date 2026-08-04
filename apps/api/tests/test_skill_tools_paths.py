@@ -1,460 +1,446 @@
 import pytest
 
+from app.agent.model_context.types import coerce_tool_output
 from app.mcp_tools import skill_tools
+from app.mcp_tools.registry import registry
+
+
+def _value(result):
+    return coerce_tool_output(result).value
+
+
+def _write_skill(root, directory, *, name, description, body="Follow it.\n", metadata=""):
+    skill_dir = root / directory
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        f"name: {name}\n"
+        f"description: {description}\n"
+        f"{metadata}"
+        "---\n\n"
+        f"{body}",
+        encoding="utf-8",
+    )
+    return skill_dir
 
 
 @pytest.mark.asyncio
-async def test_standard_skills_default_to_project_root_skills(tmp_path, monkeypatch) -> None:
+async def test_standard_skill_catalog_and_read_use_codex_handles(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("OPENREEL_SKILLS_DIR", raising=False)
     monkeypatch.setattr(skill_tools.settings, "PROJECT_ROOT", str(tmp_path))
-
-    skill_dir = tmp_path / "skills" / "custom_flow"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: custom_flow\n"
-        "description: 自定义流程\n"
-        "category: workflow\n"
-        "applies_to: video\n"
-        "---\n\n"
-        "按用户指定的自定义流程执行。\n",
-        encoding="utf-8",
+    _write_skill(
+        tmp_path / "skills",
+        "workflows/custom_flow",
+        name="custom_flow",
+        description="Use for custom video workflow requests.",
+        body="Run the custom workflow.\n",
+        metadata="category: workflow\n",
     )
 
-    unscoped = await skill_tools.skill_search(query="custom_flow")
-    assert any(item["name"] == "custom_flow" for item in unscoped["skills"])
+    listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
+    item = next(item for item in listed["skills"] if item["name"] == "custom_flow")
+    assert item == {
+        "authority": {"kind": "orchestrator"},
+        "package": "user/workflows/custom_flow",
+        "name": "custom_flow",
+        "description": "Use for custom video workflow requests.",
+        "main_resource": "SKILL.md",
+    }
 
-    found = await skill_tools.skill_search(query="custom_flow", category="workflow")
-    assert any(item["name"] == "custom_flow" for item in found["skills"])
-    custom_item = next(item for item in found["skills"] if item["name"] == "custom_flow")
-    assert "可复用模板" in custom_item["usage"]
-    assert "workflow_spec" in custom_item["usage"]
-
-    user_only = await skill_tools.skill_search(
-        query="custom_flow", category="workflow", scope="user"
+    loaded = _value(
+        await skill_tools.skills_read(
+            item["authority"], item["package"], item["main_resource"]
+        )
     )
-    assert [item["scope"] for item in user_only["skills"]] == ["user"]
-
-    builtin_only = await skill_tools.skill_search(
-        query="视频制作 默认流程", category="workflow", scope="builtin"
-    )
-    assert all(item["scope"] == "builtin" for item in builtin_only["skills"])
-    assert any(item["name"] == "video_production" for item in builtin_only["skills"])
-
-    loaded = await skill_tools.skill_get_skill("custom_flow", category="workflow")
-    assert loaded["ok"] is True
-    assert loaded["detail"] == "full"
+    assert set(loaded) == {"resource", "contents", "next_cursor"}
     assert loaded["resource"] == "SKILL.md"
-    assert loaded["path"] == "skills/custom_flow/SKILL.md"
-    assert "name: custom_flow" in loaded["content_page"]["content"]
-    assert "按用户指定" in loaded["content_page"]["content"]
-    assert loaded["workflow_template_match_hint"]["skill_name"] == "custom_flow"
-    assert "内置和用户" in loaded["workflow_template_match_hint"]["hint"]
+    assert "name: custom_flow" in loaded["contents"]
+    assert "Run the custom workflow" in loaded["contents"]
+    assert loaded["next_cursor"] is None
 
-    summary = await skill_tools.skill_get_skill(
-        "custom_flow", category="workflow", detail="summary"
+
+def test_skill_resource_tool_contracts_match_codex() -> None:
+    list_spec = registry.get("skills.list")
+    read_spec = registry.get("skills.read")
+    assert list_spec is not None
+    assert read_spec is not None
+    assert list_spec.description == (
+        "List skills owned by the requested authority. Returns the exact authority, package, and "
+        "main_resource values required by skills.read. Pass next_cursor back as cursor to continue."
     )
-    assert summary["detail"] == "summary"
-    assert "content_page" not in summary
-
-    multi = await skill_tools.skill_search(queries=["custom_flow"], category="workflow")
-    assert "workflow_spec" in multi["hint"]
-    assert "direct_template" in multi["hint"]
-    assert "直接运行" not in multi["hint"]
-
-    loaded_with_scope = await skill_tools.skill_get_skill(
-        "custom_flow", category="workflow", scope="user"
+    assert read_spec.description == (
+        "Read one page from a skill resource. Pass the exact authority and package from skills.list "
+        "or an explicitly selected skill's resource_access metadata, plus its main_resource or a "
+        "referenced resource beneath that package. Pass next_cursor back as cursor to continue."
     )
-    assert loaded_with_scope["ok"] is True
-    assert loaded_with_scope["scope"] == "user"
+    list_authorities = list_spec.schema["properties"]["authority"]["oneOf"]
+    read_authorities = read_spec.schema["properties"]["authority"]["oneOf"]
+    assert [item["properties"]["kind"]["const"] for item in list_authorities] == [
+        "orchestrator",
+        "executor",
+    ]
+    assert read_authorities[0]["required"] == ["kind"]
+    assert read_authorities[1]["required"] == ["kind", "id"]
+    assert list_spec.output_policy.max_model_tokens == 10_000
+    assert read_spec.output_policy.max_model_tokens == 10_000
 
 
 @pytest.mark.asyncio
-async def test_standard_skills_can_use_explicit_skills_dir(tmp_path, monkeypatch) -> None:
-    project_root = tmp_path / "project"
-    skills_root = tmp_path / "install-root" / "skills"
-    monkeypatch.setattr(skill_tools.settings, "PROJECT_ROOT", str(project_root))
-    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
-
-    skill_dir = skills_root / "bright_prompt"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: bright_prompt\n"
-        "description: 明亮提示词写法\n"
-        "category: prompt\n"
-        "applies_to: image\n"
-        "---\n\n"
-        "画面明亮，主体清晰。\n",
-        encoding="utf-8",
-    )
-
-    found = await skill_tools.skill_search(query="bright", category="prompt")
-    assert any(item["name"] == "bright_prompt" for item in found["skills"])
-
-    loaded = await skill_tools.skill_get_skill("bright_prompt", category="prompt")
-    assert loaded["ok"] is True
-    assert "画面明亮" in loaded["content_page"]["content"]
-
-
-@pytest.mark.asyncio
-async def test_skill_get_reads_relative_resources_and_blocks_escape(tmp_path, monkeypatch) -> None:
+async def test_skill_packages_are_never_imported_as_python_tools(tmp_path, monkeypatch) -> None:
     skills_root = tmp_path / "skills"
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
-    skill_dir = skills_root / "resourceful"
-    references_dir = skill_dir / "references"
-    references_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: resourceful\n"
-        "description: 需要时读取参考说明的通用 skill\n"
-        "---\n\n"
-        "需要高级规则时读取 references/advanced.md。\n",
-        encoding="utf-8",
+    skill_dir = _write_skill(
+        skills_root,
+        "markdown_only",
+        name="markdown_only",
+        description="Use when a markdown-only Skill is requested.",
     )
-    (references_dir / "advanced.md").write_text("# 高级规则\n\n只读必要章节。\n", encoding="utf-8")
+    (skill_dir / "__init__.py").write_text(
+        "raise RuntimeError('Skill packages must never be imported')\n", encoding="utf-8"
+    )
 
-    found = await skill_tools.skill_search(query="参考说明")
-    assert found["skills"][0]["category"] == "general"
+    listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
+    assert "markdown_only" in {item["name"] for item in listed["skills"]}
 
-    resource = await skill_tools.skill_get_skill("resourceful", resource="references/advanced.md")
-    assert resource["ok"] is True
-    assert resource["resource"] == "references/advanced.md"
-    assert resource["content_page"]["source"] == "references/advanced.md"
-    assert "高级规则" in resource["content_page"]["content"]
 
-    escaped = await skill_tools.skill_get_skill("resourceful", resource="../outside.md")
+@pytest.mark.asyncio
+async def test_legacy_frontmatter_fields_cannot_hide_a_standard_skill(tmp_path, monkeypatch) -> None:
+    skills_root = tmp_path / "skills"
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+    _write_skill(
+        skills_root,
+        "legacy_extensions",
+        name="legacy_extensions",
+        description="Use to verify standard discovery ignores legacy routing fields.",
+        metadata="source: internal_helper\ntool_name: internal.hidden\n",
+    )
+
+    listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
+    assert "legacy_extensions" in {item["name"] for item in listed["skills"]}
+
+
+@pytest.mark.asyncio
+async def test_explicit_skills_root_is_an_orchestrator_package(tmp_path, monkeypatch) -> None:
+    skills_root = tmp_path / "install-root" / "skills"
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+    _write_skill(
+        skills_root,
+        "bright_prompt",
+        name="bright_prompt",
+        description="Use for bright image prompts.",
+        body="Keep the subject bright and clear.\n",
+    )
+
+    listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
+    item = next(item for item in listed["skills"] if item["name"] == "bright_prompt")
+    assert item["package"] == "user/bright_prompt"
+    loaded = _value(
+        await skill_tools.skills_read(item["authority"], item["package"], "SKILL.md")
+    )
+    assert "bright and clear" in loaded["contents"]
+
+
+@pytest.mark.asyncio
+async def test_skills_read_reads_relative_resources_and_blocks_escape(tmp_path, monkeypatch) -> None:
+    skills_root = tmp_path / "skills"
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+    skill_dir = _write_skill(
+        skills_root,
+        "resourceful",
+        name="resourceful",
+        description="Use when advanced reference instructions are needed.",
+        body="Read references/advanced.md when needed.\n",
+    )
+    references = skill_dir / "references"
+    references.mkdir()
+    (references / "advanced.md").write_text("# Advanced\n\nRead only this rule.\n", encoding="utf-8")
+
+    loaded = _value(
+        await skill_tools.skills_read(
+            {"kind": "orchestrator"}, "user/resourceful", "references/advanced.md"
+        )
+    )
+    assert loaded["resource"] == "references/advanced.md"
+    assert "Read only this rule" in loaded["contents"]
+
+    escaped = _value(
+        await skill_tools.skills_read(
+            {"kind": "orchestrator"}, "user/resourceful", "../outside.md"
+        )
+    )
     assert escaped["ok"] is False
     assert escaped["error_kind"] == "invalid_resource"
 
 
 @pytest.mark.asyncio
-async def test_flat_markdown_and_invalid_standard_skill_are_not_loaded(
+async def test_invalid_standard_skill_is_omitted_and_reported_as_warning(
     tmp_path, monkeypatch
 ) -> None:
     skills_root = tmp_path / "skills"
-    legacy_dir = skills_root / "prompts"
-    legacy_dir.mkdir(parents=True)
-    (legacy_dir / "legacy.md").write_text("# legacy flat skill\n", encoding="utf-8")
-    invalid_dir = skills_root / "invalid"
-    invalid_dir.mkdir()
-    (invalid_dir / "SKILL.md").write_text(
-        "---\nname: invalid\n---\n\nMissing description.\n", encoding="utf-8"
-    )
+    legacy = skills_root / "legacy"
+    legacy.mkdir(parents=True)
+    (legacy / "legacy.md").write_text("# not a package\n", encoding="utf-8")
+    invalid = skills_root / "invalid"
+    invalid.mkdir()
+    (invalid / "SKILL.md").write_text("---\nname: invalid\n---\n", encoding="utf-8")
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
 
-    result = await skill_tools.skill_search(query="")
-
-    assert all(item["name"] not in {"legacy", "invalid"} for item in result["skills"])
-    assert any("missing field `description`" in error["error"] for error in result["errors"])
+    listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
+    assert all(item["name"] not in {"legacy", "invalid"} for item in listed["skills"])
+    assert any("missing field `description`" in warning for warning in listed["warnings"])
 
 
 @pytest.mark.asyncio
-async def test_codex_frontmatter_repair_and_openai_policy_are_supported(
+async def test_allow_implicit_false_hides_catalog_but_explicit_path_still_loads(
     tmp_path, monkeypatch
 ) -> None:
     skills_root = tmp_path / "skills"
-    skill_dir = skills_root / "explicit_only"
-    metadata_dir = skill_dir / "agents"
-    metadata_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: explicit_only\n"
-        "description: Build for AWS: ECS deployment\n"
-        "---\n\n"
-        "Only load this skill when explicitly selected.\n",
-        encoding="utf-8",
+    skill_dir = _write_skill(
+        skills_root,
+        "explicit_only",
+        name="explicit_only",
+        description="Build for AWS: ECS deployment",
+        body="Only load this Skill explicitly.\n",
     )
+    metadata_dir = skill_dir / "agents"
+    metadata_dir.mkdir()
     (metadata_dir / "openai.yaml").write_text(
-        "interface:\n"
-        '  display_name: "Explicit only"\n'
-        "policy:\n"
-        "  allow_implicit_invocation: false\n",
+        "interface:\n  display_name: Explicit only\n"
+        "policy:\n  allow_implicit_invocation: false\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
 
-    result = await skill_tools.skill_search(query="AWS ECS")
-
-    matched = next(item for item in result["skills"] if item["name"] == "explicit_only")
-    assert matched["description"] == "Build for AWS: ECS deployment"
-    assert matched["allow_implicit_invocation"] is False
+    listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
+    assert "explicit_only" not in {item["name"] for item in listed["skills"]}
     assert "explicit_only" not in skill_tools.render_available_skills_context()
 
-    mentions = skill_tools.extract_explicit_skill_mentions(
-        "Use $explicit_only and [$explicit_only](skill://explicit_only), not $HOME."
-    )
-    assert mentions == [
-        {"name": "explicit_only", "path": "", "kind": "name"},
-        {
-            "name": "explicit_only",
-            "path": "skill://explicit_only",
-            "kind": "linked",
-        },
-    ]
-
+    locator = "skill://user/explicit_only/SKILL.md"
     injected = skill_tools.build_explicit_skill_injections(
-        "Use $explicit_only and [$explicit_only](skill://explicit_only)."
+        f"Use [$explicit_only]({locator})."
     )
     assert injected["selected_names"] == ("explicit_only",)
-    assert len(injected["instructions"]) == 1
-    assert injected["instructions"][0].startswith(
-        "<skill>\n<name>explicit_only</name>\n<path>"
-    )
-    assert "Only load this skill when explicitly selected." in injected["instructions"][0]
-    assert injected["warnings"] == ()
+    assert f"<path>{locator}</path>" in injected["instructions"][0]
+    assert "Only load this Skill explicitly" in injected["instructions"][0]
 
 
-def test_explicit_skill_selection_supports_structured_input_and_missing_path_warning(
-    tmp_path, monkeypatch
-) -> None:
+def test_explicit_selection_matches_codex_order_and_path_rules(tmp_path, monkeypatch) -> None:
     skills_root = tmp_path / "skills"
-    skill_dir = skills_root / "structured_skill"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: structured_skill\n"
-        "description: A structured explicit skill.\n"
-        "---\n\n"
-        "Follow the structured skill.\n",
-        encoding="utf-8",
-    )
-    second_dir = skills_root / "second_skill"
-    second_dir.mkdir(parents=True)
-    (second_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: second_skill\n"
-        "description: A second explicit skill.\n"
-        "---\n\n"
-        "Follow the second skill.\n",
-        encoding="utf-8",
-    )
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+    _write_skill(skills_root, "one", name="one", description="First Skill.")
+    _write_skill(skills_root, "two", name="two", description="Second Skill.")
 
+    mentions = skill_tools.extract_explicit_skill_mentions(
+        "$two and [$one](skill://user/one/SKILL.md), not $HOME.",
+        attachments=[
+            {
+                "kind": "skill",
+                "name": "one",
+                "path": "skill://user/one/SKILL.md",
+            }
+        ],
+    )
+    assert mentions[0]["kind"] == "structured"
     injected = skill_tools.build_explicit_skill_injections(
-        "$unknown_variable and $second_skill",
-        attachments=[{"kind": "skill", "name": "structured_skill"}],
+        "$two",
+        attachments=[
+            {
+                "kind": "skill",
+                "name": "one",
+                "path": "skill://user/one/SKILL.md",
+            }
+        ],
     )
-    assert injected["selected_names"] == ("second_skill", "structured_skill")
-    assert len(injected["instructions"]) == 2
-    assert injected["warnings"] == ()
+    assert injected["selected_names"] == ("one", "two")
 
-    missing = skill_tools.build_explicit_skill_injections(
-        "Use [$missing](skill://missing)."
+    name_only_structured = skill_tools.build_explicit_skill_injections(
+        "", attachments=[{"kind": "skill", "name": "one"}]
     )
-    assert missing["instructions"] == ()
-    assert len(missing["warnings"]) == 1
-    assert "unavailable" in missing["warnings"][0]
+    assert name_only_structured["instructions"] == ()
+
+    blocked_fallback = skill_tools.build_explicit_skill_injections(
+        "$one",
+        attachments=[
+            {"kind": "skill", "name": "one", "path": "skill://user/missing/SKILL.md"}
+        ],
+    )
+    assert blocked_fallback["instructions"] == ()
 
 
-def test_explicit_skill_prompt_uses_codex_utf8_byte_limit(tmp_path, monkeypatch) -> None:
+def test_plain_explicit_name_must_be_unambiguous(tmp_path, monkeypatch) -> None:
+    user_root = tmp_path / "skills"
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(user_root))
+    _write_skill(user_root, "a", name="duplicate", description="User duplicate.")
+    builtin_root = tmp_path / "builtin"
+    _write_skill(builtin_root, "b", name="duplicate", description="Builtin duplicate.")
+    monkeypatch.setattr(skill_tools, "_BUILTIN_SKILLS_ROOT", builtin_root)
+
+    assert skill_tools.build_explicit_skill_injections("$duplicate")["instructions"] == ()
+    linked = skill_tools.build_explicit_skill_injections(
+        "[$duplicate](skill://user/a/SKILL.md)"
+    )
+    assert linked["selected_names"] == ("duplicate",)
+
+
+def test_explicit_prompt_uses_codex_utf8_byte_limit(tmp_path, monkeypatch) -> None:
     skills_root = tmp_path / "skills"
-    skill_dir = skills_root / "large_skill"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: large_skill\n"
-        "description: A large explicit skill.\n"
-        "---\n\n"
-        + "规则" * 5_000,
-        encoding="utf-8",
-    )
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+    _write_skill(
+        skills_root,
+        "large_skill",
+        name="large_skill",
+        description="A large explicit Skill.",
+        body="规则" * 5_000,
+    )
 
     injected = skill_tools.build_explicit_skill_injections("$large_skill")
-
-    assert injected["selected_names"] == ("large_skill",)
     contents = injected["instructions"][0].split("\n", 3)[3].rsplit("\n</skill>", 1)[0]
     assert len(contents.encode("utf-8")) <= skill_tools.MAX_EXPLICIT_SKILL_PROMPT_BYTES
-    assert "8000-byte explicit prompt limit" in injected["warnings"][0]
+    assert "skills.read" in injected["warnings"][0]
+    assert "locator's exact package" in injected["warnings"][0]
 
 
 @pytest.mark.asyncio
-async def test_missing_or_unusable_user_skill_dir_is_empty_index(tmp_path, monkeypatch) -> None:
-    skills_root = tmp_path / "skills-file"
-    skills_root.write_text("not a directory", encoding="utf-8")
-    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
-
-    user_only = await skill_tools.skill_search(query="写剧本", category="workflow", scope="user")
-    assert user_only["ok"] is True
-    assert user_only["skills"] == []
-    assert user_only["total"] == 0
-
-    builtin = await skill_tools.skill_search(
-        query="视频制作 默认流程", category="workflow", scope="builtin"
-    )
-    assert builtin["ok"] is True
-    assert any(item["name"] == "video_production" for item in builtin["skills"])
-
-
-@pytest.mark.asyncio
-async def test_standard_skill_search_uses_metadata_and_prioritizes_user_skills(
+async def test_skills_list_uses_fingerprinted_cursor_and_rejects_stale_cursor(
     tmp_path, monkeypatch
 ) -> None:
     skills_root = tmp_path / "skills"
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+    monkeypatch.setattr(skill_tools, "_MAX_SKILLS_PER_PAGE", 1)
+    _write_skill(skills_root, "one", name="one", description="First Skill.")
+    _write_skill(skills_root, "two", name="two", description="Second Skill.")
 
-    skill_dir = skills_root / "storyboard_video_prompt"
-    skill_dir.mkdir(parents=True)
+    first = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
+    assert len(first["skills"]) == 1
+    assert first["next_cursor"]
+    second = _value(
+        await skill_tools.skills_list(
+            {"kind": "orchestrator"}, cursor=first["next_cursor"]
+        )
+    )
+    assert len(second["skills"]) == 1
+
+    _write_skill(skills_root, "three", name="three", description="Third Skill.")
+    stale = _value(
+        await skill_tools.skills_list(
+            {"kind": "orchestrator"}, cursor=first["next_cursor"]
+        )
+    )
+    assert stale["error_kind"] == "stale_cursor"
+
+
+@pytest.mark.asyncio
+async def test_skills_read_uses_utf8_byte_cursor_and_rejects_stale_cursor(
+    tmp_path, monkeypatch
+) -> None:
+    skills_root = tmp_path / "skills"
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+    monkeypatch.setattr(skill_tools, "_MAX_READ_CONTENT_BYTES", 17)
+    skill_dir = _write_skill(
+        skills_root,
+        "paged",
+        name="paged",
+        description="A paged Skill.",
+        body="中文内容" * 30,
+    )
+
+    first = _value(
+        await skill_tools.skills_read(
+            {"kind": "orchestrator"}, "user/paged", "SKILL.md"
+        )
+    )
+    assert first["next_cursor"]
+    second = _value(
+        await skill_tools.skills_read(
+            {"kind": "orchestrator"},
+            "user/paged",
+            "SKILL.md",
+            cursor=first["next_cursor"],
+        )
+    )
+    assert second["contents"]
+
     (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: storyboard_video_prompt\n"
-        "description: 把分镜图和剧情改写成图生视频提示词，重点写动作、镜头、节奏和衔接。\n"
-        "category: prompt\n"
-        "applies_to: video production storyboard 视频 分镜 提示词\n"
-        "---\n\n"
-        "按分镜顺序写镜头动作。\n",
+        (skill_dir / "SKILL.md").read_text(encoding="utf-8") + "changed",
         encoding="utf-8",
     )
-
-    found = await skill_tools.skill_search(query="图生视频 衔接", category="prompt")
-
-    assert found["total"] >= 1
-    assert found["skills"][0]["name"] == "storyboard_video_prompt"
-    assert found["skills"][0]["scope"] == "user"
-    assert found["skills"][0]["priority"] == 0
-
-    mixed_query = await skill_tools.skill_search(
-        query="video production storyboard 视频 分镜 提示词", category="prompt"
+    stale = _value(
+        await skill_tools.skills_read(
+            {"kind": "orchestrator"},
+            "user/paged",
+            "SKILL.md",
+            cursor=first["next_cursor"],
+        )
     )
-
-    assert mixed_query["total"] >= 1
-    assert mixed_query["skills"][0]["name"] == "storyboard_video_prompt"
-    assert mixed_query["skills"][0]["scope"] == "user"
-    assert mixed_query["skills"][0]["match"]["mode"] == "query"
-
-    builtin_query = await skill_tools.skill_search(
-        query="分镜 宫格", category="prompt", scope="builtin"
-    )
-    assert builtin_query["scope_filter"] == "builtin"
-    assert all(item["scope"] == "builtin" for item in builtin_query["skills"])
-    assert any(item["name"] == "shot_grid_prompt" for item in builtin_query["skills"])
+    assert stale["error_kind"] == "stale_cursor"
 
 
 @pytest.mark.asyncio
-async def test_builtin_video_prompt_modules_are_discoverable(tmp_path, monkeypatch) -> None:
-    skills_root = tmp_path / "skills"
-    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
-
-    expected = {
-        "写剧本": "script_writing",
-        "人物提示词": "character_prompt",
-        "场景提示词": "scene_prompt",
-        "分镜 宫格": "shot_grid_prompt",
-        "视频提示词": "video_prompt",
-    }
-
-    for query, name in expected.items():
-        found = await skill_tools.skill_search(query=query, category="prompt", scope="builtin")
-        assert found["ok"] is True
-        assert any(item["name"] == name and item["scope"] == "builtin" for item in found["skills"])
-
-        loaded = await skill_tools.skill_get_skill(name, category="prompt", scope="builtin")
-        assert loaded["ok"] is True
-        assert loaded["scope"] == "builtin"
-        assert loaded["category"] == "prompt"
-
-
-@pytest.mark.asyncio
-async def test_skill_search_supports_batch_module_queries(tmp_path, monkeypatch) -> None:
-    skills_root = tmp_path / "skills"
-    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
-
-    result = await skill_tools.skill_search(
-        category="prompt",
-        scope="builtin",
-        queries=["写剧本", "人物提示词", "分镜 宫格", "视频提示词"],
-    )
-
-    assert result["ok"] is True
-    assert result["mode"] == "multi_query"
-    assert result["queries"] == ["写剧本", "人物提示词", "分镜 宫格", "视频提示词"]
-    assert [group["query"] for group in result["groups"]] == result["queries"]
-    assert all(group["total"] >= 1 for group in result["groups"])
-    names = {item["name"] for item in result["skills"]}
-    assert {"script_writing", "character_prompt", "shot_grid_prompt", "video_prompt"} <= names
-    assert all(item["scope"] == "builtin" for item in result["skills"])
-    assert "primary_skill" in result["hint"]
-
-
-@pytest.mark.asyncio
-async def test_builtin_storyboard_review_skill_is_discoverable(tmp_path, monkeypatch) -> None:
-    skills_root = tmp_path / "skills"
-    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
-
-    found = await skill_tools.skill_search(query="分镜 检查", category="review", scope="builtin")
-
-    assert found["ok"] is True
-    assert any(item["name"] == "storyboard_frame_check" for item in found["skills"])
-
-    loaded = skill_tools.load_review_skill_by_key("storyboard_frame_check")
-    assert loaded["ok"] is True
-    assert loaded["scope"] == "builtin"
-    assert "叙事是否清晰" in loaded["content"]
-
-
-@pytest.mark.asyncio
-async def test_skill_scope_rejects_unknown_value(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(tmp_path / "skills"))
-
-    found = await skill_tools.skill_search(query="video", category="workflow", scope="remote")
-    assert found["ok"] is False
-    assert found["error_kind"] == "invalid_skill_scope"
-    assert found["available_scopes"] == ["user", "builtin"]
-
-    loaded = await skill_tools.skill_get_skill(
-        "video_production", category="workflow", scope="remote"
-    )
-    assert loaded["ok"] is False
-    assert loaded["error_kind"] == "invalid_skill_scope"
-
-
-@pytest.mark.asyncio
-async def test_review_skills_are_searched_separately_and_prefer_reviewer(
+async def test_skills_read_enforces_codex_one_megabyte_resource_limit(
     tmp_path, monkeypatch
 ) -> None:
     skills_root = tmp_path / "skills"
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
-
-    review_dir = skills_root / "storyboard_frame_check"
-    prompt_dir = skills_root / "shot_grid_video_prompt"
-    review_dir.mkdir(parents=True)
-    prompt_dir.mkdir(parents=True)
-    (review_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: storyboard_frame_check\n"
-        "description: 分镜画面合理性检查\n"
-        "category: review\n"
-        "applies_to: 分镜检查 storyboard review\n"
-        "---\n\n"
-        "逐格检查叙事、情绪和镜头衔接。\n",
-        encoding="utf-8",
+    skill_dir = _write_skill(
+        skills_root,
+        "oversized",
+        name="oversized",
+        description="Use to verify the resource size boundary.",
     )
-    (prompt_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: shot_grid_video_prompt\n"
-        "description: 分镜写视频提示词\n"
-        "category: prompt\n"
-        "applies_to: 分镜提示词 视频提示词\n"
-        "---\n\n"
-        "把分镜整理成视频提示词。\n",
-        encoding="utf-8",
+    references = skill_dir / "references"
+    references.mkdir()
+    (references / "too-large.md").write_text(
+        "x" * (skill_tools._MAX_SKILL_RESOURCE_CONTENT_BYTES + 1), encoding="utf-8"
     )
 
-    review = await skill_tools.skill_search(query="分镜 检查", category="review")
-    prompt = await skill_tools.skill_search(query="分镜 检查", category="prompt")
-
-    assert [item["name"] for item in review["skills"]] == ["storyboard_frame_check"]
-    assert review["skills"][0]["recommended_tool"] == "agent.review"
-    assert prompt["skills"][0]["name"] == "shot_grid_video_prompt"
-
-    loaded_for_self_check = await skill_tools.skill_get_skill(
-        "storyboard_frame_check", category="review"
+    loaded = _value(
+        await skill_tools.skills_read(
+            {"kind": "orchestrator"}, "user/oversized", "references/too-large.md"
+        )
     )
-    assert loaded_for_self_check["ok"] is True
-    assert loaded_for_self_check["preferred_tool"] == "agent.review"
-    assert "逐格检查" in loaded_for_self_check["content_page"]["content"]
+    assert loaded["error_kind"] == "resource_too_large"
 
-    loaded = skill_tools.load_review_skill_by_key("storyboard_frame_check")
-    assert loaded["ok"] is True
-    assert "逐格检查" in loaded["content"]
+
+@pytest.mark.asyncio
+async def test_executor_authority_is_empty_in_openreel(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(tmp_path / "skills"))
+    listed = _value(await skill_tools.skills_list({"kind": "executor"}))
+    assert listed == {"skills": [], "warnings": [], "next_cursor": None}
+    loaded = _value(
+        await skill_tools.skills_read(
+            {"kind": "executor", "id": "worker"}, "pkg", "SKILL.md"
+        )
+    )
+    assert loaded["error_kind"] == "package_not_available"
+
+
+def test_runtime_catalog_keeps_all_locators_and_description_prefixes() -> None:
+    catalog = skill_tools.render_available_skills_context()
+    visible = [
+        item
+        for item in skill_tools._build_unified_index()
+        if item.get("allow_implicit_invocation") is not False
+    ]
+    for item in visible:
+        assert f"- {item['name']}:" in catalog
+        assert f"(orchestrator resource: {item['locator']})" in catalog
+        assert skill_tools._catalog_description(item)[:20] in catalog
+    assert len(catalog) <= 1_750
+
+
+@pytest.mark.asyncio
+async def test_builtin_prompt_and_review_skills_are_listed_without_semantic_search(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(tmp_path / "skills"))
+    listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
+    names = {item["name"] for item in listed["skills"]}
+    assert {
+        "script_writing",
+        "character_prompt",
+        "scene_prompt",
+        "shot_grid_prompt",
+        "video_prompt",
+        "storyboard_frame_check",
+        "video_production",
+    } <= names

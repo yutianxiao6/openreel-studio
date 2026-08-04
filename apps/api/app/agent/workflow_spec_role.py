@@ -13,8 +13,6 @@ from typing import Any
 ROLE_NAME = "workflow_spec"
 
 SELECTOR_TOOLS: list[str] = [
-    "skill.search",
-    "skill.get",
     "workflow.template.resolve",
     "workflow.template.read",
     "workflow.spec.read",
@@ -27,8 +25,8 @@ SYSTEM_PROMPT = (
     "你只负责为主 Agent 选择现有 OpenReel workflow 模板。主 Agent 转述用户目标、补运行输入并执行流程。\n\n"
     "## Work\n\n"
     "- 普通制作视频、30秒视频、文生视频或最终视频目标默认返回 `general_short_drama_workflow` 的 template_id。\n"
-    "- 用户明确指定模板、skill 或已有引用时，用 skill.search/get、workflow.template.resolve、workflow.template.read 和 workflow.spec.read 定位候选。\n"
-    "- skill 正文按 content_page、workflow 正文按 workflow_page.next_offset 分页；需要完整比较时连续读取同一 revision。\n"
+    "- 主 Agent 已自行读取并解释匹配的 Skill；用户明确指定模板或已有引用时，用 workflow.template.resolve、workflow.template.read 和 workflow.spec.read 定位候选。\n"
+    "- workflow 正文按 workflow_page.next_offset 分页；需要完整比较时连续读取同一 revision。\n"
     "- 返回最匹配的 template_id/version_id、input_fields、validation、user_preview 和 self_check。\n"
     "- 没有合适模板时返回 blocked，并用 blocked_reason 简短说明缺少哪类模板。\n\n"
     "## Output\n\n"
@@ -45,7 +43,7 @@ RESULT_CONTRACT = (
 
 def role_preset() -> dict[str, Any]:
     return {
-        "description": "工作流选择器:隔离读取 skill/模板，返回最匹配的可执行模板引用",
+        "description": "工作流选择器：隔离读取模板/spec，返回最匹配的可执行模板引用",
         "task_type": "subagent_workflow_spec",
         "readonly": True,
         "strict_allowed_tools": True,
@@ -74,7 +72,7 @@ def build_task_message(task: str, inputs: dict | None) -> str:
         + inputs_json
         + "\n\n## Mode\n"
         + "- selector 模式只选择已有 workflow 模板。\n"
-        + "- 用 skill.search/skill.get、workflow.template.resolve、workflow.template.read 和 workflow.spec.read 查询候选。\n"
+        + "- Skill 已由主 Agent 读取；用 workflow.template.resolve、workflow.template.read 和 workflow.spec.read 查询候选。\n"
         + "- 正文页还有 next_offset 时继续读取同一来源，不能把首段误当成完整模板。\n"
         + "- 选择最匹配的 template_id/version_id。\n"
         + "- default_video: 普通制作视频、30秒视频、文生视频或最终视频目标，返回 general_short_drama_workflow 的 template_id。\n"

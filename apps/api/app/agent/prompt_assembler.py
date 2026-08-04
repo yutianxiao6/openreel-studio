@@ -11,8 +11,8 @@ Section trigger types:
   - factory     : 动态构造(runtime_context)
 
 Historical business triggers such as create/video/template/introspect are not
-loaded automatically. Detailed workflow guidance must be requested explicitly
-through tools/skills, not inferred by this assembler.
+loaded automatically. The runtime Skill catalog supplies description-based
+selection metadata; this assembler does not infer business intent.
 """
 
 from __future__ import annotations
@@ -122,7 +122,7 @@ class PromptAssemblyResult:
 _BASELINE_NS = [
     "project",
     "interaction",
-    "skill",
+    "skills",
     "node",
     "canvas",
     "task",
@@ -130,7 +130,7 @@ _BASELINE_NS = [
     "tool",
     "vision",
 ]
-_WORKFLOW_BUILD_NS = ["project", "interaction", "skill", "workflow"]
+_WORKFLOW_BUILD_NS = ["project", "interaction", "skills", "workflow"]
 _DEFAULT_TOOL_PROFILE = "default"
 _WORKFLOW_BUILD_TOOL_PROFILE = "workflow_build"
 _WORKFLOW_BUILD_SUPPRESSED_SECTIONS = {

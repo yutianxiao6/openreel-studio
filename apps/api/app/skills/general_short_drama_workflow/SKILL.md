@@ -13,7 +13,7 @@ applies_to: "通用视频制作 默认视频制作 workflow 宫格分镜 故事�
 
 模板只保存 V2 可复用结构：输入字段、逻辑步骤、依赖、循环、`uses` 引用关系和每一步的 `prompt` 合同。本次剧情、剧本文字、人物描述、图片 prompt、视频 prompt 成品在运行实例中生成，不写死进模板。
 
-执行时由主 Agent 填写或更新流程输入，再调用 `workflow.run_step`、`workflow.run_next` 或 `workflow.run_all`。运行器按依赖执行各步骤；中间规划和集合整理保存在 workflow runtime，用户可见产物显示为画布节点。
+执行时由主 Agent 填写或更新流程输入，再通过 `tool.search`、`tool.describe` 和 `tool.execute` 调用 deferred `workflow.run_step`、`workflow.run_next` 或 `workflow.run_all`。运行器按依赖执行各步骤；中间规划和集合整理保存在 workflow runtime，用户可见产物显示为画布节点。
 
 ## 输入字段
 

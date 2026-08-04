@@ -68,7 +68,7 @@ def test_workflow_build_prompt_loads_only_in_workflow_build_mode() -> None:
     assert "foreach.until" in workflow_result.system
     assert "{{ previous }}" in workflow_result.system
     assert workflow_result.tool_profile == "workflow_build"
-    assert workflow_result.tool_namespaces == ("project", "interaction", "skill", "workflow")
+    assert workflow_result.tool_namespaces == ("project", "interaction", "skills", "workflow")
     assert "node.*" not in workflow_result.system
     assert "canvas.delete" not in workflow_result.system
     assert "task.*" not in workflow_result.history
@@ -87,6 +87,7 @@ def test_workflow_build_prompt_uses_dedicated_cached_prefix() -> None:
 
     assert section_names == [
         "identity",
+        "skill_usage",
         "workflow_build_mode",
         "runtime_context",
     ]
@@ -119,6 +120,7 @@ def test_plan_mode_prompt_is_read_only_without_execution_sections() -> None:
 
     assert section_names == [
         "identity",
+        "skill_usage",
         "plan_mode",
         "runtime_context",
     ]
@@ -159,10 +161,10 @@ def test_runtime_context_does_not_duplicate_latest_user_goal() -> None:
     assert "本轮用户目标" not in text
     assert "继续之前的提示词相关优化" not in text
     assert "## Skills" in text
-    assert "$SkillName" in text
-    assert "Multiple mentions mean use all" in text
-    assert "do not carry skills across turns" in text
-    assert "best fallback" in text
+    assert "### Available skills" in text
+    assert "description" in text
+    assert "orchestrator resource" in text
+    assert "skill://builtin/video_production/SKILL.md" in text
     assert len(text) <= 1_900
 
 def test_runtime_context_does_not_inject_video_intake_first_card() -> None:
@@ -180,25 +182,16 @@ def test_runtime_context_does_not_inject_video_intake_first_card() -> None:
     assert "首张视频信息卡优先问缺失入口字段" not in text
     assert "start_tree_draft" not in text
 
-def test_split_prompt_cache_ignores_latest_user_and_mentor_guides() -> None:
+def test_split_prompt_cache_ignores_latest_user_and_retired_runtime_state() -> None:
     base = get_split_prompt_result(PromptContext(
         project_id="cache-runtime",
         user_message="继续优化提示词注入",
         state={},
     ))
-    with_guide = get_split_prompt_result(PromptContext(
+    with_retired_state = get_split_prompt_result(PromptContext(
         project_id="cache-runtime",
         user_message="继续优化提示词注入",
-        state={
-            "_mentor_guides_loaded": {
-                "debugging": {
-                    "topic": "debugging",
-                    "guidance_summary": "先检查 trace、SSE 和工具结果。",
-                    "guidance_hash": "guide-hash-1",
-                    "references_count": 2,
-                }
-            }
-        },
+        state={"_retired_runtime_field": "must not alter the stable prefix"},
     ))
     changed_user = get_split_prompt_result(PromptContext(
         project_id="cache-runtime",
@@ -206,16 +199,15 @@ def test_split_prompt_cache_ignores_latest_user_and_mentor_guides() -> None:
         state={},
     ))
 
-    assert base.cache_key == with_guide.cache_key
+    assert base.cache_key == with_retired_state.cache_key
     assert base.cache_key == changed_user.cache_key
     assert "继续优化提示词注入" not in base.cache_key
     assert "改为检查图片" not in changed_user.cache_key
     assert "### 指南复用缓存" not in base.runtime
-    assert "### 指南复用缓存" not in with_guide.runtime
-    assert "guide-hash-1" not in with_guide.runtime
+    assert "_retired_runtime_field" not in with_retired_state.runtime
     assert "继续优化提示词注入" not in base.runtime
     assert "改为检查图片和分镜一致性" not in changed_user.runtime
-    assert "### 指南复用缓存" not in with_guide.system
+    assert "_retired_runtime_field" not in with_retired_state.system
 
 
 def test_explicit_skill_mentions_select_current_turn_instructions_and_change_cache(
@@ -282,9 +274,9 @@ def test_always_prompt_sections_are_contracts_not_manuals() -> None:
 def test_working_loop_stays_domain_neutral_with_core_prompt() -> None:
     assert "latest request" in working_loop.PROMPT
     assert "evidence" in working_loop.PROMPT
-    assert "agent.run(workflow_spec)" in working_loop.PROMPT
+    assert "deferred `agent.run`" in working_loop.PROMPT
     assert "Workflow Build Mode" not in working_loop.PROMPT
-    assert "tools mutate state" in working_loop.PROMPT
+    assert "tools change state" in working_loop.PROMPT
     assert "Skills guide work" in working_loop.PROMPT
     assert "Before tools, write one progress sentence" in working_loop.PROMPT
     assert "finalize_tree_draft" not in working_loop.PROMPT
@@ -301,7 +293,7 @@ def test_default_prompt_has_one_general_decision_contract_per_concern() -> None:
     ))
     text = "\n".join([result.system, result.history])
 
-    assert text.count("With explicit scope/inputs, call the action tool") == 1
+    assert text.count("With explicit inputs, act") == 1
     assert text.count("summary > index > detail") == 1
     assert text.count("interaction.request_input") == 1
     assert text.count("structured confirmation") == 1
@@ -830,7 +822,7 @@ def test_runtime_context_omits_recent_review_records() -> None:
         {
             "_last_agent_review": {
                 "review_profile": "视频检查",
-                "review_skill_key": "my_storyboard_check",
+                "review_skill": {"name": "my_storyboard_check"},
                 "status": "pass",
                 "safe_to_submit": True,
                 "findings_count": 0,

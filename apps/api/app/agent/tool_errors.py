@@ -41,8 +41,8 @@ def _default_hint(error_kind: str) -> str:
         return "子 Agent 已返回 blocked 终态。向用户说明失败原因、已尝试步骤和可选下一步。"
     if kind in {"missing_field", "missing_id", "missing_node", "missing_patch", "missing_prompt", "missing_video_node_for_video_request", "bad_deferred_tool_arguments", "invalid_field"}:
         return "检查工具参数和必填字段，必要时先读取项目或节点状态后再重试。"
-    if kind in {"dependency_missing", "guide_not_loaded", "missing_prompt_source", "missing_prompt_template", "missing_template_selection_reason", "implicit_video_production_path"}:
-        return "先补齐依赖或读取对应指南，再回到原工具调用；不要新建替代节点。"
+    if kind in {"dependency_missing", "missing_prompt_source", "missing_prompt_template", "missing_template_selection_reason", "implicit_video_production_path"}:
+        return "先补齐依赖或读取匹配的 Skill/模板，再回到原工具调用；不要新建替代节点。"
     if kind in {"permission_denied", "plan_pending_approval", "plan_required_before_action"}:
         return "遵守权限边界；需要用户确认、计划批准或补充信息时先停止执行。"
     if kind in {"project_missing", "node_missing", "not_found", "node_not_found", "parent_not_found", "task_not_found", "reference_not_found"}:
@@ -71,7 +71,7 @@ def _default_suggested_next(error_kind: str) -> str:
         "unsupported_video_aspect_ratio",
     }:
         return "repair_arguments"
-    if kind in {"dependency_missing", "guide_not_loaded", "missing_prompt_source", "missing_prompt_template", "missing_template_selection_reason", "implicit_video_production_path"}:
+    if kind in {"dependency_missing", "missing_prompt_source", "missing_prompt_template", "missing_template_selection_reason", "implicit_video_production_path"}:
         return "satisfy_dependency"
     if kind in {"permission_denied", "plan_pending_approval", "plan_required_before_action"}:
         return "ask_or_wait_for_user"

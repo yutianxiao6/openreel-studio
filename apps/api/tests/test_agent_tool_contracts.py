@@ -29,8 +29,8 @@ def test_generate_plan_keeps_node_first_core_surface() -> None:
     assert "agent.planner_make_plan" not in visible
     assert "node.create" in visible
     assert "node.run" in visible
-    assert "skill.search" in visible
-    assert "skill.get" in visible
+    assert "skills.list" in visible
+    assert "skills.read" in visible
     assert "skill.video_production" not in visible
     assert "plan.propose" not in visible
     assert "tool.search" in visible
@@ -66,7 +66,7 @@ def test_prompt_namespace_hints_match_core_agent_surface() -> None:
         "interaction",
         "node",
         "project",
-        "skill",
+        "skills",
         "task",
         "tool",
         "vision",
@@ -87,8 +87,8 @@ def test_agent_tool_surface_matches_node_first_contract() -> None:
         "node.update",
         "project.get_state",
         "project.reset",
-        "skill.get",
-        "skill.search",
+        "skills.list",
+        "skills.read",
         "task.complete",
         "task.create",
         "task.list",
@@ -104,8 +104,8 @@ def test_agent_tool_surface_matches_node_first_contract() -> None:
     assert registry.tool_exposure("node.create") == "core"
     assert registry.tool_exposure("canvas.delete") == "core"
     assert registry.tool_exposure("project.reset") == "core"
-    assert registry.tool_exposure("skill.get") == "core"
-    assert registry.tool_exposure("skill.search") == "core"
+    assert registry.tool_exposure("skills.list") == "core"
+    assert registry.tool_exposure("skills.read") == "core"
     assert registry.tool_exposure("skill.video_production") == "unregistered"
     assert registry.tool_exposure("task.create") == "core"
     assert registry.tool_exposure("task.list") == "core"
@@ -147,8 +147,8 @@ def test_workflow_build_tool_surface_is_dedicated_to_workflow_files() -> None:
     assert visible == {
         "interaction.request_input",
         "project.get_state",
-        "skill.get",
-        "skill.search",
+        "skills.list",
+        "skills.read",
         "workflow.canvas.inspect",
         "workflow.spec.apply_patch",
         "workflow.spec.read",
@@ -227,7 +227,7 @@ def test_node_create_schema_uses_single_references_entrypoint() -> None:
     assert "references" in fields
     assert fields["generation"]["required"] == ["instruction", "source_message_count"]
     assert fields["generation"]["properties"]["source_message_count"]["maximum"] == 8
-    assert "长正文" in spec.description
+    assert spec.description == "创建一个或少量 text/image/video/audio 创作节点。"
     assert "depends_on" not in fields
     assert "reference_images" not in fields
     assert "source_image" in role_enum
@@ -253,7 +253,7 @@ def test_node_update_schema_prefers_input_patch_and_keeps_backend_alias_hidden()
     assert "oneOf" in items
     assert {"type": "string"} in items["oneOf"]
     assert "depends_on" not in props
-    assert "局部合并" in spec.description
+    assert spec.description == "局部更新一个或少量指定节点的允许字段。"
 
 
 def test_node_get_exposes_bounded_text_content_window() -> None:
@@ -268,7 +268,7 @@ def test_node_get_exposes_bounded_text_content_window() -> None:
     assert properties["content_limit"]["minimum"] == 0
     assert properties["content_limit"]["maximum"] == 8_000
     assert "默认及最大 8000" in properties["content_limit"]["description"]
-    assert "content_page.next_offset" in spec.description
+    assert spec.description == "读取一个或多个节点详情。"
 
 
 def test_agent_review_schema_keeps_structured_optional_arguments() -> None:
@@ -278,8 +278,10 @@ def test_agent_review_schema_keeps_structured_optional_arguments() -> None:
 
     assert props["evidence"]["type"] == "object"
     assert props["custom_checklist"]["type"] == "array"
-    assert props["guide_topics"]["type"] == "array"
-    assert props["focus"]["type"] == "array"
+    assert "guide_topics" not in props
+    assert "focus" not in props
+    assert "review_profile" not in props
+    assert "review_skill" in props
     assert props["custom_checklist"]["items"]["type"] == "string"
 
 
@@ -493,7 +495,7 @@ def test_core_tool_descriptions_follow_short_contract() -> None:
         description = str(fn.get("description") or "").strip()
         if any(marker in description for marker in old_contract_markers):
             old_style.append(name)
-        if len(description) > 260:
+        if name not in {"skills.list", "skills.read"} and len(description) > 260:
             too_long.append(name)
 
     assert old_style == []
@@ -616,12 +618,10 @@ def test_core_read_and_confirmation_descriptions_support_minimal_decisions() -> 
     assert nodes is not None
     assert details is not None
     assert delete is not None
-    assert "依赖现状" in (state.description or "")
-    assert "参数已完整时不做前置读取" in (state.description or "")
     assert "画布摘要" in (state.description or "")
     assert "有界节点索引页" in (nodes.description or "")
-    assert "content_page" in (details.description or "")
-    assert "首次调用创建结构化确认并结束当前轮" in (delete.description or "")
+    assert "节点详情" in (details.description or "")
+    assert "结构化确认" in (delete.description or "")
 
     delete_props = (delete.schema or {}).get("properties") or {}
     assert delete_props["scope"]["enum"] == ["selected", "all"]
@@ -640,14 +640,11 @@ def test_node_read_tools_support_index_then_batch_detail_contract() -> None:
 
     assert get_props["node_ids"]["type"] == "array"
     assert get_props["node_ids"]["items"]["type"] == "string"
-    assert "node_ids" in (get_spec.description or "")
     assert "query" in get_props
     assert "regex" in get_props
     assert list_props["limit"]["type"] == "integer"
     assert "query" in list_props
     assert "regex" in list_props
-    assert "默认返回 20" in (list_spec.description or "")
-    assert "next_offset" in (list_spec.description or "")
     assert list_props["limit"]["maximum"] == 100
     assert list_props["offset"]["minimum"] == 0
 
@@ -667,21 +664,10 @@ def test_low_frequency_tools_are_deferred_and_reset_is_core() -> None:
     assert "tool.describe" in visible
     assert "tool.execute" in visible
 
-def test_project_mentor_skill_is_loaded_but_not_in_core_tool_surface() -> None:
-    assert registry.get("skill.project_mentor") is not None
-    assert "skill.project_mentor" not in _visible_tools(None)
-
-@pytest.mark.asyncio
-async def test_project_mentor_exposes_prompt_compaction_topic() -> None:
-    tool = registry.get("skill.project_mentor")
-    assert tool is not None
-
-    result = await tool.handler(topic="prompt_compaction")
-
-    assert result["topic"] == "prompt_compaction"
-    assert result["references_count"] > 0
-    assert "file.read_text" in result["reference_policy"]
-    assert "permission policy" in result["guidance"]
+def test_project_mentor_is_a_standard_package_not_a_dedicated_tool() -> None:
+    assert registry.get("skill.project_mentor") is None
+    assert registry.get("skills.list") is not None
+    assert registry.get("skills.read") is not None
 
 def test_agent_prompt_sections_use_current_video_mode_names() -> None:
     prompt_text = "\n".join(
@@ -712,7 +698,7 @@ def test_single_image_prompt_documents_reference_image_to_image_path() -> None:
     assert "node.list" in prompt_text
     assert "node.list(limit=0)" in prompt_text
     assert "Skills guide work" in prompt_text
-    assert "tools mutate state" in prompt_text
+    assert "tools change state" in prompt_text
     assert "旧规划" not in prompt_text
 
 def test_prompt_rules_prioritize_latest_user_message_over_historical_failures() -> None:
@@ -754,6 +740,7 @@ def test_prompt_cache_sensitive_snapshot_for_blank_turn() -> None:
     assert [section.name for section in result.sections] == [
         "identity",
         "working_loop",
+        "skill_usage",
         "task_loop",
         "core_rules",
         "delete_rule",
@@ -790,8 +777,8 @@ def test_prompt_cache_sensitive_snapshot_for_blank_turn() -> None:
         "node.update",
         "project.get_state",
         "project.reset",
-        "skill.get",
-        "skill.search",
+        "skills.list",
+        "skills.read",
         "task.complete",
         "task.create",
         "task.list",

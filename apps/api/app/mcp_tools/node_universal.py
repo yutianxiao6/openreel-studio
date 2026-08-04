@@ -5259,7 +5259,7 @@ async def node_run(
     if action == "review":
         return _run_response({
             "ok": False,
-            "error": "action='review' 已移除。需要审稿时由模型创建/更新 text 节点或调用合适的只读 guide。",
+            "error": "action='review' 已移除。需要审稿时由主 Agent 读取匹配的 review Skill，再自行检查或调用 agent.review。",
             "error_kind": "unsupported_action",
             "node_type": node_type,
         })

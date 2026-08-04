@@ -34,8 +34,6 @@ _FULL_RESET_CONTEXT_KEYS = (
     "memory",
     "prompt_overrides",
     "_canvas_summary",
-    "_mentor_guides_loaded",
-    "_skills_loaded",
     "_last_agent_review",
     "project_mode",
     "project_sub_mode",

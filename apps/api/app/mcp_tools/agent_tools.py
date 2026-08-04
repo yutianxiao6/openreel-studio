@@ -85,9 +85,6 @@ READONLY_TOOL_ALLOWLIST: set[str] = {
     "events.query",
     "feature.list",
     "feature.is_enabled",
-    "skill.project_mentor",
-    "skill.search",
-    "skill.get",
     "workflow.spec.read",
     "workflow.template.resolve",
     "workflow.template.read",
@@ -144,12 +141,12 @@ ROLE_PRESETS: dict[str, dict[str, Any]] = {
         "task_type": "agent_review",
         "system": (
             "你是 reviewer 子 Agent,任务是**只读审查**。"
-            "只能读取项目状态、任务、节点、指南、文件或记忆,根据主 Agent 给定的审查目标给出问题、风险和建议。"
+            "只能读取项目状态、任务、节点、文件或记忆,根据主 Agent 给定的审查目标和 Skill 规则给出问题、风险和建议。"
             "审查范围可以是节点图、视频流程、提示词、工具选择、trace 摘要、前端问题、配置或其他工程事项。"
             "审查必须以用户当前明确需求、主 Agent 提供的证据和真实项目状态为准；"
             "同时检查主 Agent 的工具选择、修复范围和工作摘要是否偏离用户当前需求或指定 skill；"
             "只指出有具体证据的违反项、遗漏项、冲突项或不可执行项。"
-            "不要用个人偏好的剧情、风格、制作路径或指南示例替换已经满足用户需求的方案；"
+            "不要用个人偏好的剧情、风格、制作路径或规则示例替换已经满足用户需求的方案；"
             "没有证据证明错误时返回 pass 或 low severity 建议。"
             "如果输入 evidence.current_canvas_graph.available=true,优先直接审查该证据包；只有证据缺失或需要核实时才调用工具。"
             "审查制作方案时，以 project.get_state、node.list、node.get 和明确 evidence 为准。"
@@ -162,9 +159,6 @@ ROLE_PRESETS: dict[str, dict[str, Any]] = {
             "task.list",
             "node.list",
             "node.get",
-            "skill.project_mentor",
-            "skill.search",
-            "skill.get",
             "file.read_text",
             "memory.recall",
         ],
@@ -208,10 +202,9 @@ ROLE_PRESETS: dict[str, dict[str, Any]] = {
         "task_type": "agent_aux",
         "system": (
             "你是 project_mentor 子 Agent,任务是解释项目规则和给出下一步建议。"
-            "优先使用 skill.project_mentor,必要时读取项目状态。禁止改项目。"
+            "根据主 Agent 提供的规则和真实项目状态回答。禁止改项目。"
         ),
         "allowed_tools": [
-            "skill.project_mentor",
             "project.get_state",
             "memory.recall",
         ],
@@ -237,13 +230,12 @@ ROLE_PRESETS: dict[str, dict[str, Any]] = {
         "system": (
             "你是 node_producer 子 Agent,负责完成主 Agent 指定的独立节点任务。"
             "主 Agent 会传 node_id/node_ids、allowed_node_types、objective、basis、primary_skill、inline_spec、reference_node_ids 和验收标准；它已经完成流程规划和节点创建。"
-            "先读取目标节点,再读取 reference_node_ids 和目标节点依赖的上游节点作为上下文；有 primary_skill 时用 skill.get 读取这一份模块 skill；有 inline_spec 时它优先于通用指南；没有 skill 时按输入事实和通用模型判断完成。"
+            "先读取目标节点,再读取 reference_node_ids 和目标节点依赖的上游节点作为上下文；Skill 必须已由主 Agent 读取并通过 inline_spec/验收标准传入，primary_skill 只作来源标识；没有 inline_spec 时按输入事实和通用模型判断完成。"
             "更新 prompt/fields/references 后按需要运行节点；图片结果可用 vision.view_image 自检；失败时优先修同一节点并有限重试。"
             "只处理输入作用域内的节点,上游节点只读引用,不搜索流程,不规划整条视频流程,不新建节点。"
             "最终只交回结构化结果和验证依据。"
         ),
         "allowed_tools": [
-            "skill.get",
             "node.get",
             "node.update",
             "node.run",
@@ -304,7 +296,6 @@ REVIEW_RESULT_SCHEMA_VERSION = "agent_review_result_v1"
 REVIEW_PARSE_OK_STATUSES = {"parsed", "repaired"}
 REVIEW_SESSION_OK_STATUS = "completed"
 REVIEW_TIMEOUT_MAX_SECONDS = 480.0
-_REVIEW_SKILL_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,80}$")
 _REVIEW_STATUSES = {"pass", "revise_required", "blocked"}
 _REVIEW_STATUS_ALIASES = {
     "ok": "pass",
@@ -329,71 +320,10 @@ def _project_relative_path(path: Path) -> str:
         return str(path)
 
 
-def _normalize_review_skill_key(value: Any) -> str:
-    key = str(value or "").strip().lower().replace(" ", "_")
-    return key if _REVIEW_SKILL_KEY_RE.match(key) else ""
-
-
-def _read_review_skill(key: str) -> dict[str, Any]:
-    from app.mcp_tools.skill_tools import load_review_skill_by_key
-
-    return load_review_skill_by_key(key)
-
-
-def _read_app_skill(key: str) -> dict[str, Any]:
-    normalized = _normalize_review_skill_key(key)
-    if not normalized:
-        return {"ok": False, "error": "invalid_app_skill_key", "key": key}
-    candidates = [
-        Path(settings.PROJECT_ROOT) / "apps" / "api" / "app" / "skills" / normalized / "SKILL.md",
-        Path(__file__).resolve().parents[1] / "skills" / normalized / "SKILL.md",
-    ]
-    for path in candidates:
-        if not path.exists() or not path.is_file():
-            continue
-        content = path.read_text(encoding="utf-8", errors="replace")
-        try:
-            rel_path = str(path.relative_to(Path(settings.PROJECT_ROOT)))
-        except ValueError:
-            rel_path = str(path)
-        return {
-            "ok": True,
-            "key": normalized,
-            "path": rel_path,
-            "source": "app_skill",
-            "content": content[:8000],
-            "chars": len(content),
-        }
-    return {"ok": False, "error": "app_skill_not_found", "key": normalized}
-
-
-def _load_review_skill_by_key(key: str) -> dict[str, Any]:
-    try:
-        from app.mcp_tools import skill_tools
-
-        loaded = skill_tools.load_review_skill_by_key(key)
-        if loaded.get("ok"):
-            return loaded
-    except Exception:
-        pass
-    custom = _read_review_skill(key)
-    if custom.get("ok"):
-        return custom
-    app_skill = _read_app_skill(key)
-    if app_skill.get("ok"):
-        return app_skill
-    return custom
-
-
-def _coerce_review_skill_arg(review_skill: dict | str | None, review_skill_key: str) -> dict[str, Any] | str:
+def _coerce_review_skill_arg(review_skill: dict | str | None) -> dict[str, Any] | str:
     if isinstance(review_skill, dict):
         return review_skill
     raw = str(review_skill or "").strip()
-    key = _normalize_review_skill_key(review_skill_key or raw)
-    if key:
-        loaded = _load_review_skill_by_key(key)
-        if loaded.get("ok"):
-            return loaded
     return raw if raw else {}
 
 
@@ -439,7 +369,7 @@ def _review_profile_block(inputs: dict | None) -> str:
         + "status 只能是 pass / revise_required / blocked；缺失或非法会被后端视为 blocked。"
         + "findings 每项包含 severity、issue、evidence、suggested_fix、violated_requirement。"
         + "只有具体证据能证明违反用户需求、节点事实、依赖关系或执行条件时,才使用 medium/high/blocking。"
-        + "偏好型优化、替代创意和指南示例差异只能作为 low severity 建议,不能要求重写正确方案。"
+        + "偏好型优化、替代创意和规则示例差异只能作为 low severity 建议,不能要求重写正确方案。"
         + "证据不足时 status='blocked'、safe_to_submit=false，并写 missing_evidence。"
     )
 
@@ -1141,7 +1071,7 @@ def _subagent_review_context_block(role: str, inputs: dict | None) -> str:
         return _review_profile_block(inputs if isinstance(inputs, dict) else {})
     if not isinstance(inputs, dict):
         return ""
-    review_keys = {"review_profile", "custom_checklist", "review_skill", "review_skill_key"}
+    review_keys = {"review_profile", "custom_checklist", "review_skill"}
     if any(key in inputs for key in review_keys):
         return _review_profile_block(inputs)
     return ""
@@ -1184,7 +1114,7 @@ def _build_node_producer_task_message(task: str, inputs: dict | None) -> str:
         + "- basis/primary_skill/inline_spec 是本轮判断依据；primary_skill 已由主 Agent 选择，inline_spec 和用户当前明确要求优先。\n"
         + "- 没有 skill 时使用输入事实和通用模型能力完成，并在 basis_used 里记录依据。\n"
         + "\n\n## 节点生命周期\n"
-        + "- 读取目标节点，再读取指定上游节点，必要时读取指定 skill。\n"
+        + "- 读取目标节点和指定上游节点；Skill 规则只使用主 Agent 传入的 inline_spec/验收标准。\n"
         + "- 补全或更新 fields.content/prompt/references/必要参数后，按需要运行节点。\n"
         + "- 图片结果需要看图自检；视频/音频异步任务以节点状态和工具返回为准。\n"
         + "- 失败时优先修同一作用域节点并有限重试；信息不足或连续失败时返回 blocked。\n"
@@ -2929,8 +2859,8 @@ def _agent_run_catalog() -> list[dict[str, Any]]:
                 "allow_create",
             ],
             "summary": (
-                "首选通用生产 worker；主 Agent 先搭节点框架、指定作用域并传 primary_skill/inline_spec，"
-                "worker 读取指定依据、补 prompt/fields、运行并自检。"
+                "首选通用生产 worker；主 Agent 先读 Skill、搭节点框架、指定作用域并传 primary_skill/inline_spec，"
+                "worker 按已传依据补 prompt/fields、运行并自检。"
             ),
         },
         {
@@ -2946,7 +2876,7 @@ def _agent_run_catalog() -> list[dict[str, Any]]:
                 "context",
             ],
             "summary": (
-                "负责选择现有 workflow 模板；隔离读取 skill/template/spec，"
+                "负责选择现有 workflow 模板；主 Agent 先读 Skill，本 worker 隔离读取 template/spec，"
                 "返回 template_id，并由 agent.run 随引用补充 input_fields。"
             ),
         },
@@ -3395,9 +3325,7 @@ async def agent_review(
     review_profile: str = "general",
     evidence: dict | None = None,
     custom_checklist: list[str] | None = None,
-    review_skill_key: str = "",
     review_skill: dict | str | None = None,
-    guide_topics: list[str] | None = None,
     focus: list[str] | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
 ) -> dict:
@@ -3406,7 +3334,6 @@ async def agent_review(
     The main agent calls this for complex review needs, then decides whether to
     revise, continue, submit, or report based on the returned result.
     """
-    guide_topics = _coerce_string_list(guide_topics, limit=8)
     focus = _coerce_string_list(focus, limit=12)
     custom_checklist = _coerce_string_list(custom_checklist, limit=20)
     profile_label = str(review_profile or "general").strip()[:120] or "general"
@@ -3414,16 +3341,11 @@ async def agent_review(
     if not review_goal:
         review_goal = "检查当前项目工作是否可继续提交或执行"
     if not work_summary:
-        work_summary = "未提供工作摘要；请用只读工具核实当前项目状态、节点图和必要指南。"
-    loaded_review_skill: dict[str, Any] | str = _coerce_review_skill_arg(
-        review_skill,
-        review_skill_key,
-    )
-    if not loaded_review_skill and review_skill_key:
-        loaded_review_skill = _load_review_skill_by_key(review_skill_key)
+        work_summary = "未提供工作摘要；请用只读工具核实当前项目状态和节点图。"
+    loaded_review_skill: dict[str, Any] | str = _coerce_review_skill_arg(review_skill)
     task = (
         "主 Agent 请求你做一次隔离只读审查。请结合审查目标、用户需求、主 Agent 工作摘要、"
-        "审查 profile、证据包、项目真实状态和必要指南检查问题。只返回检查结果给主 Agent；如需修改，只写问题和建议，"
+        "审查 profile、主 Agent 传入的 Skill 规则、证据包和项目真实状态检查问题。只返回检查结果给主 Agent；如需修改，只写问题和建议，"
         "不要直接修改项目。还要检查主 Agent 的工具选择和修复范围是否符合最新用户需求与当前 skill。"
     )
     review_inputs = {
@@ -3433,9 +3355,7 @@ async def agent_review(
         "work_summary": str(work_summary)[:2400],
         "evidence": evidence,
         "custom_checklist": (custom_checklist or [])[:20],
-        "review_skill_key": _normalize_review_skill_key(review_skill_key),
         "review_skill": loaded_review_skill,
-        "guide_topics": guide_topics[:8],
         "focus": focus[:12],
         "expected_output": {
             "status": "pass | revise_required | blocked",

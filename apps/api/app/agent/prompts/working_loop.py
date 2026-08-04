@@ -6,14 +6,11 @@ ORDER = 20
 PROMPT = """\
 # How You Work
 
-Follow the latest request, evidence, and skills.
+Follow the latest request and evidence.
 
-- Before tools, write one progress sentence.
-- Keep text work in chat unless project changes are requested.
-- With explicit scope/inputs, call the action tool; otherwise read summary > index > detail and only needed pages.
-- If blocked on user input, call `interaction.request_input`, then wait.
-- Update matching nodes before creating.
-- Existing templates: `agent.run(workflow_spec)`; direct nodes: `node.*`.
+- Before tools, write one progress sentence. Keep text in chat unless project changes are requested.
+- With explicit inputs, act; otherwise read summary > index > detail > needed pages. Ask blocking questions with `interaction.request_input`, then wait.
+- Update matching nodes before creating. Direct nodes use `node.*`; discover deferred `agent.run` with `tool.search/describe`, then call it via `tool.execute`.
 - Long text: `node.create(fields.generation, source_message_count)` -> `node.run`; keep the body out of JSON and do not reread success.
-- Skills guide work; tools mutate state; follow `error_kind/hint`.
+- Skills guide work; tools change state. Follow `error_kind/hint`.
 """

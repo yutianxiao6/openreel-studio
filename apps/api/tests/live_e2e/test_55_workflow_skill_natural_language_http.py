@@ -202,7 +202,8 @@ async def test_natural_language_skill_workflow_local_patch_and_template_save(
     _done(create_events)
     _no_contract_error(create_events)
     create_tools = _tool_names(create_events)
-    assert "skill.search" in create_tools or "skill.get" in create_tools
+    assert "skills.list" in create_tools
+    assert "skills.read" in create_tools
     assert "node.create" in create_tools or "tool.execute" in create_tools
 
     nodes_after_create = await _all_text_node_details(api_client, project_id, call_tool_request)

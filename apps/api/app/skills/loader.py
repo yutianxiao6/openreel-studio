@@ -133,9 +133,6 @@ def parse_skill_document(raw: str, *, default_name: str) -> dict[str, Any]:
         "short_description": short_description,
         "category": _single_line(parsed.get("category")),
         "applies_to": _single_line(parsed.get("applies_to")),
-        "when_to_use": _single_line(parsed.get("when_to_use")),
-        "source": _single_line(parsed.get("source")),
-        "tool_name": _single_line(parsed.get("tool_name")),
         "frontmatter": parsed,
     }
 
@@ -240,7 +237,6 @@ def discover_skill_packages(
         packages.append(
             {
                 **metadata,
-                "declared_source": metadata.get("source", ""),
                 "path": str(skill_path),
                 "skill_dir": str(skill_path.parent),
                 "root_path": str(root),

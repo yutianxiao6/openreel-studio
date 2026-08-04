@@ -16,10 +16,7 @@ from app.mcp_tools import (
     workflow_tools,
     workflow_spec_tools,
 )
-from app.mcp_tools.registry import load_skills, register, registry
-
-# Load any user-supplied skills
-load_skills()
+from app.mcp_tools.registry import register, registry
 
 __all__ = [
     "agent_tools",
@@ -38,5 +35,4 @@ __all__ = [
     "workflow_spec_tools",
     "registry",
     "register",
-    "load_skills",
 ]

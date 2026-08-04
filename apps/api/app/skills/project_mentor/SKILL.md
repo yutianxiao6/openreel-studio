@@ -1,10 +1,6 @@
 ---
 name: project_mentor
-tool_name: skill.project_mentor
-description: OpenReel project mentor for architecture, debugging, repair, and prompt hygiene.
-when_to_use: Use for project rules, node repair, delivery audit, trace/debug guidance, or prompt maintenance.
-tags: [project, mentor, debugging, guide]
-source: skill
+description: Use for OpenReel architecture, rules, node repair, delivery audit, debugging, or prompt maintenance.
 ---
 
 # project_mentor
@@ -28,18 +24,18 @@ maintain separate canvas/panel state before work appears.
 
 ## Current Rules
 
-- Ordinary image/video work starts by searching user workflow skills, then reads
-  the builtin `video_production` standard skill package through the runtime
-  catalog or `skill.search`, then reads it completely with `skill.get`
-  when no user workflow matches. It then creates
+- Ordinary image/video work uses the automatically injected Skill catalog,
+  chooses the minimal description match, resolves its exact package with
+  `skills.list`, and reads the complete `SKILL.md` with `skills.read`. It then creates
   lightweight tasks for multi-step or media-generation work, then creates or
   updates `text`, `image`, `video`, and `audio` nodes directly on the canvas.
 - Main Agent plans the node graph and dependency order. Each node is an
   independent task. Script, character image, scene image, shot grid image, and
   final video prompt are produced by `node.run` with one module prompt skill
   at a time.
-- Reusable graph workflows are executed by deferred `workflow.run_step`,
-  `workflow.run_next`, or `workflow.run_all` with `inputs`; the workflow runner
+- Reusable graph workflows are executed through `tool.search`, `tool.describe`,
+  and `tool.execute` for deferred `workflow.run_step`, `workflow.run_next`, or
+  `workflow.run_all`; the workflow runner
   calls `node.run` internally for visible product nodes.
 - Canvas state is the creative truth source visible to the model. Drafts,
   grouping, method choice, review notes, and assumptions are node fields or text
@@ -80,10 +76,10 @@ maintain separate canvas/panel state before work appears.
   projections plus an opaque `artifact_ref`. Only resumable page content gets
   the document-sized string window; unrelated nested strings keep the normal
   per-field ceiling.
-- Long text readers (`node.get`, `skill.get`, file readers, text assets, and
-  workflow spec/template readers) expose deterministic character pages with a
-  revision and `next_offset`. Continue from that offset instead of requesting
-  or reconstructing an unbounded result.
+- Long text readers such as `node.get`, file readers, text assets, and workflow
+  spec/template readers expose bounded content pages with `next_offset`.
+  `skills.read` uses the opaque `next_cursor` returned by its preceding page;
+  continue until it becomes null.
 - User skills use `skills/<skill-name>/SKILL.md`. Standard frontmatter supplies
   `name` and `description`; OpenReel optionally reads `category` and
   `applies_to`. Supporting files stay inside the same package under
@@ -94,20 +90,19 @@ maintain separate canvas/panel state before work appears.
   `<skill>` block. Multiple explicit selections are all injected, and they do
   not carry into later turns. Explicit selection remains available when
   `agents/openai.yaml` disables implicit invocation. Description matches and
-  plain-text names use the model-visible catalog plus `skill.get`; that tool
-  reads the full `SKILL.md` page sequence and resolves a requested `resource`
-  relative to the package without allowing directory escape.
+  plain-text names use the model-visible catalog. Orchestrator resources use
+  exact handles from `skills.list`; `skills.read` follows `next_cursor` through
+  the full `SKILL.md` and resolves resources inside the same package.
 - Collection readers use bounded pages. `project.get_state` returns runtime
   state plus canvas counts rather than every node and edge; use `node.list` and
-  `node.get` for details. Task, memory, event, workspace, asset, skill, and
-  workflow runtime collections expose `offset`/`next_offset` (or a nested page)
-  so callers continue deliberately instead of using an unlimited sentinel.
+  `node.get` for details. Most collections expose `offset`/`next_offset` or a
+  nested page; `skills.list` uses its opaque `next_cursor`.
 - System prompt stays short. Detailed workflow, examples, and debugging advice
   live in skills, docs, tests, validators, and permission policy.
 
 ## Core Tools
 
-`project.get_state`, `interaction.request_input`, `skill.search`, `skill.get`,
+`project.get_state`, `interaction.request_input`, `skills.list`, `skills.read`,
 `task.create`, `task.list`, `task.update`, `task.complete`, `agent.review`,
 `node.list`, `node.get`, `node.create`, `node.update`, `node.run`, and
 `canvas.delete`. `tool.search`, `tool.describe`, and `tool.execute` are core

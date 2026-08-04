@@ -80,7 +80,7 @@ def decide_tool_permission(ctx: ToolPermissionContext) -> PermissionDecision:
             "ok": False,
             "error": f"{ctx.tool_name} 是 deferred 文件工具，Agent Loop 不能绕过 tool.search/tool.describe/tool.execute 直接调用。",
             "error_kind": "deferred_tool_must_use_tool_execute",
-            "hint": "读取上传文本时先 tool.search(category='file') / tool.describe，再 tool.execute；guide 规则正文使用对应 skill 的 guidance/guide_content。",
+            "hint": "读取上传文本时先 tool.search(category='file') / tool.describe，再 tool.execute；Skill 正文通过自动目录和 skills.list/read 获取。",
         })
 
     if is_plan_mode(state) and ctx.tool_name not in plan_mode_allowed_tools():

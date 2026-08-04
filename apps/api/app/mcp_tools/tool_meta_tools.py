@@ -26,7 +26,6 @@ from app.mcp_tools.registry import _schema_from_handler, registry, ToolSpec
 # Tier 1 工具不进 list,因为它们已经在主工具表里完整可见。
 # 低频工具通过 deferred 暴露；被节点协议吸收的旧辅助工具标记 hidden。
 _CATEGORIES: dict[str, set[str]] = {
-    "guide": {"skill.project_mentor", "skill.story_template_method"},
     "workflow": {
         "workflow.list_templates",
         "workflow.runtime_status",
@@ -104,25 +103,13 @@ _STATIC_SEARCH_HINTS: dict[str, str] = {
     "workflow.run_step": "run specific workflow step execute one ready step fill inputs 指定步骤 运行 单步 填写输入",
     "workflow.run_next": "run next ready workflow step continue fill inputs dependency 下一步 继续运行 填写输入 依赖",
     "workflow.run_all": "run all remaining workflow steps execute full flow fill inputs 一键运行 全部 剩余步骤 填写输入",
-    "skill.project_mentor": (
-        "guide project mentor architecture agent loop permission trace debugging "
-        "revision audit node repair rerun failed node source path production audit "
-        "dependency_missing prompt compaction cache budget "
-        "项目架构 Agent循环 节点修订 制作审查 交付审查 "
-        "失败节点 原地修复 节点修复 重跑 排障 提示词压缩 缓存预算"
-    ),
-	    "skill.story_template_method": (
-	        "story template story_template image_to_video optional method complex action blocking "
-	        "visual development board high resolution 3840x2160 2560x1440 camera map action flow art direction "
-	        "故事模板 图生视频 可选制作方法 复杂动作 动作调度 视觉开发板 高分辨率"
-	    ),
     "system.models": "model mapping active model provider 模型映射 当前模型 provider",
     "system.status": "system status health tool capability 系统状态 工具 能力",
     "file.list_dir": "list directory files in data or project storage 列目录 遍历文件树",
     "file.read_text": (
         "read explicit user uploaded text file project storage rel_path 读取用户上传或本轮明确路径文本文件 "
         "offset limit next_offset paged large file chunks 大文件分页 分段读取 "
-        "not guide source docs trace tool_result guide 内容用 skill.project_mentor 节点状态用 node.get"
+        "not skill source docs trace tool_result；Skill 内容通过 skills.list/read 读取，节点状态用 node.get"
     ),
     "file.extract_text_from_upload": (
         "extract text from uploaded txt md docx offset limit next_offset paged chunks "
@@ -216,37 +203,6 @@ def _agent_visible_deferred_schema(spec: ToolSpec) -> dict[str, Any]:
     if isinstance(properties, dict):
         properties.pop("workflow", None)
     return result
-
-
-def _cached_project_mentor_result(
-    *,
-    target: str,
-    kwargs: dict[str, Any],
-    state: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    if target != "skill.project_mentor" or not isinstance(state, dict):
-        return None
-    topic = str(kwargs.get("topic") or "overview").strip().lower()
-    if not topic:
-        return None
-    cache = state.get("_mentor_guides_loaded")
-    cached = cache.get(topic) if isinstance(cache, dict) else None
-    if not isinstance(cached, dict):
-        return None
-    guidance_summary = str(cached.get("guidance_summary") or "").strip()
-    if not guidance_summary:
-        return None
-    return {
-        "ok": True,
-        "topic": topic,
-        "guidance": guidance_summary,
-        "references": [],
-        "references_count": int(cached.get("references_count") or 0),
-        "reference_policy": "来自 guide cache；无源码路径可读，复用 guidance 和 guidance_hash。",
-        "from_guide_cache": True,
-        "guidance_hash": cached.get("guidance_hash") or "",
-        "cache_policy": "当前项目已缓存该 project_mentor 指南；复用摘要和哈希。",
-    }
 
 
 def _split_names(value: str) -> list[str]:
@@ -767,14 +723,6 @@ async def tool_execute(
             "failure_policy": _DEFERRED_FAILURE_POLICY,
         }
     kwargs["project_id"] = project_id
-    cached_result = _cached_project_mentor_result(target=target, kwargs=kwargs, state=_state)
-    if cached_result is not None:
-        return {
-            "_deferred_tool": target,
-            "_deferred_alias": {"requested": requested_target, "resolved": target} if requested_target != target else None,
-            "_deferred_permission": _permission_summary(target, decision),
-            **cached_result,
-        }
     if target in _DEFERRED_CONFIRMATION_TOOLS:
         from app.agent.confirmation_protocol import is_pending_confirmation_expired
 

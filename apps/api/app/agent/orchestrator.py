@@ -7,7 +7,6 @@ response or hits MAX_ITERATIONS.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import re
@@ -108,8 +107,6 @@ from app.services.project_service import ProjectService
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 200  # 上限很高，几乎不限；真正拦截靠重复错误检测
-_MENTOR_GUIDE_CACHE_KEY = "_mentor_guides_loaded"
-_SKILL_GUIDE_CACHE_KEY = "_skills_loaded"
 _TASK_DONE_STATUSES = {"completed", "skipped"}
 
 _INTERNAL_NAME_RE = re.compile(
@@ -151,92 +148,13 @@ def _message_model_visible(metadata: dict[str, Any]) -> bool:
     return True
 
 
-def _guide_loaded_trace_payload(tool_name: str, result: Any) -> dict[str, Any] | None:
-    if not isinstance(result, dict):
-        return None
-    if result.get("from_guide_cache") is True:
-        return None
-    guide_tool = str(result.get("_deferred_tool") or tool_name or "")
-    if guide_tool != "skill.project_mentor":
-        return None
-    if result.get("error") or result.get("ok") is False:
-        return None
-
-    guidance = str(result.get("guidance") or "")
-    return {
-        "guide_tool": guide_tool,
-        "trigger_tool": tool_name,
-        "guide_name": str(result.get("topic") or "overview"),
-        "chars": len(guidance),
-        "references_count": _guide_references_count(result),
-    }
-
-
-def _guide_references_count(result: dict[str, Any]) -> int:
-    raw_count = result.get("references_count")
-    if isinstance(raw_count, int):
-        return max(0, raw_count)
-    references = result.get("references")
-    if isinstance(references, list):
-        return len(references)
-    return 0
-
-
-def _compact_cached_guide_summary(value: Any, limit: int = 520) -> str:
+def _compact_summary(value: Any, limit: int = 520) -> str:
     text = " ".join(str(value or "").split())
     if not text:
         return ""
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "..."
-
-
-def _cached_guide_hash(value: str) -> str:
-    text = " ".join(str(value or "").split())
-    if not text:
-        return ""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-
-
-def _mentor_guide_cache_payload(result: dict[str, Any]) -> dict[str, Any] | None:
-    if result.get("from_guide_cache") is True:
-        return None
-    topic = str(result.get("topic") or "").strip().lower()
-    if not topic:
-        return None
-    guidance = str(result.get("guidance") or "")
-    return {
-        "topic": topic,
-        "guidance_summary": _compact_cached_guide_summary(guidance),
-        "guidance_hash": _cached_guide_hash(guidance),
-        "guidance_chars": len(guidance),
-        "references_count": _guide_references_count(result),
-    }
-
-
-def _skill_guide_cache_payload(tool_name: str, result: dict[str, Any]) -> dict[str, Any] | None:
-    if not isinstance(result, dict):
-        return None
-    if result.get("from_guide_cache") is True or result.get("error") or result.get("ok") is False:
-        return None
-    resolved_tool = str(result.get("_deferred_tool") or tool_name or "").strip()
-    if not resolved_tool.startswith("skill.") or resolved_tool == "skill.project_mentor":
-        return None
-    skill_name = str(result.get("skill") or resolved_tool.removeprefix("skill.")).strip()
-    if not skill_name:
-        return None
-    guidance = str(result.get("guidance") or result.get("model_summary") or "")
-    summary = str(result.get("model_summary") or guidance)
-    guidance_hash = str(result.get("guidance_hash") or "").strip() or _cached_guide_hash(guidance)
-    return {
-        "skill": skill_name,
-        "tool": resolved_tool,
-        "path": str(result.get("skill_path") or ""),
-        "detail": str(result.get("detail") or "summary"),
-        "summary": _compact_cached_guide_summary(summary),
-        "guidance_hash": guidance_hash,
-        "guidance_chars": len(guidance),
-    }
 
 
 def _deferred_tool_input(tool_args: dict[str, Any]) -> dict[str, Any]:
@@ -308,15 +226,11 @@ def _agent_review_state_payload(tool_args: dict[str, Any], result: Any) -> dict[
     return {
         "tool": target,
         "schema_version": schema_version,
-        "review_goal": _compact_cached_guide_summary(input_args.get("review_goal"), 240),
+        "review_goal": _compact_summary(input_args.get("review_goal"), 240),
         "review_profile": str(input_args.get("review_profile") or ""),
-        "review_skill_key": str(input_args.get("review_skill_key") or ""),
         "custom_checklist_count": len(input_args.get("custom_checklist") or [])
         if isinstance(input_args.get("custom_checklist"), list)
         else 0,
-        "guide_topics": input_args.get("guide_topics")[:8]
-        if isinstance(input_args.get("guide_topics"), list)
-        else [],
         "focus": input_args.get("focus")[:12]
         if isinstance(input_args.get("focus"), list)
         else [],
@@ -338,7 +252,7 @@ def _agent_review_state_payload(tool_args: dict[str, Any], result: Any) -> dict[
             "node_count": review_subject.get("node_count"),
             "media_node_count": review_subject.get("media_node_count"),
         },
-        "summary": _compact_cached_guide_summary(result.get("summary"), 240),
+        "summary": _compact_summary(result.get("summary"), 240),
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
 
@@ -1012,7 +926,7 @@ class AgentOrchestrator:
             suggested_next = str(result.get("suggested_next") or "").strip()
             next_labels = {
                 "repair_arguments": "需要修正工具参数后再试。",
-                "satisfy_dependency": "需要先补齐依赖或读取对应指南。",
+                "satisfy_dependency": "需要先补齐依赖或读取匹配的 Skill/模板。",
                 "ask_or_wait_for_user": "需要等待用户确认或补充信息。",
                 "read_state": "需要先重新读取项目状态。",
                 "model_decides": "需要根据错误重新选择下一步。",
@@ -1024,8 +938,6 @@ class AgentOrchestrator:
             return "方案提交失败：没有拿到可提交的方案内容。"
         if kind == "plan_required_before_action":
             return "当前动作被执行策略拦截：系统认为这轮需要先提交可审核方案。"
-        if kind == "guide_not_loaded":
-            return "节点创建前缺少创建指南，需要先读取对应节点类型的字段规范。"
         if kind == "dependency_missing":
             return "节点依赖还不完整，需要先补齐上游节点或参考素材。"
         if error:
@@ -2896,47 +2808,6 @@ class AgentOrchestrator:
                                 "phase": phase,
                                 **usage_payload,
                             }
-                        skill_cache = _skill_guide_cache_payload(tool_name, raw_result)
-                        if skill_cache:
-                            existing_skill_cache = state.get(_SKILL_GUIDE_CACHE_KEY)
-                            if not isinstance(existing_skill_cache, dict):
-                                existing_skill_cache = {}
-                            existing_payload = existing_skill_cache.get(skill_cache["skill"])
-                            if existing_payload != skill_cache:
-                                next_skill_cache = dict(existing_skill_cache)
-                                next_skill_cache[skill_cache["skill"]] = skill_cache
-                                state[_SKILL_GUIDE_CACHE_KEY] = next_skill_cache
-                                await _persist_state_patch({_SKILL_GUIDE_CACHE_KEY: next_skill_cache})
-                            trace.emit(
-                                "skill_loaded",
-                                iteration=iteration,
-                                tool_name=tool_name,
-                                transition_reason="skill_tool_result_loaded",
-                                skill=skill_cache.get("skill"),
-                                detail=skill_cache.get("detail"),
-                                guidance_chars=skill_cache.get("guidance_chars"),
-                                guidance_hash=skill_cache.get("guidance_hash"),
-                            )
-                        guide_cache = _mentor_guide_cache_payload(raw_result)
-                        if guide_cache:
-                            existing_cache = state.get(_MENTOR_GUIDE_CACHE_KEY)
-                            if not isinstance(existing_cache, dict):
-                                existing_cache = {}
-                            existing_payload = existing_cache.get(guide_cache["topic"])
-                            if existing_payload != guide_cache:
-                                next_cache = dict(existing_cache)
-                                next_cache[guide_cache["topic"]] = guide_cache
-                                state[_MENTOR_GUIDE_CACHE_KEY] = next_cache
-                                await _persist_state_patch({_MENTOR_GUIDE_CACHE_KEY: next_cache})
-                        guide_trace = _guide_loaded_trace_payload(tool_name, raw_result)
-                        if guide_trace:
-                            trace.emit(
-                                "guide_loaded",
-                                iteration=iteration,
-                                tool_name=tool_name,
-                                transition_reason="guide_tool_result_loaded",
-                                **guide_trace,
-                            )
                         review_payload = _agent_review_state_payload(tool_args, raw_result)
                         if review_payload:
                             await _persist_state_patch({"_last_agent_review": review_payload})
@@ -2946,7 +2817,6 @@ class AgentOrchestrator:
                                 tool_name=tool_name,
                                 transition_reason="agent_review_state_recorded",
                                 review_profile=review_payload.get("review_profile"),
-                                review_skill_key=review_payload.get("review_skill_key"),
                                 status=review_payload.get("status"),
                                 safe_to_submit=review_payload.get("safe_to_submit"),
                                 findings_count=review_payload.get("findings_count"),

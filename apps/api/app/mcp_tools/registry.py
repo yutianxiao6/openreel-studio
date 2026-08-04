@@ -3,7 +3,7 @@
 Why:
 - One canonical list (name → handler + schema + namespace + description) so the
   planner, the MCP server export, and the docs all read from the same source.
-- Skills / plugins can register their own tools by calling `register(...)`
+- Tool modules and plugins can register tools by calling `register(...)`
   at import time. The agent's prompt context auto-picks them up.
 - A tool can be looked up by full name (`node.run`) and invoked
   with a kwargs dict, regardless of which python module defined it.
@@ -13,9 +13,9 @@ Usage:
     handler = registry.get("node.run")
     result = await handler(node_id=...)
 
-Skill author:
+Tool author:
     from app.mcp_tools.registry import register
-    @register("myskill.do_thing", description="...", schema={...})
+    @register("plugin.do_thing", description="...", schema={...})
     async def do_thing(project_id: str, x: int): ...
 """
 
@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from pathlib import Path
 from types import UnionType
 from typing import Any, Awaitable, Callable, Union, get_args, get_origin, get_type_hints
 
@@ -276,7 +275,7 @@ class ToolSpec:
     namespace: str = ""
     tags: list[str] = field(default_factory=list)         # e.g. ["drama", "single"]
     requires_node: bool = False     # true → composite wrapper that owns a node
-    metadata: dict[str, Any] = field(default_factory=dict) # arbitrary (e.g. SKILL.md frontmatter)
+    metadata: dict[str, Any] = field(default_factory=dict)
     search_hint: str = ""           # extra deferred-search index text, not shown as full prompt
     usage_hints: list[str] = field(default_factory=list)  # short retrieval-oriented hints
     is_read_only: bool = False
@@ -578,8 +577,8 @@ class ToolRegistry:
         "node.update",
         "project.get_state",
         "project.reset",
-        "skill.get",
-        "skill.search",
+        "skills.list",
+        "skills.read",
         "task.complete",
         "task.create",
         "task.list",
@@ -592,8 +591,8 @@ class ToolRegistry:
     _WORKFLOW_BUILD_CORE_TOOLS: set[str] = {
         "interaction.request_input",
         "project.get_state",
-        "skill.get",
-        "skill.search",
+        "skills.list",
+        "skills.read",
         "workflow.canvas.inspect",
         "workflow.spec.apply_patch",
         "workflow.spec.read",
@@ -700,9 +699,6 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "node.update": "局部更新一个或少量指定节点的允许字段",
     "project.get_state": "读取项目运行状态和画布摘要",
     "project.reset": "按 scope 清理失败节点或执行已确认的全量项目重置",
-    "skill.get": "读取标准 SKILL.md 或同目录相对文本资源",
-    "skill.project_mentor": "查询项目架构、规则、文档入口和排障顺序",
-    "skill.search": "搜索标准 skill 元数据目录",
     "system.models": "读取任务类型到模型的当前映射",
     "system.status": "读取系统状态、模型、工具、MCP 和能力摘要",
     "task.complete": "把执行任务标记为 completed 并保存结果摘要",
@@ -730,8 +726,6 @@ _STANDARD_CANNOT_BY_NAME: dict[str, str] = {
     "node.update": "不能把运行产物写进 prompt，也不能绕过节点字段边界",
     "project.get_state": "不能修改项目，也不能把历史上下文当成当前状态",
     "project.reset": "不能在没有当前用户明确请求和必要确认时执行 full reset",
-    "skill.get": "不能修改项目；只读取 skill",
-    "skill.search": "不能修改项目；只搜索 skill",
     "task.complete": "不能在工具真实成功前标记完成",
     "task.update": "不能篡改任务图结构或绕过用户批准的执行计划",
     "tool.describe": "不能描述隐藏、注销或不存在的工具",
@@ -755,57 +749,22 @@ _STANDARD_CANNOT_BY_NAMESPACE: dict[str, str] = {
     "memory": "不能把不稳定推测写成长期事实，不能替代任务或节点状态",
     "scene": "不能创建或修改场景；场景创作走 node.*",
     "shot": "不能创建或修改镜头；镜头创作走 node.*",
-    "skill": "不能越过项目工具、权限策略或节点规则直接改状态",
+    "skills": "不能越过项目工具、权限策略或节点规则直接改状态",
     "system": "不能修改模型、工具或 MCP 配置",
     "team": "不能越过主 Agent 权限边界直接改项目核心状态",
-}
-
-_STANDARD_USAGE_BY_NAME: dict[str, str] = {
-    "interaction.request_input": "只问阻塞项；提交后等待用户回复。",
-    "agent.review": "阶段产出后调用；传目标、需求、摘要和证据；只修有证据的问题。",
-    "agent.run": "workflow_spec 只选择已有 workflow 模板；node_producer 处理指定节点；image_editor 处理像素编辑。",
-    "canvas.delete": "按用户明确范围调用；首次调用创建结构化确认并结束当前轮。",
-    "node.create": (
-        "单个或少量批量创建；长正文保存用 fields.generation 后 node.run；"
-        "搭框架/低风险可用 nodes，复杂媒体 prompt 或大量节点分批。"
-    ),
-    "node.get": (
-        "设置最小 content_limit；正文按 content_page.next_offset 分页，node_ids 每次最多 20 个。"
-    ),
-    "node.list": "默认返回 20 个；按 next_offset 分页，单页最多 100。",
-    "node.run": (
-        "运行前检查内容/prompt/fields/依赖；不符合要求先 node.update；"
-        "fields.generation 成功即已原子保存，无需 node.get 验证；失败读 error_kind/hint/model_feedback。"
-    ),
-    "node.update": "input_json 与旧 input 局部合并；不同改动用 updates，同一 patch 可配 node_ids；复杂/高风险分批。",
-    "project.get_state": "依赖现状时读取；参数已完整时不做前置读取。",
-    "skill.search": "按名称/描述搜索；category/scope 可选；按 next_offset 分页。",
-    "skill.get": "默认读取 SKILL.md；相对资源用 resource；正文按 content_page.next_offset 读到 EOF。",
-    "task.create": "复杂多步用 subject 或 items 建 checklist；简单任务跳过。",
-    "task.complete": "任务真实完成并有结果摘要后调用。",
-    "task.list": "需要恢复进度、找可执行/失败/阻塞任务或清理残留前调用。",
-    "task.update": "任务开始、阻塞、失败或元数据变化时调用；同项目最多一个 in_progress。",
-    "tool.describe": "对已发现的 deferred 工具读取完整 schema 和使用元数据。",
-    "tool.execute": "core 工具直接调用；deferred 先 search/describe。",
-    "tool.search": "query='' 列出 visible deferred 目录；category 可缩小目录；知道名字后用 select:name 精确选择。",
-    "vision.view_image": "看已有图片时先定位 node_id；node_ids/sources 可批量附加；工具不做摘要。",
-    "workflow.spec.apply_patch": "create 传 workflow；update 传 base 和 operations；replace 传 base 和 workflow；save.target 可为 artifact 或 template。",
-    "project.reset": ("scope='failed' 清失败节点；scope='full' 带 reason 返回确认卡，确认后执行。"),
 }
 
 _STANDARD_LIMIT_BY_NAME: dict[str, str] = {
     "interaction.request_input": "只请求用户输入，不创建、修改、删除、运行、重置或批准项目内容",
     "agent.review": "只读审查，不创建、修改、运行、删除、批准、重置或直接向用户提交",
     "node.create": "只创建节点，不运行节点",
-    "canvas.delete": "不清任务、项目 state 或标题",
+    "canvas.delete": "删除需当前用户明确请求和结构化确认；不清任务、项目 state 或标题",
     "node.get": "只读取节点",
     "node.list": "只读取节点列表",
     "node.run": "只运行现有节点，不绕过依赖或 readiness 错误",
     "node.update": "只改允许字段，不写入不属于该节点的产物",
     "project.get_state": "只读取项目状态",
     "project.reset": "full reset 需要当前用户明确请求和确认",
-    "skill.get": "只读取标准 skill 包内文本；不能越过 skill 目录",
-    "skill.search": "只搜索 skill 元数据目录",
     "task.complete": "只标记真实完成的任务",
     "task.list": "只读取任务列表",
     "task.update": "只更新任务状态和元数据",
@@ -828,16 +787,6 @@ def _is_core_tool_name(name: str, target_registry: ToolRegistry) -> bool:
     )
 
 
-def _tool_usage_line(name: str, target_registry: ToolRegistry) -> str:
-    if name in target_registry._AGENT_HIDDEN:
-        return "内部或控制面调用；不要把它作为主 Agent 执行路径。"
-    if name in _STANDARD_USAGE_BY_NAME:
-        return _STANDARD_USAGE_BY_NAME[name]
-    if _is_core_tool_name(name, target_registry):
-        return "核心工具可直接调用，按 schema 填参；调用前先确认当前项目、任务或节点状态。"
-    return "先用 tool.search 缩小范围，再用 tool.describe 读取 schema，最后通过 tool.execute 执行。"
-
-
 def _tool_limit_line(name: str, spec: ToolSpec) -> str:
     if name in _STANDARD_LIMIT_BY_NAME:
         return _STANDARD_LIMIT_BY_NAME[name].rstrip("。")
@@ -852,8 +801,7 @@ def _tool_limit_line(name: str, spec: ToolSpec) -> str:
 def _standard_agent_tool_description(spec: ToolSpec, target_registry: ToolRegistry) -> str:
     base = _base_description(spec).rstrip("。")
     limit = _tool_limit_line(spec.name, spec)
-    usage = _tool_usage_line(spec.name, target_registry).rstrip("。")
-    parts = [base, usage]
+    parts = [base]
     if (
         spec.is_destructive
         or spec.requires_confirmation
@@ -878,7 +826,7 @@ def _base_description(spec: ToolSpec) -> str:
     return f"{spec.name} 的工具能力"
 
 
-_READ_ONLY_TAGS = {"read", "query", "guide"}
+_READ_ONLY_TAGS = {"read", "query"}
 _MUTATING_TAGS = {"execute", "write", "control", "destructive"}
 _DESTRUCTIVE_NAMES = {"project.reset", "canvas.delete"}
 _CONFIRMATION_NAMES = {"project.reset", "canvas.delete"}
@@ -895,7 +843,7 @@ def _infer_read_only(spec: ToolSpec) -> bool:
     short = spec.short_name.lower()
     if short.startswith(_READ_ONLY_VERBS):
         return True
-    if spec.namespace in {"system", "template", "skill", "feature"}:
+    if spec.namespace in {"system", "template", "feature"}:
         return True
     return bool(spec.is_read_only)
 
@@ -916,6 +864,9 @@ def _apply_tool_boundary_metadata(spec: ToolSpec) -> None:
 def _standardize_tool_spec(spec: ToolSpec, target_registry: ToolRegistry | None = None) -> None:
     """Apply boundary metadata and keep core tool descriptions stable."""
     _apply_tool_boundary_metadata(spec)
+    if spec.namespace == "skills":
+        # These are Codex protocol tools; preserve their canonical descriptions.
+        return
     target = target_registry or registry
     if _is_core_tool_name(spec.name, target):
         spec.description = _standard_agent_tool_description(spec, target)
@@ -946,7 +897,7 @@ def register(
     output_policy: ToolOutputPolicy | None = None,
     replace: bool = False,
 ) -> Callable[[ToolHandler], ToolHandler]:
-    """Decorator form. Skills can use this at import time."""
+    """Decorator form for tool modules and plugins."""
 
     def decorator(fn: ToolHandler) -> ToolHandler:
         registry.register(
@@ -1024,7 +975,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         tags=["tool", "meta", "read"],
         output_policy=COLLECTION_OUTPUT_POLICY,
       description=(
-        "列出或搜索 deferred/Tier2 工具目录，用于按需发现指南、系统和低频能力；"
+        "列出或搜索 deferred/Tier2 工具目录，用于按需发现系统和低频能力；"
         "query='' 列目录，select:name 精确选择，支持关键词和 regex。"
         "只返回可见按需工具，不替模型做业务判断。"
       ),
@@ -1037,7 +988,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
                 },
                 "category": {
                     "type": "string",
-                    "description": "可选分类，如 guide/project/workflow/query/assets/system/memory/task/collab/attach/control/image/file",
+                    "description": "可选分类，如 workflow/query/assets/system/memory/task/collab/attach/control/image/file",
                 },
               "regex": {
                   "oneOf": [
@@ -1751,7 +1702,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
       description=(
           "读取用户上传文件或用户本轮明确给出的项目存储相对路径。"
           "rel_path 只接受上传结果或用户明确路径；正文在 content_page 中按字符偏移分页。"
-          "guide、节点、trace 和 tool result 状态查询使用对应工具。"
+          "Skill 正文通过 skills.list/read 获取；节点、trace 和 tool result 状态查询使用对应工具。"
       ),
       usage_hints=[
         "file.read_text(project_id=project_id, rel_path='uploads/script.txt', offset=0, limit=8000)",
@@ -2028,7 +1979,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
           "工作流 模板选择 现有模板 节点生产 节点补全 提示词编写 运行节点 图片生成 视频提示词 人物图 参考图 图片编辑 子agent 子 Agent 委派 专职 worker 裁剪 涂鸦 画笔 覆盖 填充 标注 文字 箭头 抠图 分割 透明背景 图标"
       ),
       usage_hints=[
-          "Workflow 请求交给 workflow_spec 选择器；普通视频默认返回 general_short_drama_workflow 的 template_id，显式模板、artifact 或 workflow skill 才返回其他引用。",
+          "Workflow 请求交给 workflow_spec 选择器；主 Agent 先自行读完匹配的 Skill，再传模板线索和已知输入。普通视频默认返回 general_short_drama_workflow 的 template_id。",
           "主 Agent 拿到 template_id/artifact_ref 和 input_fields 后，根据用户原话和历史状态判断是否提问；需要复查模板或 spec 时再读取 workflow.template.read 或 workflow.spec.read。",
           "tool.execute(name='agent.run', input={'agent':'workflow_spec','task':'为用户的视频请求选择可运行工作流模板','inputs':{'facts':{'plot':'江湖相逢'},'current_workflow':{}}})",
           "tool.execute(name='agent.run', input={'agent':'node_producer','task':'补全并运行节点12的人物参考图；按选定人物 prompt skill 写入并生成，完成后看图自检。','inputs':{'node_id':'12','allowed_node_types':['image'],'basis':{'kind':'skill_plan'},'primary_skill':{'name':'character_prompt','category':'prompt','scope':'builtin'},'acceptance_criteria':['主体清晰','参考一致']},'max_steps':12})",
@@ -2085,11 +2036,29 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         agent_tools.agent_review,
         tags=["agent", "review", "read"],
         output_policy=DELEGATED_OUTPUT_POLICY,
+        schema={
+          "type": "object",
+          "additionalProperties": False,
+          "properties": {
+            "review_goal": {"type": "string"},
+            "user_request": {"type": "string"},
+            "work_summary": {"type": "string"},
+            "evidence": {"type": "object", "additionalProperties": True},
+            "custom_checklist": {"type": "array", "items": {"type": "string"}},
+            "review_skill": {
+              "oneOf": [
+                {"type": "string"},
+                {"type": "object", "additionalProperties": True},
+              ]
+            },
+            "max_steps": {"type": "integer"},
+          },
+        },
       description=(
-          "隔离运行通用只读审查子 Agent，用真实项目状态、任务、计划、节点、指南和文件审查主 Agent 指定目标。"
-          "复杂视频节点批次或任务需要第二视角时传 review_goal、user_request、work_summary、review_profile、evidence、guide_topics/focus。"
+          "隔离运行通用只读审查子 Agent，用真实项目状态、任务、节点、文件和主 Agent 传入的 Skill 规则审查指定目标。"
+          "复杂视频节点批次或任务需要第二视角时传 review_goal、user_request、work_summary 和 evidence。"
           "媒体运行前可用它批量检查 prompt 是否符合 skill、字段是否可执行、依赖是否使用节点编号。"
-          "自定义检查 skill 用 skill.search(category='review') 发现，再把名称传给 review_skill_key。"
+          "自定义检查 Skill 从自动目录匹配；主 Agent 用 skills.list/read 读完后，把适用规则放进 custom_checklist 或 review_skill。"
           "返回 pass/revise_required/blocked 等结果；主 Agent 只修有 evidence 或 violated_requirement 的具体问题。"
         ),
     )
@@ -2171,112 +2140,4 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
 
 
 _register_builtins()
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Internal tool-package loading. Readable standard skill packages are discovered
-# independently by mcp_tools.skill_tools and need no Python entry point. A package
-# here may additionally use __init__.py to register an internal/deferred tool.
-# ─────────────────────────────────────────────────────────────────────────
-
-
-def parse_skill_md(text: str) -> dict[str, Any]:
-    """Tiny YAML-frontmatter parser (key: value lines + simple lists).
-    Avoids a PyYAML dep for what is intentionally a tiny schema."""
-    if not text.startswith("---"):
-        return {"_body": text}
-    end = text.find("\n---", 3)
-    if end < 0:
-        return {"_body": text}
-    head = text[3:end].strip()
-    body = text[end + 4 :].lstrip("\n")
-
-    out: dict[str, Any] = {}
-    current_list_key: str | None = None
-    for raw in head.splitlines():
-        if not raw.strip():
-            current_list_key = None
-            continue
-        if raw.startswith("  - ") or raw.startswith("- "):
-            if current_list_key is None:
-                continue
-            value = raw.split("-", 1)[1].strip().strip('"').strip("'")
-            out.setdefault(current_list_key, []).append(value)
-            continue
-        if ":" in raw:
-            key, _, value = raw.partition(":")
-            key = key.strip()
-            value = value.strip()
-            if value == "" or value == "[]":
-                out[key] = []
-                current_list_key = key
-            elif value.startswith("[") and value.endswith("]"):
-                inner = value[1:-1].strip()
-                items = [x.strip().strip('"').strip("'") for x in inner.split(",") if x.strip()]
-                out[key] = items
-                current_list_key = None
-            else:
-                out[key] = value.strip('"').strip("'")
-                current_list_key = None
-    out["_body"] = body
-    return out
-
-
-def _load_skill_dir(package: str, skill_dir: Path) -> str | None:
-    """Import skills/<name>/ as a package and return its dotted module name."""
-    import importlib
-
-    name = skill_dir.name
-    skill_md = skill_dir / "SKILL.md"
-    metadata: dict[str, Any] = {}
-    if skill_md.exists():
-        metadata = parse_skill_md(skill_md.read_text(encoding="utf-8"))
-
-    init_file = skill_dir / "__init__.py"
-    if not init_file.exists():
-        return None
-
-    full = f"{package}.{name}"
-    importlib.import_module(full)
-
-    # Attach metadata to any tools the module just registered. We match by
-    # tool name == metadata.get("tool_name") OR namespace skill.<name>.
-    tool_name = metadata.get("tool_name")
-    if tool_name and tool_name in registry._tools:
-        spec = registry._tools[tool_name]
-        spec.metadata.update(metadata)
-        if not spec.search_hint and metadata.get("search_hint"):
-            spec.search_hint = str(metadata.get("search_hint") or "")
-        if not spec.usage_hints and metadata.get("usage_hints"):
-            hints = metadata.get("usage_hints")
-            if isinstance(hints, str):
-                hints = [hints]
-            if isinstance(hints, list):
-                spec.usage_hints = [str(item) for item in hints if str(item).strip()]
-
-    return full
-
-
-def load_skills(package: str = "app.skills") -> list[str]:
-    """Import every packaged skill under ``skills/<name>/``."""
-    import importlib
-    import pkgutil
-
-    try:
-        pkg = importlib.import_module(package)
-    except ModuleNotFoundError:
-        return []
-
-    loaded: list[str] = []
-    for mod_info in pkgutil.iter_modules(pkg.__path__):
-        if not mod_info.ispkg:
-            continue
-        skill_path = Path(pkg.__path__[0]) / mod_info.name
-        result = _load_skill_dir(package, skill_path)
-        if result:
-            loaded.append(result)
-    return loaded
-
-
-load_skills()
 _apply_standard_tool_descriptions()

@@ -72,7 +72,7 @@ from app.services import media_generation, media_provider
 plan_rule = SimpleNamespace(
     PROMPT=(
         "# Complex Work\n\n"
-        "Read video workflow skills with `skill.search(category='workflow')`, select reusable template candidates before running, "
+        "Choose video workflow Skills from the automatic name/description catalog, resolve exact handles with `skills.list`, read them with `skills.read`, then select reusable template candidates, "
         "then use `text` / `image` / `video` nodes as creative state, "
         "and use tasks only as a progress ledger. Write dependencies into node fields and verify outputs before completion."
     )

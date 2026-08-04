@@ -89,7 +89,6 @@ def _section_token_estimates(prompt_assembly: dict | None) -> dict[str, int]:
         "stable_section_tokens": 0,
         "history_section_tokens": 0,
         "dynamic_section_tokens": 0,
-        "guide_section_tokens": 0,
     }
     if not isinstance(prompt_assembly, dict):
         return estimates
@@ -102,9 +101,7 @@ def _section_token_estimates(prompt_assembly: dict | None) -> dict[str, int]:
         tokens = _estimate_text_tokens("x" * int(section.get("chars") or 0))
         source = str(section.get("source") or "")
         tier = str(section.get("tier") or "")
-        if source == "guide":
-            estimates["guide_section_tokens"] += tokens
-        elif source in {"factory", "state"}:
+        if source in {"factory", "state"}:
             estimates["dynamic_section_tokens"] += tokens
         elif tier == "s":
             estimates["stable_section_tokens"] += tokens

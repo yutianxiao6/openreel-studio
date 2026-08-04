@@ -32,6 +32,9 @@ _PRIORITY_KEYS = (
     "message",
     "summary",
     "content_page",
+    "resource",
+    "contents",
+    "next_cursor",
     "next_offset",
     "total",
     "returned",
@@ -50,6 +53,7 @@ _RESUMABLE_PAGE_KEYS = {
     "total_chars",
     "next_offset",
 }
+_RESUMABLE_RESOURCE_KEYS = {"resource", "contents", "next_cursor"}
 _NORMAL_DOCUMENT_STRING_MAX_TOKENS = 600
 
 
@@ -156,12 +160,14 @@ def _project(
         ordered_keys.extend(key for key in value if key not in ordered_keys)
         selected = ordered_keys[:max_items]
         resumable_page = _RESUMABLE_PAGE_KEYS.issubset(value)
+        resumable_resource = _RESUMABLE_RESOURCE_KEYS.issubset(value)
         projected = {
             str(key): _project(
                 value[key],
                 max_string_tokens=(
                     max_page_string_tokens
-                    if resumable_page and key == "content"
+                    if (resumable_page and key == "content")
+                    or (resumable_resource and key == "contents")
                     else max_string_tokens
                 ),
                 max_page_string_tokens=max_page_string_tokens,

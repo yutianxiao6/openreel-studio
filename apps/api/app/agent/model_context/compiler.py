@@ -226,7 +226,7 @@ def _next_for_error_kind(error_kind: str) -> str:
     }:
         return "repair_arguments"
     if error_kind in {
-        "dependency_missing", "guide_not_loaded", "missing_prompt_source", "missing_prompt_template",
+        "dependency_missing", "missing_prompt_source", "missing_prompt_template",
         "missing_template_selection_reason", "implicit_video_production_path",
     }:
         return "satisfy_dependency"

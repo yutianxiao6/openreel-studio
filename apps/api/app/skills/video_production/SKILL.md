@@ -9,8 +9,8 @@ applies_to: 视频制作 视频工作流 默认视频流程 workflow template ge
 
 ## 模型摘要
 
-- `video_production` 是通过 `skill.search` / `skill.get` 读取的 workflow skill，不是 workflow 模板，也不是 spec 来源；它只是视频制作入口规则和模块 skill 索引。
-- 普通“制作视频/短剧/文生视频”默认直接使用模板 `general_short_drama_workflow`（显示名“通用视频制作工作流”），把用户输入传给 `workflow.run_step`、`workflow.run_next` 或 `workflow.run_all` 运行。
+- `video_production` 由自动 Skill 目录匹配，通过 `skills.list` / `skills.read` 读取；它不是 workflow 模板或 spec 来源，只提供视频制作入口规则和模块 Skill 索引。
+- 普通“制作视频/短剧/文生视频”默认使用模板 `general_short_drama_workflow`（显示名“通用视频制作工作流”），通过 `tool.search`、`tool.describe` 和 `tool.execute` 调用 deferred `workflow.run_step`、`workflow.run_next` 或 `workflow.run_all`。
 - 工作流请求通过 `workflow_spec` 选择器返回现有模板引用；默认路径返回 `general_short_drama_workflow`，不重新生成 spec。
 - 默认视频运行模式只使用现有模板引用、补齐输入并运行 workflow。
 - 用户主动要求查询或选择模板时，优先委派 `workflow_spec` 选择器；只在需要展示列表时读取 workflow 模板目录。
@@ -21,7 +21,7 @@ applies_to: 视频制作 视频工作流 默认视频流程 workflow template ge
 - 每个节点都是独立任务单元；`task` 只记录进度；生产依赖写节点 `fields.references`，图片引用用 `role:"visual_reference"`，文字上下文用 `role:"context"`，直接采用已有图片用 `role:"source_image"`。
 - 最终 image/video prompt 提到参考图时使用候选表给出的精确 `@参考图标签`，标签沿用完整画布标题并保留其中的 `|`、`｜`、空格、书名号等字符，例如“人物沿用 `@《回头》主角｜15岁少年`，镜头沿用 `@宫格分镜图`”。后端把标签绑定到稳定的图片节点 ID，参考图列表换序后仍指向同一张图。
 - `fields.director_capture=true` 的图片是导演台构图参考，只继承人物/物体站位、朝向、姿态、比例、遮挡、景别和机位；正式分镜同时引用人物图与场景图重绘，不保留白模、色块、网格或编辑器外观，也不把构图参考自动当作视频首帧。
-- 当前轮通过 `$video_production` 或结构化 Skill 引用显式选择时，正文会在模型调用前以 `<skill>` 块注入；否则 `skill.get` 默认返回标准 `SKILL.md` 的 `content_page`，必须按 `content_page.next_offset` 续读到 EOF 后再执行。skill 引用的文本文件用同一工具的 `resource` 相对当前 skill 目录读取，`path` 只是 source locator。
+- 当前轮通过 `$video_production` 或带精确 path 的结构化 Skill 引用显式选择时，正文会在模型调用前以 `<skill>` 块注入；否则先用 `skills.list(authority={"kind":"orchestrator"})` 获取精确 handle，再用 `skills.read` 读取 `main_resource`，沿 `next_cursor` 到 EOF。引用资源继续使用同一 authority/package；`skill://` 是 source locator，不是文件路径。
 
 ## 默认模板
 
@@ -35,9 +35,11 @@ name: 通用视频制作工作流
 默认运行方式：
 
 ```text
-workflow.run_all(
-  template_id="general_short_drama_workflow",
-  inputs={
+tool.execute(
+  name="workflow.run_all",
+  input={
+    "template_id": "general_short_drama_workflow",
+    "inputs": {
     "plot": "...",
     "duration_seconds": 15,
     "episode_count": 1,
@@ -45,6 +47,7 @@ workflow.run_all(
     "style": "...",
     "video_type": "短剧",
     "visual_plan_mode": "storyboard"
+    }
   }
 )
 ```
@@ -55,7 +58,7 @@ workflow.run_all(
 
 - 用户说“用模板/查模板/有没有类似流程”时，查询模板候选。
 - 默认可用 workflow 模板是 `general_short_drama_workflow`。
-- 用户给出 workflow skill 或一段流程说明时，先用 skill 摘要和目标查可复用模板；主流程能由通用模板承接时直接复用。
+- 用户给出 workflow Skill 或一段流程说明时，先用自动目录中的 name/description 和目标查可复用模板；主流程能由通用模板承接时直接复用。
 - no hit：`workflow_spec` 返回 blocked，并说明缺少哪类模板。
 
 ## 输入和运行
@@ -74,9 +77,9 @@ workflow.runtime_status
 
 常用运行：
 
-- 开始完整流程：`workflow.run_all(template_id="general_short_drama_workflow", inputs=...)`
-- 继续下一步：`workflow.run_next(template_id="general_short_drama_workflow", instance_id=...)`
-- 指定步骤：`workflow.run_step(template_id="general_short_drama_workflow", step_id=..., inputs=..., instance_id=...)`
+- 开始完整流程：`tool.execute(name="workflow.run_all", input={"template_id":"general_short_drama_workflow","inputs":...})`
+- 继续下一步：`tool.execute(name="workflow.run_next", input={"template_id":"general_short_drama_workflow","instance_id":...})`
+- 指定步骤：`tool.execute(name="workflow.run_step", input={"template_id":"general_short_drama_workflow","step_id":...,"inputs":...,"instance_id":...})`
 
 视频 step 的 `execution=auto` 表示流程运行时继续生成视频；`execution=manual` 表示只准备提示词和视频节点，等待用户在该节点上点击生成。以流程编辑器“手动运行”保存的选择为准。
 
@@ -101,7 +104,7 @@ workflow.runtime_status
 
 用户只要求一个单独图片、一个直接文生视频、或明确不需要完整流程时，可以不启动 graph workflow，直接创建/更新 `text`、`image` 或 `video` 节点并运行。
 
-Standalone 节点运行使用 `node.run`；graph workflow 运行使用 `workflow.run_step`、`workflow.run_next` 或 `workflow.run_all`，由 workflow runner 按步骤调用节点 runner。
+Standalone 节点运行使用 `node.run`；graph workflow 通过 `tool.execute` 调用 deferred `workflow.run_step`、`workflow.run_next` 或 `workflow.run_all`，由 workflow runner 按步骤调用节点 runner。
 
 外部执行客户端运行媒体节点后，通过同一节点的服务端终态事件等待取得结果；供应商轮询由后台 UMA 承担，客户端不重复查询节点状态，也不因等待超时再次调用 `node.run`。
 

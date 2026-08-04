@@ -25,6 +25,7 @@ SECTION_COUNT_LIMIT = 8
 EXPECTED_FIXED_SECTIONS = [
     "identity",
     "working_loop",
+    "skill_usage",
     "task_loop",
     "core_rules",
     "delete_rule",
@@ -106,8 +107,10 @@ def test_core_tool_schema_descriptions_are_not_in_always_loaded_prefix() -> None
     assert len(tools) == 20
     assert "agent.review" in tool_names
     assert "canvas.delete" in tool_names
-    assert "skill.get" in tool_names
-    assert "skill.search" in tool_names
+    assert "skills.list" in tool_names
+    assert "skills.read" in tool_names
+    assert "skill.get" not in tool_names
+    assert "skill.search" not in tool_names
     assert "task.create" in tool_names
     assert "task.complete" in tool_names
     assert "tool.search" in tool_names

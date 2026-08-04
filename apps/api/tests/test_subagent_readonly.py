@@ -40,7 +40,7 @@ def test_resolve_role_filters_custom_tools_to_readonly_only() -> None:
 
     assert preset["readonly"] is True
     assert "node.list" in preset["allowed_tools"]
-    assert "skill.project_mentor" in preset["allowed_tools"]
+    assert "skill.project_mentor" not in preset["allowed_tools"]
     assert "feature.list" in preset["allowed_tools"]
     assert "node.run" not in preset["allowed_tools"]
     assert "project.reset" not in preset["allowed_tools"]
@@ -88,14 +88,14 @@ def test_node_producer_role_allows_scoped_worker_whitelist() -> None:
     assert preset["task_type"] == "subagent_node_producer"
     assert preset["include_tool_schemas"] is True
     assert preset["enforce_max_steps"] is True
-    assert preset["allowed_tools"] == ["skill.get", "node.get", "node.update", "node.run", "vision.view_image"]
+    assert preset["allowed_tools"] == ["node.get", "node.update", "node.run", "vision.view_image"]
     assert "skill.search" not in preset["allowed_tools"]
-    assert "skill.get" in preset["allowed_tools"]
+    assert "skill.get" not in preset["allowed_tools"]
     assert "node.create" not in preset["allowed_tools"]
     assert "node.update" in preset["allowed_tools"]
     assert "node.run" in preset["allowed_tools"]
     assert "project.reset" not in preset["allowed_tools"]
-    assert preset["denied_tools"] == ["project.get_state", "skill.search", "node.create", "project.reset"]
+    assert preset["denied_tools"] == ["project.get_state", "skill.search", "skill.get", "node.create", "project.reset"]
 
 
 def test_workflow_roles_keep_preset_minimum_step_limit() -> None:
@@ -140,13 +140,13 @@ def test_workflow_spec_role_allows_only_template_selector_tools() -> None:
     assert preset["include_tool_schemas"] is True
     assert preset["enforce_max_steps"] is True
     assert preset["allowed_tools"] == [
-        "skill.search",
-        "skill.get",
         "workflow.template.resolve",
         "workflow.template.read",
         "workflow.spec.read",
     ]
     assert preset["denied_tools"] == [
+        "skill.search",
+        "skill.get",
         "workflow.protocol_info",
         "workflow.spec.start",
         "workflow.spec.append_steps",
@@ -332,7 +332,7 @@ def test_node_producer_prompt_package_has_stable_prefix_and_cache_key() -> None:
     assert "补全并运行人物参考图节点" not in package_a["system"]
     assert "使用用户本轮给出的三面图规则" in package_a["task_message"]
     assert "node_producer 子 Agent" in package_a["system"]
-    assert "skill.get" in package_a["system"]
+    assert "skill.get" not in package_a["system"]
     assert "skill.search" not in package_a["system"]
     assert "node.run" in package_a["system"]
     assert "reference_node_ids" in package_a["system"]
@@ -380,7 +380,6 @@ def test_node_producer_prompt_package_stays_worker_sized() -> None:
     assert package["diagnostics"]["system_chars"] <= 1300
     assert len(package["system"]) + len(tools_json) <= 6200
     assert package["diagnostics"]["tool_names"] == [
-        "skill.get",
         "node.get",
         "node.update",
         "node.run",
@@ -677,7 +676,8 @@ def test_reviewer_is_general_readonly_checker() -> None:
     )["system"]
 
     assert preset["readonly"] is True
-    assert {"project.get_state", "task.list", "node.list", "node.get", "skill.project_mentor"} <= set(preset["allowed_tools"])
+    assert {"project.get_state", "task.list", "node.list", "node.get"} <= set(preset["allowed_tools"])
+    assert not any(name.startswith(("skill.", "skills.")) for name in preset["allowed_tools"])
     assert "通用只读审查" in preset["description"]
     assert "审查范围可以是节点图、视频流程、提示词、工具选择、trace 摘要、前端问题、配置或其他工程事项" in system
     assert "project.get_state、node.list、node.get" in system
@@ -718,46 +718,8 @@ def test_review_system_accepts_custom_checklist_and_skill() -> None:
     assert "禁止调用任何写入、执行、生成、删除、批准、重置或配置变更工具" in system
 
 
-def test_review_skill_key_loads_from_root_skill_review_dir(tmp_path, monkeypatch) -> None:
-    root = tmp_path
-    monkeypatch.delenv("OPENREEL_SKILLS_DIR", raising=False)
-    skill_dir = root / "skills" / "my_storyboard_check"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: my_storyboard_check\n"
-        "description: 用户自定义分镜检查\n"
-        "category: review\n"
-        "---\n\n"
-        "# 我的分镜检查\n\n- 必须逐格核对\n- 不得新增剧情\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(agent_tools.settings, "PROJECT_ROOT", str(root))
-
-    loaded = agent_tools._read_review_skill("my_storyboard_check")
-
-    assert loaded["ok"] is True
-    assert loaded["key"] == "my_storyboard_check"
-    assert loaded["path"] == "skills/my_storyboard_check/SKILL.md"
-    assert "必须逐格核对" in loaded["content"]
-
-
 @pytest.mark.asyncio
-async def test_agent_review_loads_review_skill_key_before_subagent(tmp_path, monkeypatch) -> None:
-    root = tmp_path
-    monkeypatch.delenv("OPENREEL_SKILLS_DIR", raising=False)
-    skill_dir = root / "skills" / "my_prompt_check"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        "name: my_prompt_check\n"
-        "description: 用户自定义提示词检查\n"
-        "category: review\n"
-        "---\n\n"
-        "# 提示词检查\n\n- 必须检查主体、动作和镜头\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(agent_tools.settings, "PROJECT_ROOT", str(root))
+async def test_agent_review_uses_main_agent_supplied_skill_rules(monkeypatch) -> None:
     captured = {}
 
     async def fake_subagent_run(**kwargs):
@@ -772,7 +734,10 @@ async def test_agent_review_loads_review_skill_key_before_subagent(tmp_path, mon
         user_request="检查这段提示词",
         work_summary="已写 image prompt",
         review_profile="用户自定义提示词检查",
-        review_skill_key="my_prompt_check",
+        review_skill={
+            "name": "my_prompt_check",
+            "content": "必须检查主体、动作和镜头",
+        },
         custom_checklist=["检查是否复述剧情"],
     )
 
@@ -783,8 +748,6 @@ async def test_agent_review_loads_review_skill_key_before_subagent(tmp_path, mon
     assert result["result"]["safe_to_submit"] is True
     inputs = captured["inputs"]
     assert inputs["review_profile"] == "用户自定义提示词检查"
-    assert inputs["review_skill_key"] == "my_prompt_check"
-    assert inputs["review_skill"]["ok"] is True
     assert "必须检查主体、动作和镜头" in inputs["review_skill"]["content"]
     assert inputs["custom_checklist"] == ["检查是否复述剧情"]
 
@@ -1554,7 +1517,7 @@ async def test_agent_run_workflow_spec_blocks_artifact_ref_even_with_self_check(
 
 
 @pytest.mark.asyncio
-async def test_agent_review_coerces_string_evidence_and_loads_app_skill(monkeypatch) -> None:
+async def test_agent_review_coerces_string_inputs_without_loading_skill_packages(monkeypatch) -> None:
     captured = {}
 
     async def fake_subagent_run(**kwargs):
@@ -1570,20 +1533,17 @@ async def test_agent_review_coerces_string_evidence_and_loads_app_skill(monkeypa
         work_summary="已新建一个替代分镜节点",
         evidence="node_id=d213; status=idle",
         custom_checklist="检查是否应改原节点；检查是否漏掉人物和场景",
-        guide_topics="video_production",
         focus="工具选择, 修复范围",
-        review_skill="video_production",
+        review_skill="# Review Skill\n\n检查视频制作要求和节点依赖。",
     )
 
     assert result["summary"] == "ok"
     inputs = captured["inputs"]
     assert inputs["evidence"] == {"text": "node_id=d213; status=idle"}
     assert inputs["custom_checklist"] == ["检查是否应改原节点", "检查是否漏掉人物和场景"]
-    assert inputs["guide_topics"] == ["video_production"]
+    assert "guide_topics" not in inputs
     assert inputs["focus"] == ["工具选择", "修复范围"]
-    assert inputs["review_skill"]["ok"] is True
-    assert inputs["review_skill"]["source"] == "app_skill"
-    assert "每个节点都是独立任务" in inputs["review_skill"]["content"]
+    assert "检查视频制作要求" in inputs["review_skill"]
 
 
 @pytest.mark.asyncio
