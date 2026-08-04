@@ -56,6 +56,7 @@ class PromptContext:
             "collaboration_mode": self.collaboration_mode,
             "tool_profile": select_tool_profile(self),
             "runtime": _runtime_state_signature(self.state),
+            "skill_catalog": _skill_catalog_revision(),
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -142,8 +143,13 @@ _PLAN_SUPPRESSED_SECTIONS = {
 _SUPPORTED_TRIGGERS = {"always", "factory", "plan_mode", "workflow_build_mode", "attachments"}
 _RUNTIME_STATE_CACHE_KEYS = (
     "metadata",
-    "_skills_loaded",
 )
+
+
+def _skill_catalog_revision() -> str:
+    from app.mcp_tools.skill_tools import skill_catalog_revision
+
+    return skill_catalog_revision()
 
 
 def _cache_signature(value: object) -> dict[str, object]:

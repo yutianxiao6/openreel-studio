@@ -29,7 +29,8 @@ maintain separate canvas/panel state before work appears.
 ## Current Rules
 
 - Ordinary image/video work starts by searching user workflow skills, then reads
-  the builtin `video_production` markdown skill through `skill.search` / `skill.get`
+  the builtin `video_production` standard skill package through the runtime
+  catalog or `skill.search`, then reads it completely with `skill.get`
   when no user workflow matches. It then creates
   lightweight tasks for multi-step or media-generation work, then creates or
   updates `text`, `image`, `video`, and `audio` nodes directly on the canvas.
@@ -83,6 +84,13 @@ maintain separate canvas/panel state before work appears.
   workflow spec/template readers) expose deterministic character pages with a
   revision and `next_offset`. Continue from that offset instead of requesting
   or reconstructing an unbounded result.
+- User skills use `skills/<skill-name>/SKILL.md`. Standard frontmatter supplies
+  `name` and `description`; OpenReel optionally reads `category` and
+  `applies_to`. Supporting files stay inside the same package under
+  `references/`, `scripts/`, `assets/`, `templates/`, or `agents/openai.yaml`.
+  The runtime prompt carries only bounded metadata. `skill.get` reads the full
+  `SKILL.md` page sequence and resolves a requested `resource` relative to that
+  package without allowing directory escape.
 - Collection readers use bounded pages. `project.get_state` returns runtime
   state plus canvas counts rather than every node and edge; use `node.list` and
   `node.get` for details. Task, memory, event, workspace, asset, skill, and

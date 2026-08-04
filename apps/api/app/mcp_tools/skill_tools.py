@@ -1,15 +1,11 @@
-"""Skill registry — categorized on-demand skill loading.
+"""Codex-compatible standard skill package catalog and readers.
 
-Two skill sources:
-  apps/api/app/skills/<name>/  — built-in default skills (SKILL.md + __init__.py)
-  skills/                       — user custom skills grouped by category
-
-skill.search(category=...) → returns matching names + descriptions (lightweight)
-skill.get                  → returns a resumable content_page; workflow skills help select templates
+Every readable skill is a directory package containing ``SKILL.md``. OpenReel
+keeps its workflow/prompt/review category as an optional frontmatter extension.
 """
+
 from __future__ import annotations
 
-import logging
 import os
 import re
 import hashlib
@@ -19,11 +15,16 @@ from typing import Any
 
 from app.config import settings
 from app.agent.model_context.policy import COLLECTION_OUTPUT_POLICY, DOCUMENT_OUTPUT_POLICY
-from app.mcp_tools.file_tools import text_content_window
-from app.mcp_tools.query_match import invalid_regex_response, match_text, search_blob
+from app.mcp_tools.file_tools import TEXT_SOURCE_MAX_BYTES, text_content_window
+from app.mcp_tools.query_match import match_text, search_blob
 from app.mcp_tools.registry import register
-
-logger = logging.getLogger(__name__)
+from app.skills.loader import (
+    SKILL_FILENAME,
+    SkillFormatError,
+    catalog_revision,
+    discover_skill_packages,
+    resolve_skill_resource,
+)
 
 _SKILLS_ROOT = Path(__file__).resolve().parent.parent / "skills"
 
@@ -41,13 +42,9 @@ _CATEGORY_ALIASES: dict[str, str] = {
     "check": "review",
     "checker": "review",
     "audit": "review",
+    "general": "general",
 }
-_USER_SKILL_CATEGORY_DIRS: dict[str, str] = {
-    "workflow": "workflows",
-    "prompt": "prompts",
-    "review": "review",
-}
-_SEARCHABLE_CATEGORIES = {"workflow", "prompt", "review"}
+_SEARCHABLE_CATEGORIES = {"workflow", "prompt", "review", "general"}
 _SCOPE_ALIASES: dict[str, str] = {
     "user": "user",
     "custom": "user",
@@ -63,14 +60,8 @@ SKILL_SEARCH_DEFAULT_LIMIT = 8
 SKILL_SEARCH_MAX_LIMIT = 50
 
 
-def _md_skills_root() -> Path:
-    root = Path(os.environ.get("OPENREEL_SKILLS_DIR") or Path(settings.PROJECT_ROOT) / "skills")
-    for child in (root, root / "workflows", root / "prompts", root / "review"):
-        try:
-            child.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            logger.warning("Unable to initialize user skill directory %s: %s", child, exc)
-    return root
+def _user_skills_root() -> Path:
+    return Path(os.environ.get("OPENREEL_SKILLS_DIR") or Path(settings.PROJECT_ROOT) / "skills")
 
 
 def _normalize_skill_category(value: Any) -> str:
@@ -79,28 +70,16 @@ def _normalize_skill_category(value: Any) -> str:
 
 
 def _skill_is_internal(meta: dict[str, Any]) -> bool:
-    source = str(meta.get("source") or "").strip().lower()
+    source = str(meta.get("declared_source") or meta.get("source") or "").strip().lower()
     tool_name = str(meta.get("tool_name") or "").strip().lower()
     return source == "internal_helper" or tool_name.startswith("internal.")
-
-def _parse_frontmatter(raw: str) -> dict[str, str]:
-    m = re.match(r"^---\s*\n(.*?)\n---", raw, re.DOTALL)
-    if not m:
-        return {}
-    result: dict[str, str] = {}
-    for line in m.group(1).split("\n"):
-        line = line.strip()
-        if ":" in line:
-            key, _, value = line.partition(":")
-            result[key.strip()] = value.strip()
-    return result
 
 
 def _markdown_skill_summary(raw: str) -> str:
     if raw.startswith("---"):
         match = re.match(r"^---\s*\n.*?\n---\s*\n?", raw, re.DOTALL)
         if match:
-            raw = raw[match.end():]
+            raw = raw[match.end() :]
     text = re.sub(r"\s+", " ", raw).strip()
     return text[:240]
 
@@ -121,7 +100,9 @@ def _match_skill_blob(
         case_sensitive=case_sensitive,
     )
     if match.get("matched") or not str(query or "").strip():
-        match["score"] = 1000 + len(match.get("matched_terms") or []) + len(match.get("matched_patterns") or [])
+        match["score"] = (
+            1000 + len(match.get("matched_terms") or []) + len(match.get("matched_patterns") or [])
+        )
         return match
 
     raw_blob = str(blob or "")
@@ -193,7 +174,9 @@ def _workflow_template_direct_payload(summary: dict[str, Any]) -> dict[str, Any]
         {
             "id": str(field.get("id") or ""),
             "header": str(field.get("label") or field.get("id") or "")[:80],
-            "question": str(field.get("description") or f"请填写{field.get('label') or field.get('id')}。"),
+            "question": str(
+                field.get("description") or f"请填写{field.get('label') or field.get('id')}。"
+            ),
         }
         for field in input_fields
         if field.get("required") and field.get("missing") and str(field.get("id") or "").strip()
@@ -204,7 +187,9 @@ def _workflow_template_direct_payload(summary: dict[str, Any]) -> dict[str, Any]
         "source": str(summary.get("source") or ""),
         "description": str(summary.get("description") or "")[:220],
         "inputs": [str(item) for item in summary.get("inputs") or [] if str(item or "").strip()],
-        "required_inputs": [str(item) for item in summary.get("required_inputs") or [] if str(item or "").strip()],
+        "required_inputs": [
+            str(item) for item in summary.get("required_inputs") or [] if str(item or "").strip()
+        ],
         "missing_inputs": missing_inputs,
         "input_fields": input_fields[:8],
         "input_questions": input_questions,
@@ -229,24 +214,30 @@ def _direct_workflow_template_for_skill(skill: dict[str, Any]) -> dict[str, Any]
     matches: list[tuple[int, dict[str, Any]]] = []
     for summary in summaries:
         template_id = str(summary.get("id") or "").strip()
-        source_skill = summary.get("source_skill") if isinstance(summary.get("source_skill"), dict) else {}
+        source_skill = (
+            summary.get("source_skill") if isinstance(summary.get("source_skill"), dict) else {}
+        )
         source_skill_name = str(source_skill.get("name") or "").strip()
         if template_id == skill_name:
             matches.append((0, summary))
         elif source_skill_name == skill_name:
             matches.append((1, summary))
-    matches.sort(key=lambda item: (
-        item[0],
-        0 if str(item[1].get("scope") or "") == "user" else 1,
-        str(item[1].get("name") or ""),
-        str(item[1].get("id") or ""),
-    ))
+    matches.sort(
+        key=lambda item: (
+            item[0],
+            0 if str(item[1].get("scope") or "") == "user" else 1,
+            str(item[1].get("name") or ""),
+            str(item[1].get("id") or ""),
+        )
+    )
     if not matches:
         return None
     return _workflow_template_direct_payload(deepcopy(matches[0][1]))
 
 
-def _skill_search_result_item(skill: dict[str, Any], match: dict[str, Any], query: str | None) -> dict[str, Any]:
+def _skill_search_result_item(
+    skill: dict[str, Any], match: dict[str, Any], query: str | None
+) -> dict[str, Any]:
     item = {
         "name": skill["name"],
         "category": skill["category"],
@@ -256,12 +247,18 @@ def _skill_search_result_item(skill: dict[str, Any], match: dict[str, Any], quer
         "source": skill.get("source", ""),
         "source_root": skill.get("source_root", ""),
         "priority": skill.get("priority", 100),
+        "path": skill.get("display_path", ""),
+        "allow_implicit_invocation": skill.get("allow_implicit_invocation", True),
     }
     if skill.get("summary"):
         item["summary"] = str(skill["summary"] or "")[:1_024]
+    if skill.get("interface"):
+        item["interface"] = skill["interface"]
     if skill.get("category") == "review":
         item["recommended_tool"] = "agent.review"
-        item["usage"] = "检查类 skill；把 name 作为 review_skill_key 传给 agent.review，附上目标节点或来源引用。"
+        item["usage"] = (
+            "检查类 skill；把 name 作为 review_skill_key 传给 agent.review，附上目标节点或来源引用。"
+        )
     elif skill.get("category") == "workflow":
         direct = _direct_workflow_template_for_skill(skill)
         item["recommended_tool"] = "agent.run"
@@ -271,14 +268,15 @@ def _skill_search_result_item(skill: dict[str, Any], match: dict[str, Any], quer
         else:
             item["usage"] = "摘要交给 workflow_spec 选择器；它会查找并选择可复用模板。"
     elif skill.get("scope") == "user":
-        item["usage"] = "本地用户 skill，优先于内置默认指南；graph workflow 的 prompt skill 写入 step prompt_template，standalone 才读取单份正文。"
+        item["usage"] = "本地用户 skill，优先于同名内置指南；使用前通过 skill.get 读完 SKILL.md。"
     else:
-        item["usage"] = "内置默认 skill；用户 skill 没有匹配项时作为 fallback。"
+        item["usage"] = "内置 skill；使用前通过 skill.get 读完 SKILL.md。"
     if query:
         item["match"] = {
             key: value
             for key, value in match.items()
-            if key in {"mode", "matched_terms", "matched_patterns"} and value not in (None, "", [], {})
+            if key in {"mode", "matched_terms", "matched_patterns"}
+            and value not in (None, "", [], {})
         }
     item["_score"] = _skill_relevance_score(skill, query) or int(match.get("score") or 0)
     return item
@@ -286,12 +284,9 @@ def _skill_search_result_item(skill: dict[str, Any], match: dict[str, Any], quer
 
 def _dedupe_skill_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
     for item in items:
-        key = (
-            str(item.get("category") or ""),
-            str(item.get("name") or ""),
-        )
+        key = str(item.get("name") or "")
         if key in seen:
             continue
         seen.add(key)
@@ -325,7 +320,13 @@ def _search_index_for_category(
         if not match.get("matched"):
             continue
         results.append(_skill_search_result_item(skill, match, query))
-    results.sort(key=lambda item: (int(item.get("priority", 100)), -int(item.get("_score", 0)), str(item.get("name", ""))))
+    results.sort(
+        key=lambda item: (
+            int(item.get("priority", 100)),
+            -int(item.get("_score", 0)),
+            str(item.get("name", "")),
+        )
+    )
     return results
 
 
@@ -345,73 +346,115 @@ def _scope_filter_value(scope: str = "") -> str | None:
     return _SCOPE_ALIASES.get(raw, raw)
 
 
-def _build_unified_index() -> list[dict[str, Any]]:
-    """Scan both skill sources and return a unified list."""
-    from app.mcp_tools.registry import parse_skill_md
+def _skill_roots() -> list[Path]:
+    return [_user_skills_root(), _SKILLS_ROOT]
+
+
+def skill_catalog_revision() -> str:
+    """Return the revision used to invalidate the prompt assembly cache."""
+    return catalog_revision(_skill_roots())
+
+
+def _display_skill_path(path: str) -> str:
+    target = Path(path)
+    try:
+        return str(target.resolve().relative_to(Path(settings.PROJECT_ROOT).resolve())).replace(
+            "\\", "/"
+        )
+    except (OSError, ValueError):
+        return str(target).replace("\\", "/")
+
+
+def _build_unified_index_with_errors() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Scan standard skill packages from project and built-in roots."""
     results: list[dict[str, Any]] = []
-
-    # User markdown skills are local policy/knowledge and take precedence over
-    # built-in default skills with the same search terms or name.
-    md_skills_root = _md_skills_root()
-    if md_skills_root.exists():
-        for dir_category, dirname in _USER_SKILL_CATEGORY_DIRS.items():
-            cat_dir = md_skills_root / dirname
-            if not cat_dir.is_dir():
+    errors: list[dict[str, str]] = []
+    roots = [
+        (_user_skills_root(), "user", "user_custom", 0),
+        (_SKILLS_ROOT, "builtin", "builtin_default", 10),
+    ]
+    for root, scope, source_root, priority in roots:
+        packages, package_errors = discover_skill_packages(
+            root,
+            scope=scope,
+            source_root=source_root,
+            priority=priority,
+        )
+        errors.extend(package_errors)
+        for package in packages:
+            if _skill_is_internal(package):
                 continue
-            for fpath in sorted(cat_dir.glob("*.md")):
-                name = fpath.stem
-                raw = ""
-                try:
-                    raw = fpath.read_text(encoding="utf-8")
-                    fm = _parse_frontmatter(raw)
-                except Exception:
-                    fm = {}
-                category = _normalize_skill_category(fm.get("category") or dir_category)
-                if category not in _SEARCHABLE_CATEGORIES:
-                    category = dir_category
-                results.append({
-                    "name": name,
-                    "category": category,
-                    "dir_category": dir_category,
-                    "description": fm.get("description", ""),
-                    "applies_to": fm.get("applies_to", "all"),
-                    "source": "markdown",
-                    "scope": "user",
-                    "source_root": "user_custom",
-                    "priority": 0,
-                    "path": str(fpath),
-                    "content": raw,
-                    "summary": _markdown_skill_summary(raw),
-                })
-
-    # Python-package skills (apps/api/app/skills/<name>/SKILL.md)
-    if _SKILLS_ROOT.exists():
-        for child in sorted(_SKILLS_ROOT.iterdir()):
-            if not child.is_dir() or child.name.startswith("_") or child.name == "__pycache__":
-                continue
-            skill_md = child / "SKILL.md"
-            if not skill_md.exists():
-                continue
-            raw = skill_md.read_text(encoding="utf-8")
-            meta = parse_skill_md(raw)
-            if _skill_is_internal(meta):
-                continue
-            category = _normalize_skill_category(meta.get("category") or "")
+            category = _normalize_skill_category(package.get("category") or "general")
             if category not in _SEARCHABLE_CATEGORIES:
-                continue
-            results.append({
-                "name": child.name,
-                "category": category,
-                "description": meta.get("description", ""),
-                "applies_to": meta.get("applies_to", "all"),
-                "source": "python_package",
-                "scope": "builtin",
-                "source_root": "builtin_default",
-                "priority": 10,
-                "summary": meta.get("when_to_use", ""),
-            })
+                category = "general"
+            package["category"] = category
+            package["applies_to"] = package.get("applies_to") or "all"
+            package["summary"] = package.get("when_to_use") or ""
+            package["display_path"] = _display_skill_path(str(package.get("path") or ""))
+            results.append(package)
+    results.sort(
+        key=lambda item: (
+            int(item.get("priority", 100)),
+            str(item.get("name") or ""),
+            str(item.get("path") or ""),
+        )
+    )
+    return results, errors
 
-    return results
+
+def _build_unified_index() -> list[dict[str, Any]]:
+    return _build_unified_index_with_errors()[0]
+
+
+def render_available_skills_context(max_chars: int = 1_750) -> str:
+    """Render a bounded Codex-style metadata catalog for runtime context."""
+    index, errors = _build_unified_index_with_errors()
+    visible = [skill for skill in index if skill.get("allow_implicit_invocation") is not False]
+    if not visible:
+        return ""
+
+    intro = [
+        "## Skills",
+        "Available skill metadata; bodies are loaded only after a match.",
+        "### Available skills",
+    ]
+    outro = [
+        "### How to use skills",
+        "If a skill is named or clearly matches, announce it, then use `skill.get` and read every `content_page` through EOF before acting. Read linked files with `resource` relative to that skill; load only needed resources.",
+    ]
+    if errors:
+        outro.append(
+            f"Skipped {len(errors)} invalid skill package(s); `skill.search` returns details."
+        )
+
+    def render_line(skill: dict[str, Any], description_limit: int) -> str:
+        description = str(skill.get("description") or "")
+        if description_limit <= 0:
+            description = ""
+        elif len(description) > description_limit:
+            description = description[: max(0, description_limit - 3)].rstrip() + "..."
+        path = str(skill.get("display_path") or skill.get("path") or "")
+        detail = f": {description}" if description else ""
+        return f"- {skill.get('name')}{detail} (file: {path})"
+
+    for description_limit in (160, 120, 80, 48, 24, 0):
+        lines = [render_line(skill, description_limit) for skill in visible]
+        rendered = "\n".join([*intro, *lines, *outro])
+        if len(rendered) <= max_chars:
+            return rendered
+
+    lines: list[str] = []
+    omitted = 0
+    for skill in visible:
+        line = render_line(skill, 0)
+        candidate = "\n".join([*intro, *lines, line, *outro])
+        if len(candidate) > max_chars:
+            omitted += 1
+            continue
+        lines.append(line)
+    if omitted:
+        outro.append(f"{omitted} additional skill(s) omitted by the runtime catalog budget.")
+    return "\n".join([*intro, *lines, *outro])[:max_chars]
 
 
 def _find_index_skill(
@@ -438,7 +481,9 @@ def _find_index_skill(
         if scope_filter is not None and skill.get("scope") != scope_filter:
             continue
         candidates.append(skill)
-    candidates.sort(key=lambda item: (int(item.get("priority", 100)), str(item.get("category") or "")))
+    candidates.sort(
+        key=lambda item: (int(item.get("priority", 100)), str(item.get("category") or ""))
+    )
     return candidates[0] if candidates else None
 
 
@@ -476,7 +521,9 @@ def _skill_search_hint_for_category(category_filter: set[str] | None) -> str:
         return "prompt skill 返回提示词写法摘要；workflow 图内使用时写入 step primary_skill 或 prompt_template。"
     if category_filter == {"review"}:
         return "review skill 返回检查标准摘要；正式检查把 name 作为 review_skill_key 传给 agent.review。"
-    return "skill 返回摘要；按 category 选择 workflow、prompt 或 review 的后续工具路径。"
+    if category_filter == {"general"}:
+        return "general skill 使用标准 SKILL.md 合同；命中后用 skill.get 读取全部正文。"
+    return "skill.search 只返回元数据；命中后用 skill.get 读取全部 SKILL.md。"
 
 
 def _read_index_skill_summary(skill: dict[str, Any]) -> dict[str, Any]:
@@ -500,33 +547,45 @@ def _read_index_skill_summary(skill: dict[str, Any]) -> dict[str, Any]:
             payload["direct_template"] = direct
         payload["content_available"] = True
     if skill.get("path"):
-        payload["path"] = skill.get("path")
+        payload["path"] = skill.get("display_path") or skill.get("path")
     return payload
 
 
 def _read_index_skill_content(
     skill: dict[str, Any],
     *,
+    resource: str = "",
     limit: int | None = None,
     paged: bool = False,
     content_offset: int = 0,
     content_limit: int | None = None,
 ) -> dict[str, Any]:
     name = str(skill.get("name") or "")
-    source = skill.get("source", "")
-    if source == "python_package":
-        from app.mcp_tools.registry import parse_skill_md
-        sdir = _SKILLS_ROOT / name
-        skill_md = sdir / "SKILL.md"
-        meta = parse_skill_md(skill_md.read_text(encoding="utf-8")) if skill_md.exists() else {}
-        content = str(meta.get("_body", ""))
-    elif skill.get("path"):
-        content = Path(skill["path"]).read_text(encoding="utf-8")
-    else:
+    if not skill.get("path") or not skill.get("skill_dir"):
         return {"ok": False, "error": "无法读取 skill 内容", "error_kind": "unknown_source"}
+    target = resolve_skill_resource(Path(str(skill["skill_dir"])), resource or SKILL_FILENAME)
+    if target.stat().st_size > TEXT_SOURCE_MAX_BYTES:
+        return {
+            "ok": False,
+            "error": f"skill resource 超过 {TEXT_SOURCE_MAX_BYTES} bytes",
+            "error_kind": "resource_too_large",
+            "resource": str(resource or SKILL_FILENAME),
+        }
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeError:
+        return {
+            "ok": False,
+            "error": "skill resource 不是 UTF-8 文本",
+            "error_kind": "binary_resource",
+            "resource": str(resource or SKILL_FILENAME),
+        }
     if limit is not None:
         content = content[: max(0, int(limit))]
     summary = _skill_summary_value(skill, content)
+    resource_path = str(target.relative_to(Path(str(skill["skill_dir"])).resolve())).replace(
+        "\\", "/"
+    )
     payload = {
         "ok": True,
         "name": name,
@@ -537,10 +596,12 @@ def _read_index_skill_content(
         "source_root": skill.get("source_root", ""),
         "detail": "full",
         "summary": summary,
+        "path": skill.get("display_path") or skill.get("path"),
+        "resource": resource_path,
     }
     if paged:
         page = text_content_window(content, offset=content_offset, limit=content_limit)
-        page["source"] = "SKILL.md"
+        page["source"] = resource_path
         page["revision"] = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
         payload["content_page"] = page
     else:
@@ -550,8 +611,6 @@ def _read_index_skill_content(
         direct = _direct_workflow_template_for_skill(skill)
         if direct:
             payload["direct_template"] = direct
-    if skill.get("path"):
-        payload["path"] = skill.get("path")
     return payload
 
 
@@ -571,7 +630,7 @@ def load_review_skill_by_key(key: str) -> dict[str, Any]:
 
 @register(
     "skill.search",
-    description="按 category/scope 搜索 skill 索引；review 类返回 name 后交给 agent.review 使用。",
+    description="按名称和描述搜索标准 skill 元数据，可用 category/scope 缩小范围。",
     tags=["skill", "read"],
     output_policy=COLLECTION_OUTPUT_POLICY,
 )
@@ -579,25 +638,20 @@ async def skill_search(
     query: str = "",
     queries: list[str] | None = None,
     category: str = "",
-    kind: str = "",
     scope: str = "",
-    regex: str | list[str] | None = None,
-    pattern: str | list[str] | None = None,
-    case_sensitive: bool = False,
     offset: int = 0,
     limit: int = SKILL_SEARCH_DEFAULT_LIMIT,
 ) -> dict[str, Any]:
-    invalid = invalid_regex_response(regex=regex, pattern=pattern)
-    if invalid is not None:
-        return invalid
-    category_filter = _category_filter_set(category, kind)
+    category_filter = _category_filter_set(category)
     if category_filter == set():
         return {
             "ok": False,
-            "error": f"未知 skill category: {category or kind}",
+            "error": f"未知 skill category: {category}",
             "error_kind": "invalid_skill_category",
-            "available_categories": ["workflow", "prompt", "review"],
+            "available_categories": ["workflow", "prompt", "review", "general"],
         }
+    if category_filter is None:
+        category_filter = set(_SEARCHABLE_CATEGORIES)
     scope_filter = _scope_filter_value(scope)
     if scope_filter is not None and scope_filter not in _SEARCHABLE_SCOPES:
         return {
@@ -606,54 +660,7 @@ async def skill_search(
             "error_kind": "invalid_skill_scope",
             "available_scopes": ["user", "builtin"],
         }
-    index = _build_unified_index()
-    if category_filter is None:
-        matched_by_category: dict[str, list[dict[str, Any]]] = {}
-        for skill in index:
-            if scope_filter is not None and skill.get("scope") != scope_filter:
-                continue
-            match = _match_skill_blob(
-                _skill_search_blob(skill),
-                query=query,
-                regex=regex,
-                pattern=pattern,
-                case_sensitive=case_sensitive,
-            )
-            if not match.get("matched"):
-                continue
-            skill = dict(skill)
-            skill["_rank_score"] = _skill_relevance_score(skill, query)
-            cat = str(skill.get("category") or "")
-            matched_by_category.setdefault(cat, []).append(skill)
-        categories: list[dict[str, Any]] = []
-        for cat, skills in sorted(matched_by_category.items()):
-            skills.sort(key=lambda item: (int(item.get("priority", 100)), -int(item.get("_rank_score", 0)), str(item.get("name", ""))))
-            categories.append({
-                "category": cat,
-                "count": len(skills),
-                "top": [
-                    {
-                        "name": item.get("name"),
-                        "description": str(item.get("description", "") or "")[:1_024],
-                        "scope": item.get("scope", ""),
-                        "source_root": item.get("source_root", ""),
-                    }
-                    for item in skills[:3]
-                ],
-            })
-        return {
-            "ok": True,
-            "needs_category": True,
-            "skills": [],
-            "total": sum(item["count"] for item in categories),
-            "categories": categories,
-            "hint": (
-                "请重新调用 skill.search 并指定 category='workflow'、'prompt' 或 'review'。"
-                "review 类检查把 name 作为 review_skill_key 传给 agent.review。"
-            ),
-            "available_categories": ["workflow", "prompt", "review"],
-            "scope_filter": scope_filter or "",
-        }
+    index, scan_errors = _build_unified_index_with_errors()
 
     offset = max(0, int(offset or 0))
     limit = max(1, min(int(limit or SKILL_SEARCH_DEFAULT_LIMIT), SKILL_SEARCH_MAX_LIMIT))
@@ -670,25 +677,27 @@ async def skill_search(
                 category_filter=category_filter,
                 scope_filter=scope_filter,
                 query=one_query,
-                regex=regex,
-                pattern=pattern,
-                case_sensitive=case_sensitive,
+                regex=None,
+                pattern=None,
+                case_sensitive=False,
             )
             public_group = []
-            for item in group_results[offset:offset + min(limit, 3)]:
+            for item in group_results[offset : offset + min(limit, 3)]:
                 public_item = dict(item)
                 public_item.pop("_score", None)
                 public_group.append(public_item)
-            groups.append({
-                "query": one_query,
-                "skills": public_group,
-                "total": len(group_results),
-                "returned": len(public_group),
-            })
+            groups.append(
+                {
+                    "query": one_query,
+                    "skills": public_group,
+                    "total": len(group_results),
+                    "returned": len(public_group),
+                }
+            )
             merged.extend(group_results)
         all_results = _dedupe_skill_items(merged)
         total = len(all_results)
-        results = all_results[offset:offset + limit]
+        results = all_results[offset : offset + limit]
         for item in results:
             item.pop("_score", None)
         return {
@@ -703,6 +712,7 @@ async def skill_search(
             "queries": query_list,
             "scope_filter": scope_filter or "",
             "hint": _skill_search_hint_for_category(category_filter),
+            "errors": scan_errors,
         }
 
     results = _search_index_for_category(
@@ -710,14 +720,14 @@ async def skill_search(
         category_filter=category_filter,
         scope_filter=scope_filter,
         query=query,
-        regex=regex,
-        pattern=pattern,
-        case_sensitive=case_sensitive,
+        regex=None,
+        pattern=None,
+        case_sensitive=False,
     )
     if scope_filter is None:
         results = _dedupe_skill_items(results)
     total = len(results)
-    results = results[offset:offset + limit]
+    results = results[offset : offset + limit]
     for item in results:
         item.pop("_score", None)
     return {
@@ -728,26 +738,36 @@ async def skill_search(
         "offset": offset,
         "next_offset": offset + len(results) if offset + len(results) < total else None,
         "scope_filter": scope_filter or "",
+        "hint": _skill_search_hint_for_category(category_filter),
+        "errors": scan_errors,
     }
 
 
 @register(
     "skill.get",
-    description="读取 skill 摘要或正文页；workflow 默认返回摘要，detail='full' 返回 content_page。",
+    description="读取标准 SKILL.md 或其相对文本资源；按 content_page.next_offset 续读到 EOF。",
     tags=["skill", "read"],
     output_policy=DOCUMENT_OUTPUT_POLICY,
 )
 async def skill_get_skill(
     name: str = "",
     category: str = "",
-    kind: str = "",
     scope: str = "",
     detail: str = "",
+    resource: str = "",
     content_offset: int = 0,
     content_limit: int | None = None,
 ) -> dict[str, Any]:
     if not name:
         return {"ok": False, "error": "请提供 skill 名称", "error_kind": "missing_name"}
+    category_filter = _category_filter_set(category)
+    if category_filter == set():
+        return {
+            "ok": False,
+            "error": f"未知 skill category: {category}",
+            "error_kind": "invalid_skill_category",
+            "available_categories": ["workflow", "prompt", "review", "general"],
+        }
     scope_filter = _scope_filter_value(scope)
     if scope_filter is not None and scope_filter not in _SEARCHABLE_SCOPES:
         return {
@@ -756,16 +776,22 @@ async def skill_get_skill(
             "error_kind": "invalid_skill_scope",
             "available_scopes": ["user", "builtin"],
         }
-    match = _find_index_skill(name, category=category, kind=kind, scope=scope)
+    match = _find_index_skill(name, category=category, scope=scope)
     if not match:
         available = sorted(s["name"] for s in _build_unified_index())
-        return {"ok": False, "error": f"未找到: {name}", "error_kind": "not_found", "available": available}
+        return {
+            "ok": False,
+            "error": f"未找到: {name}",
+            "error_kind": "not_found",
+            "available": available,
+        }
     try:
         detail_norm = str(detail or "").strip().lower()
-        if match.get("category") == "workflow" and detail_norm not in {"full", "content"}:
+        if detail_norm == "summary" and not resource:
             return _read_index_skill_summary(match)
         payload = _read_index_skill_content(
             match,
+            resource=resource,
             paged=True,
             content_offset=content_offset,
             content_limit=content_limit,
@@ -774,5 +800,13 @@ async def skill_get_skill(
             payload["preferred_tool"] = "agent.review"
             payload["usage"] = "reviewer 会按 review_skill_key 隔离加载；主 Agent 只做最终确认。"
         return payload
+    except SkillFormatError as exc:
+        return {"ok": False, "error": str(exc), "error_kind": "invalid_resource"}
+    except FileNotFoundError as exc:
+        return {
+            "ok": False,
+            "error": f"skill resource 不存在: {exc}",
+            "error_kind": "resource_not_found",
+        }
     except OSError as exc:
         return {"ok": False, "error": f"读取失败: {exc}", "error_kind": "read_error"}

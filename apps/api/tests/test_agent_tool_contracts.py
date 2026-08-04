@@ -711,8 +711,8 @@ def test_single_image_prompt_documents_reference_image_to_image_path() -> None:
     assert "source_image" in prompt_text
     assert "node.list" in prompt_text
     assert "node.list(limit=0)" in prompt_text
-    assert "Skills supply prompt rules" in prompt_text
-    assert "prompt rules" in prompt_text
+    assert "Skills guide work" in prompt_text
+    assert "tools mutate state" in prompt_text
     assert "旧规划" not in prompt_text
 
 def test_prompt_rules_prioritize_latest_user_message_over_historical_failures() -> None:

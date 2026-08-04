@@ -197,6 +197,7 @@ async def test_video_production_skill_guides_reference_driven_short_video_nodes(
         "video_production",
         category="workflow",
         scope="builtin",
+        detail="summary",
     )
     assert summary["ok"] is True
     assert summary["detail"] == "summary"
@@ -213,7 +214,7 @@ async def test_video_production_skill_guides_reference_driven_short_video_nodes(
 
     assert full["ok"] is True
     assert full["detail"] == "full"
-    assert full["source"] == "python_package"
+    assert full["source"] == "skill_package"
     assert full["source_root"] == "builtin_default"
     assert "skill.video_production" not in guide
     assert "视频制作入口指南" in guide
@@ -260,7 +261,7 @@ async def test_video_production_skill_guides_reference_driven_short_video_nodes(
     assert "grok-imagine-video-1.5" not in guide
     assert "role:\"visual_reference\"" in guide
     assert "role:\"source_image\"" in guide
-    assert "`path` 只做诊断来源" in guide
+    assert "`path` 只是 source locator" in guide
 
 
 @pytest.mark.asyncio

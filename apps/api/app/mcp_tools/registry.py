@@ -564,7 +564,7 @@ class ToolRegistry:
     }
 
     # Stable core tool surface for the Agent Loop. The node-first path discovers
-    # business workflow through skill.search and scoped skill reads, and exposes primitives to
+    # business workflow through the runtime skill catalog and scoped skill reads, and exposes primitives to
     # read state, ask users, maintain a lightweight task ledger, and
     # create/update/run/delete nodes.
     _CORE_AGENT_TOOLS: set[str] = {
@@ -700,9 +700,9 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "node.update": "局部更新一个或少量指定节点的允许字段",
     "project.get_state": "读取项目运行状态和画布摘要",
     "project.reset": "按 scope 清理失败节点或执行已确认的全量项目重置",
-    "skill.get": "读取 skill 摘要或正文页",
+    "skill.get": "读取标准 SKILL.md 或同目录相对文本资源",
     "skill.project_mentor": "查询项目架构、规则、文档入口和排障顺序",
-    "skill.search": "搜索 workflow/prompt/review skill 索引",
+    "skill.search": "搜索标准 skill 元数据目录",
     "system.models": "读取任务类型到模型的当前映射",
     "system.status": "读取系统状态、模型、工具、MCP 和能力摘要",
     "task.complete": "把执行任务标记为 completed 并保存结果摘要",
@@ -779,8 +779,8 @@ _STANDARD_USAGE_BY_NAME: dict[str, str] = {
     ),
     "node.update": "input_json 与旧 input 局部合并；不同改动用 updates，同一 patch 可配 node_ids；复杂/高风险分批。",
     "project.get_state": "依赖现状时读取；参数已完整时不做前置读取。",
-    "skill.search": "指定 category；按 next_offset 分页。",
-    "skill.get": "workflow 默认摘要；正文按 content_page.next_offset 分页。",
+    "skill.search": "按名称/描述搜索；category/scope 可选；按 next_offset 分页。",
+    "skill.get": "默认读取 SKILL.md；相对资源用 resource；正文按 content_page.next_offset 读到 EOF。",
     "task.create": "复杂多步用 subject 或 items 建 checklist；简单任务跳过。",
     "task.complete": "任务真实完成并有结果摘要后调用。",
     "task.list": "需要恢复进度、找可执行/失败/阻塞任务或清理残留前调用。",
@@ -804,8 +804,8 @@ _STANDARD_LIMIT_BY_NAME: dict[str, str] = {
     "node.update": "只改允许字段，不写入不属于该节点的产物",
     "project.get_state": "只读取项目状态",
     "project.reset": "full reset 需要当前用户明确请求和确认",
-    "skill.get": "只读取 skill；workflow 默认摘要，detail='full' 返回有界正文页",
-    "skill.search": "只搜索指定 category 的 skill 索引",
+    "skill.get": "只读取标准 skill 包内文本；不能越过 skill 目录",
+    "skill.search": "只搜索 skill 元数据目录",
     "task.complete": "只标记真实完成的任务",
     "task.list": "只读取任务列表",
     "task.update": "只更新任务状态和元数据",
@@ -2174,9 +2174,9 @@ _register_builtins()
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Skill loading. Each skill lives at apps/api/app/skills/<name>/
-# with at least a SKILL.md (YAML frontmatter) and a Python entry point
-# whose import-time `@register(...)` calls populate the registry.
+# Internal tool-package loading. Readable standard skill packages are discovered
+# independently by mcp_tools.skill_tools and need no Python entry point. A package
+# here may additionally use __init__.py to register an internal/deferred tool.
 # ─────────────────────────────────────────────────────────────────────────
 
 

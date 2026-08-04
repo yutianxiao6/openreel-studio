@@ -721,9 +721,14 @@ def test_review_system_accepts_custom_checklist_and_skill() -> None:
 def test_review_skill_key_loads_from_root_skill_review_dir(tmp_path, monkeypatch) -> None:
     root = tmp_path
     monkeypatch.delenv("OPENREEL_SKILLS_DIR", raising=False)
-    skill_dir = root / "skills" / "review"
+    skill_dir = root / "skills" / "my_storyboard_check"
     skill_dir.mkdir(parents=True)
-    (skill_dir / "my_storyboard_check.md").write_text(
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: my_storyboard_check\n"
+        "description: 用户自定义分镜检查\n"
+        "category: review\n"
+        "---\n\n"
         "# 我的分镜检查\n\n- 必须逐格核对\n- 不得新增剧情\n",
         encoding="utf-8",
     )
@@ -733,7 +738,7 @@ def test_review_skill_key_loads_from_root_skill_review_dir(tmp_path, monkeypatch
 
     assert loaded["ok"] is True
     assert loaded["key"] == "my_storyboard_check"
-    assert loaded["path"] == "skills/review/my_storyboard_check.md"
+    assert loaded["path"] == "skills/my_storyboard_check/SKILL.md"
     assert "必须逐格核对" in loaded["content"]
 
 
@@ -741,9 +746,14 @@ def test_review_skill_key_loads_from_root_skill_review_dir(tmp_path, monkeypatch
 async def test_agent_review_loads_review_skill_key_before_subagent(tmp_path, monkeypatch) -> None:
     root = tmp_path
     monkeypatch.delenv("OPENREEL_SKILLS_DIR", raising=False)
-    skill_dir = root / "skills" / "review"
+    skill_dir = root / "skills" / "my_prompt_check"
     skill_dir.mkdir(parents=True)
-    (skill_dir / "my_prompt_check.md").write_text(
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: my_prompt_check\n"
+        "description: 用户自定义提示词检查\n"
+        "category: review\n"
+        "---\n\n"
         "# 提示词检查\n\n- 必须检查主体、动作和镜头\n",
         encoding="utf-8",
     )

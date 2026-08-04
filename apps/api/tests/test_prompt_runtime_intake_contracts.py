@@ -158,7 +158,8 @@ def test_runtime_context_does_not_duplicate_latest_user_goal() -> None:
     assert "项目标题" in text
     assert "本轮用户目标" not in text
     assert "继续之前的提示词相关优化" not in text
-    assert len(text) < 200
+    assert "## Skills" in text
+    assert len(text) <= 1_900
 
 def test_runtime_context_does_not_inject_video_intake_first_card() -> None:
     text = runtime_context.build(
@@ -237,7 +238,7 @@ def test_working_loop_stays_domain_neutral_with_core_prompt() -> None:
     assert "agent.run(workflow_spec)" in working_loop.PROMPT
     assert "Workflow Build Mode" not in working_loop.PROMPT
     assert "tools mutate state" in working_loop.PROMPT
-    assert "prompt rules" in working_loop.PROMPT
+    assert "Skills guide work" in working_loop.PROMPT
     assert "Before tools, write one progress sentence" in working_loop.PROMPT
     assert "finalize_tree_draft" not in working_loop.PROMPT
     assert "agent.review" not in working_loop.PROMPT

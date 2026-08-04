@@ -27,7 +27,6 @@ import asyncio
 import hashlib
 import inspect
 import json
-import os
 import re
 import uuid
 from copy import deepcopy
@@ -323,13 +322,6 @@ _REVIEW_STATUS_ALIASES = {
 _REVIEW_SEVERITIES = {"low", "medium", "high", "blocking"}
 
 
-def _review_skill_dir() -> Path:
-    skills_root = Path(os.environ.get("OPENREEL_SKILLS_DIR") or Path(settings.PROJECT_ROOT) / "skills")
-    path = skills_root / "review"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def _project_relative_path(path: Path) -> str:
     try:
         return str(path.relative_to(Path(settings.PROJECT_ROOT)))
@@ -343,23 +335,9 @@ def _normalize_review_skill_key(value: Any) -> str:
 
 
 def _read_review_skill(key: str) -> dict[str, Any]:
-    normalized = _normalize_review_skill_key(key)
-    if not normalized:
-        return {"ok": False, "error": "invalid_review_skill_key", "key": key}
-    path = (_review_skill_dir() / f"{normalized}.md").resolve()
-    base = _review_skill_dir().resolve()
-    if base not in path.parents or path.suffix.lower() != ".md":
-        return {"ok": False, "error": "invalid_review_skill_path", "key": normalized}
-    if not path.exists():
-        return {"ok": False, "error": "review_skill_not_found", "key": normalized}
-    content = path.read_text(encoding="utf-8", errors="replace")
-    return {
-        "ok": True,
-        "key": normalized,
-        "path": _project_relative_path(path),
-        "content": content[:8000],
-        "chars": len(content),
-    }
+    from app.mcp_tools.skill_tools import load_review_skill_by_key
+
+    return load_review_skill_by_key(key)
 
 
 def _read_app_skill(key: str) -> dict[str, Any]:

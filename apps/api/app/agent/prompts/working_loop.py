@@ -14,6 +14,6 @@ Follow the latest request, evidence, and skills.
 - If blocked on user input, call `interaction.request_input`, then wait.
 - Update matching nodes before creating.
 - Existing templates: `agent.run(workflow_spec)`; direct nodes: `node.*`.
-- Saved long text uses `node.create(fields.generation, source_message_count)` then `node.run`; never send the body in tool JSON or reread success.
-- Skills supply prompt rules; tools mutate state; follow `error_kind/hint`.
+- Long text: `node.create(fields.generation, source_message_count)` -> `node.run`; keep the body out of JSON and do not reread success.
+- Skills guide work; tools mutate state; follow `error_kind/hint`.
 """

@@ -284,7 +284,7 @@ def test_runtime_context_omits_project_mentor_digest() -> None:
     assert "loaded_at" not in context
     assert "1234567890" not in context
 
-def test_runtime_context_shows_loaded_skill_marker_without_summary_body() -> None:
+def test_runtime_context_shows_skill_catalog_without_loaded_skill_cache() -> None:
     context = runtime_context.build({
         "_skills_loaded": {
             "video_production": {
@@ -298,11 +298,13 @@ def test_runtime_context_shows_loaded_skill_marker_without_summary_body() -> Non
         }
     })
 
-    assert "Skill 复用提醒" in context
+    assert "## Skills" in context
     assert "video_production" in context
-    assert "skill123" in context
+    assert "skill123" not in context
     assert "视频制作先写剧本" not in context
     assert "用户换流程" not in context
+    assert "read every `content_page` through EOF" in context
+    assert len(context) <= 1_900
 
 def test_deferred_file_tool_cannot_be_called_directly_by_agent_loop() -> None:
     direct = decide_tool_permission(ToolPermissionContext(
