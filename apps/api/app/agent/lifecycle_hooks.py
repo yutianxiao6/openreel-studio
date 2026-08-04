@@ -21,6 +21,7 @@ REPEATED_PERMISSION_DENIAL_MESSAGE = (
 )
 EXECUTION_CHECKLIST_MARKER = "<execution-checklist>"
 RUNTIME_CONTEXT_MARKER = "<runtime-context>"
+SKILLS_CONTEXT_MARKER = "<skills_instructions>"
 SKILL_INSTRUCTIONS_MARKER = "<skill>"
 SKILL_WARNING_MARKER = "<skill-warning>"
 
@@ -48,6 +49,8 @@ class BeforeModelCallHookResult:
     removed_checklist_reminders: int = 0
     runtime_context_added: bool = False
     removed_runtime_contexts: int = 0
+    skills_context_added: bool = False
+    removed_skills_contexts: int = 0
     skill_instructions_added: int = 0
     removed_skill_instructions: int = 0
     skill_warnings_added: int = 0
@@ -91,6 +94,16 @@ def _is_skill_instruction_message(message: dict[str, Any]) -> bool:
     )
 
 
+def _is_skills_context_message(message: dict[str, Any]) -> bool:
+    return (
+        isinstance(message, dict)
+        and message.get("role") == "developer"
+        and isinstance(message.get("content"), str)
+        and message["content"].startswith(SKILLS_CONTEXT_MARKER)
+        and message["content"].rstrip().endswith("</skills_instructions>")
+    )
+
+
 def _is_skill_warning_message(message: dict[str, Any]) -> bool:
     return (
         isinstance(message, dict)
@@ -116,12 +129,14 @@ def run_before_model_call(
     messages: list[dict[str, Any]],
     checklist_reminder: str,
     runtime_context: str = "",
+    skills_context: str = "",
     skill_instructions: tuple[str, ...] | list[str] = (),
     skill_warnings: tuple[str, ...] | list[str] = (),
 ) -> BeforeModelCallHookResult:
     cleaned_messages: list[dict[str, Any]] = []
     removed_checklist_count = 0
     removed_runtime_count = 0
+    removed_skills_context_count = 0
     removed_skill_count = 0
     removed_skill_warning_count = 0
     for message in messages:
@@ -130,6 +145,9 @@ def run_before_model_call(
             continue
         if _is_runtime_context_message(message):
             removed_runtime_count += 1
+            continue
+        if _is_skills_context_message(message):
+            removed_skills_context_count += 1
             continue
         if _is_skill_instruction_message(message):
             removed_skill_count += 1
@@ -149,6 +167,8 @@ def run_before_model_call(
             "content": f"{RUNTIME_CONTEXT_MARKER}\n{runtime_context}\n</runtime-context>",
             }
         )
+    if skills_context:
+        context_messages.append({"role": "developer", "content": skills_context})
     for instruction in skill_instructions:
         if str(instruction or "").strip():
             context_messages.append({"role": "user", "content": str(instruction)})
@@ -171,6 +191,8 @@ def run_before_model_call(
         removed_checklist_reminders=removed_checklist_count,
         runtime_context_added=bool(runtime_context),
         removed_runtime_contexts=removed_runtime_count,
+        skills_context_added=bool(skills_context),
+        removed_skills_contexts=removed_skills_context_count,
         skill_instructions_added=sum(
             1 for instruction in skill_instructions if str(instruction or "").strip()
         ),

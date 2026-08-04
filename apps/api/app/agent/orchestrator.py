@@ -769,6 +769,7 @@ async def build_split_system_result(
         tool_profile=result.tool_profile,
         cache_key=result.cache_key,
         runtime=runtime,
+        skills_context=result.skills_context,
         skill_instructions=result.skill_instructions,
         selected_skill_names=result.selected_skill_names,
         skill_warnings=result.skill_warnings,
@@ -1651,6 +1652,7 @@ class AgentOrchestrator:
         prompt_assembly = await _rebuild_system_result(state, canvas_summary)
         system, history_inject = prompt_assembly.system, prompt_assembly.history
         runtime_inject = prompt_assembly.runtime
+        skills_context = prompt_assembly.skills_context
         skill_instructions = prompt_assembly.skill_instructions
         skill_warnings = prompt_assembly.skill_warnings
         prompt_assembly_diag = prompt_assembly.diagnostics()
@@ -1725,6 +1727,7 @@ class AgentOrchestrator:
             sections=prompt_assembly_diag.get("sections"),
             system_chars=prompt_assembly_diag.get("system_chars"),
             history_chars=prompt_assembly_diag.get("history_chars"),
+            skills_context_chars=prompt_assembly_diag.get("skills_context_chars"),
             tool_namespaces=prompt_assembly_diag.get("tool_namespaces"),
             tool_profile=prompt_assembly_diag.get("tool_profile"),
             tools_count=len(_visible_tool_names),
@@ -1939,6 +1942,7 @@ class AgentOrchestrator:
                 messages,
                 checklist_reminder,
                 runtime_context=runtime_inject,
+                skills_context=skills_context,
                 skill_instructions=skill_instructions,
                 skill_warnings=skill_warnings,
             )
@@ -2084,6 +2088,7 @@ class AgentOrchestrator:
                             messages,
                             checklist_reminder,
                             runtime_context=runtime_inject,
+                            skills_context=skills_context,
                             skill_instructions=skill_instructions,
                             skill_warnings=skill_warnings,
                         )
@@ -3384,6 +3389,7 @@ class AgentOrchestrator:
                 prompt_assembly = await _rebuild_system_result(state, canvas_summary)
                 system = prompt_assembly.system
                 runtime_inject = prompt_assembly.runtime
+                skills_context = prompt_assembly.skills_context
                 skill_instructions = prompt_assembly.skill_instructions
                 skill_warnings = prompt_assembly.skill_warnings
                 prompt_assembly_diag = prompt_assembly.diagnostics()

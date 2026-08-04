@@ -25,7 +25,6 @@ SECTION_COUNT_LIMIT = 8
 EXPECTED_FIXED_SECTIONS = [
     "identity",
     "working_loop",
-    "skill_usage",
     "task_loop",
     "core_rules",
     "delete_rule",
@@ -92,6 +91,7 @@ def test_fixed_prompt_only_loads_known_minimal_sections() -> None:
     assert len(prompt.sections) <= SECTION_COUNT_LIMIT
     assert all(section.trigger in {"always", "factory"} for section in prompt.sections)
     assert all(section.chars <= 700 for section in prompt.sections if section.source == "static")
+    assert prompts_pkg.get("skill_usage") is None
     assert prompts_pkg.get("tools_manifest") is None
 
 

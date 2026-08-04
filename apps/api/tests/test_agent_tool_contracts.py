@@ -740,7 +740,6 @@ def test_prompt_cache_sensitive_snapshot_for_blank_turn() -> None:
     assert [section.name for section in result.sections] == [
         "identity",
         "working_loop",
-        "skill_usage",
         "task_loop",
         "core_rules",
         "delete_rule",
@@ -751,6 +750,8 @@ def test_prompt_cache_sensitive_snapshot_for_blank_turn() -> None:
     assert "本轮用户目标" not in (result.system or "")
     assert "本轮用户目标" not in (result.runtime or "")
     assert "项目标题" in (result.runtime or "")
+    assert result.skills_context.startswith("<skills_instructions>")
+    assert "### How to use skills" in result.skills_context
     assert len(result.history or "") > 700
     assert len(json.dumps(tools, ensure_ascii=False, separators=(",", ":"))) < 11_500
     assert len(result.system or "") + len(json.dumps(tools, ensure_ascii=False, separators=(",", ":"))) < 13_500

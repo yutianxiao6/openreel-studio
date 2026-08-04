@@ -23,14 +23,7 @@ def build(
     latest_user_message: str = "",
     **_: object,
 ) -> str:
-    from app.mcp_tools.skill_tools import render_available_skills_context
-
-    parts = [
+    return "\n".join([
         "## 运行时上下文",
         f"项目标题:{_project_title(state)!r}",
-    ]
-    skill_catalog = render_available_skills_context()
-    if skill_catalog:
-        parts.append(skill_catalog)
-
-    return "\n".join(parts)
+    ])

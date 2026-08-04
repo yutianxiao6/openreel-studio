@@ -264,16 +264,23 @@ def test_runtime_context_omits_node_refs_and_prompt_body() -> None:
     assert "LEAK_PROMPT_BODY" not in context
 
 
-def test_runtime_context_shows_only_codex_style_skill_catalog() -> None:
-    context = runtime_context.build({})
+def test_skills_context_separates_codex_catalog_from_runtime_state() -> None:
+    result = assemble_split_result(PromptContext(
+        project_id="skills-context",
+        user_message="继续",
+        state={},
+    ))
+    context = result.skills_context
 
     assert "## Skills" in context
     assert "video_production" in context
     assert "### Available skills" in context
     assert "orchestrator resource" in context
     assert "skill://builtin/video_production/SKILL.md" in context
+    assert "### How to use skills" in context
     assert "content_page" not in context
-    assert len(context) <= 1_900
+    assert "## Skills" not in result.runtime
+    assert len(result.runtime) <= 1_900
 
 def test_deferred_file_tool_cannot_be_called_directly_by_agent_loop() -> None:
     direct = decide_tool_permission(ToolPermissionContext(

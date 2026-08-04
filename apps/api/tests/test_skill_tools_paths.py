@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 
 from app.agent.model_context.types import coerce_tool_output
@@ -425,7 +427,21 @@ def test_runtime_catalog_keeps_all_locators_and_description_prefixes() -> None:
         assert f"- {item['name']}:" in catalog
         assert f"(orchestrator resource: {item['locator']})" in catalog
         assert skill_tools._catalog_description(item)[:20] in catalog
-    assert len(catalog) <= 1_750
+    assert catalog.startswith("<skills_instructions>\n## Skills\n")
+    assert catalog.endswith("\n</skills_instructions>")
+    assert "### How to use skills" in catalog
+
+
+def test_skills_usage_protocol_matches_codex_source_contract() -> None:
+    # Hashes pin the exact upstream Codex constants without duplicating the
+    # complete 3K usage protocol in the test body.
+    assert hashlib.sha256(
+        skill_tools.SKILLS_INTRO_WITH_ABSOLUTE_PATHS.encode("utf-8")
+    ).hexdigest() == "46ccc2267a6792a99ae3025d6c8021b9ec0a490614c5cdd4fe1a0c47c36984e4"
+    assert hashlib.sha256(
+        skill_tools.SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS.encode("utf-8")
+    ).hexdigest() == "acea851e76fd3c2fdffab880258fc9d63b88aeac003fe246ec21d2ab418a2ddb"
+    assert skill_tools.DEFAULT_SKILL_METADATA_CHAR_BUDGET == 8_000
 
 
 @pytest.mark.asyncio

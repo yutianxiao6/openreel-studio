@@ -35,7 +35,36 @@ _MAX_SKILLS_PER_PAGE = 20
 _MAX_READ_CONTENT_BYTES = 24_000
 _MAX_SKILL_RESOURCE_CONTENT_BYTES = 1024 * 1024
 _MAX_CATALOG_DESCRIPTION_CHARS = 1_024
+DEFAULT_SKILL_METADATA_CHAR_BUDGET = 8_000
 MAX_EXPLICIT_SKILL_PROMPT_BYTES = 8_000
+
+SKILLS_INSTRUCTIONS_OPEN_TAG = "<skills_instructions>"
+SKILLS_INSTRUCTIONS_CLOSE_TAG = "</skills_instructions>"
+SKILLS_INTRO_WITH_ABSOLUTE_PATHS = (
+    "A skill is a set of instructions provided through a `SKILL.md` source. Below is the list "
+    "of skills that can be used. Each entry includes a name, description, and source locator. "
+    "`file` locators are on the host filesystem, `environment resource` locators are owned by "
+    "an execution environment, `orchestrator resource` locators are opaque non-filesystem "
+    "resources, and `custom resource` locators use their provider's access mechanism."
+)
+SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS = """\
+- Discovery: The list above is the skills available in this session (name + description + source locator). `file` entries live on the host filesystem, `environment resource` and `orchestrator resource` entries must be accessed through `skills.list` and `skills.read`, and `custom resource` entries use their provider's access mechanism.
+- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
+- Missing/blocked: If a named skill isn't in the list or its source can't be read, say so briefly and continue with the best fallback.
+- How to use a skill (progressive disclosure):
+  1) After deciding to use a skill, the main agent must read its `SKILL.md` completely before taking task actions. For a `file` entry, open the listed path. For an `environment resource`, call `skills.list` with `{"authority":{"kind":"executor"}}`; for an `orchestrator resource`, use `{"authority":{"kind":"orchestrator"}}`. Select the matching package and pass its exact authority, package, and `main_resource` to `skills.read`. Follow `next_cursor`; if a read is paginated, continue until EOF.
+  2) When `SKILL.md` references another resource, use the same access mechanism. Resolve relative references beneath an executor skill's returned package and call `skills.read` with the same authority and package. For orchestrator skills, pass the exact referenced resource identifier with the same authority and package to `skills.read`; do not treat `skill://` identifiers as filesystem paths.
+  3) If `SKILL.md` points to extra folders such as `references/`, use its routing instructions to identify the resources required for the task. The main agent must read each required instruction or reference file itself before acting on it. Do not delegate reading, summarizing, or interpreting skill instructions to a subagent. Subagents may still perform task work when the selected skill allows it.
+  4) For filesystem-backed skills, prefer running or patching provided scripts instead of retyping large code blocks. For environment and orchestrator skills, use `skills.read` and the available tools; do not invent a local path.
+  5) Reuse provided assets or templates through the same source access mechanism instead of recreating them.
+- Coordination and sequencing:
+  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.
+  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.
+- Context hygiene:
+  - Progressive disclosure applies to selecting relevant files, not partially reading a selected instruction file. Do not load unrelated references, scripts, or assets.
+  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.
+  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.
+- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."""
 
 _COMMON_ENV_VAR_MENTIONS = {
     "PATH",
@@ -419,26 +448,30 @@ def _allocate_catalog_lines(items: list[dict[str, Any]], budget: int) -> tuple[l
     ], 0
 
 
-def render_available_skills_context(max_chars: int = 1_750) -> str:
-    """Render Codex-style name/description/source metadata within a hard budget."""
+def render_available_skills_context(
+    max_chars: int = DEFAULT_SKILL_METADATA_CHAR_BUDGET,
+) -> str:
+    """Render the Codex skills catalog and complete usage protocol.
+
+    ``max_chars`` applies only to model-visible catalog lines, matching Codex's
+    metadata budget. The usage protocol is appended outside that budget.
+    """
     index, _ = _build_unified_index_with_errors()
     visible = [item for item in index if item.get("allow_implicit_invocation") is not False]
     if not visible:
         return ""
-    header = (
-        "## Skills\n"
-        "A Skill is a set of instructions provided through a `SKILL.md` source. Entries provide "
-        "its name, description, and source locator.\n"
-        "### Available skills\n"
+    lines, _ = _allocate_catalog_lines(visible, max(0, int(max_chars)))
+    body = "\n".join(
+        [
+            "## Skills",
+            SKILLS_INTRO_WITH_ABSOLUTE_PATHS,
+            "### Available skills",
+            *lines,
+            "### How to use skills",
+            SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS,
+        ]
     )
-    available = max(0, int(max_chars) - len(header))
-    lines, omitted = _allocate_catalog_lines(visible, available)
-    rendered = header + "\n".join(lines)
-    if omitted:
-        notice = f"\nExceeded skills context budget. {omitted} additional skill(s) were not included."
-        if len(rendered) + len(notice) <= max_chars:
-            rendered += notice
-    return rendered[:max_chars]
+    return f"{SKILLS_INSTRUCTIONS_OPEN_TAG}\n{body}\n{SKILLS_INSTRUCTIONS_CLOSE_TAG}"
 
 
 def _is_mention_name_char(char: str) -> bool:

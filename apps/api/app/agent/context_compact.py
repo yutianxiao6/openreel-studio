@@ -141,7 +141,15 @@ def _is_runtime_wrapper_message(message: dict) -> bool:
     if not isinstance(content, str):
         return False
     stripped = content.lstrip()
-    return stripped.startswith("<system-reminder>") or stripped.startswith("<compacted_context")
+    return stripped.startswith((
+        "<system-reminder>",
+        "<compacted_context",
+        "<execution-checklist>",
+        "<runtime-context>",
+        "<skills_instructions>",
+        "<skill>",
+        "<skill-warning>",
+    ))
 
 
 def compact_preserved_tail(
@@ -220,6 +228,8 @@ def compact_preserved_tail(
 def build_compact_summary_prompt(messages: list[dict]) -> str:
     serialized: list[str] = []
     for message in messages:
+        if _is_runtime_wrapper_message(message):
+            continue
         role = message.get("role", "?")
         content = message.get("content", "")
         if isinstance(content, list):

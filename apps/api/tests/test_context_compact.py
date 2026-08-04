@@ -31,6 +31,24 @@ def test_compact_summary_prompt_uses_token_budget_for_cjk_history() -> None:
     assert "tokens omitted" in prompt
 
 
+def test_compact_summary_omits_codex_skill_context_fragments() -> None:
+    prompt = context_compact.build_compact_summary_prompt([
+        {"role": "user", "content": "当前真实任务"},
+        {
+            "role": "developer",
+            "content": "<skills_instructions>\nCATALOG_BODY\n</skills_instructions>",
+        },
+        {
+            "role": "user",
+            "content": "<skill>\n<name>demo</name>\nSKILL_BODY\n</skill>",
+        },
+    ])
+
+    assert "当前真实任务" in prompt
+    assert "CATALOG_BODY" not in prompt
+    assert "SKILL_BODY" not in prompt
+
+
 def test_compact_messages_wraps_background_boundary() -> None:
     messages = context_compact.compact_messages(
         "稳定背景",

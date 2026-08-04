@@ -87,7 +87,6 @@ def test_workflow_build_prompt_uses_dedicated_cached_prefix() -> None:
 
     assert section_names == [
         "identity",
-        "skill_usage",
         "workflow_build_mode",
         "runtime_context",
     ]
@@ -120,7 +119,6 @@ def test_plan_mode_prompt_is_read_only_without_execution_sections() -> None:
 
     assert section_names == [
         "identity",
-        "skill_usage",
         "plan_mode",
         "runtime_context",
     ]
@@ -160,12 +158,28 @@ def test_runtime_context_does_not_duplicate_latest_user_goal() -> None:
     assert "项目标题" in text
     assert "本轮用户目标" not in text
     assert "继续之前的提示词相关优化" not in text
-    assert "## Skills" in text
+    assert "## Skills" not in text
+    assert len(text) <= 1_900
+
+
+def test_skills_context_is_a_complete_codex_developer_fragment() -> None:
+    result = assemble_split_result(PromptContext(
+        project_id="skills-context",
+        user_message="继续",
+        state={},
+    ))
+
+    text = result.skills_context
+    assert text.startswith("<skills_instructions>\n## Skills\n")
+    assert text.endswith("\n</skills_instructions>")
     assert "### Available skills" in text
-    assert "description" in text
+    assert "description, and source locator" in text
     assert "orchestrator resource" in text
     assert "skill://builtin/video_production/SKILL.md" in text
-    assert len(text) <= 1_900
+    assert "### How to use skills" in text
+    assert "read its `SKILL.md` completely before taking task actions" in text
+    assert "Do not delegate reading, summarizing, or interpreting skill instructions" in text
+    assert "Reuse provided assets or templates" in text
 
 def test_runtime_context_does_not_inject_video_intake_first_card() -> None:
     text = runtime_context.build(
@@ -490,7 +504,26 @@ def test_before_model_call_hook_replaces_runtime_context_reminder() -> None:
     assert contents[-1] == "<runtime-context>\n## 运行时上下文\nnew\n</runtime-context>"
 
 
+def test_before_model_call_hook_replaces_codex_skills_developer_fragment() -> None:
+    old_context = "<skills_instructions>\nold\n</skills_instructions>"
+    new_context = "<skills_instructions>\nnew\n</skills_instructions>"
+    result = run_before_model_call(
+        [
+            {"role": "user", "content": "继续"},
+            {"role": "developer", "content": old_context},
+        ],
+        "",
+        skills_context=new_context,
+    )
+
+    assert result.removed_skills_contexts == 1
+    assert result.skills_context_added is True
+    assert old_context not in [message["content"] for message in result.messages]
+    assert result.messages[-1] == {"role": "developer", "content": new_context}
+
+
 def test_before_model_call_hook_replaces_current_turn_skill_instructions() -> None:
+    catalog = "<skills_instructions>\ncatalog\n</skills_instructions>"
     old_skill = "<skill>\n<name>old</name>\n<path>old/SKILL.md</path>\nold\n</skill>"
     new_skill = "<skill>\n<name>new</name>\n<path>new/SKILL.md</path>\nnew\n</skill>"
     old_warning = "<skill-warning>\n- old\n</skill-warning>"
@@ -501,6 +534,7 @@ def test_before_model_call_hook_replaces_current_turn_skill_instructions() -> No
             {"role": "user", "content": old_warning},
         ],
         "",
+        skills_context=catalog,
         skill_instructions=(new_skill,),
         skill_warnings=("new warning",),
     )
@@ -512,6 +546,7 @@ def test_before_model_call_hook_replaces_current_turn_skill_instructions() -> No
     assert result.skill_warnings_added == 1
     assert old_skill not in contents
     assert old_warning not in contents
+    assert result.messages[-3] == {"role": "developer", "content": catalog}
     assert contents[-2] == new_skill
     assert contents[-1] == "<skill-warning>\n- new warning\n</skill-warning>"
 

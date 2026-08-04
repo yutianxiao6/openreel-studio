@@ -82,6 +82,7 @@ class PromptAssemblyResult:
     cache_key: str
     tool_profile: str = "default"
     runtime: str = ""
+    skills_context: str = ""
     skill_instructions: tuple[str, ...] = ()
     selected_skill_names: tuple[str, ...] = ()
     skill_warnings: tuple[str, ...] = ()
@@ -97,6 +98,7 @@ class PromptAssemblyResult:
             "system_chars": len(self.system or ""),
             "history_chars": len(self.history or ""),
             "runtime_chars": len(self.runtime or ""),
+            "skills_context_chars": len(self.skills_context or ""),
             "section_count": len(self.sections),
             "sections_by_trigger": by_trigger,
             "sections_by_tier": by_tier,
@@ -239,9 +241,13 @@ def assemble_split_result(ctx: PromptContext) -> PromptAssemblyResult:
     h_blocks: list[str] = []
     runtime_text = ""
     stats: list[PromptSectionStat] = []
-    from app.mcp_tools.skill_tools import build_explicit_skill_injections
+    from app.mcp_tools.skill_tools import (
+        build_explicit_skill_injections,
+        render_available_skills_context,
+    )
 
     explicit_skills = build_explicit_skill_injections(ctx.user_message, ctx.attachments)
+    skills_context = render_available_skills_context()
 
     for sec in prompts_pkg.all_sections():
         if sec.trigger == "factory":
@@ -307,6 +313,7 @@ def assemble_split_result(ctx: PromptContext) -> PromptAssemblyResult:
         tool_namespaces=namespaces,
         tool_profile=tool_profile,
         cache_key=ctx.cache_key(),
+        skills_context=skills_context,
         skill_instructions=explicit_skills["instructions"],
         selected_skill_names=explicit_skills["selected_names"],
         skill_warnings=explicit_skills["warnings"],
