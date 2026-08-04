@@ -57,6 +57,9 @@ class PromptContext:
             "tool_profile": select_tool_profile(self),
             "runtime": _runtime_state_signature(self.state),
             "skill_catalog": _skill_catalog_revision(),
+            "explicit_skills": _explicit_skill_selection_signature(
+                self.user_message, self.attachments
+            ),
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -79,6 +82,9 @@ class PromptAssemblyResult:
     cache_key: str
     tool_profile: str = "default"
     runtime: str = ""
+    skill_instructions: tuple[str, ...] = ()
+    selected_skill_names: tuple[str, ...] = ()
+    skill_warnings: tuple[str, ...] = ()
 
     def diagnostics(self) -> dict:
         by_trigger: dict[str, int] = {}
@@ -96,6 +102,9 @@ class PromptAssemblyResult:
             "sections_by_tier": by_tier,
             "tool_namespaces": list(self.tool_namespaces),
             "tool_profile": self.tool_profile,
+            "selected_skill_names": list(self.selected_skill_names),
+            "skill_instruction_count": len(self.skill_instructions),
+            "skill_warnings": list(self.skill_warnings),
             "sections": [
                 {
                     "name": section.name,
@@ -150,6 +159,14 @@ def _skill_catalog_revision() -> str:
     from app.mcp_tools.skill_tools import skill_catalog_revision
 
     return skill_catalog_revision()
+
+
+def _explicit_skill_selection_signature(
+    user_message: str, attachments: list[dict]
+) -> str:
+    from app.mcp_tools.skill_tools import explicit_skill_selection_signature
+
+    return explicit_skill_selection_signature(user_message, attachments)
 
 
 def _cache_signature(value: object) -> dict[str, object]:
@@ -222,6 +239,9 @@ def assemble_split_result(ctx: PromptContext) -> PromptAssemblyResult:
     h_blocks: list[str] = []
     runtime_text = ""
     stats: list[PromptSectionStat] = []
+    from app.mcp_tools.skill_tools import build_explicit_skill_injections
+
+    explicit_skills = build_explicit_skill_injections(ctx.user_message, ctx.attachments)
 
     for sec in prompts_pkg.all_sections():
         if sec.trigger == "factory":
@@ -287,6 +307,9 @@ def assemble_split_result(ctx: PromptContext) -> PromptAssemblyResult:
         tool_namespaces=namespaces,
         tool_profile=tool_profile,
         cache_key=ctx.cache_key(),
+        skill_instructions=explicit_skills["instructions"],
+        selected_skill_names=explicit_skills["selected_names"],
+        skill_warnings=explicit_skills["warnings"],
     )
 
 

@@ -855,6 +855,9 @@ async def build_split_system_result(
         tool_profile=result.tool_profile,
         cache_key=result.cache_key,
         runtime=runtime,
+        skill_instructions=result.skill_instructions,
+        selected_skill_names=result.selected_skill_names,
+        skill_warnings=result.skill_warnings,
     )
 
 
@@ -1736,6 +1739,8 @@ class AgentOrchestrator:
         prompt_assembly = await _rebuild_system_result(state, canvas_summary)
         system, history_inject = prompt_assembly.system, prompt_assembly.history
         runtime_inject = prompt_assembly.runtime
+        skill_instructions = prompt_assembly.skill_instructions
+        skill_warnings = prompt_assembly.skill_warnings
         prompt_assembly_diag = prompt_assembly.diagnostics()
         history_visible = chat_history_visible_for_turn(state)
         messages = await self._call_build_messages(
@@ -1811,6 +1816,9 @@ class AgentOrchestrator:
             tool_namespaces=prompt_assembly_diag.get("tool_namespaces"),
             tool_profile=prompt_assembly_diag.get("tool_profile"),
             tools_count=len(_visible_tool_names),
+            selected_skill_names=prompt_assembly_diag.get("selected_skill_names"),
+            skill_instruction_count=prompt_assembly_diag.get("skill_instruction_count"),
+            skill_warning_count=len(prompt_assembly_diag.get("skill_warnings") or []),
         )
         trace.emit(
             "agent_loop_ready",
@@ -2019,6 +2027,8 @@ class AgentOrchestrator:
                 messages,
                 checklist_reminder,
                 runtime_context=runtime_inject,
+                skill_instructions=skill_instructions,
+                skill_warnings=skill_warnings,
             )
             messages = before_model_call.messages
 
@@ -2162,6 +2172,8 @@ class AgentOrchestrator:
                             messages,
                             checklist_reminder,
                             runtime_context=runtime_inject,
+                            skill_instructions=skill_instructions,
+                            skill_warnings=skill_warnings,
                         )
                         messages = before_model_call.messages
                         llm_started_at = time.perf_counter()
@@ -3502,6 +3514,8 @@ class AgentOrchestrator:
                 prompt_assembly = await _rebuild_system_result(state, canvas_summary)
                 system = prompt_assembly.system
                 runtime_inject = prompt_assembly.runtime
+                skill_instructions = prompt_assembly.skill_instructions
+                skill_warnings = prompt_assembly.skill_warnings
                 prompt_assembly_diag = prompt_assembly.diagnostics()
 
             if stop_after_tool:

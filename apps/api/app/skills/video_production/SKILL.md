@@ -21,7 +21,7 @@ applies_to: 视频制作 视频工作流 默认视频流程 workflow template ge
 - 每个节点都是独立任务单元；`task` 只记录进度；生产依赖写节点 `fields.references`，图片引用用 `role:"visual_reference"`，文字上下文用 `role:"context"`，直接采用已有图片用 `role:"source_image"`。
 - 最终 image/video prompt 提到参考图时使用候选表给出的精确 `@参考图标签`，标签沿用完整画布标题并保留其中的 `|`、`｜`、空格、书名号等字符，例如“人物沿用 `@《回头》主角｜15岁少年`，镜头沿用 `@宫格分镜图`”。后端把标签绑定到稳定的图片节点 ID，参考图列表换序后仍指向同一张图。
 - `fields.director_capture=true` 的图片是导演台构图参考，只继承人物/物体站位、朝向、姿态、比例、遮挡、景别和机位；正式分镜同时引用人物图与场景图重绘，不保留白模、色块、网格或编辑器外观，也不把构图参考自动当作视频首帧。
-- `skill.get` 默认返回标准 `SKILL.md` 的 `content_page`；必须按 `content_page.next_offset` 续读到 EOF 后再执行。skill 引用的文本文件用同一工具的 `resource` 相对当前 skill 目录读取，`path` 只是 source locator。
+- 当前轮通过 `$video_production` 或结构化 Skill 引用显式选择时，正文会在模型调用前以 `<skill>` 块注入；否则 `skill.get` 默认返回标准 `SKILL.md` 的 `content_page`，必须按 `content_page.next_offset` 续读到 EOF 后再执行。skill 引用的文本文件用同一工具的 `resource` 相对当前 skill 目录读取，`path` 只是 source locator。
 
 ## 默认模板
 

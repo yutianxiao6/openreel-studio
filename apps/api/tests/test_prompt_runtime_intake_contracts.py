@@ -159,6 +159,10 @@ def test_runtime_context_does_not_duplicate_latest_user_goal() -> None:
     assert "本轮用户目标" not in text
     assert "继续之前的提示词相关优化" not in text
     assert "## Skills" in text
+    assert "$SkillName" in text
+    assert "Multiple mentions mean use all" in text
+    assert "do not carry skills across turns" in text
+    assert "best fallback" in text
     assert len(text) <= 1_900
 
 def test_runtime_context_does_not_inject_video_intake_first_card() -> None:
@@ -212,6 +216,49 @@ def test_split_prompt_cache_ignores_latest_user_and_mentor_guides() -> None:
     assert "继续优化提示词注入" not in base.runtime
     assert "改为检查图片和分镜一致性" not in changed_user.runtime
     assert "### 指南复用缓存" not in with_guide.system
+
+
+def test_explicit_skill_mentions_select_current_turn_instructions_and_change_cache(
+    tmp_path, monkeypatch
+) -> None:
+    from app.mcp_tools import skill_tools
+
+    skills_root = tmp_path / "skills"
+    skill_dir = skills_root / "turn_skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: turn_skill\n"
+        "description: Use for an explicit current-turn test.\n"
+        "---\n\n"
+        "CURRENT TURN ONLY\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+
+    ordinary = assemble_split_result(PromptContext(
+        project_id="explicit-skill-cache",
+        user_message="继续",
+        state={},
+    ))
+    selected = assemble_split_result(PromptContext(
+        project_id="explicit-skill-cache",
+        user_message="使用 $turn_skill 继续",
+        state={},
+    ))
+    next_turn = assemble_split_result(PromptContext(
+        project_id="explicit-skill-cache",
+        user_message="下一轮继续",
+        state={},
+    ))
+
+    assert ordinary.skill_instructions == ()
+    assert selected.selected_skill_names == ("turn_skill",)
+    assert "CURRENT TURN ONLY" in selected.skill_instructions[0]
+    assert selected.cache_key != ordinary.cache_key
+    assert next_turn.skill_instructions == ()
+    assert next_turn.cache_key == ordinary.cache_key
+    assert skill_tools.explicit_skill_selection_signature("普通消息") == ""
 
 
 def test_always_prompt_sections_are_contracts_not_manuals() -> None:
@@ -449,6 +496,32 @@ def test_before_model_call_hook_replaces_runtime_context_reminder() -> None:
     assert old_runtime not in contents
     assert contents[-2] == "继续"
     assert contents[-1] == "<runtime-context>\n## 运行时上下文\nnew\n</runtime-context>"
+
+
+def test_before_model_call_hook_replaces_current_turn_skill_instructions() -> None:
+    old_skill = "<skill>\n<name>old</name>\n<path>old/SKILL.md</path>\nold\n</skill>"
+    new_skill = "<skill>\n<name>new</name>\n<path>new/SKILL.md</path>\nnew\n</skill>"
+    old_warning = "<skill-warning>\n- old\n</skill-warning>"
+    result = run_before_model_call(
+        [
+            {"role": "user", "content": "当前需求"},
+            {"role": "user", "content": old_skill},
+            {"role": "user", "content": old_warning},
+        ],
+        "",
+        skill_instructions=(new_skill,),
+        skill_warnings=("new warning",),
+    )
+
+    contents = [message["content"] for message in result.messages]
+    assert result.removed_skill_instructions == 1
+    assert result.removed_skill_warnings == 1
+    assert result.skill_instructions_added == 1
+    assert result.skill_warnings_added == 1
+    assert old_skill not in contents
+    assert old_warning not in contents
+    assert contents[-2] == new_skill
+    assert contents[-1] == "<skill-warning>\n- new warning\n</skill-warning>"
 
 def test_before_model_call_hook_appends_dynamic_context_for_cache_prefix() -> None:
     checklist = "<execution-checklist>\nnext\n</execution-checklist>"

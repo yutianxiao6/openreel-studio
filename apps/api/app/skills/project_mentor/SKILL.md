@@ -88,9 +88,15 @@ maintain separate canvas/panel state before work appears.
   `name` and `description`; OpenReel optionally reads `category` and
   `applies_to`. Supporting files stay inside the same package under
   `references/`, `scripts/`, `assets/`, `templates/`, or `agents/openai.yaml`.
-  The runtime prompt carries only bounded metadata. `skill.get` reads the full
-  `SKILL.md` page sequence and resolves a requested `resource` relative to that
-  package without allowing directory escape.
+  The runtime prompt carries only bounded metadata. Current-turn `$SkillName`,
+  linked `skill://` / `SKILL.md` mentions, and structured `kind=skill` inputs
+  resolve before the model call and inject each selected package as a bounded
+  `<skill>` block. Multiple explicit selections are all injected, and they do
+  not carry into later turns. Explicit selection remains available when
+  `agents/openai.yaml` disables implicit invocation. Description matches and
+  plain-text names use the model-visible catalog plus `skill.get`; that tool
+  reads the full `SKILL.md` page sequence and resolves a requested `resource`
+  relative to the package without allowing directory escape.
 - Collection readers use bounded pages. `project.get_state` returns runtime
   state plus canvas counts rather than every node and edge; use `node.list` and
   `node.get` for details. Task, memory, event, workspace, asset, skill, and

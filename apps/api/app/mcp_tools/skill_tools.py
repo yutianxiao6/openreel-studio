@@ -58,6 +58,21 @@ _SCOPE_ALIASES: dict[str, str] = {
 _SEARCHABLE_SCOPES = {"user", "builtin"}
 SKILL_SEARCH_DEFAULT_LIMIT = 8
 SKILL_SEARCH_MAX_LIMIT = 50
+MAX_EXPLICIT_SKILL_PROMPT_BYTES = 8_000
+
+_COMMON_ENV_VAR_MENTIONS = {
+    "PATH",
+    "HOME",
+    "USER",
+    "SHELL",
+    "PWD",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "TERM",
+    "XDG_CONFIG_HOME",
+}
 
 
 def _user_skills_root() -> Path:
@@ -406,6 +421,206 @@ def _build_unified_index() -> list[dict[str, Any]]:
     return _build_unified_index_with_errors()[0]
 
 
+def _is_mention_name_char(char: str) -> bool:
+    return len(char) == 1 and (char.isascii() and (char.isalnum() or char in "_-:"))
+
+
+def _parse_linked_skill_mention(
+    text: str, start: int
+) -> tuple[str, str, int] | None:
+    if not text.startswith("[$", start):
+        return None
+    name_start = start + 2
+    if name_start >= len(text) or not _is_mention_name_char(text[name_start]):
+        return None
+    name_end = name_start + 1
+    while name_end < len(text) and _is_mention_name_char(text[name_end]):
+        name_end += 1
+    if name_end >= len(text) or text[name_end] != "]":
+        return None
+    path_start = name_end + 1
+    while path_start < len(text) and text[path_start].isspace():
+        path_start += 1
+    if path_start >= len(text) or text[path_start] != "(":
+        return None
+    path_end = text.find(")", path_start + 1)
+    if path_end < 0:
+        return None
+    path = text[path_start + 1 : path_end].strip()
+    if not path:
+        return None
+    return text[name_start:name_end], path, path_end + 1
+
+
+def extract_explicit_skill_mentions(
+    message: str, attachments: list[dict[str, Any]] | None = None
+) -> list[dict[str, str]]:
+    """Parse only Codex-style explicit syntax, never natural-language intent."""
+    text = str(message or "")
+    mentions: list[dict[str, str]] = []
+    index = 0
+    while index < len(text):
+        linked = _parse_linked_skill_mention(text, index)
+        if linked is not None:
+            name, path, next_index = linked
+            if name.upper() not in _COMMON_ENV_VAR_MENTIONS:
+                mentions.append({"name": name, "path": path, "kind": "linked"})
+            index = next_index
+            continue
+        if text[index] != "$":
+            index += 1
+            continue
+        name_start = index + 1
+        if name_start >= len(text) or not _is_mention_name_char(text[name_start]):
+            index += 1
+            continue
+        name_end = name_start + 1
+        while name_end < len(text) and _is_mention_name_char(text[name_end]):
+            name_end += 1
+        name = text[name_start:name_end]
+        if name.upper() not in _COMMON_ENV_VAR_MENTIONS:
+            mentions.append({"name": name, "path": "", "kind": "name"})
+        index = name_end
+
+    for attachment in attachments or []:
+        if not isinstance(attachment, dict):
+            continue
+        kind = str(attachment.get("kind") or attachment.get("type") or "").strip().lower()
+        if kind != "skill":
+            continue
+        name = str(attachment.get("name") or "").strip()
+        path = str(attachment.get("path") or attachment.get("source") or "").strip()
+        if name or path:
+            mentions.append({"name": name, "path": path, "kind": "structured"})
+
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for mention in mentions:
+        key = (mention["name"], mention["path"], mention["kind"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(mention)
+    return deduped
+
+
+def explicit_skill_selection_signature(
+    message: str, attachments: list[dict[str, Any]] | None = None
+) -> str:
+    """Hash explicit selectors so unrelated natural-language turns share prompt cache."""
+    mentions = extract_explicit_skill_mentions(message, attachments)
+    if not mentions:
+        return ""
+    raw = repr([(item["name"], item["path"], item["kind"]) for item in mentions])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _normalize_skill_locator(value: str) -> str:
+    locator = str(value or "").strip().replace("\\", "/")
+    if locator.startswith("skill://"):
+        locator = locator[len("skill://") :]
+    while locator.startswith("./"):
+        locator = locator[2:]
+    return locator.rstrip("/")
+
+
+def _skill_locator_keys(skill: dict[str, Any]) -> set[str]:
+    name = str(skill.get("name") or "")
+    path = str(skill.get("path") or "")
+    display_path = str(skill.get("display_path") or "")
+    keys = {
+        _normalize_skill_locator(name),
+        _normalize_skill_locator(path),
+        _normalize_skill_locator(display_path),
+        _normalize_skill_locator(f"{name}/{SKILL_FILENAME}"),
+    }
+    try:
+        keys.add(_normalize_skill_locator(str(Path(path).resolve())))
+    except OSError:
+        pass
+    return {key for key in keys if key}
+
+
+def _resolve_explicit_skill(
+    mention: dict[str, str], index: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    path = _normalize_skill_locator(mention.get("path", ""))
+    if path:
+        for skill in index:
+            if path in _skill_locator_keys(skill):
+                return skill
+        return None
+    name = str(mention.get("name") or "")
+    candidates = [skill for skill in index if skill.get("name") == name]
+    candidates.sort(key=lambda item: (int(item.get("priority", 100)), str(item.get("path") or "")))
+    return candidates[0] if candidates else None
+
+
+def _take_utf8_bytes(value: str, max_bytes: int) -> tuple[str, bool]:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value, False
+    return encoded[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def build_explicit_skill_injections(
+    message: str, attachments: list[dict[str, Any]] | None = None
+) -> dict[str, tuple[str, ...]]:
+    """Resolve explicit current-turn mentions and render Codex-style skill fragments."""
+    mentions = extract_explicit_skill_mentions(message, attachments)
+    if not mentions:
+        return {"instructions": (), "selected_names": (), "warnings": ()}
+
+    index, _ = _build_unified_index_with_errors()
+    selected: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    seen_paths: set[str] = set()
+    for mention in mentions:
+        skill = _resolve_explicit_skill(mention, index)
+        if skill is None:
+            if mention.get("kind") in {"linked", "structured"}:
+                label = mention.get("name") or mention.get("path") or "unknown"
+                warnings.append(
+                    f"Explicitly selected skill `{label}` is unavailable; say so briefly and continue with the best fallback."
+                )
+            continue
+        path = str(skill.get("path") or "")
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        selected.append(skill)
+
+    instructions: list[str] = []
+    selected_names: list[str] = []
+    for skill in selected:
+        name = str(skill.get("name") or "")
+        path = str(skill.get("path") or "")
+        try:
+            raw = Path(path).read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            warnings.append(
+                f"Failed to load explicitly selected skill `{name}`: {exc}. Continue with the best fallback."
+            )
+            continue
+        contents, truncated = _take_utf8_bytes(raw, MAX_EXPLICIT_SKILL_PROMPT_BYTES)
+        display_path = str(skill.get("display_path") or path)
+        instructions.append(
+            f"<skill>\n<name>{name}</name>\n<path>{display_path}</path>\n{contents}\n</skill>"
+        )
+        selected_names.append(name)
+        if truncated:
+            warnings.append(
+                f"Skill `{name}` exceeded the {MAX_EXPLICIT_SKILL_PROMPT_BYTES}-byte explicit prompt limit. "
+                "Use `skill.get` pagination before relying on omitted instructions."
+            )
+
+    return {
+        "instructions": tuple(instructions),
+        "selected_names": tuple(selected_names),
+        "warnings": tuple(warnings),
+    }
+
+
 def render_available_skills_context(max_chars: int = 1_750) -> str:
     """Render a bounded Codex-style metadata catalog for runtime context."""
     index, errors = _build_unified_index_with_errors()
@@ -420,7 +635,9 @@ def render_available_skills_context(max_chars: int = 1_750) -> str:
     ]
     outro = [
         "### How to use skills",
-        "If a skill is named or clearly matches, announce it, then use `skill.get` and read every `content_page` through EOF before acting. Read linked files with `resource` relative to that skill; load only needed resources.",
+        "- Trigger: If the user names a skill (`$SkillName` or plain text), or the task clearly matches its description, use it for this turn. Multiple mentions mean use all; do not carry skills across turns unless re-mentioned.",
+        "- Explicit selections may already appear in `<skill>` blocks. Otherwise announce the minimal matching set, order, and why; explain any skipped obvious match. Then use `skill.get` and read every `content_page` through EOF before acting.",
+        "- Read only needed linked resources with `resource` relative to that package. If a named skill is missing or unreadable, say so briefly and continue with the best fallback.",
     ]
     if errors:
         outro.append(

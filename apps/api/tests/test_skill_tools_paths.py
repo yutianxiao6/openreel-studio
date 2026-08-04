@@ -181,6 +181,93 @@ async def test_codex_frontmatter_repair_and_openai_policy_are_supported(
     assert matched["allow_implicit_invocation"] is False
     assert "explicit_only" not in skill_tools.render_available_skills_context()
 
+    mentions = skill_tools.extract_explicit_skill_mentions(
+        "Use $explicit_only and [$explicit_only](skill://explicit_only), not $HOME."
+    )
+    assert mentions == [
+        {"name": "explicit_only", "path": "", "kind": "name"},
+        {
+            "name": "explicit_only",
+            "path": "skill://explicit_only",
+            "kind": "linked",
+        },
+    ]
+
+    injected = skill_tools.build_explicit_skill_injections(
+        "Use $explicit_only and [$explicit_only](skill://explicit_only)."
+    )
+    assert injected["selected_names"] == ("explicit_only",)
+    assert len(injected["instructions"]) == 1
+    assert injected["instructions"][0].startswith(
+        "<skill>\n<name>explicit_only</name>\n<path>"
+    )
+    assert "Only load this skill when explicitly selected." in injected["instructions"][0]
+    assert injected["warnings"] == ()
+
+
+def test_explicit_skill_selection_supports_structured_input_and_missing_path_warning(
+    tmp_path, monkeypatch
+) -> None:
+    skills_root = tmp_path / "skills"
+    skill_dir = skills_root / "structured_skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: structured_skill\n"
+        "description: A structured explicit skill.\n"
+        "---\n\n"
+        "Follow the structured skill.\n",
+        encoding="utf-8",
+    )
+    second_dir = skills_root / "second_skill"
+    second_dir.mkdir(parents=True)
+    (second_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: second_skill\n"
+        "description: A second explicit skill.\n"
+        "---\n\n"
+        "Follow the second skill.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+
+    injected = skill_tools.build_explicit_skill_injections(
+        "$unknown_variable and $second_skill",
+        attachments=[{"kind": "skill", "name": "structured_skill"}],
+    )
+    assert injected["selected_names"] == ("second_skill", "structured_skill")
+    assert len(injected["instructions"]) == 2
+    assert injected["warnings"] == ()
+
+    missing = skill_tools.build_explicit_skill_injections(
+        "Use [$missing](skill://missing)."
+    )
+    assert missing["instructions"] == ()
+    assert len(missing["warnings"]) == 1
+    assert "unavailable" in missing["warnings"][0]
+
+
+def test_explicit_skill_prompt_uses_codex_utf8_byte_limit(tmp_path, monkeypatch) -> None:
+    skills_root = tmp_path / "skills"
+    skill_dir = skills_root / "large_skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: large_skill\n"
+        "description: A large explicit skill.\n"
+        "---\n\n"
+        + "规则" * 5_000,
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
+
+    injected = skill_tools.build_explicit_skill_injections("$large_skill")
+
+    assert injected["selected_names"] == ("large_skill",)
+    contents = injected["instructions"][0].split("\n", 3)[3].rsplit("\n</skill>", 1)[0]
+    assert len(contents.encode("utf-8")) <= skill_tools.MAX_EXPLICIT_SKILL_PROMPT_BYTES
+    assert "8000-byte explicit prompt limit" in injected["warnings"][0]
+
 
 @pytest.mark.asyncio
 async def test_missing_or_unusable_user_skill_dir_is_empty_index(tmp_path, monkeypatch) -> None:
