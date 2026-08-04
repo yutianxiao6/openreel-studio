@@ -91,7 +91,6 @@ def test_fixed_prompt_only_loads_known_minimal_sections() -> None:
     assert len(prompt.sections) <= SECTION_COUNT_LIMIT
     assert all(section.trigger in {"always", "factory"} for section in prompt.sections)
     assert all(section.chars <= 700 for section in prompt.sections if section.source == "static")
-    assert prompts_pkg.get("skill_usage") is None
     assert prompts_pkg.get("tools_manifest") is None
 
 
@@ -109,8 +108,6 @@ def test_core_tool_schema_descriptions_are_not_in_always_loaded_prefix() -> None
     assert "canvas.delete" in tool_names
     assert "skills.list" in tool_names
     assert "skills.read" in tool_names
-    assert "skill.get" not in tool_names
-    assert "skill.search" not in tool_names
     assert "task.create" in tool_names
     assert "task.complete" in tool_names
     assert "tool.search" in tool_names

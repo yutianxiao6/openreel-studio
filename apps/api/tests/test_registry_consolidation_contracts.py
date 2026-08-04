@@ -27,8 +27,6 @@ async def test_tool_search_empty_query_lists_visible_deferred_catalog() -> None:
     assert result["returned"] == result["total"]
     assert names == catalog_names
     assert "assets.save_to_project" in names
-    assert "skill.video_production" not in names
-    assert "skill.search" not in names
     assert "node.create" not in names
     for name in names:
         spec = registry.get(name)
@@ -99,23 +97,13 @@ async def test_task_delete_is_deferred_and_task_create_is_core() -> None:
     assert registry.tool_exposure("task.create") == "core"
     assert {item["tier"] for item in (await tool_meta_tools.tool_describe(sorted(names)))["tools"]} == {2}
 
-@pytest.mark.asyncio
-async def test_skill_packages_are_not_deferred_dedicated_tools() -> None:
-    result = await tool_meta_tools.tool_search(query="skill mentor story template", limit=0)
-    names = {item["name"] for item in result["tools"]}
-
-    assert not any(name.startswith("skill.") for name in names)
-    assert registry.get("skill.project_mentor") is None
-    assert registry.get("skill.story_template_method") is None
-    assert registry.get("skill.search") is None
-    assert registry.get("skill.get") is None
+def test_skill_packages_use_core_resource_tools() -> None:
     assert registry.tool_exposure("skills.list") == "core"
     assert registry.tool_exposure("skills.read") == "core"
 
 
 @pytest.mark.asyncio
 async def test_video_production_skill_guides_reference_driven_short_video_nodes() -> None:
-    assert registry.get("skill.video_production") is None
     listed = coerce_tool_output(
         await skill_tools.skills_list({"kind": "orchestrator"})
     ).value
@@ -128,10 +116,7 @@ async def test_video_production_skill_guides_reference_driven_short_video_nodes(
     guide = full["contents"]
 
     assert full["resource"] == "SKILL.md"
-    assert "skill.video_production" not in guide
     assert "视频制作入口指南" in guide
-    assert "skill.search" not in guide
-    assert "skill.get" not in guide
     assert "skills.list" in guide
     assert "skills.read" in guide
     assert "general_short_drama_workflow" in guide
@@ -192,15 +177,15 @@ async def test_video_production_hands_off_explicit_story_template_requests() -> 
     assert "故事模板图/视觉开发板" in result["contents"]
 
 
-def test_video_production_skill_uses_markdown_as_single_source() -> None:
-    module_source = Path("app/skills/video_production/__init__.py").read_text(encoding="utf-8")
+def test_builtin_skill_packages_do_not_use_python_wrappers() -> None:
+    skill_dirs = {
+        Path(str(item["skill_dir"]))
+        for item in skill_tools._build_unified_index()
+        if item.get("scope") == "builtin"
+    }
 
-    assert "register(" not in module_source
-    assert "skill.video_production" not in module_source
-    assert "skills.list/read" in module_source
-    assert "_FULL_GUIDE" not in module_source
-    assert "_MODEL_SUMMARY" not in module_source
-    assert "## 核心流程" not in module_source
+    assert skill_dirs
+    assert all(not (skill_dir / "__init__.py").exists() for skill_dir in skill_dirs)
 
 
 @pytest.mark.asyncio
@@ -215,7 +200,6 @@ async def test_story_template_method_is_separate_optional_guide() -> None:
     ).value
     assert "image" in full["contents"]
     assert "video" in full["contents"]
-    assert registry.get("skill.story_template_method") is None
 
 
 @pytest.mark.asyncio

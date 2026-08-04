@@ -33,14 +33,12 @@ def test_resolve_role_filters_custom_tools_to_readonly_only() -> None:
             "node.run",
             "project.reset",
             "tool.execute",
-            "skill.project_mentor",
             "feature.list",
         ],
     )
 
     assert preset["readonly"] is True
     assert "node.list" in preset["allowed_tools"]
-    assert "skill.project_mentor" not in preset["allowed_tools"]
     assert "feature.list" in preset["allowed_tools"]
     assert "node.run" not in preset["allowed_tools"]
     assert "project.reset" not in preset["allowed_tools"]
@@ -73,8 +71,8 @@ def test_node_producer_role_allows_scoped_worker_whitelist() -> None:
         "node_producer",
         [
             "project.get_state",
-            "skill.search",
-            "skill.get",
+            "skills.list",
+            "skills.read",
             "node.get",
             "node.create",
             "node.update",
@@ -89,13 +87,13 @@ def test_node_producer_role_allows_scoped_worker_whitelist() -> None:
     assert preset["include_tool_schemas"] is True
     assert preset["enforce_max_steps"] is True
     assert preset["allowed_tools"] == ["node.get", "node.update", "node.run", "vision.view_image"]
-    assert "skill.search" not in preset["allowed_tools"]
-    assert "skill.get" not in preset["allowed_tools"]
+    assert "skills.list" not in preset["allowed_tools"]
+    assert "skills.read" not in preset["allowed_tools"]
     assert "node.create" not in preset["allowed_tools"]
     assert "node.update" in preset["allowed_tools"]
     assert "node.run" in preset["allowed_tools"]
     assert "project.reset" not in preset["allowed_tools"]
-    assert preset["denied_tools"] == ["project.get_state", "skill.search", "skill.get", "node.create", "project.reset"]
+    assert preset["denied_tools"] == ["project.get_state", "skills.list", "skills.read", "node.create", "project.reset"]
 
 
 def test_workflow_roles_keep_preset_minimum_step_limit() -> None:
@@ -118,8 +116,8 @@ def test_workflow_spec_role_allows_only_template_selector_tools() -> None:
     preset = agent_tools._resolve_role(
         "workflow_spec",
         [
-            "skill.search",
-            "skill.get",
+            "skills.list",
+            "skills.read",
             "workflow.protocol_info",
             "workflow.template.resolve",
             "workflow.template.read",
@@ -145,8 +143,8 @@ def test_workflow_spec_role_allows_only_template_selector_tools() -> None:
         "workflow.spec.read",
     ]
     assert preset["denied_tools"] == [
-        "skill.search",
-        "skill.get",
+        "skills.list",
+        "skills.read",
         "workflow.protocol_info",
         "workflow.spec.start",
         "workflow.spec.append_steps",
@@ -260,8 +258,8 @@ async def test_workflow_spec_subagent_requests_10000_output_tokens(monkeypatch) 
 def test_subagent_project_id_injection_matches_tool_signature() -> None:
     assert agent_tools._subagent_tool_accepts_project_id("node.get") is True
     assert agent_tools._subagent_tool_accepts_project_id("project.get_state") is True
-    assert agent_tools._subagent_tool_accepts_project_id("skill.search") is False
-    assert agent_tools._subagent_tool_accepts_project_id("skill.get") is False
+    assert agent_tools._subagent_tool_accepts_project_id("skills.list") is False
+    assert agent_tools._subagent_tool_accepts_project_id("skills.read") is False
     assert agent_tools._subagent_tool_accepts_project_id("workflow.spec.apply_patch") is True
 
 
@@ -332,8 +330,8 @@ def test_node_producer_prompt_package_has_stable_prefix_and_cache_key() -> None:
     assert "补全并运行人物参考图节点" not in package_a["system"]
     assert "使用用户本轮给出的三面图规则" in package_a["task_message"]
     assert "node_producer 子 Agent" in package_a["system"]
-    assert "skill.get" not in package_a["system"]
-    assert "skill.search" not in package_a["system"]
+    assert "skills.list" not in package_a["system"]
+    assert "skills.read" not in package_a["system"]
     assert "node.run" in package_a["system"]
     assert "reference_node_ids" in package_a["system"]
     assert "上游节点只读引用" in package_a["system"]
@@ -677,7 +675,7 @@ def test_reviewer_is_general_readonly_checker() -> None:
 
     assert preset["readonly"] is True
     assert {"project.get_state", "task.list", "node.list", "node.get"} <= set(preset["allowed_tools"])
-    assert not any(name.startswith(("skill.", "skills.")) for name in preset["allowed_tools"])
+    assert not any(name.startswith("skills.") for name in preset["allowed_tools"])
     assert "通用只读审查" in preset["description"]
     assert "审查范围可以是节点图、视频流程、提示词、工具选择、trace 摘要、前端问题、配置或其他工程事项" in system
     assert "project.get_state、node.list、node.get" in system

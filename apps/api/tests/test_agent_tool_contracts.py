@@ -31,7 +31,6 @@ def test_generate_plan_keeps_node_first_core_surface() -> None:
     assert "node.run" in visible
     assert "skills.list" in visible
     assert "skills.read" in visible
-    assert "skill.video_production" not in visible
     assert "plan.propose" not in visible
     assert "tool.search" in visible
     assert "node.draw_character" not in visible
@@ -106,7 +105,6 @@ def test_agent_tool_surface_matches_node_first_contract() -> None:
     assert registry.tool_exposure("project.reset") == "core"
     assert registry.tool_exposure("skills.list") == "core"
     assert registry.tool_exposure("skills.read") == "core"
-    assert registry.tool_exposure("skill.video_production") == "unregistered"
     assert registry.tool_exposure("task.create") == "core"
     assert registry.tool_exposure("task.list") == "core"
     assert registry.tool_exposure("task.update") == "core"
@@ -664,8 +662,7 @@ def test_low_frequency_tools_are_deferred_and_reset_is_core() -> None:
     assert "tool.describe" in visible
     assert "tool.execute" in visible
 
-def test_project_mentor_is_a_standard_package_not_a_dedicated_tool() -> None:
-    assert registry.get("skill.project_mentor") is None
+def test_project_mentor_is_available_through_standard_skill_tools() -> None:
     assert registry.get("skills.list") is not None
     assert registry.get("skills.read") is not None
 
