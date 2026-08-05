@@ -33,6 +33,7 @@ from app.services.universal_adapter_config import (
     create_universal_adapter_binding,
     universal_adapter_cache_key,
 )
+from app.services.uma_result_store import archive_invocation_result
 
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -235,6 +236,7 @@ def _image_result(
     if not result.succeeded:
         return {**_result_error(result), **_result_metadata(binding, result)}
     images: list[dict[str, Any]] = []
+    unavailable_outputs = 0
     for output in result.outputs:
         if not isinstance(output, ImageOutput):
             continue
@@ -250,14 +252,12 @@ def _image_result(
         elif output.path is not None:
             try:
                 item["b64"] = base64.b64encode(output.path.read_bytes()).decode("ascii")
-            except OSError as exc:
-                return {
-                    "ok": False,
-                    "status": "failed",
-                    "error": f"cannot read UMA image output: {exc}",
-                    "error_kind": "artifact_read_failed",
-                    **_result_metadata(binding, result),
-                }
+            except OSError:
+                unavailable_outputs += 1
+                continue
+        elif not output.url:
+            unavailable_outputs += 1
+            continue
         images.append(item)
     if not images:
         return {
@@ -267,12 +267,17 @@ def _image_result(
             "error_kind": "protocol_mismatch",
             **_result_metadata(binding, result),
         }
-    return {
+    response = {
         "ok": True,
         "status": "completed",
         "images": images,
         **_result_metadata(binding, result),
     }
+    if unavailable_outputs:
+        response["partial_error"] = (
+            f"{unavailable_outputs} UMA image output(s) had no directly readable artifact"
+        )
+    return response
 
 
 def _suffix_for_output(kind: str, output: VideoOutput | AudioOutput | FileOutput) -> str:
@@ -373,6 +378,7 @@ class UniversalAdapterService:
                 media=media,
                 metadata={"project_id": project_id, "openreel_provider": binding.provider_name},
             )
+            await archive_invocation_result(project_id=project_id, result=result)
             return _image_result(binding, result)
         except Exception as exc:
             return self._configuration_failure(provider, exc)
@@ -718,10 +724,16 @@ class UniversalAdapterService:
     ) -> dict[str, Any]:
         binding = job.binding
         if not result.succeeded:
+            await archive_invocation_result(project_id=job.project_id, result=result)
             return {**_result_error(result), **_result_metadata(binding, result)}
         expected_type = VideoOutput if binding.kind == "video" else AudioOutput
-        outputs = [output for output in result.outputs if isinstance(output, expected_type)]
-        if not outputs:
+        indexed_outputs = [
+            (index, output)
+            for index, output in enumerate(result.outputs)
+            if isinstance(output, expected_type)
+        ]
+        if not indexed_outputs:
+            await archive_invocation_result(project_id=job.project_id, result=result)
             return {
                 "ok": False,
                 "status": "failed",
@@ -729,17 +741,41 @@ class UniversalAdapterService:
                 "error_kind": "protocol_mismatch",
                 **_result_metadata(binding, result),
             }
-        materialized = [
-            await self._materialize_output(
+        materialized: list[dict[str, Any]] = []
+        materialized_by_index: dict[int, dict[str, Any]] = {}
+        for output_index, output in indexed_outputs:
+            item = await self._materialize_output(
                 project_id=job.project_id,
                 kind=binding.kind,
                 output=output,
                 save_locally=job.save_locally,
                 limit=binding.options.max_output_bytes,
             )
-            for output in outputs
+            item["output_index"] = output_index
+            materialized.append(item)
+            materialized_by_index[output_index] = item
+        await archive_invocation_result(
+            project_id=job.project_id,
+            result=result,
+            materialized_outputs=materialized_by_index,
+        )
+        usable = [
+            (item, output)
+            for item, (_, output) in zip(materialized, indexed_outputs, strict=True)
+            if any(
+                item.get(key)
+                for key in ("url", "local_url", "local_path", "remote_url")
+            )
         ]
-        primary = materialized[0]
+        if not usable:
+            return {
+                "ok": False,
+                "status": "failed",
+                "error": f"UMA {binding.kind} outputs had no materializable artifact",
+                "error_kind": "artifact_unavailable",
+                **_result_metadata(binding, result),
+            }
+        primary, primary_output = usable[0]
         response = {
             "ok": True,
             "status": "completed",
@@ -748,12 +784,19 @@ class UniversalAdapterService:
             "local_path": primary.get("local_path"),
             "remote_url": primary.get("remote_url"),
             "mime_type": primary.get("mime_type"),
-            "duration": getattr(outputs[0], "duration_seconds", None),
+            "duration": getattr(primary_output, "duration_seconds", None),
             **_result_metadata(binding, result),
         }
+        unavailable_count = len(materialized) - len(usable)
+        if unavailable_count:
+            response["partial_error"] = (
+                f"{unavailable_count} UMA {binding.kind} output(s) had no materializable artifact"
+            )
+        usable_items = [item for item, _ in usable]
         if binding.kind == "audio":
-            response["audios"] = materialized
+            response["audios"] = usable_items
         elif binding.kind == "video":
+            response["videos"] = usable_items
             last_frame = next(
                 (output for output in result.outputs if isinstance(output, ImageOutput)),
                 None,
@@ -782,7 +825,27 @@ class UniversalAdapterService:
             "mime_type": output.mime_type,
             "duration": output.duration_seconds,
         }
+        if isinstance(output, VideoOutput):
+            base.update(
+                {
+                    "width": output.width,
+                    "height": output.height,
+                    "fps": output.fps,
+                }
+            )
+        else:
+            base["sample_rate_hz"] = output.sample_rate_hz
+        if output.data is None and output.path is None and not remote_url:
+            return {
+                **base,
+                "download_error": "UMA store-backed output cannot be resolved by OpenReel",
+            }
         if not save_locally:
+            if output.data is not None and output.path is None and not remote_url:
+                return {
+                    **base,
+                    "download_error": "inline UMA output requires local materialization",
+                }
             return base
 
         suffix = _suffix_for_output(kind, output)

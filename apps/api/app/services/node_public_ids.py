@@ -19,6 +19,16 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 
+_MODEL_PRIVATE_OUTPUT_KEYS = {
+    "adapter_resume_request",
+    "adapter_route",
+    "history",
+    "local_path",
+    "media_history",
+    "polls",
+    "usage",
+}
+
 
 def strip_node_id_marker(value: Any) -> str:
     text = str(value or "").strip()
@@ -123,6 +133,22 @@ def publicize_node_refs(value: Any, id_map: dict[str, str]) -> Any:
     return value
 
 
+def model_visible_node_output(value: Any) -> Any:
+    if isinstance(value, list):
+        return [model_visible_node_output(item) for item in value]
+    if isinstance(value, dict):
+        visible: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in _MODEL_PRIVATE_OUTPUT_KEYS:
+                continue
+            if key == "_subagent_usage":
+                visible[key] = item
+            else:
+                visible[key] = model_visible_node_output(item)
+        return visible
+    return value
+
+
 def model_visible_node_payload(
     node: dict[str, Any],
     id_map: dict[str, str] | None = None,
@@ -134,6 +160,9 @@ def model_visible_node_payload(
         for key, value in node.items()
         if key not in {"display_id", "project_id"}
     }
+    for key in ("output", "output_json"):
+        if key in payload:
+            payload[key] = model_visible_node_output(payload[key])
     payload["id"] = public_id
     return payload
 

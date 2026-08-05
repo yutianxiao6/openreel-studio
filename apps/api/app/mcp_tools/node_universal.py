@@ -35,6 +35,7 @@ from app.services.llm_service import LLMOutputTruncatedError, LLMService
 from app.services.node_public_ids import (
     internal_to_public_id_map,
     looks_like_public_node_id,
+    model_visible_node_output,
     model_visible_node_payload,
     public_node_id_from_dict,
     publicize_node_refs,
@@ -4917,8 +4918,11 @@ async def node_run(
 
     hidden_response_keys: set[str] = set()
 
-    def _visible_payload(payload: Any) -> Any:
+    def _stored_payload(payload: Any) -> Any:
         return _strip_transient_field_keys(payload, hidden_response_keys)
+
+    def _visible_payload(payload: Any) -> Any:
+        return model_visible_node_output(_stored_payload(payload))
 
     def _run_response(payload: dict[str, Any]) -> dict[str, Any]:
         payload = _visible_payload(payload)
@@ -5449,10 +5453,11 @@ async def node_run(
 
     if node_type in {"video", "audio"} and isinstance(result, dict) and result.get("status") in {"queued", "running"}:
         result = media_history.preserve_media_history(result, archived_output)
-        visible_result = _visible_payload(result)
+        stored_result = _stored_payload(result)
+        visible_result = model_visible_node_output(stored_result)
         await canvas_tools.update_node(
             node_id,
-            {"status": "running", "error_message": None, "output_data": visible_result},
+            {"status": "running", "error_message": None, "output_data": stored_result},
         )
         try:
             from app.agent.orchestrator import emit_canvas_event
@@ -5463,7 +5468,7 @@ async def node_run(
                     "payload": {
                         "id": node_id,
                         "status": "running",
-                        "output": visible_result,
+                        "output": stored_result,
                         "job_id": result.get("job_id"),
                     },
                 },
@@ -5495,8 +5500,9 @@ async def node_run(
 
     if node_type in {"image", "video", "audio"} and isinstance(result, dict):
         result = media_history.preserve_media_history(result, archived_output)
-    visible_result = _visible_payload(result)
+    stored_result = _stored_payload(result)
+    visible_result = model_visible_node_output(stored_result)
     await canvas_tools.update_node(
-        node_id, {"status": "completed", "output_data": visible_result},
+        node_id, {"status": "completed", "output_data": stored_result},
     )
     return _run_response({"node_id": node_id, "type": node_type, "result": visible_result})

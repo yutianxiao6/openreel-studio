@@ -463,6 +463,27 @@ def _video_output(
 ) -> dict[str, Any]:
     ok = bool(result.get("ok"))
     status = result.get("status") or ("completed" if ok else "failed")
+    raw_videos = result.get("videos") if isinstance(result.get("videos"), list) else []
+    projected_videos: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_videos):
+        if not isinstance(item, dict):
+            continue
+        projected_videos.append(
+            {
+                "asset_id": (asset_ids or [])[index] if index < len(asset_ids or []) else None,
+                "url": _video_display_url(item),
+                "local_url": item.get("local_url"),
+                "local_path": item.get("local_path"),
+                "remote_url": item.get("remote_url"),
+                "mime_type": item.get("mime_type"),
+                "duration": item.get("duration"),
+                "width": item.get("width"),
+                "height": item.get("height"),
+                "fps": item.get("fps"),
+                "output_index": item.get("output_index", index),
+                "download_error": item.get("download_error"),
+            }
+        )
     return {
         "ok": ok,
         "type": "video",
@@ -483,6 +504,7 @@ def _video_output(
         "local_url": result.get("local_url"),
         "local_path": result.get("local_path"),
         "remote_url": result.get("remote_url"),
+        "videos": projected_videos,
         "thumbnail_url": result.get("thumbnail_url"),
         "last_frame_url": result.get("last_frame_url"),
         "error": result.get("error"),
@@ -502,7 +524,27 @@ def _video_output(
     }
 
 
-async def _register_video_asset(
+def _video_asset_results(result: dict[str, Any]) -> list[dict[str, Any]]:
+    videos = result.get("videos")
+    if not isinstance(videos, list):
+        return [result]
+    items = [item for item in videos if isinstance(item, dict)]
+    if not items:
+        return [result]
+    output_count = len(items)
+    shared = {key: value for key, value in result.items() if key != "videos"}
+    return [
+        {
+            **shared,
+            **item,
+            "output_index": item.get("output_index", index),
+            "output_count": output_count,
+        }
+        for index, item in enumerate(items)
+    ]
+
+
+async def _register_video_assets(
     *,
     project_id: str,
     prompt: str,
@@ -516,48 +558,59 @@ async def _register_video_asset(
     duration_seconds: int,
     aspect_ratio: str | None,
     resolution: str | None,
-) -> str:
-    display_url = _video_display_url(result)
-    local_path = result.get("local_path")
-    asset = await register_asset(
-        project_id=project_id,
-        asset_type="video",
-        name=f"video-{(shot_id or uuid.uuid4().hex)[:8]}",
-        prompt=prompt,
-        model_name=result.get("model") or model or "video",
-        metadata={
-            "shot_id": shot_id,
-            "first_frame": first_frame_asset_id,
-            "last_frame": last_frame_asset_id,
-            "reference_images": refs_provided,
-            "resolved_reference_images": result.get("resolved_reference_images") or [],
-            "resolved_media_references": result.get("resolved_media_references") or [],
-            "aspect_ratio": aspect_ratio,
-            "resolution": result.get("resolution") or resolution,
-            "url": display_url,
-            "local_url": result.get("local_url"),
-            "local_path": local_path,
-            "remote_url": result.get("remote_url"),
-            "thumbnail_url": result.get("thumbnail_url"),
-            "duration_seconds": duration_seconds,
-            "status": result.get("status") or ("completed" if result.get("ok") else "failed"),
-            "provider": result.get("provider"),
-            "model": result.get("model") or model,
-            "job_id": result.get("job_id"),
-            "error": result.get("error"),
-            "error_kind": result.get("error_kind"),
-            "provider_msg": result.get("provider_msg"),
-            "usage": result.get("usage"),
-            "progress": result.get("progress"),
-            "polls": result.get("polls") or [],
-            "download_error": result.get("download_error"),
-        },
-        node_id=node_id,
-        url=display_url,
-        path=local_path,
-        mime_type="video/mp4" if display_url or local_path else None,
-    )
-    return asset["id"]
+) -> list[str]:
+    asset_ids: list[str] = []
+    for asset_position, item in enumerate(_video_asset_results(result)):
+        display_url = _video_display_url(item)
+        local_path = item.get("local_path")
+        output_index = int(item.get("output_index") or 0)
+        output_count = int(item.get("output_count") or 1)
+        suffix = f"-{asset_position + 1}" if output_count > 1 else ""
+        asset = await register_asset(
+            project_id=project_id,
+            asset_type="video",
+            name=f"video-{(shot_id or uuid.uuid4().hex)[:8]}{suffix}",
+            prompt=prompt,
+            model_name=item.get("model") or model or "video",
+            metadata={
+                "shot_id": shot_id,
+                "first_frame": first_frame_asset_id,
+                "last_frame": last_frame_asset_id,
+                "reference_images": refs_provided,
+                "resolved_reference_images": item.get("resolved_reference_images") or [],
+                "resolved_media_references": item.get("resolved_media_references") or [],
+                "aspect_ratio": aspect_ratio,
+                "resolution": item.get("resolution") or resolution,
+                "url": display_url,
+                "local_url": item.get("local_url"),
+                "local_path": local_path,
+                "remote_url": item.get("remote_url"),
+                "thumbnail_url": item.get("thumbnail_url"),
+                "duration_seconds": item.get("duration") or duration_seconds,
+                "status": item.get("status")
+                or ("completed" if item.get("ok") else "failed"),
+                "provider": item.get("provider"),
+                "model": item.get("model") or model,
+                "job_id": item.get("job_id"),
+                "error": item.get("error"),
+                "error_kind": item.get("error_kind"),
+                "provider_msg": item.get("provider_msg"),
+                "usage": item.get("usage"),
+                "progress": item.get("progress"),
+                "polls": item.get("polls") or [],
+                "download_error": item.get("download_error"),
+                "output_index": output_index,
+                "output_count": output_count,
+            },
+            node_id=node_id,
+            url=display_url,
+            path=local_path,
+            mime_type=(item.get("mime_type") or "video/mp4")
+            if display_url or local_path
+            else None,
+        )
+        asset_ids.append(asset["id"])
+    return asset_ids
 
 
 async def _background_video_poll(
@@ -658,9 +711,9 @@ async def _background_video_poll(
             )
             return
 
-    asset_id = None
+    asset_ids: list[str] = []
     if record_asset:
-        asset_id = await _register_video_asset(
+        asset_ids = await _register_video_assets(
             project_id=project_id,
             prompt=prompt,
             shot_id=shot_id,
@@ -677,8 +730,8 @@ async def _background_video_poll(
 
     output = _video_output(
         result,
-        asset_id=asset_id,
-        asset_ids=[asset_id] if asset_id else [],
+        asset_id=asset_ids[0] if asset_ids else None,
+        asset_ids=asset_ids,
         duration_seconds=duration_seconds,
         aspect_ratio=aspect_ratio,
         resolution=resolution,
@@ -1068,9 +1121,9 @@ async def generate_video(
             reference_images=refs_provided,
         )
 
-    asset_id = None
+    asset_ids: list[str] = []
     if record_asset:
-        asset_id = await _register_video_asset(
+        asset_ids = await _register_video_assets(
             project_id=project_id,
             prompt=prompt,
             shot_id=shot_id,
@@ -1086,8 +1139,8 @@ async def generate_video(
         )
     return _video_output(
         result,
-        asset_id=asset_id,
-        asset_ids=[asset_id] if asset_id else [],
+        asset_id=asset_ids[0] if asset_ids else None,
+        asset_ids=asset_ids,
         duration_seconds=duration_seconds,
         aspect_ratio=aspect_ratio,
         resolution=resolution,
@@ -1167,7 +1220,7 @@ def _audio_asset_results(result: dict[str, Any]) -> list[dict[str, Any]]:
         {
             **shared,
             **item,
-            "output_index": index,
+            "output_index": item.get("output_index", index),
             "output_count": output_count,
         }
         for index, item in enumerate(items)
