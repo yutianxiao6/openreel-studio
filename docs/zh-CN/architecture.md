@@ -79,7 +79,7 @@ storage/               上传、生成和导出资产（运行数据）
 
 ## Agent 与工具
 
-所有普通自然语言请求进入 Agent loop。模型先读取项目状态和需要的 Skill，再调用受权限控制的工具创建、修改或运行节点。后端负责安全确认、结构校验、持久化、上下文压缩和事件投递，不在模型外通过关键词猜测用户意图。
+所有普通自然语言请求进入 Agent loop。每个可用 Skill 的 `name`、`description` 和位置作为运行时目录自动注入；模型在用户显式点名或需求明显匹配 description 时读取完整 `SKILL.md`，再调用受权限控制的工具创建、修改或运行节点。后端负责安全确认、结构校验、持久化、上下文压缩和事件投递，不在模型外通过关键词猜测用户意图。
 
 高频创作能力保持为稳定核心工具；低频操作通过工具搜索按需加载。大工具结果写入文件，模型上下文只保留摘要和引用。
 
@@ -91,7 +91,7 @@ storage/               上传、生成和导出资产（运行数据）
 
 ## 媒体 Provider
 
-运行配置只保存 Provider、模型名、Base URL、Key 和协议 ID。图片、视频和音频 HTTP 请求结构放在 `config/*_provider_protocols/catalog.json`，由统一媒体服务读取。详细说明见 [模型接入](./model-providers.md)。
+运行配置只保存 Provider、模型名、Base URL、Key 以及 UMA 协议和目标引用。图片、视频和音频的 HTTP 请求、上传、轮询、状态判断与结果提取统一由 `config/universal_model_adapter/protocols/*.json` 和对应媒体 target catalog 声明。详细说明见 [模型接入](./model-providers.md)。
 
 ## 持久化与事件
 

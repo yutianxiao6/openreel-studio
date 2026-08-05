@@ -9,7 +9,7 @@ English · [简体中文](./README.md)
 
 **Bring the agent, node canvas, reusable workflows, and frame-based timeline into one creative desktop.**
 
-OpenReel Studio is an open-source, conversational workspace for AI video production. Start with a natural-language request and let the agent create and run visible text, image, video, and audio nodes. Build reusable production systems in the workflow editor, then finish the result in the built-in timeline.
+OpenReel Studio is an open-source, conversational workspace for AI video production. Start with a natural-language request and let the agent create and run visible text, image, video, and audio nodes. Block shots in the 3D Director Desk, build reusable production systems in the workflow editor, then finish the result in the built-in timeline.
 
 [Quick start](./docs/en/getting-started.md) · [User guide](./docs/en/user-guide.md) · [Workflows](./docs/en/workflows.md) · [External agents](./docs/en/agent-integrations.md) · [Architecture](./docs/en/architecture.md)
 
@@ -25,34 +25,39 @@ OpenReel Studio organizes that chain around three principles:
 - **Traceable dependencies**: references between characters, scenes, storyboards, and final videos are represented by edges.
 - **Local retries**: edit, run, retry, or replace one node without restarting the complete production.
 
-## One workspace, four ways to collaborate
+## One workspace, five ways to collaborate
 
 | Surface | Purpose |
 | --- | --- |
 | Project sessions | Create, switch, select, and manage projects from the collapsible left rail; every project keeps its own chat and canvas. |
 | Agent chat | Create, update, run, and review nodes with natural language; resize the chat pane when the workspace needs more room. |
 | Creation canvas | Inspect and edit the actual `text`, `image`, `video`, and `audio` deliverables and their dependencies. |
+| 3D Director Desk | Block spatial relationships with mannequins, common props, custom GLB assets, panoramas, and multiple cameras, then promote selected captures to the canvas. |
 | Workflows and editing | Reuse production methods in the workflow editor and finish picture and sound in the frame-based timeline. |
 
 ## From one request to a finished video
 
 1. **Describe the target**: provide the subject, duration, style, aspect ratio, and available material.
-2. **Create visible deliverables**: let the agent build script, character, scene, storyboard, video, or audio nodes.
-3. **Review and adjust locally**: inspect real previews, prompts, references, and result history, then rerun only the node that needs work.
-4. **Reuse the method**: save reliable steps as workflows with inputs, dependencies, collections, conditions, and loops.
-5. **Move into the timeline**: drag images, videos, and audio from the media pool onto tracks for arrangement and adjustment.
-6. **Export back to the canvas**: rendered output returns as a new final-video node that can continue into downstream work.
+2. **Block space and cameras**: when composition matters, arrange characters and props in the 3D Director Desk, switch cameras, and save composition references.
+3. **Create visible deliverables**: let the agent build script, character, scene, storyboard, video, or audio nodes.
+4. **Review and adjust locally**: inspect real previews, prompts, references, and result history, then rerun only the node that needs work.
+5. **Reuse the method**: save reliable steps as workflows with inputs, dependencies, collections, conditions, and loops.
+6. **Move into the timeline**: drag images, videos, and audio from the media pool onto tracks for arrangement and adjustment.
+7. **Export back to the canvas**: rendered output returns as a new final-video node that can continue into downstream work.
 
 ## Core capabilities
 
 | Capability | Current implementation |
 | --- | --- |
 | Node-first creation | User-visible text, image, video, and audio nodes are the source of truth for creative work. |
+| Standard Skill runtime | Discover built-in and user `skills/<skill-name>/SKILL.md` packages automatically; load explicit names directly and read a complete Skill on demand when its frontmatter `description` clearly matches the request. |
 | Real visual references | Distinguish pixels shown to a prompt model, visual references used by a media model, and direct source-image adoption. |
 | Generation and history | Run and retry nodes independently and restore previous results without replacing the latest successful preview on failure. |
+| 3D Director Desk | Use articulated and animated mannequins, common 3D props, custom GLB assets, panoramas, multiple cameras, and a capture timeline; promote captures as ordinary image reference nodes. |
 | Workflow V2 | Dynamic inputs, `needs`, media `uses`, collection expansion, conditional branches, and bounded feedback loops. |
 | Dynamic media settings | Models, aspect ratios, exact pixels, quality, and frame rate travel with the current front-end run instead of polluting reusable specs. |
-| Provider flexibility | Configure LLM, image, video, and audio services independently; video runs exclusively through the Universal Model Adapter submodule for requests, uploads, provider polling, and result parsing, while image/audio retain their current declarative protocols. |
+| Unified media protocols | Image, audio, and video all use Universal Model Adapter for requests, uploads, polling, status interpretation, and result extraction; OpenReel owns node lifecycle and materialization, archives complete results outside model context, and returns only bounded projections. |
+| In-card audio playback | Play an audio node directly on its card with the built-in player and live frequency display; multiple upstream audio outputs are all retained locally. |
 | Frame-based editing | Drag-in media, snapping, track arrangement, trims, splits, joins, real filmstrips, and real audio waveforms. |
 | Picture and sound | Position, scale, rotation, opacity, rectangular crop, gain, mute, and fades. |
 | Local and desktop runtime | Run from source, deploy with Docker, or install on Windows, Linux, and macOS. |
@@ -61,6 +66,10 @@ OpenReel Studio organizes that chain around three principles:
 ## Product views
 
 These screenshots come from the current running product and use a dedicated public demo project.
+
+### 3D Director Desk
+
+The Director Desk blocks characters, props, environments, and cameras before final generation. Captures stay in its internal timeline until the user chooses **Add to canvas**, which creates an ordinary `image` composition-reference node; a capture never becomes a video first frame automatically.
 
 ### Reusable workflows
 

@@ -35,10 +35,10 @@ PYTHONPATH=. uv run pytest -q
 | Agent 调度 | `apps/api/app/agent` |
 | 原子工具 | `apps/api/app/mcp_tools` |
 | 视频制作知识 | Skill 或 workflow template |
-| 媒体 HTTP 协议 | `config/*_provider_protocols/catalog.json` |
+| 媒体 HTTP 协议 | `config/universal_model_adapter/protocols/*.json` 和对应媒体 target catalog |
 | 可复用工作流 | `workflow_templates/user` 或内置 Skill 模板 |
 
-业务流程和提示词知识优先放进 Skill，不要把长教程写进每轮 system prompt。可以由 schema、validator 或权限策略确定的规则，优先用代码和测试保证。
+业务流程和提示词知识优先放进 Skill，不要把长教程写进每轮 system prompt。Skill 使用 `skills/<skill-name>/SKILL.md` 标准包结构，YAML frontmatter 必须提供 `name` 和 `description`；运行时自动注入目录摘要，显式点名或 description 明显匹配时才读取完整正文和所需资源。可以由 schema、validator 或权限策略确定的规则，优先用代码和测试保证。
 
 ## 提交前检查
 

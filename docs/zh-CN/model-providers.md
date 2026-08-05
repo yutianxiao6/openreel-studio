@@ -2,7 +2,7 @@
 
 [English](../en/model-providers.md) · [中文文档首页](../README.md) · [使用指南](./user-guide.md)
 
-本文只说明 OpenReel 的设置页和运行时边界。视频线协议的详细写法统一由
+本文只说明 OpenReel 的设置页和运行时边界。媒体线协议的详细写法统一由
 Universal Model Adapter 子仓维护，请阅读子仓的
 [OpenReel 视频集成指南](https://github.com/yutianxiao6/universal-model-adapter/blob/main/docs/zh-CN/openreel-integration.md)。
 

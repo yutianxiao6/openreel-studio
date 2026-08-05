@@ -2,7 +2,7 @@
 
 English · [简体中文](../zh-CN/model-providers.md) · [Documentation home](../README.en.md) · [User guide](./user-guide.md)
 
-This guide covers the OpenReel settings and runtime boundary. Detailed video
+This guide covers the OpenReel settings and runtime boundary. Detailed media
 wire-protocol authoring belongs to the Universal Model Adapter submodule and is
 documented in its [OpenReel video integration guide](https://github.com/yutianxiao6/universal-model-adapter/blob/main/docs/en/openreel-integration.md).
 

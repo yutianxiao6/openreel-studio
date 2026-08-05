@@ -79,7 +79,7 @@ Node fields contain prompts, model settings, status, references, and outputs. `f
 
 ## Agent and tools
 
-Ordinary natural-language requests enter the agent loop. The model reads project state and relevant skills, then invokes permission-controlled tools to create, update, and run nodes. The backend enforces safety confirmation, schemas, persistence, context limits, and event delivery without guessing business intent through keyword routing.
+Ordinary natural-language requests enter the agent loop. The runtime injects a catalog containing each available Skill's `name`, `description`, and location. When the user names a Skill explicitly or the request clearly matches its description, the model reads the complete `SKILL.md` before invoking permission-controlled tools to create, update, and run nodes. The backend enforces safety confirmation, schemas, persistence, context limits, and event delivery without guessing business intent through keyword routing.
 
 Frequently used creative tools stay in a stable core surface. Lower-frequency capabilities are discovered and loaded on demand. Large tool results are stored outside the model context, which retains only summaries and references.
 
@@ -91,7 +91,7 @@ See the [Workflow Spec protocol](../workflow-spec-protocol.md).
 
 ## Media providers
 
-Runtime configuration stores provider identity, model name, base URL, key, and protocol ID. Declarative HTTP request behavior for image, video, and audio providers lives in `config/*_provider_protocols/catalog.json` and is executed by shared media services. See [Model providers](./model-providers.md).
+Runtime configuration stores provider identity, model name, base URL, key, and UMA protocol/target references. Image, video, and audio HTTP requests, uploads, polling, status interpretation, and result extraction are declared by `config/universal_model_adapter/protocols/*.json` and the corresponding media target catalogs. See [Model providers](./model-providers.md).
 
 ## Persistence and events
 

@@ -66,12 +66,12 @@ Open `http://localhost:3000`. The API listens on `http://localhost:8000` by defa
 1. Open Settings from the application header.
 2. Add at least one LLM provider, choose its tier, and set the tier default.
 3. Add image, video, or audio providers as needed.
-4. For video, select an explicit UMA protocol and model target; for image or audio, select the matching OpenReel Catalog protocol.
+4. For every image, video, or audio Provider, select the UMA protocol and model target that match the provider API.
 5. Save, create a project, verify the Agent with a small request, then verify each external media service with a minimal node run.
 
 Local `config/runtime.jsonc` is the configuration source of truth. Prefer the Settings UI and never commit real API keys.
 
-Settings has no separate connection-test button. Saving confirms local validation; a minimal node run confirms end-to-end provider access. See [Model configuration and provider protocols](./model-providers.md) for fields, Base URL rules, the video UMA boundary, and image/audio Catalog guidance.
+Settings has no separate connection-test button. Saving confirms local validation; a minimal node run confirms end-to-end provider access. See [Model configuration and provider protocols](./model-providers.md) for fields, Base URL rules, and the unified media UMA boundary.
 
 ## Docker
 

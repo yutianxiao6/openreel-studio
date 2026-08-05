@@ -35,10 +35,10 @@ Frontend interaction changes require a real-browser pass and a screenshot of the
 | Agent orchestration | `apps/api/app/agent` |
 | Atomic tools | `apps/api/app/mcp_tools` |
 | Video-production knowledge | Skills or workflow templates |
-| Media HTTP protocols | `config/*_provider_protocols/catalog.json` |
+| Media HTTP protocols | `config/universal_model_adapter/protocols/*.json` and the corresponding media target catalog |
 | Reusable workflows | `workflow_templates/user` or built-in skill templates |
 
-Business process and prompt-writing knowledge should live in skills rather than the stable per-turn system prompt. Rules that can be enforced by schemas, validators, or permission policy should be implemented and tested there.
+Business process and prompt-writing knowledge should live in Skills rather than the stable per-turn system prompt. A Skill uses the standard `skills/<skill-name>/SKILL.md` package layout with required `name` and `description` YAML frontmatter. The runtime injects catalog summaries automatically and reads the complete body and required resources only for an explicit name or a clear description match. Rules that can be enforced by schemas, validators, or permission policy should be implemented and tested there.
 
 ## Before committing
 
