@@ -9146,23 +9146,37 @@ function isAudioUrl(value: unknown): value is string {
   return typeof value === "string" && /\.(mp3|wav|m4a|aac|ogg|flac)(?:\?|#|$)/i.test(value)
 }
 
-function previewAudioFromNode(node: FlowNode | undefined): { src: string } | null {
+function previewAudiosFromNode(node: FlowNode | undefined): Array<{ src: string }> {
   const data = node?.data as { type?: string; preview?: Record<string, unknown>; output?: unknown } | undefined
-  if (data?.type !== "audio") return null
+  if (data?.type !== "audio") return []
   const candidates = [data.preview, previewObject(data.output)].filter(Boolean) as Record<string, unknown>[]
+  const audios: Array<{ src: string }> = []
+  const seen = new Set<string>()
+  const push = (item: Record<string, unknown> | null | undefined) => {
+    const src = previewUrlFromObject(item, ["local_url", "url", "remote_url"])
+    if (!src || seen.has(src)) return
+    seen.add(src)
+    audios.push({ src })
+  }
   for (const item of candidates) {
     if (item.type === "fusion" && Array.isArray(item.stages)) {
-      const stage = (item.stages as Record<string, unknown>[]).find((stageItem) => (
+      const stages = (item.stages as Record<string, unknown>[]).filter((stageItem) => (
         /音频|audio|sound|music/i.test(String(stageItem.name ?? "")) &&
         previewUrlFromObject(stageItem, ["local_url", "url", "remote_url"])
       ))
-      const src = previewUrlFromObject(stage, ["local_url", "url", "remote_url"])
-      if (src) return { src }
+      stages.forEach(push)
+    }
+    if (Array.isArray(item.audios)) {
+      item.audios.forEach((audio) => push(previewObject(audio)))
     }
     const src = previewUrlFromObject(item, ["local_url", "url", "remote_url"])
-    if (src && (item.type === "audio" || isAudioUrl(src))) return { src }
+    if (src && (item.type === "audio" || isAudioUrl(src))) push(item)
   }
-  return null
+  return audios
+}
+
+function previewAudioFromNode(node: FlowNode | undefined): { src: string } | null {
+  return previewAudiosFromNode(node)[0] ?? null
 }
 
 function mediaOperationSourceNodeIdFromNode(node: FlowNode | undefined): string | undefined {
@@ -9417,7 +9431,7 @@ function NodeOutputPreviewCard({
     : ""
   const imageUrl = type === "image" ? previewImageUrlFromNode(node) : ""
   const video = type === "video" ? previewVideoFromNode(node) : null
-  const audio = type === "audio" ? previewAudioFromNode(node) : null
+  const audios = type === "audio" ? previewAudiosFromNode(node) : []
   const [textDraft, setTextDraft] = useState(textValue)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -9577,7 +9591,7 @@ function NodeOutputPreviewCard({
               </div>
             )
           ) : type === "audio" ? (
-            audio?.src ? (
+            audios.length > 0 ? (
               <div className={NODE_PREVIEW_LAYOUT_CLASS}>
                 <div className="flex min-h-0 flex-col gap-2.5">
                   <PreviewSpecRail entries={specEntries} />
@@ -9591,7 +9605,16 @@ function NodeOutputPreviewCard({
                         />
                       ))}
                     </div>
-                    <audio controls className="w-full max-w-2xl [color-scheme:dark]" src={audio.src} />
+                    <div className="w-full max-w-2xl space-y-3">
+                      {audios.map((audio, index) => (
+                        <div key={audio.src} className="rounded-lg border border-white/[0.08] bg-black/30 p-3">
+                          <div className="mb-2 text-xs font-medium text-zinc-400">
+                            {audios.length > 1 ? `音频 ${index + 1}` : "音频"}
+                          </div>
+                          <audio controls className="w-full [color-scheme:dark]" src={audio.src} />
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
                 <PreviewPromptPanel prompt={info.prompt} />

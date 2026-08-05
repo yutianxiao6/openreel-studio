@@ -39,9 +39,8 @@
       "accept_http": [200],
       "read": {
         "status": "/json/data/status",
-        "success": ["success", "succeeded", "completed", "done"],
-        "failure": ["fail", "failed", "failure", "error", "cancelled", "canceled", "expired"],
-        "progress": "/json/data/progress",
+        "success": ["success", "succeeded", "completed", "done", "SUCCESS", "SUCCEEDED", "COMPLETED", "DONE"],
+        "failure": ["fail", "failed", "failure", "error", "cancelled", "canceled", "expired", "FAIL", "FAILED", "FAILURE", "ERROR", "CANCELLED", "CANCELED", "EXPIRED"],
         "error_message": "/json/data/fail_reason",
         "error_code": "/json/code",
         "artifacts": {

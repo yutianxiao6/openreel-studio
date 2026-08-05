@@ -41,9 +41,8 @@
       "accept_http": [200],
       "read": {
         "status": "/json/data/status",
-        "success": ["success", "succeeded", "completed", "complete", "done"],
-        "failure": ["failed", "failure", "error", "cancelled", "canceled", "expired", "create_task_failed", "generate_audio_failed", "submit_failed"],
-        "progress": "/json/data/progress",
+        "success": ["success", "succeeded", "completed", "complete", "done", "SUCCESS", "SUCCEEDED", "COMPLETED", "COMPLETE", "DONE"],
+        "failure": ["failed", "failure", "error", "cancelled", "canceled", "expired", "create_task_failed", "generate_audio_failed", "submit_failed", "FAILED", "FAILURE", "ERROR", "CANCELLED", "CANCELED", "EXPIRED", "CREATE_TASK_FAILED", "GENERATE_AUDIO_FAILED", "SUBMIT_FAILED"],
         "error_message": "/json/data/error",
         "error_code": "/json/code",
         "artifacts": {

@@ -99,6 +99,7 @@ interface PreviewData {
   grid?: { rows?: number; cols?: number }
   cells?: ImageGridPreviewCell[]
   prompt?: string
+  audios?: unknown[]
 }
 
 interface NodeData {
@@ -205,23 +206,49 @@ function videoFromPreview(preview?: PreviewData): { src: string; poster?: string
   return null
 }
 
-function audioFromPreview(preview?: PreviewData): { src: string; format?: string; duration?: string } | null {
-  if (!preview) return null
+interface AudioPreviewItem {
+  src: string
+  format?: string
+  duration?: string
+}
+
+function audiosFromPreview(preview?: PreviewData): AudioPreviewItem[] {
+  if (!preview) return []
   if (preview.type === "fusion" && Array.isArray(preview.stages)) {
     const audioStage = preview.stages.find((stage) => {
       const src = stage.local_url || stage.url || stage.remote_url
       return /音频|audio|sound/i.test(stage.name ?? "") && typeof src === "string" && src.length > 0
     })
     const src = audioStage ? resolveMediaUrl(audioStage.local_url || audioStage.url || audioStage.remote_url) : ""
-    return src ? { src, duration: audioStage?.duration_seconds ? `${audioStage.duration_seconds}s` : undefined } : null
+    return src ? [{ src, duration: audioStage?.duration_seconds ? `${audioStage.duration_seconds}s` : undefined }] : []
+  }
+  const items: AudioPreviewItem[] = []
+  const seen = new Set<string>()
+  const push = (value: unknown, fallback?: PreviewData) => {
+    const item = objectFromUnknown(value)
+    const rawSrc = item
+      ? item.local_url || item.url || item.remote_url
+      : typeof value === "string" ? value : undefined
+    const src = resolveMediaUrl(typeof rawSrc === "string" ? rawSrc : undefined)
+    if (!src || seen.has(src)) return
+    seen.add(src)
+    const format = typeof item?.format === "string"
+      ? item.format
+      : typeof fallback?.format === "string" ? fallback.format : undefined
+    const durationValue = item?.duration ?? item?.duration_seconds ?? fallback?.duration_seconds
+    items.push({
+      src,
+      format,
+      duration: durationValue != null ? `${durationValue}s` : undefined,
+    })
+  }
+  if (Array.isArray(preview.audios)) {
+    preview.audios.forEach((item) => push(item, preview))
   }
   if (preview.type === "audio" || [preview.local_url, preview.url, preview.remote_url].some((item) => typeof item === "string" && /\.(mp3|wav|m4a|aac|ogg|flac)(\?|#|$)/i.test(item))) {
-    const src = resolveMediaUrl(preview.local_url || preview.url || preview.remote_url)
-    const format = typeof preview.format === "string" ? preview.format : undefined
-    const duration = preview.duration_seconds != null ? `${preview.duration_seconds}s` : undefined
-    return src ? { src, format, duration } : null
+    push(preview, preview)
   }
-  return null
+  return items
 }
 
 function objectFromUnknown(value: unknown): Record<string, unknown> | null {
@@ -589,7 +616,10 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const isMediaNode = data.type === "image" || data.type === "video" || data.type === "audio"
   const image = imageFromPreview(data.preview)
   const video = videoFromPreview(data.preview)
-  const audio = audioFromPreview(data.preview)
+  const audioTracks = audiosFromPreview(data.preview)
+  const audioTrackSignature = audioTracks.map((item) => item.src).join("|")
+  const [audioTrackIndex, setAudioTrackIndex] = useState(0)
+  const audio = audioTracks[Math.min(audioTrackIndex, Math.max(0, audioTracks.length - 1))] ?? null
   const mediaProgress = mediaProgressFromPreview(data.preview)
   const [naturalImage, setNaturalImage] = useState<{ src: string; width: number; height: number } | null>(null)
   const [naturalVideo, setNaturalVideo] = useState<{ src: string; width: number; height: number } | null>(null)
@@ -851,9 +881,10 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
 
   useEffect(() => {
     setCardAudioPlaying(false)
+    setAudioTrackIndex(0)
     stopAudioFrequencyAnimation()
     if (!audioAnalyserRef.current) audioAnalysisUnavailableRef.current = false
-  }, [audio?.src, stopAudioFrequencyAnimation])
+  }, [audioTrackSignature, stopAudioFrequencyAnimation])
 
   useEffect(() => () => {
     stopAudioFrequencyAnimation(false)
@@ -1481,6 +1512,33 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
                   <span className="ml-0.5 h-0 w-0 border-y-[9px] border-l-[14px] border-y-transparent border-l-white" />
                 )}
               </button>
+              {audioTracks.length > 1 && (
+                <div className="nodrag absolute bottom-2 left-1/2 z-30 flex -translate-x-1/2 items-center gap-1 rounded-full border border-white/12 bg-black/65 p-1 shadow-lg shadow-black/25 backdrop-blur">
+                  {audioTracks.map((track, index) => (
+                    <button
+                      key={track.src}
+                      type="button"
+                      aria-label={`播放第 ${index + 1} 条音频`}
+                      aria-pressed={index === audioTrackIndex}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        audioRef.current?.pause()
+                        setAudioTrackIndex(index)
+                      }}
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      className={cn(
+                        "flex h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-[10px] font-semibold transition",
+                        index === audioTrackIndex
+                          ? "bg-amber-200 text-zinc-950"
+                          : "text-zinc-300 hover:bg-white/10 hover:text-white",
+                      )}
+                    >
+                      {index + 1}
+                    </button>
+                  ))}
+                </div>
+              )}
               {isRunning && (
                 <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/38 backdrop-blur-[1px]">
                   <div className="flex min-w-[150px] items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">

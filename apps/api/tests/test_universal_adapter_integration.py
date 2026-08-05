@@ -54,13 +54,21 @@ def _service_with_binding(
     provider: SimpleNamespace,
     provider_params: dict[str, Any],
     handler: Any,
+    *,
+    download_handler: Any | None = None,
 ) -> tuple[UniversalAdapterService, Any]:
     binding = create_universal_adapter_binding(
         provider,
         provider_params,
         transport=httpx.MockTransport(handler),
     )
-    service = UniversalAdapterService()
+    if download_handler is None:
+        service = UniversalAdapterService()
+    else:
+        service = UniversalAdapterService(
+            download_client=httpx.AsyncClient(transport=httpx.MockTransport(download_handler)),
+        )
+        service._owns_download_client = True
     service._bindings[universal_adapter_cache_key(provider, provider_params)] = binding
     return service, binding
 
@@ -631,9 +639,16 @@ async def test_audio_provider_materializes_binary_output_in_openreel_storage(
 
 
 @pytest.mark.asyncio
-async def test_suno_audio_provider_uses_uma_task_protocol() -> None:
+async def test_suno_audio_provider_uses_uma_task_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     polls = 0
     submitted_body: dict[str, Any] = {}
+    audio_bytes = {
+        "/song-a.mp3": b"openreel-suno-audio-a",
+        "/song-b.mp3": b"openreel-suno-audio-b",
+    }
 
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal polls
@@ -645,7 +660,7 @@ async def test_suno_audio_provider_uses_uma_task_protocol() -> None:
         if polls == 1:
             return httpx.Response(
                 200,
-                json={"code": "success", "data": {"status": "processing", "progress": 30}},
+                json={"code": "success", "data": {"status": "IN_PROGRESS", "progress": "30%"}},
                 request=request,
             )
         return httpx.Response(
@@ -653,8 +668,8 @@ async def test_suno_audio_provider_uses_uma_task_protocol() -> None:
             json={
                 "code": "success",
                 "data": {
-                    "status": "success",
-                    "progress": 100,
+                    "status": "SUCCESS",
+                    "progress": "100%",
                     "data": [
                         {
                             "audio_url": "https://assets.example.invalid/song-a.mp3",
@@ -670,6 +685,15 @@ async def test_suno_audio_provider_uses_uma_task_protocol() -> None:
             request=request,
         )
 
+    async def download_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=audio_bytes[request.url.path],
+            headers={"content-type": "audio/mpeg"},
+            request=request,
+        )
+
+    monkeypatch.setattr(settings, "STORAGE_PATH", str(tmp_path))
     provider, provider_params = _provider(
         kind="audio",
         protocol_id="newapi.suno-music-task",
@@ -677,7 +701,12 @@ async def test_suno_audio_provider_uses_uma_task_protocol() -> None:
         model="V5",
         uma={"target_profile_id": "newapi.suno-music-task:generic"},
     )
-    service, _ = _service_with_binding(provider, provider_params, handler)
+    service, _ = _service_with_binding(
+        provider,
+        provider_params,
+        handler,
+        download_handler=download_handler,
+    )
     try:
         result = await service.submit_audio(
             provider=provider,
@@ -688,7 +717,7 @@ async def test_suno_audio_provider_uses_uma_task_protocol() -> None:
             style="cinematic pop",
             instrumental=True,
             extra={"mv": "chirp-v4"},
-            save_locally=False,
+            save_locally=True,
             wait_for_completion=True,
         )
     finally:
@@ -706,6 +735,11 @@ async def test_suno_audio_provider_uses_uma_task_protocol() -> None:
         "https://assets.example.invalid/song-a.mp3",
         "https://assets.example.invalid/song-b.mp3",
     ]
+    assert [Path(item["local_path"]).read_bytes() for item in result["audios"]] == [
+        audio_bytes["/song-a.mp3"],
+        audio_bytes["/song-b.mp3"],
+    ]
+    assert len({item["local_url"] for item in result["audios"]}) == 2
     assert result["duration"] == 42.5
     assert polls == 2
 

@@ -1183,6 +1183,7 @@ function parseOutputPreview(outputJson: unknown, nodeType?: unknown): Record<str
         progress: data.progress,
         poll_status: data.poll_status,
         poll_count: data.poll_count,
+        audios: Array.isArray(data.audios) ? data.audios : undefined,
       }
     }
     if (

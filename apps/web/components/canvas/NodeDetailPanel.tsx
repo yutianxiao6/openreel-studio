@@ -6658,18 +6658,22 @@ function TypedRenderer({
   }
 
   if (type === "audio") {
-    const media = collectMedia(outObj)
-    const audio = media.find((item) => item.kind === "audio")
+    const audios = collectMedia(outObj).filter((item) => item.kind === "audio")
     const prompt = pickPromptText(topPrompt, inObj, outObj)
     const refs = pickReferences(inObj, outObj)
     return (
       <div className="space-y-3">
-        {audio ? (
-          <Section title={audio.label || "音频预览"}>
-            <InlineAudioPreview
-              src={audio.src}
-              title={audio.label || node.title || "音频预览"}
-            />
+        {audios.length > 0 ? (
+          <Section title={audios.length > 1 ? `音频预览 (${audios.length})` : audios[0].label || "音频预览"}>
+            <div className="space-y-2">
+              {audios.map((audio, index) => (
+                <InlineAudioPreview
+                  key={audio.src}
+                  src={audio.src}
+                  title={audio.label || `${node.title || "音频预览"} ${index + 1}`}
+                />
+              ))}
+            </div>
             <ReferenceThumbStrip refs={refs} projectId={projectId} setLightbox={setLightbox} />
           </Section>
         ) : (

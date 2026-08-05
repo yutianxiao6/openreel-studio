@@ -1154,7 +1154,27 @@ def _audio_output(
     }
 
 
-async def _register_audio_asset(
+def _audio_asset_results(result: dict[str, Any]) -> list[dict[str, Any]]:
+    audios = result.get("audios")
+    if not isinstance(audios, list):
+        return [result]
+    items = [item for item in audios if isinstance(item, dict)]
+    if not items:
+        return [result]
+    output_count = len(items)
+    shared = {key: value for key, value in result.items() if key != "audios"}
+    return [
+        {
+            **shared,
+            **item,
+            "output_index": index,
+            "output_count": output_count,
+        }
+        for index, item in enumerate(items)
+    ]
+
+
+async def _register_audio_assets(
     *,
     project_id: str,
     prompt: str,
@@ -1166,50 +1186,54 @@ async def _register_audio_asset(
     instrumental: bool | None,
     duration_seconds: int | None,
     audio_format: str | None,
-) -> str:
-    display_url = _audio_display_url(result)
-    local_path = result.get("local_path")
-    mime_type = (result.get("mime_type") or "audio/mpeg") if (display_url or local_path) else None
-    asset = await register_asset(
-        project_id=project_id,
-        asset_type="audio",
-        name=f"audio-{uuid.uuid4().hex[:8]}",
-        prompt=prompt,
-        model_name=result.get("model") or model or "audio",
-        metadata={
-            "title": title,
-            "style": style,
-            "instrumental": instrumental,
-            "voice": result.get("voice"),
-            "speed": result.get("speed"),
-            "instructions": result.get("instructions"),
-            "duration_seconds": result.get("duration") or duration_seconds,
-            "format": result.get("format") or audio_format,
-            "url": display_url,
-            "local_url": result.get("local_url"),
-            "local_path": local_path,
-            "remote_url": result.get("remote_url"),
-            "stream_audio_url": result.get("stream_audio_url"),
-            "source_audio_url": result.get("source_audio_url"),
-            "image_url": result.get("image_url"),
-            "status": result.get("status") or ("completed" if result.get("ok") else "failed"),
-            "provider": result.get("provider"),
-            "model": result.get("model") or model,
-            "job_id": result.get("job_id"),
-            "error": result.get("error"),
-            "error_kind": result.get("error_kind"),
-            "provider_msg": result.get("provider_msg"),
-            "progress": result.get("progress"),
-            "polls": result.get("polls") or [],
-            "download_error": result.get("download_error"),
-            "audios": result.get("audios") if isinstance(result.get("audios"), list) else [],
-        },
-        node_id=node_id,
-        url=display_url,
-        path=local_path,
-        mime_type=mime_type,
-    )
-    return asset["id"]
+) -> list[str]:
+    asset_ids: list[str] = []
+    for item in _audio_asset_results(result):
+        display_url = _audio_display_url(item)
+        local_path = item.get("local_path")
+        mime_type = (item.get("mime_type") or "audio/mpeg") if (display_url or local_path) else None
+        asset = await register_asset(
+            project_id=project_id,
+            asset_type="audio",
+            name=f"audio-{uuid.uuid4().hex[:8]}",
+            prompt=prompt,
+            model_name=item.get("model") or model or "audio",
+            metadata={
+                "title": title,
+                "style": style,
+                "instrumental": instrumental,
+                "voice": item.get("voice"),
+                "speed": item.get("speed"),
+                "instructions": item.get("instructions"),
+                "duration_seconds": item.get("duration") or duration_seconds,
+                "format": item.get("format") or audio_format,
+                "url": display_url,
+                "local_url": item.get("local_url"),
+                "local_path": local_path,
+                "remote_url": item.get("remote_url"),
+                "stream_audio_url": item.get("stream_audio_url"),
+                "source_audio_url": item.get("source_audio_url"),
+                "image_url": item.get("image_url"),
+                "status": item.get("status") or ("completed" if item.get("ok") else "failed"),
+                "provider": item.get("provider"),
+                "model": item.get("model") or model,
+                "job_id": item.get("job_id"),
+                "error": item.get("error"),
+                "error_kind": item.get("error_kind"),
+                "provider_msg": item.get("provider_msg"),
+                "progress": item.get("progress"),
+                "polls": item.get("polls") or [],
+                "download_error": item.get("download_error"),
+                "output_index": item.get("output_index", 0),
+                "output_count": item.get("output_count", 1),
+            },
+            node_id=node_id,
+            url=display_url,
+            path=local_path,
+            mime_type=mime_type,
+        )
+        asset_ids.append(asset["id"])
+    return asset_ids
 
 
 async def _background_audio_poll(
@@ -1268,9 +1292,9 @@ async def _background_audio_poll(
         ),
     )
 
-    asset_id = None
+    asset_ids: list[str] = []
     if record_asset:
-        asset_id = await _register_audio_asset(
+        asset_ids = await _register_audio_assets(
             project_id=project_id,
             prompt=prompt,
             node_id=node_id,
@@ -1285,8 +1309,8 @@ async def _background_audio_poll(
 
     output = _audio_output(
         result,
-        asset_id=asset_id,
-        asset_ids=[asset_id] if asset_id else [],
+        asset_id=asset_ids[0] if asset_ids else None,
+        asset_ids=asset_ids,
         prompt=prompt,
         title=title,
         style=style,
@@ -1409,9 +1433,9 @@ async def generate_audio(
             audio_format=audio_format,
         )
 
-    asset_id = None
+    asset_ids: list[str] = []
     if record_asset:
-        asset_id = await _register_audio_asset(
+        asset_ids = await _register_audio_assets(
             project_id=project_id,
             prompt=prompt,
             node_id=node_id,
@@ -1425,8 +1449,8 @@ async def generate_audio(
         )
     return _audio_output(
         result,
-        asset_id=asset_id,
-        asset_ids=[asset_id] if asset_id else [],
+        asset_id=asset_ids[0] if asset_ids else None,
+        asset_ids=asset_ids,
         prompt=prompt,
         title=title,
         style=style,

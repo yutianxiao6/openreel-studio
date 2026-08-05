@@ -101,8 +101,14 @@ def test_video_sound_control_follows_the_selected_protocol_capability() -> None:
 
 def test_audio_node_card_has_embedded_playback_and_live_frequency_visualizer() -> None:
     nodes = read("components/canvas/SmartNode.tsx")
+    canvas = read("components/canvas/WorkflowCanvas.tsx")
+    details = read("components/canvas/NodeDetailPanel.tsx")
 
     assert "const audioRef = useRef<HTMLAudioElement | null>(null)" in nodes
+    assert "const audioTracks = audiosFromPreview(data.preview)" in nodes
+    assert "audioTracks.map((track, index)" in nodes
+    assert "previewAudiosFromNode(node)" in canvas
+    assert "const audios = collectMedia(outObj).filter" in details
     assert "context.createMediaElementSource(player)" in nodes
     assert "canAnalyseAudioSource(player.currentSrc || player.src)" in nodes
     assert "analyser.getByteFrequencyData(frequencyData)" in nodes

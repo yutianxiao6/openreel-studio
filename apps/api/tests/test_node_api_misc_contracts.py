@@ -2032,6 +2032,64 @@ async def test_media_generation_audio_queues_background_poll(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_media_generation_audio_registers_every_completed_output(monkeypatch):
+    registered: list[dict] = []
+
+    async def fake_generate_audio_with_provider(**_kwargs):
+        return {
+            "ok": True,
+            "provider": "suno-audio",
+            "model": "V5",
+            "status": "completed",
+            "job_id": "audio-task-2",
+            "local_url": "/api/media/proj-1/generated_audio/audio-a.mp3",
+            "local_path": "/storage/proj-1/generated_audio/audio-a.mp3",
+            "remote_url": "https://assets.example.invalid/audio-a.mp3",
+            "audios": [
+                {
+                    "local_url": "/api/media/proj-1/generated_audio/audio-a.mp3",
+                    "local_path": "/storage/proj-1/generated_audio/audio-a.mp3",
+                    "remote_url": "https://assets.example.invalid/audio-a.mp3",
+                    "mime_type": "audio/mpeg",
+                    "duration": 240,
+                },
+                {
+                    "local_url": "/api/media/proj-1/generated_audio/audio-b.mp3",
+                    "local_path": "/storage/proj-1/generated_audio/audio-b.mp3",
+                    "remote_url": "https://assets.example.invalid/audio-b.mp3",
+                    "mime_type": "audio/mpeg",
+                    "duration": 197.6,
+                },
+            ],
+        }
+
+    async def fake_register_asset(**kwargs):
+        registered.append(kwargs)
+        return {"id": f"asset-audio-{len(registered)}"}
+
+    monkeypatch.setattr(media_generation, "generate_audio_with_provider", fake_generate_audio_with_provider)
+    monkeypatch.setattr(media_generation, "register_asset", fake_register_asset)
+
+    result = await media_generation.generate_audio(
+        project_id="proj-1",
+        prompt="cinematic theme",
+        node_id="audio-2",
+        model="suno-audio",
+        record_asset=True,
+    )
+
+    assert result["asset_id"] == "asset-audio-1"
+    assert result["asset_ids"] == ["asset-audio-1", "asset-audio-2"]
+    assert len(result["audios"]) == 2
+    assert [item["path"] for item in registered] == [
+        "/storage/proj-1/generated_audio/audio-a.mp3",
+        "/storage/proj-1/generated_audio/audio-b.mp3",
+    ]
+    assert [item["metadata"]["output_index"] for item in registered] == [0, 1]
+    assert all(item["metadata"]["output_count"] == 2 for item in registered)
+
+
+@pytest.mark.asyncio
 async def test_node_run_video_queue_keeps_node_running(monkeypatch):
     updates: list[dict] = []
 
