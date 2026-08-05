@@ -27,12 +27,27 @@ async def lifespan(app: FastAPI):
     except Exception:
         import logging
         logging.getLogger(__name__).exception("Interrupted workflow runtime recovery failed")
-    from app.services.node_recovery import cleanup_interrupted_media_nodes, recover_interrupted_video_polls
+    # Provider config must be materialized before media task recovery selects a
+    # provider. This also performs one-time audio-to-UMA config migration.
+    from app.config_store import get_store
+    store = get_store()
+    env_keys = {
+        "OPENAI_API_KEY": settings.OPENAI_API_KEY,
+        "ANTHROPIC_API_KEY": settings.ANTHROPIC_API_KEY,
+        "DEEPSEEK_API_KEY": settings.DEEPSEEK_API_KEY,
+        "DASHSCOPE_API_KEY": settings.DASHSCOPE_API_KEY,
+        "GEMINI_API_KEY": settings.GEMINI_API_KEY,
+    }
+    ok, errs = await store.bootstrap(env_keys)
+    if not ok:
+        import logging
+        logging.getLogger(__name__).error("ConfigStore bootstrap failed: %s", errs)
+    from app.services.node_recovery import cleanup_interrupted_media_nodes, recover_interrupted_uma_media_polls
     try:
-        await recover_interrupted_video_polls()
+        await recover_interrupted_uma_media_polls()
     except Exception:
         import logging
-        logging.getLogger(__name__).exception("Interrupted video poll recovery failed")
+        logging.getLogger(__name__).exception("Interrupted UMA media poll recovery failed")
     try:
         await cleanup_interrupted_media_nodes(
             stale_after_seconds=None,
@@ -47,20 +62,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         import logging
         logging.getLogger(__name__).exception("Interrupted video sequence render recovery failed")
-    # ConfigStore：bootstrap (首启自动 seed .env keys 到 runtime.jsonc) + 启动 watcher
-    from app.config_store import get_store
-    store = get_store()
-    env_keys = {
-        "OPENAI_API_KEY": settings.OPENAI_API_KEY,
-        "ANTHROPIC_API_KEY": settings.ANTHROPIC_API_KEY,
-        "DEEPSEEK_API_KEY": settings.DEEPSEEK_API_KEY,
-        "DASHSCOPE_API_KEY": settings.DASHSCOPE_API_KEY,
-        "GEMINI_API_KEY": settings.GEMINI_API_KEY,
-    }
-    ok, errs = await store.bootstrap(env_keys)
-    if not ok:
-        import logging
-        logging.getLogger(__name__).error("ConfigStore bootstrap failed: %s", errs)
     await store.start_watcher()
     # Connect to external MCP servers (non-fatal if any fail)
     from app.mcp_client import mcp_client_manager

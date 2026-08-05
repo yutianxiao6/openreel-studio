@@ -13,9 +13,29 @@ from app.services import media_generation, node_recovery
 
 
 @pytest.mark.asyncio
-async def test_recover_interrupted_video_polls_resumes_persisted_jobs(monkeypatch):
+async def test_recover_interrupted_uma_media_polls_resumes_persisted_jobs(monkeypatch):
     now = datetime.utcnow()
     nodes = [
+        SimpleNamespace(
+            id="running-audio",
+            project_id="project-1",
+            type="audio",
+            status="running",
+            prompt="audio prompt",
+            input_json=json.dumps({"title": "Theme"}),
+            output_json=json.dumps(
+                {
+                    "type": "audio",
+                    "status": "running",
+                    "job_id": "job-audio",
+                    "provider_task_id": "provider-job-audio",
+                    "adapter_resume_request": {"kind": "audio"},
+                    "adapter_resume_supported": True,
+                    "provider": "provider-audio",
+                }
+            ),
+            updated_at=now,
+        ),
         SimpleNamespace(
             id="running-video",
             project_id="project-1",
@@ -88,18 +108,25 @@ async def test_recover_interrupted_video_polls_resumes_persisted_jobs(monkeypatc
         yield Session()
 
     resumed: list[str] = []
+    resumed_audio: list[str] = []
 
     async def fake_resume(**kwargs):
         resumed.append(kwargs["node_id"])
         return True
 
+    async def fake_resume_audio(**kwargs):
+        resumed_audio.append(kwargs["node_id"])
+        return True
+
     monkeypatch.setattr(node_recovery, "session_scope", fake_session_scope)
     monkeypatch.setattr(media_generation, "resume_persisted_video_poll", fake_resume)
+    monkeypatch.setattr(media_generation, "resume_persisted_audio_poll", fake_resume_audio)
 
-    result = await node_recovery.recover_interrupted_video_polls(project_id="project-1")
+    result = await node_recovery.recover_interrupted_uma_media_polls(project_id="project-1")
 
-    assert result["resumed"] == 2
+    assert result["resumed"] == 3
     assert resumed == ["running-video", "transient-video"]
+    assert resumed_audio == ["running-audio"]
 
 
 @pytest.mark.asyncio
@@ -142,6 +169,49 @@ async def test_resume_persisted_video_poll_updates_node_without_resubmitting(mon
     assert updates[0]["output_data"]["job_id"] == "existing-job"
     assert "error" not in updates[0]["output_data"]
     assert scheduled["queued_result"]["job_id"] == "existing-job"
+    assert scheduled["queued_result"]["recovered_after_restart"] is True
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_audio_poll_updates_node_without_resubmitting(monkeypatch):
+    updates: list[dict] = []
+    scheduled: dict = {}
+
+    async def fake_update_node(node_id: str, patch: dict):
+        updates.append({"node_id": node_id, **patch})
+        return {"id": node_id, **patch}
+
+    def fake_schedule(**kwargs):
+        scheduled.update(kwargs)
+
+    monkeypatch.setattr(canvas_tools, "update_node", fake_update_node)
+    monkeypatch.setattr(media_generation, "_schedule_background_audio_poll", fake_schedule)
+
+    resumed = await media_generation.resume_persisted_audio_poll(
+        project_id="project-1",
+        node_id="audio-1",
+        prompt="audio prompt",
+        input_data={"title": "Theme", "style": "cinematic", "instrumental": True},
+        output={
+            "type": "audio",
+            "status": "processing",
+            "job_id": "existing-audio-job",
+            "provider_task_id": "provider-existing-audio-job",
+            "adapter_resume_request": {"kind": "audio"},
+            "adapter_resume_supported": True,
+            "provider": "provider-audio",
+            "model": "model-audio",
+            "error": "temporary 502",
+            "error_kind": "server_error",
+        },
+    )
+
+    assert resumed is True
+    assert updates[0]["status"] == "running"
+    assert updates[0]["output_data"]["job_id"] == "existing-audio-job"
+    assert updates[0]["output_data"]["provider_task_id"] == "provider-existing-audio-job"
+    assert "error" not in updates[0]["output_data"]
+    assert scheduled["queued_result"]["job_id"] == "existing-audio-job"
     assert scheduled["queued_result"]["recovered_after_restart"] is True
 
 

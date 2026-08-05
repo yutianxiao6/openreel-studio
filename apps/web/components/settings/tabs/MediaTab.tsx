@@ -53,6 +53,42 @@ function videoModelTemplateOptions(protocols: MediaProtocolSummary[]): Array<{
   return options
 }
 
+function audioModelTemplateOptions(protocols: MediaProtocolSummary[]): Array<{
+  label: string
+  value: string
+  modelName: string
+  protocolId: string
+  targetProfileId: string
+  operation: string
+}> {
+  const options: Array<{
+    label: string
+    value: string
+    modelName: string
+    protocolId: string
+    targetProfileId: string
+    operation: string
+  }> = []
+  for (const protocol of protocols) {
+    const protocolLabel = protocol.display_name || protocol.id
+    for (const profile of protocol.model_profiles || []) {
+      const modelName = String(profile.match || "").trim()
+      const targetProfileId = String(profile.target_profile_id || "").trim()
+      const operation = String(profile.operation || "").trim()
+      if (!modelName || modelName === "*" || !targetProfileId || !operation) continue
+      options.push({
+        label: `${profile.label?.trim() || modelName} · ${protocolLabel}`,
+        value: `${targetProfileId}:${modelName}`,
+        modelName,
+        protocolId: protocol.id,
+        targetProfileId,
+        operation,
+      })
+    }
+  }
+  return options
+}
+
 function kindLabel(kind: MediaKind): string {
   if (kind === "image") return "图片"
   if (kind === "video") return "视频"
@@ -229,7 +265,7 @@ function ProviderSummary({
       entry.api_format === "universal_adapter" ? umaProtocolId
       : entry.kind === "image" ? entry.params?.image_protocol_id
       : entry.kind === "video" ? ""
-      : entry.params?.audio_protocol_id
+      : ""
     ) || "",
   )
   return (
@@ -285,7 +321,7 @@ function blank(kind: MediaKind): MediaProviderEntry {
     base_url: "",
     api_key: "",
     model_name: kind === "audio" ? "tts-1" : "",
-    api_format: kind === "video" ? "universal_adapter" : kind === "audio" ? "audio_http_v1" : "image_http_v1",
+    api_format: kind === "audio" || kind === "video" ? "universal_adapter" : "image_http_v1",
     is_active: false, enabled: true, notes: "", params: {},
   }
 }
@@ -413,12 +449,45 @@ function Row({
   }
   const setAudioProtocolId = (value: string) => {
     const nextParams = { ...(draft.params || {}) }
-    delete nextParams.audio_protocol
-    delete nextParams.protocol
+    const currentUma = nextParams.uma && typeof nextParams.uma === "object"
+      ? { ...(nextParams.uma as Record<string, unknown>) }
+      : {}
     const clean = value.trim()
-    if (clean) nextParams.audio_protocol_id = clean
-    else delete nextParams.audio_protocol_id
-    setDraft({ ...draft, api_format: "audio_http_v1", params: nextParams })
+    if (clean) currentUma.protocol_id = clean
+    else delete currentUma.protocol_id
+    const selectedProtocol = audioProtocols.find((item) => item.id === clean)
+    const matchedProfile = selectedProtocol?.model_profiles?.find(
+      (item) => item.match === draft.model_name,
+    ) || selectedProtocol?.model_profiles?.find((item) => item.match === "*")
+    if (matchedProfile?.target_profile_id) {
+      currentUma.target_profile_id = matchedProfile.target_profile_id
+      currentUma.operation = matchedProfile.operation || "audio.speech"
+    } else {
+      delete currentUma.target_profile_id
+      delete currentUma.operation
+    }
+    nextParams.uma = currentUma
+    setDraft({ ...draft, api_format: "universal_adapter", params: nextParams })
+  }
+  const setAudioModelName = (value: string) => {
+    const nextParams = { ...(draft.params || {}) }
+    const currentUma = nextParams.uma && typeof nextParams.uma === "object"
+      ? { ...(nextParams.uma as Record<string, unknown>) }
+      : {}
+    const protocol = audioProtocols.find(
+      (item) => item.id === String(currentUma.protocol_id || ""),
+    )
+    const matchedProfile = protocol?.model_profiles?.find((item) => item.match === value)
+      || protocol?.model_profiles?.find((item) => item.match === "*")
+    if (matchedProfile?.target_profile_id) {
+      currentUma.target_profile_id = matchedProfile.target_profile_id
+      currentUma.operation = matchedProfile.operation || "audio.speech"
+    } else {
+      delete currentUma.target_profile_id
+      delete currentUma.operation
+    }
+    nextParams.uma = currentUma
+    setDraft({ ...draft, model_name: value, params: nextParams })
   }
 
   const videoModelTemplates = videoModelTemplateOptions(videoProtocols)
@@ -452,6 +521,34 @@ function Row({
       && (!item.targetProfileId || item.targetProfileId === String(draftUma.target_profile_id || "")),
     )?.value || ""
     : ""
+  const audioModelTemplates = audioModelTemplateOptions(audioProtocols)
+  const selectedAudioTemplate = entry.kind === "audio"
+    ? audioModelTemplates.find((item) =>
+      item.modelName === draft.model_name
+      && item.protocolId === String(draftUma.protocol_id || "")
+      && item.targetProfileId === String(draftUma.target_profile_id || ""),
+    )?.value || ""
+    : ""
+  const applyAudioTemplate = (templateKey: string) => {
+    const template = audioModelTemplates.find((item) => item.value === templateKey)
+    if (!template) return
+    const nextParams = { ...(draft.params || {}) }
+    const currentUma = nextParams.uma && typeof nextParams.uma === "object"
+      ? { ...(nextParams.uma as Record<string, unknown>) }
+      : {}
+    nextParams.uma = {
+      ...currentUma,
+      protocol_id: template.protocolId,
+      operation: template.operation,
+      target_profile_id: template.targetProfileId,
+    }
+    setDraft({
+      ...draft,
+      model_name: template.modelName,
+      api_format: "universal_adapter",
+      params: nextParams,
+    })
+  }
   const imageInputTransport = normalizeVideoImageTransport(draft.params?.image_transport)
   const imageProtocolId = String(draft.params?.image_protocol_id || "")
   const imageProtocolOptions = imageProtocols.map((item) => ({
@@ -488,7 +585,7 @@ function Row({
       && Boolean(String(draftUma.target_profile_id || "").trim())
       && hasRequiredVideoBaseUrls
     )
-  const audioProtocolId = String(draft.params?.audio_protocol_id || "")
+  const audioProtocolId = String(draftUma.protocol_id || "")
   const audioProtocolOptions = audioProtocols.map((item) => ({
     label: item.display_name && item.display_name !== item.id
       ? `${item.display_name} · ${item.id}`
@@ -498,7 +595,13 @@ function Row({
   const selectedCatalogAudioProtocolId = audioProtocolOptions.some((item) => item.value === audioProtocolId)
     ? audioProtocolId
     : ""
-  const canSaveAudioProtocol = draft.api_format !== "audio_http_v1" || Boolean(selectedCatalogAudioProtocolId)
+  const canSaveAudioProtocol = draft.kind !== "audio"
+    || (
+      draft.api_format === "universal_adapter"
+      && Boolean(selectedCatalogAudioProtocolId)
+      && Boolean(String(draftUma.target_profile_id || "").trim())
+      && String(draftUma.operation || "").startsWith("audio.")
+    )
 
   return (
     <div className="overflow-hidden rounded-lg border border-indigo-700/60 bg-indigo-950/15">
@@ -632,11 +735,25 @@ function Row({
           </>
         ) : entry.kind === "audio" ? (
           <>
+            <SelectField
+              label="推荐模型"
+              value={selectedAudioTemplate}
+              onChange={applyAudioTemplate}
+              options={[
+                { label: audioModelTemplates.length ? "手动填写模型名" : "target 配置里没有具体模型建议", value: "" },
+                ...audioModelTemplates.map((item) => ({
+                  label: item.label,
+                  value: item.value,
+                })),
+              ]}
+              defaultText="可手填"
+              hint="选项来自独立的音频 target 配置；选择后会同时绑定模型名、UMA 协议、operation 和 target profile。"
+            />
             <F
               label="模型名"
               required
               value={draft.model_name}
-              onChange={(v) => setField("model_name", v)}
+              onChange={setAudioModelName}
               hint="填写当前中转站或官方接口实际支持的音频模型 ID，例如 tts-1、V5。"
             />
             <SelectField
@@ -648,11 +765,11 @@ function Row({
                 ...audioProtocolOptions,
               ]}
               required
-              hint="从 config/audio_provider_protocols/catalog.json 动态读取；选择协议后系统按该协议构造请求、轮询和解析音频结果。"
+              hint="模型能力来自独立 target 配置；请求、轮询和音频结果读取由 Universal Model Adapter V2 协议执行。"
             />
             {audioProtocolId && !selectedCatalogAudioProtocolId && (
               <div className="col-span-2 rounded border border-amber-800 bg-amber-950/30 px-2 py-1 text-[10px] text-amber-200">
-                当前保存的协议 ID「{audioProtocolId}」不在配置文件中，请先在 catalog 中加入该协议，或改选已有协议。
+                当前保存的协议 ID「{audioProtocolId}」不在 UMA 音频 target 配置中，请改选已有协议。
               </div>
             )}
           </>

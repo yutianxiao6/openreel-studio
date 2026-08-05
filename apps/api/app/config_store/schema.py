@@ -61,13 +61,6 @@ def _image_protocol_ids_from_catalog() -> set[str]:
     )
 
 
-def _audio_protocol_ids_from_catalog() -> set[str]:
-    return _protocol_ids_from_catalog(
-        "OPENREEL_AUDIO_PROTOCOLS_FILE",
-        "config/audio_provider_protocols/catalog.json",
-    )
-
-
 class LlmProviderEntry(BaseModel):
     """单个 LLM provider，对应 llm_providers 表一行。"""
 
@@ -168,9 +161,9 @@ class MediaProviderEntry(BaseModel):
     @field_validator("api_format")
     @classmethod
     def _valid_api_format(cls, v: str) -> str:
-        if v not in ("universal_adapter", "raw", "image_http_v1", "audio_http_v1"):
+        if v not in ("universal_adapter", "raw", "image_http_v1"):
             raise ValueError(
-                "api_format must be 'universal_adapter' or a supported image/audio format, "
+                "api_format must be 'universal_adapter' or a supported image format, "
                 f"got {v!r}"
             )
         return v
@@ -180,7 +173,7 @@ class MediaProviderEntry(BaseModel):
         allowed = {
             "image": {"universal_adapter", "image_http_v1", "raw"},
             "video": {"universal_adapter"},
-            "audio": {"universal_adapter", "audio_http_v1"},
+            "audio": {"universal_adapter"},
         }[self.kind]
         if self.api_format not in allowed:
             raise ValueError(
@@ -202,9 +195,9 @@ class MediaProviderEntry(BaseModel):
         protocol_id = str(uma.get("protocol_id") or "").strip()
         if not protocol_id:
             raise ValueError("universal_adapter provider 必须设置 params.uma.protocol_id")
-        if self.kind == "video" and not str(uma.get("target_profile_id") or "").strip():
+        if self.kind in {"video", "audio"} and not str(uma.get("target_profile_id") or "").strip():
             raise ValueError(
-                "video universal_adapter provider 必须设置 params.uma.target_profile_id"
+                f"{self.kind} universal_adapter provider 必须设置 params.uma.target_profile_id"
             )
         operation = str(uma.get("operation") or f"{self.kind}.{'speech' if self.kind == 'audio' else 'generate'}").strip()
         if not operation.startswith(f"{self.kind}."):
@@ -233,28 +226,6 @@ class MediaProviderEntry(BaseModel):
                 f"params.image_protocol_id={protocol_id!r} 不在 config/image_provider_protocols/catalog.json 的 protocols 中"
             )
         return self
-
-    @model_validator(mode="after")
-    def _validate_audio_protocol_reference(self) -> "MediaProviderEntry":
-        if self.kind != "audio" or self.api_format != "audio_http_v1":
-            return self
-        params = self.params if isinstance(self.params, dict) else {}
-        if "audio_protocol" in params or isinstance(params.get("protocol"), dict):
-            raise ValueError(
-                "audio_http_v1 provider 只保存 params.audio_protocol_id；协议 JSON 必须写在 config/audio_provider_protocols/catalog.json"
-            )
-        protocol_id = str(params.get("audio_protocol_id") or "").strip()
-        if not protocol_id:
-            raise ValueError("audio_http_v1 provider 必须设置 params.audio_protocol_id")
-        catalog_ids = _audio_protocol_ids_from_catalog()
-        if not catalog_ids:
-            raise ValueError("audio_http_v1 protocol catalog 缺失或没有可用协议")
-        if protocol_id not in catalog_ids:
-            raise ValueError(
-                f"params.audio_protocol_id={protocol_id!r} 不在 config/audio_provider_protocols/catalog.json 的 protocols 中"
-            )
-        return self
-
 
 # ── 顶层模型 ──────────────────────────────────────────────────────────────
 

@@ -19,6 +19,7 @@ from app.services.universal_adapter_config import (
     universal_adapter_cache_key,
 )
 from app.services.universal_adapter_service import UniversalAdapterService
+from app.services.audio_target_catalog import load_audio_target_catalog
 from app.services.video_target_catalog import load_video_target_catalog
 
 
@@ -194,6 +195,47 @@ async def test_every_video_target_compiles_against_its_uma_protocol() -> None:
             assert binding.options.protocol_id == target["protocol_id"]
         finally:
             await binding.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_every_audio_target_compiles_against_its_uma_protocol() -> None:
+    for target in load_audio_target_catalog()["targets"]:
+        model_name = target["match"] if target["match"] != "*" else "generic-audio-model"
+        provider = SimpleNamespace(
+            kind="audio",
+            name=f"compile-{target['id']}",
+            base_url="https://provider.example.invalid/v1",
+            api_key="secret-test-key",
+            model_name=model_name,
+            api_format="universal_adapter",
+        )
+        params = {
+            "uma": {
+                "protocol_id": target["protocol_id"],
+                "operation": target["operation"],
+                "target_profile_id": target["id"],
+            }
+        }
+        binding = create_universal_adapter_binding(provider, params)
+        try:
+            assert binding.options.target_profile_id == target["id"]
+            assert binding.options.protocol_id == target["protocol_id"]
+            assert binding.operation == target["operation"]
+        finally:
+            await binding.client.aclose()
+
+
+def test_audio_binding_rejects_operation_that_conflicts_with_target() -> None:
+    provider, provider_params = _provider(
+        kind="audio",
+        protocol_id="newapi.suno-music-task",
+        operation="audio.speech",
+        model="V5",
+        uma={"target_profile_id": "newapi.suno-music-task:generic"},
+    )
+
+    with pytest.raises(ValueError, match="operation must match"):
+        create_universal_adapter_binding(provider, provider_params)
 
 
 @pytest.mark.asyncio
@@ -478,7 +520,7 @@ async def test_audio_provider_materializes_binary_output_in_openreel_storage(
         protocol_id="openai.media",
         operation="audio.speech",
         model="speech-v1",
-        uma={"parameter_map": {"format": "response_format"}},
+        uma={"target_profile_id": "openai.media:generic-speech"},
     )
     service, _ = _service_with_binding(provider, provider_params, handler)
     try:
@@ -502,6 +544,86 @@ async def test_audio_provider_materializes_binary_output_in_openreel_storage(
     assert output_path
     assert Path(output_path).read_bytes() == audio_bytes
     assert result["local_url"].startswith("/api/media/project-audio/generated_audio/")
+
+
+@pytest.mark.asyncio
+async def test_suno_audio_provider_uses_uma_task_protocol() -> None:
+    polls = 0
+    submitted_body: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal polls
+        if request.url.path == "/submit/music":
+            submitted_body.update(json.loads(request.content))
+            return httpx.Response(200, json={"code": "success", "data": "song-task-1"}, request=request)
+        assert request.url.path == "/fetch/song-task-1"
+        polls += 1
+        if polls == 1:
+            return httpx.Response(
+                200,
+                json={"code": "success", "data": {"status": "processing", "progress": 30}},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "code": "success",
+                "data": {
+                    "status": "success",
+                    "progress": 100,
+                    "data": [
+                        {
+                            "audio_url": "https://assets.example.invalid/song-a.mp3",
+                            "duration": 42.5,
+                        },
+                        {
+                            "audio_url": "https://assets.example.invalid/song-b.mp3",
+                            "duration": 41.0,
+                        },
+                    ],
+                },
+            },
+            request=request,
+        )
+
+    provider, provider_params = _provider(
+        kind="audio",
+        protocol_id="newapi.suno-music-task",
+        operation="audio.generate",
+        model="V5",
+        uma={"target_profile_id": "newapi.suno-music-task:generic"},
+    )
+    service, _ = _service_with_binding(provider, provider_params, handler)
+    try:
+        result = await service.submit_audio(
+            provider=provider,
+            provider_params=provider_params,
+            project_id="project-audio",
+            prompt="A warm cinematic pop theme",
+            title="Theme",
+            style="cinematic pop",
+            instrumental=True,
+            extra={"mv": "chirp-v4"},
+            save_locally=False,
+            wait_for_completion=True,
+        )
+    finally:
+        await service.aclose()
+
+    assert result["ok"] is True, result
+    assert submitted_body == {
+        "gpt_description_prompt": "A warm cinematic pop theme",
+        "tags": "cinematic pop",
+        "title": "Theme",
+        "make_instrumental": True,
+        "mv": "chirp-v4",
+    }
+    assert [item["remote_url"] for item in result["audios"]] == [
+        "https://assets.example.invalid/song-a.mp3",
+        "https://assets.example.invalid/song-b.mp3",
+    ]
+    assert result["duration"] == 42.5
+    assert polls == 2
 
 
 @pytest.mark.asyncio
@@ -624,7 +746,7 @@ async def test_audio_generation_forwards_node_duration_and_format(
     }
 
 
-def test_restart_recovery_does_not_claim_in_memory_uma_jobs() -> None:
+def test_restart_recovery_requires_persisted_uma_resume_data() -> None:
     node = SimpleNamespace(type="video")
     output = {
         "ok": True,
@@ -633,4 +755,15 @@ def test_restart_recovery_does_not_claim_in_memory_uma_jobs() -> None:
         "adapter_resume_supported": False,
     }
 
-    assert node_recovery._resumable_video_output(node, output) is False
+    assert node_recovery._resumable_uma_media_output(node, output) is False
+
+    audio_node = SimpleNamespace(type="audio")
+    resumable_audio = {
+        "ok": True,
+        "status": "running",
+        "job_id": "uma-audio-invocation",
+        "provider_task_id": "provider-audio-task",
+        "adapter_resume_request": {"operation": "audio.generate"},
+        "adapter_resume_supported": True,
+    }
+    assert node_recovery._resumable_uma_media_output(audio_node, resumable_audio) is True

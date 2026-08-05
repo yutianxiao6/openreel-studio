@@ -104,7 +104,7 @@ try {
     if ($SmokeProcess.ExitCode -ne 0) {
       throw "Smoke-test packaged API resources failed with exit code $($SmokeProcess.ExitCode)"
     }
-    foreach ($ProtocolDirName in @("image_provider_protocols", "audio_provider_protocols")) {
+    foreach ($ProtocolDirName in @("image_provider_protocols")) {
       $CatalogPath = Join-Path $SmokeRoot "config\$ProtocolDirName\catalog.json"
       if (-not (Test-Path $CatalogPath)) {
         throw "Packaged protocol catalog was not installed: config\$ProtocolDirName\catalog.json"
@@ -114,9 +114,17 @@ try {
     if (-not (Test-Path $UmaTargetCatalog)) {
       throw "Packaged UMA video target catalog was not installed."
     }
+    $UmaAudioTargetCatalog = Join-Path $SmokeRoot "config\universal_model_adapter\audio_targets\catalog.json"
+    if (-not (Test-Path $UmaAudioTargetCatalog)) {
+      throw "Packaged UMA audio target catalog was not installed."
+    }
     $UmaVideoProtocol = Join-Path $SmokeRoot "config\universal_model_adapter\protocols\volcengine-seedance-video-task.json"
     if (-not (Test-Path $UmaVideoProtocol)) {
       throw "Packaged UMA video protocols were not installed."
+    }
+    $UmaAudioProtocol = Join-Path $SmokeRoot "config\universal_model_adapter\protocols\newapi-suno-music-task.json"
+    if (-not (Test-Path $UmaAudioProtocol)) {
+      throw "Packaged UMA audio protocols were not installed."
     }
   }
   finally {

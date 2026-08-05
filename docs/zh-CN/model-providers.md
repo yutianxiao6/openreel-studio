@@ -11,10 +11,10 @@ Universal Model Adapter 子仓维护，请阅读子仓的
 | 你的情况 | 应该怎么做 |
 | --- | --- |
 | 配置 Agent 使用的 LLM | 在“设置 → LLM 模型”添加。 |
-| 配置已有的视频目标 | 添加视频 Provider，选择对应 UMA 协议和推荐目标。 |
-| 视频 API 的 HTTP 合同与现有协议不同 | 按子仓指南新增 `uma.protocol/v2` 文档和 OpenReel 视频目标。 |
-| 配置已有图片或音频协议 | 在对应设置页添加 Provider。 |
-| 新增图片或音频 HTTP 合同 | 扩展对应的 OpenReel Catalog。 |
+| 配置已有的音频或视频目标 | 添加对应 Provider，选择 UMA 协议和推荐目标。 |
+| 音频或视频 API 的 HTTP 合同与现有协议不同 | 新增 `uma.protocol/v2` 文档和对应 OpenReel target。 |
+| 配置已有图片协议 | 在图片设置页添加 Provider。 |
+| 新增图片 HTTP 合同 | 扩展图片 OpenReel Catalog。 |
 
 模型名相同不代表线协议相同。复用协议前应核对 HTTP 方法、路径、鉴权、
 请求体、上传流程、异步任务状态和结果字段。
@@ -23,9 +23,9 @@ Universal Model Adapter 子仓维护，请阅读子仓的
 
 ```mermaid
 flowchart LR
-  A[服务商 API 文档] --> B[视频: UMA V2 协议]
-  A --> C[图片/音频: OpenReel Catalog]
-  B --> D[OpenReel 视频目标]
+  A[服务商 API 文档] --> B[音频/视频: UMA V2 协议]
+  A --> C[图片: OpenReel Catalog]
+  B --> D[OpenReel 音频/视频目标]
   D --> E[设置页和 runtime.jsonc]
   C --> E
   F[Base URL / API Key / 模型 ID] --> E
@@ -35,14 +35,14 @@ flowchart LR
 | 真相源 | 作用 |
 | --- | --- |
 | `config/runtime.jsonc` | 本机账号、Base URL、API Key、模型 ID、启用/默认状态以及协议和目标引用。 |
-| `config/universal_model_adapter/protocols/*.json` | 视频 HTTP、鉴权、上传、上游任务轮询、状态/错误判断和产物提取。 |
+| `config/universal_model_adapter/protocols/*.json` | 音频/视频 HTTP、鉴权、上传、上游任务轮询、状态/错误判断和产物提取。 |
+| `config/universal_model_adapter/audio_targets/catalog.json` | 音频模型匹配、operation、前端名称、能力和默认值。 |
 | `config/universal_model_adapter/video_targets/catalog.json` | 视频模型匹配、前端名称、模式、参考素材限制、比例、分辨率、时长、默认值和额外 Base URL 槽位。 |
 | `config/image_provider_protocols/catalog.json` | 当前 OpenReel 图片 HTTP 合同。 |
-| `config/audio_provider_protocols/catalog.json` | 当前 OpenReel 音频 HTTP 合同。 |
 
-所有视频 Provider 必须使用 `api_format=universal_adapter`，并显式引用
+所有音频和视频 Provider 必须使用 `api_format=universal_adapter`，并显式引用
 `params.uma.protocol_id` 和 `params.uma.target_profile_id`。OpenReel 不根据
-模型名推断协议或目标。图片和音频暂时继续支持现有宿主 Catalog。
+模型名推断协议或目标。图片继续使用现有宿主 Catalog。
 
 Workflow V2 Spec 只描述可复用输入、步骤和依赖，不保存 Provider 密钥或
 部署环境的账号选择。
@@ -70,7 +70,7 @@ Workflow V2 Spec 只描述可复用输入、步骤和依赖，不保存 Provider
 
 1. 打开对应媒体 Provider 页面，点击“添加 Provider”。
 2. 填写唯一名称、带版本的 API Base URL、服务商准确模型 ID 和 API Key。
-3. 视频选择一个 UMA 协议及其准确模型目标；图片或音频选择对应 OpenReel
+3. 音频或视频选择一个 UMA 协议及其准确模型目标；图片选择对应 OpenReel
    Catalog 协议。
 4. 选中的目标或协议声明额外 Base URL 时，补齐对应槽位。
 5. 按需设置“默认”和“启用”，然后保存。
@@ -91,13 +91,13 @@ Base URL:  https://relay.example.test/v1
 不要把完整生成接口填进 Base URL。上传或轮询使用另一主机时，由选中的目标
 暴露命名 Base URL 槽位。
 
-## 视频统一使用 UMA 子仓
+## 音频和视频统一使用 UMA 子仓
 
 OpenReel 固定引用 `vendor/universal-model-adapter` 子仓。生产边界如下：
 
 ```mermaid
 flowchart LR
-  A[node.run / workflow] --> B[OpenReel 视频生命周期]
+  A[node.run / workflow] --> B[OpenReel 音频/视频生命周期]
   B --> C[UMA AsyncClient]
   C --> D[UMA V2 协议运行时]
   D --> E[服务商 HTTP / 上传 / 任务 API]
@@ -110,8 +110,8 @@ OpenReel 负责 Provider 选择、节点/任务生命周期、后台调度、SSE
 信息、本地落盘、资产和旧任务覆盖保护。UMA 负责请求拼装、鉴权、素材上传、
 provider task ID 提取、上游轮询、精确状态/错误解释、产物提取和标准化结果。
 
-OpenReel 只把标准化 `InvocationResult` 和 `VideoOutput` 转换成节点字段，
-不读取 provider JSON，也不保留视频 `status_path`、task ID 路径或结果 URL
+OpenReel 只把标准化 `InvocationResult`、`AudioOutput` 和 `VideoOutput` 转换成节点字段，
+不读取 provider JSON，也不保留音频/视频 `status_path`、task ID 路径或结果 URL
 解析代码。
 
 ### 视频运行配置示例
@@ -163,24 +163,22 @@ UMA 的活动 handle 和事件回放仍在内存中；OpenReel 负责持久化�
 唯一详细来源：
 [Universal Model Adapter — OpenReel 视频集成指南](https://github.com/yutianxiao6/universal-model-adapter/blob/main/docs/zh-CN/openreel-integration.md)。
 
-## 图片和音频 Catalog
+## 图片 Catalog
 
-图片和音频尚未强制迁移到 UMA，当前声明式合同仍位于：
+图片当前声明式合同仍位于：
 
 ```text
 config/image_provider_protocols/catalog.json
-config/audio_provider_protocols/catalog.json
 ```
 
-Catalog 根对象和条目使用各自的 OpenReel v1 schema。Provider 保存
-`params.image_protocol_id` 或 `params.audio_protocol_id`。Catalog 负责请求、
+Catalog 根对象和条目使用 OpenReel v1 schema。Provider 保存
+`params.image_protocol_id`。Catalog 负责请求、
 可选轮询、结果提取和可选上传规则，不能包含真实密钥。
 
-部署环境可用 `OPENREEL_IMAGE_PROTOCOLS_FILE` 和
-`OPENREEL_AUDIO_PROTOCOLS_FILE` 覆盖这两份文件。视频通过 UMA 路径发现协议，
+部署环境可用 `OPENREEL_IMAGE_PROTOCOLS_FILE` 覆盖这份文件。音频和视频通过 UMA 路径发现协议，
 并可用 `OPENREEL_UMA_PROTOCOLS` 增加路径列表。
 
-修改图片/音频 Catalog 后刷新设置页并运行最小节点。视频先校验 UMA 协议目录：
+修改图片 Catalog 后刷新设置页并运行最小节点。音频/视频先校验 UMA 协议目录：
 
 ```bash
 cd apps/api
@@ -191,12 +189,12 @@ uv run uma protocols validate ../../config/universal_model_adapter/protocols
 
 | 现象 | 优先检查 |
 | --- | --- |
-| 视频无法保存 | `api_format`、Base URL、模型 ID、API Key、显式 `protocol_id`、准确 `target_profile_id` 和额外 Base URL。 |
-| 视频协议或目标缺失 | UMA 协议 JSON、视频目标 Catalog、协议/目标 ID 是否匹配，以及 `OPENREEL_UMA_PROTOCOLS`。 |
+| 音频/视频无法保存 | `api_format`、Base URL、模型 ID、API Key、显式 `protocol_id` 和准确 `target_profile_id`。 |
+| 音频/视频协议或目标缺失 | UMA 协议 JSON、对应 target Catalog、协议/目标 ID 是否匹配，以及 `OPENREEL_UMA_PROTOCOLS`。 |
 | 视频模式或素材在 HTTP 前被拒绝 | 目标声明的模式、素材角色/数量、时长、比例和分辨率。 |
 | 视频请求、轮询状态或结果错误 | 修复 UMA V2 协议，不要在 OpenReel 增加解析。 |
 | 视频重启后未恢复 | 持久化 provider task ID、恢复请求、Provider 选择和 OpenReel recovery 日志。 |
-| 图片/音频协议缺失 | 对应宿主 Catalog 路径、JSON 语法/版本、ID 和环境覆盖。 |
+| 图片协议缺失 | 图片宿主 Catalog 路径、JSON 语法/版本、ID 和环境覆盖。 |
 | 401 / 403 | API Key、鉴权合同以及 Base URL 与账号是否匹配。 |
 | 404 | Base URL 版本以及协议资源路径是否重复或缺失。 |
 | 400 / 422 | 服务商模型 ID、模式、字段、时长、比例、分辨率和素材数量。 |

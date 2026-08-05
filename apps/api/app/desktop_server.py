@@ -86,6 +86,7 @@ def _run_packaging_smoke() -> None:
     from app.agent.workflow_spec_prompt_contract import WORKFLOW_SPEC_V2_GUIDE
     from app.config_store.schema import MediaProviderEntry
     from app.services import llm_service, media_operations, subprocess_utils
+    from app.services.audio_target_catalog import load_audio_target_catalog
     from app.services.video_target_catalog import load_video_target_catalog
 
     if not WORKFLOW_SPEC_V2_GUIDE.strip():
@@ -109,6 +110,8 @@ def _run_packaging_smoke() -> None:
         raise RuntimeError("LiteLLM client runtime data was not bundled")
     if not load_video_target_catalog().get("targets"):
         raise RuntimeError("UMA video target catalog was not bundled")
+    if not load_audio_target_catalog().get("targets"):
+        raise RuntimeError("UMA audio target catalog was not bundled")
 
     samples = (
         (
@@ -134,8 +137,14 @@ def _run_packaging_smoke() -> None:
         (
             "audio",
             "packaging-smoke-audio",
-            "audio_http_v1",
-            {"audio_protocol_id": "openai_audio_speech"},
+            "universal_adapter",
+            {
+                "uma": {
+                    "protocol_id": "openai.media",
+                    "operation": "audio.speech",
+                    "target_profile_id": "openai.media:generic-speech",
+                }
+            },
         ),
     )
     for kind, model_name, api_format, params in samples:

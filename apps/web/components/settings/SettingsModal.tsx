@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { getAudioProviderProtocols, getImageProviderProtocols, getRuntimeConfigFile, getVideoProviderProtocols, isOpenReelDesktop, patchRuntimeConfig } from "@/lib/api"
+import { getAudioModelTargets, getImageProviderProtocols, getRuntimeConfigFile, getVideoProviderProtocols, isOpenReelDesktop, patchRuntimeConfig } from "@/lib/api"
 import { LlmTab } from "./tabs/LlmTab"
 import { MediaTab } from "./tabs/MediaTab"
 import { AgentTab } from "./tabs/AgentTab"
@@ -73,6 +73,8 @@ export interface MediaProtocolSummary {
     default_resolution?: string
     modes?: Record<string, unknown> | string[]
     supported_modes?: string[]
+    operation?: string
+    mode?: string
   }>
   supported_ratios?: string[]
   supported_resolutions?: string[]
@@ -125,7 +127,7 @@ export function SettingsModal({ open, onClose }: Props) {
           ok: boolean
           protocols: MediaProtocolSummary[]
         }>().catch(() => null),
-        getAudioProviderProtocols<{
+        getAudioModelTargets<{
           ok: boolean
           protocols: MediaProtocolSummary[]
         }>().catch(() => null),

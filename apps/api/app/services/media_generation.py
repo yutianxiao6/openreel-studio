@@ -854,6 +854,109 @@ async def resume_persisted_video_poll(
     return scheduled or (project_id, node_id, job_id) in _BACKGROUND_VIDEO_TASKS
 
 
+async def resume_persisted_audio_poll(
+    *,
+    project_id: str,
+    node_id: str,
+    prompt: str,
+    input_data: dict[str, Any] | None,
+    output: dict[str, Any],
+) -> bool:
+    """Resume one UMA audio task recorded on a node without resubmitting it."""
+
+    from app.mcp_tools import canvas_tools
+
+    job_id = str(output.get("job_id") or "").strip()
+    if not job_id or _audio_display_url(output):
+        return False
+    provider_task_id = str(output.get("provider_task_id") or "").strip()
+    if not provider_task_id or not isinstance(output.get("adapter_resume_request"), dict):
+        return False
+    fields = dict(input_data or {})
+    nested_fields = fields.get("fields")
+    if isinstance(nested_fields, dict):
+        fields = {**nested_fields, **fields}
+
+    provider_name = str(output.get("provider") or fields.get("provider") or "").strip()
+    model_name = str(output.get("model") or fields.get("model") or provider_name).strip()
+    if not provider_name and not model_name:
+        return False
+    duration_value = output.get("duration_seconds") or fields.get("duration_seconds")
+    try:
+        duration_seconds = int(float(str(duration_value))) if duration_value not in (None, "") else None
+    except (TypeError, ValueError):
+        duration_seconds = None
+    instrumental = fields.get("instrumental")
+    if not isinstance(instrumental, bool):
+        instrumental = None
+
+    queued_result = dict(output)
+    queued_result.update(
+        {
+            "ok": True,
+            "status": "running",
+            "job_id": job_id,
+            "provider": provider_name or model_name,
+            "model": model_name or provider_name,
+            "resumed_existing_job": True,
+            "recovered_after_restart": True,
+        }
+    )
+    resumed_output = _audio_output(
+        queued_result,
+        asset_id=None,
+        asset_ids=[],
+        prompt=str(output.get("prompt") or prompt or "").strip(),
+        title=str(fields.get("title") or "").strip() or None,
+        style=str(fields.get("style") or "").strip() or None,
+        instrumental=instrumental,
+        duration_seconds=duration_seconds,
+        audio_format=str(fields.get("format") or "").strip() or None,
+    )
+    resumed_output["recovered_after_restart"] = True
+    for key in (
+        "error",
+        "error_message",
+        "error_kind",
+        "poll_error",
+        "poll_error_kind",
+        "poll_http_code",
+    ):
+        resumed_output.pop(key, None)
+
+    await canvas_tools.update_node(
+        node_id,
+        {"status": "running", "error_message": None, "output_data": resumed_output},
+    )
+    provider_extra = {
+        key: fields[key]
+        for key in (
+            "_poll_interval_seconds",
+            "_poll_timeout_seconds",
+            "voice",
+            "speed",
+            "instructions",
+            "format",
+        )
+        if fields.get(key) is not None
+    }
+    _schedule_background_audio_poll(
+        project_id=project_id,
+        prompt=resumed_output["prompt"],
+        node_id=node_id,
+        model=model_name or provider_name,
+        queued_result=queued_result,
+        title=resumed_output.get("title"),
+        style=resumed_output.get("style"),
+        instrumental=instrumental,
+        duration_seconds=duration_seconds,
+        audio_format=resumed_output.get("format"),
+        provider_extra=provider_extra,
+        record_asset=True,
+    )
+    return True
+
+
 async def stop_background_media_tasks() -> None:
     tasks = [*_BACKGROUND_VIDEO_TASKS.values(), *_BACKGROUND_AUDIO_TASKS]
     for task in tasks:
@@ -1029,6 +1132,8 @@ def _audio_output(
         "provider": result.get("provider"),
         "model": result.get("model"),
         "job_id": result.get("job_id"),
+        "provider_task_id": result.get("provider_task_id"),
+        "adapter_resume_request": result.get("adapter_resume_request"),
         "url": _audio_display_url(result),
         "local_url": result.get("local_url"),
         "local_path": result.get("local_path"),
@@ -1155,6 +1260,12 @@ async def _background_audio_poll(
         extra=provider_extra,
         save_locally=True,
         progress_callback=progress_callback,
+        provider_task_id=str(queued_result.get("provider_task_id") or "").strip() or None,
+        adapter_resume_request=(
+            queued_result.get("adapter_resume_request")
+            if isinstance(queued_result.get("adapter_resume_request"), dict)
+            else None
+        ),
     )
 
     asset_id = None

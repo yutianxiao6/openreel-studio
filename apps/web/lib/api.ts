@@ -2261,9 +2261,9 @@ export async function getImageProviderProtocols<T = unknown>(): Promise<T> {
   return asJson<T>(res)
 }
 
-export async function getAudioProviderProtocols<T = unknown>(): Promise<T> {
+export async function getAudioModelTargets<T = unknown>(): Promise<T> {
   const base = await getApiBase()
-  const res = await fetch(`${base}/api/tools/config/audio-protocols`)
+  const res = await fetch(`${base}/api/tools/config/audio-model-targets`)
   return asJson<T>(res)
 }
 
@@ -2347,7 +2347,7 @@ export const api = {
   getRuntimeConfigFile,
   getImageProviderProtocols,
   getVideoProviderProtocols,
-  getAudioProviderProtocols,
+  getAudioModelTargets,
   validateRuntimeConfig,
   writeRuntimeConfigFile,
   patchRuntimeConfig,

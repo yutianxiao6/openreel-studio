@@ -70,8 +70,8 @@
         }
       }
     },
-    // Audio uses its own UMA operation while sharing the OpenAI media HTTP
-    // protocol document with image generation.
+    // Audio providers use UMA too. Runtime config stores the connection and
+    // audio target reference; capabilities/defaults live in audio_targets.
     {
       "kind": "audio",
       "name": "audio-uma-openai-example",
@@ -86,11 +86,7 @@
         "uma": {
           "protocol_id": "openai.media",
           "operation": "audio.speech",
-          "parameter_map": {"format": "response_format"},
-          "static_parameters": {
-            "voice": "alloy",
-            "response_format": "mp3"
-          }
+          "target_profile_id": "openai.media:tts-1"
         }
       }
     }

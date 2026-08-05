@@ -506,6 +506,9 @@ class UniversalAdapterService:
                 "voice": (extra or {}).get("voice"),
                 "format": (extra or {}).get("format") or (extra or {}).get("audio_format"),
                 "duration_seconds": (extra or {}).get("duration_seconds"),
+                "speed": (extra or {}).get("speed"),
+                "instructions": (extra or {}).get("instructions")
+                or (style if operation == "audio.speech" else None),
             },
             media_values=[],
             extra=extra,

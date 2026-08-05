@@ -8,7 +8,13 @@ from universal_model_adapter import ProtocolCatalog
 
 from app.config import settings
 from app.config_store.schema import MediaProviderEntry
+from app.config_store.store import _migrate_audio_providers_to_uma
 from app.services import media_provider
+from app.services.audio_target_catalog import (
+    compile_audio_target_options,
+    list_audio_model_targets,
+    load_audio_target_catalog,
+)
 from app.services.video_target_catalog import (
     compile_video_target_options,
     list_video_model_targets,
@@ -23,20 +29,12 @@ def _protocol(loader, protocol_id: str) -> dict:
     return protocol
 
 
-@pytest.mark.parametrize(
-    ("loader", "protocol_ids"),
-    [
-        (media_provider._image_http_v1_protocol_from_catalog, ["openai_images_generations"]),
-        (
-            media_provider._audio_http_v1_protocol_from_catalog,
-            ["openai_audio_speech", "newapi_suno_music", "suno_compatible_generate"],
-        ),
-    ],
-)
-def test_host_catalogs_are_limited_to_image_and_audio(loader, protocol_ids) -> None:
-    for protocol_id in protocol_ids:
-        protocol = _protocol(loader, protocol_id)
-        assert protocol["id"] == protocol_id
+def test_host_catalog_is_limited_to_images() -> None:
+    protocol = _protocol(
+        media_provider._image_http_v1_protocol_from_catalog,
+        "openai_images_generations",
+    )
+    assert protocol["id"] == "openai_images_generations"
 
 
 def test_host_endpoint_builder_treats_provider_base_url_as_literal() -> None:
@@ -60,22 +58,6 @@ def test_host_endpoint_builder_treats_provider_base_url_as_literal() -> None:
             None,
             "https://provider.example/v1/images/generations",
         ),
-        (
-            media_provider._audio_http_v1_protocol_from_catalog,
-            "openai_audio_speech",
-            "https://provider.example/v1",
-            "request",
-            None,
-            "https://provider.example/v1/audio/speech",
-        ),
-        (
-            media_provider._audio_http_v1_protocol_from_catalog,
-            "suno_compatible_generate",
-            "https://provider.example/v1",
-            "poll",
-            "task-1",
-            "https://provider.example/v1/generate/record-info?taskId=task-1",
-        ),
     ],
 )
 def test_remaining_host_protocol_endpoints(
@@ -97,7 +79,7 @@ def test_remaining_host_protocol_endpoints(
     assert endpoint == expected
 
 
-def test_every_openreel_video_protocol_loads_through_uma_v2() -> None:
+def test_every_openreel_media_protocol_loads_through_uma_v2() -> None:
     protocol_dir = Path(settings.PROJECT_ROOT) / "config" / "universal_model_adapter" / "protocols"
     catalog = ProtocolCatalog.load([protocol_dir])
     assert {item.document.id for item in catalog.list()} == {
@@ -107,6 +89,8 @@ def test_every_openreel_video_protocol_loads_through_uma_v2() -> None:
         "xai.video-task",
         "grok.multipart-video-task",
         "dramaagent.updream-video-task",
+        "newapi.suno-music-task",
+        "suno.compatible-generate-task",
     }
     assert all(item.document.format == "uma.protocol/v2" for item in catalog.list())
     assert all(item.document.version == "2.0.0" for item in catalog.list())
@@ -155,6 +139,36 @@ def test_video_targets_keep_capabilities_separate_from_wire_protocols() -> None:
     assert continuation.bind["generate_type"] == "clip2v"
 
 
+def test_audio_targets_keep_capabilities_separate_from_wire_protocols() -> None:
+    catalog = load_audio_target_catalog()
+    targets = catalog["targets"]
+    assert {target["protocol_id"] for target in targets} == {
+        "openai.media",
+        "newapi.suno-music-task",
+        "suno.compatible-generate-task",
+    }
+    assert {target["operation"] for target in targets} == {
+        "audio.speech",
+        "audio.generate",
+    }
+    for target in targets:
+        serialized = json.dumps(target, ensure_ascii=False)
+        assert '"request"' not in serialized
+        assert '"response"' not in serialized
+        assert '"status_path"' not in serialized
+
+    public = list_audio_model_targets()
+    openai = next(item for item in public["protocols"] if item["id"] == "openai.media")
+    profiles = {item["match"]: item for item in openai["model_profiles"]}
+    assert profiles["tts-1"]["mode"] == "tts"
+    assert profiles["tts-1"]["operation"] == "audio.speech"
+
+    target = next(item for item in targets if item["id"] == "openai.media:tts-1")
+    options = compile_audio_target_options(target)
+    assert options["target_defaults"]["parameters"]["voice"] == "alloy"
+    assert options["parameter_map"]["format"] == "response_format"
+
+
 def test_video_provider_schema_requires_universal_adapter() -> None:
     entry = MediaProviderEntry(
         kind="video",
@@ -199,3 +213,84 @@ def test_video_provider_schema_requires_universal_adapter() -> None:
                 }
             },
         )
+
+
+def test_audio_provider_schema_requires_universal_adapter_target() -> None:
+    entry = MediaProviderEntry(
+        kind="audio",
+        name="audio-uma",
+        base_url="https://provider.example/v1",
+        api_key="secret",
+        model_name="tts-1",
+        api_format="universal_adapter",
+        params={
+            "uma": {
+                "protocol_id": "openai.media",
+                "operation": "audio.speech",
+                "target_profile_id": "openai.media:tts-1",
+            }
+        },
+    )
+    assert entry.api_format == "universal_adapter"
+
+    with pytest.raises(ValidationError, match="universal_adapter"):
+        MediaProviderEntry(
+            kind="audio",
+            name="unsupported-audio",
+            base_url="https://provider.example/v1",
+            api_key="secret",
+            model_name="tts-1",
+            api_format="audio_http_v1",
+            params={"audio_protocol_id": "openai_audio_speech"},
+        )
+
+    with pytest.raises(ValidationError, match="target_profile_id"):
+        MediaProviderEntry(
+            kind="audio",
+            name="audio-without-target",
+            base_url="https://provider.example/v1",
+            api_key="secret",
+            model_name="tts-1",
+            api_format="universal_adapter",
+            params={"uma": {"protocol_id": "openai.media", "operation": "audio.speech"}},
+        )
+
+
+def test_persisted_audio_provider_is_migrated_to_uma_before_validation() -> None:
+    config = {
+        "media_providers": [
+            {
+                "kind": "audio",
+                "name": "existing-suno",
+                "api_format": "audio_http_v1",
+                "params": {
+                    "audio_protocol_id": "newapi_suno_music",
+                    "mv": "chirp-v4",
+                    "make_instrumental": False,
+                    "_poll_interval_seconds": 3,
+                    "_poll_timeout_seconds": 90,
+                },
+            }
+        ]
+    }
+
+    migrated, changed = _migrate_audio_providers_to_uma(config)
+
+    assert changed is True
+    provider = migrated["media_providers"][0]
+    assert provider["api_format"] == "universal_adapter"
+    assert provider["params"] == {
+        "uma": {
+            "protocol_id": "newapi.suno-music-task",
+            "operation": "audio.generate",
+            "target_profile_id": "newapi.suno-music-task:generic",
+            "poll_interval_seconds": 3,
+            "task_timeout_seconds": 90,
+            "static_input": {"instrumental": False},
+            "target_defaults": {
+                "parameters": {
+                    "mv": "chirp-v4",
+                }
+            },
+        }
+    }

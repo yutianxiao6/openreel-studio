@@ -1,0 +1,86 @@
+{
+  "format": "uma.protocol/v2",
+  "id": "suno.compatible-generate-task",
+  "version": "2.0.0",
+  "kind": ["audio"],
+  "metadata": {"title": "Suno-compatible generate task"},
+  "bases": {"api": {"$ref": "provider:/bases/api"}},
+  "auth": {
+    "api": {"type": "bearer", "credential": {"$ref": "credential:/api_key"}}
+  },
+  "operations": {
+    "submit": {
+      "base": "api",
+      "auth": "api",
+      "method": "POST",
+      "path": "/generate",
+      "encoding": "json",
+      "body": {
+        "prompt": {"$ref": "request:/input/prompt"},
+        "customMode": {"$ref": "request:/parameters/customMode", "omit_if": "missing"},
+        "model": {"$ref": "target:/remote_model"},
+        "instrumental": {"$ref": "request:/input/instrumental", "omit_if": "missing"},
+        "title": {"$ref": "request:/input/title", "omit_if": "missing"},
+        "style": {"$ref": "request:/input/style", "omit_if": "missing"},
+        "negativeTags": {"$ref": "request:/parameters/negativeTags", "omit_if": "missing"},
+        "callBackUrl": {"$ref": "request:/parameters/callBackUrl", "omit_if": "missing"}
+      },
+      "accept_http": [200, 201, 202],
+      "read": {
+        "task_id": "/json/data/taskId",
+        "error_message": "/json/message",
+        "error_code": "/json/code"
+      }
+    },
+    "poll": {
+      "base": "api",
+      "auth": "api",
+      "method": "GET",
+      "path": "/generate/record-info",
+      "query": {"taskId": {"$ref": "task:/id"}},
+      "accept_http": [200],
+      "read": {
+        "status": "/json/data/status",
+        "success": ["success", "succeeded", "completed", "complete", "done"],
+        "failure": ["failed", "failure", "error", "cancelled", "canceled", "expired", "create_task_failed", "generate_audio_failed", "submit_failed"],
+        "progress": "/json/data/progress",
+        "error_message": "/json/data/error",
+        "error_code": "/json/code",
+        "artifacts": {
+          "audio_1": {
+            "kind": "audio",
+            "path": "/json/data/response/sunoData/0/audioUrl",
+            "required": true,
+            "mime_type": "audio/mpeg",
+            "fields": {"duration_seconds": "/json/data/response/sunoData/0/duration"}
+          },
+          "audio_2": {
+            "kind": "audio",
+            "path": "/json/data/response/sunoData/1/audioUrl",
+            "required": false,
+            "mime_type": "audio/mpeg",
+            "fields": {"duration_seconds": "/json/data/response/sunoData/1/duration"}
+          }
+        }
+      }
+    }
+  },
+  "entrypoints": {
+    "audio.generate": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {"prompt": {"type": "string", "minLength": 1}},
+            "required": ["prompt"]
+          },
+          "parameters": {"type": "object"}
+        },
+        "required": ["input"]
+      },
+      "submit": "submit",
+      "poll": "poll"
+    }
+  }
+}

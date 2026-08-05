@@ -2449,9 +2449,14 @@ function videoNativeAudioSettings(
 }
 
 function audioProviderModeFromProvider(provider?: AudioProviderOption): AudioProviderMode {
-  const protocolId = String(provider?.params?.audio_protocol_id || "").trim().toLowerCase()
-  if (protocolId.includes("suno") || protocolId.includes("music")) return "music"
-  if (protocolId.includes("speech") || protocolId.includes("tts")) return "tts"
+  const uma = provider?.params?.uma
+  const operation = String(
+    uma && typeof uma === "object" && "operation" in uma
+      ? (uma as Record<string, unknown>).operation
+      : "",
+  ).trim().toLowerCase()
+  if (operation === "audio.speech") return "tts"
+  if (operation.startsWith("audio.") && operation !== "audio.transcribe") return "music"
   return "unknown"
 }
 

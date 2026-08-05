@@ -1,0 +1,112 @@
+{
+  "version": "openreel.uma_audio_targets.v1",
+  "targets": [
+    {
+      "id": "openai.media:tts-1",
+      "protocol_id": "openai.media",
+      "protocol_label": "OpenAI-compatible speech",
+      "match": "tts-1",
+      "label": "TTS 1",
+      "operation": "audio.speech",
+      "capabilities": {
+        "mode": "tts",
+        "supports_voice": true,
+        "supports_speed": true,
+        "supported_formats": ["mp3", "opus", "aac", "flac", "wav", "pcm"]
+      },
+      "defaults": {"voice": "alloy", "response_format": "mp3"},
+      "parameter_map": {"format": "response_format", "audio_format": "response_format"}
+    },
+    {
+      "id": "openai.media:tts-1-hd",
+      "protocol_id": "openai.media",
+      "protocol_label": "OpenAI-compatible speech",
+      "match": "tts-1-hd",
+      "label": "TTS 1 HD",
+      "operation": "audio.speech",
+      "capabilities": {
+        "mode": "tts",
+        "supports_voice": true,
+        "supports_speed": true,
+        "supported_formats": ["mp3", "opus", "aac", "flac", "wav", "pcm"]
+      },
+      "defaults": {"voice": "alloy", "response_format": "mp3"},
+      "parameter_map": {"format": "response_format", "audio_format": "response_format"}
+    },
+    {
+      "id": "openai.media:gpt-4o-mini-tts",
+      "protocol_id": "openai.media",
+      "protocol_label": "OpenAI-compatible speech",
+      "match": "gpt-4o-mini-tts",
+      "label": "GPT-4o mini TTS",
+      "operation": "audio.speech",
+      "capabilities": {
+        "mode": "tts",
+        "supports_voice": true,
+        "supports_speed": true,
+        "supports_instructions": true,
+        "supported_formats": ["mp3", "opus", "aac", "flac", "wav", "pcm"]
+      },
+      "defaults": {"voice": "alloy", "response_format": "mp3"},
+      "parameter_map": {"format": "response_format", "audio_format": "response_format"}
+    },
+    {
+      "id": "openai.media:generic-speech",
+      "protocol_id": "openai.media",
+      "protocol_label": "OpenAI-compatible speech",
+      "match": "*",
+      "label": "OpenAI-compatible TTS",
+      "operation": "audio.speech",
+      "capabilities": {
+        "mode": "tts",
+        "supports_voice": true,
+        "supports_speed": true,
+        "supported_formats": ["mp3", "opus", "aac", "flac", "wav", "pcm"]
+      },
+      "defaults": {"voice": "alloy", "response_format": "mp3"},
+      "parameter_map": {"format": "response_format", "audio_format": "response_format"}
+    },
+    {
+      "id": "newapi.suno-music-task:generic",
+      "protocol_id": "newapi.suno-music-task",
+      "protocol_label": "New API Suno Music",
+      "match": "*",
+      "label": "Suno Music",
+      "operation": "audio.generate",
+      "capabilities": {
+        "mode": "music",
+        "supports_title": true,
+        "supports_style": true,
+        "supports_instrumental": true,
+        "returns_multiple_outputs": true
+      },
+      "defaults": {"mv": "chirp-v4"},
+      "poll_policy": {
+        "poll_interval_seconds": 8,
+        "poll_max_interval_seconds": 24,
+        "task_timeout_seconds": 1200
+      }
+    },
+    {
+      "id": "suno.compatible-generate-task:generic",
+      "protocol_id": "suno.compatible-generate-task",
+      "protocol_label": "Suno-compatible generate task",
+      "match": "*",
+      "label": "Suno-compatible Music",
+      "operation": "audio.generate",
+      "capabilities": {
+        "mode": "music",
+        "supports_title": true,
+        "supports_style": true,
+        "supports_instrumental": true,
+        "returns_multiple_outputs": true
+      },
+      "defaults": {"customMode": false},
+      "poll_policy": {
+        "poll_interval_seconds": 8,
+        "poll_max_interval_seconds": 24,
+        "task_timeout_seconds": 1200
+      }
+    }
+  ]
+}

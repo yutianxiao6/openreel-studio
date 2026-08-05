@@ -13,7 +13,6 @@ from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api import routes_projects, routes_uploads
-from app.config_store.schema import MediaProviderEntry
 from app.db.models import Project, WorkflowNode
 from app.mcp_tools import canvas_tools, node_universal
 from app.services import media_generation
@@ -1486,115 +1485,24 @@ def test_uploaded_image_output_keeps_actual_resolution(tmp_path):
     assert output["images"][0]["height"] == 654
 
 
-def test_media_provider_schema_accepts_audio_http_v1_format():
-    entry = MediaProviderEntry(
-        kind="audio",
-        name="audio-http",
-        base_url="https://audio.example",
-        api_key="audio-key",
-        model_name="tts-1",
-        api_format="audio_http_v1",
-        params={"audio_protocol_id": "openai_audio_speech"},
-    )
-
-    assert entry.kind == "audio"
-    assert entry.api_format == "audio_http_v1"
-
-
-def test_media_provider_schema_accepts_audio_http_v1_suno_protocol():
-    entry = MediaProviderEntry(
-        kind="audio",
-        name="suno-compatible",
-        base_url="https://audio.example",
-        api_key="audio-key",
-        model_name="V5",
-        api_format="audio_http_v1",
-        params={"audio_protocol_id": "newapi_suno_music"},
-    )
-
-    assert entry.kind == "audio"
-    assert entry.api_format == "audio_http_v1"
-
-
-def test_audio_http_v1_payload_prefers_node_format_and_filters_music_fields():
-    provider = SimpleNamespace(
-        api_format="audio_http_v1",
-        model_name="tts-1",
-        params_json=json.dumps({
-            "audio_protocol_id": "openai_audio_speech",
-            "response_format": "mp3",
-            "speed": 1.05,
-            "custom_mode": True,
-        }),
-    )
-
-    payload, meta = media_provider._build_audio_http_v1_payload(
-        provider,
-        prompt="旁白文本",
-        title=None,
-        style=None,
-        instrumental=None,
-        extra_override={
-            "voice": "nova",
-            "format": "wav",
-            "instructions": "自然、清晰的旁白",
-            "negative_tags": "noise",
-            "_debug": "hidden",
-        },
-    )
-
-    assert meta is not None
-    assert meta["protocol"]["id"] == "openai_audio_speech"
-    assert payload == {
-        "model": "tts-1",
-        "input": "旁白文本",
-        "voice": "nova",
-        "response_format": "wav",
-        "speed": 1.05,
-        "instructions": "自然、清晰的旁白",
-    }
-
-
-def test_audio_http_v1_newapi_suno_payload_preserves_instrumental_flag():
-    provider = SimpleNamespace(
-        api_format="audio_http_v1",
-        model_name="V5",
-        params_json=json.dumps({
-            "audio_protocol_id": "newapi_suno_music",
-        }),
-    )
-
-    payload, meta = media_provider._build_audio_http_v1_payload(
-        provider,
-        prompt="A warm cinematic pop theme",
-        title="Theme",
-        style="cinematic pop",
-        instrumental=True,
-        extra_override={"mv": "chirp-v4"},
-    )
-
-    assert meta is not None
-    assert meta["protocol"]["id"] == "newapi_suno_music"
-    assert payload == {
-        "gpt_description_prompt": "A warm cinematic pop theme",
-        "tags": "cinematic pop",
-        "title": "Theme",
-        "make_instrumental": True,
-        "mv": "chirp-v4",
-    }
-
-
 @pytest.mark.asyncio
-async def test_audio_provider_routes_audio_http_v1(monkeypatch):
+async def test_audio_provider_routes_universal_adapter(monkeypatch):
+    provider_params = {
+        "uma": {
+            "protocol_id": "openai.media",
+            "operation": "audio.speech",
+            "target_profile_id": "openai.media:tts-1",
+        }
+    }
     provider = SimpleNamespace(
         name="tts-provider",
         kind="audio",
-        api_format="audio_http_v1",
+        api_format="universal_adapter",
         base_url="https://audio.example/v1",
         api_key="audio-key",
         model_name="tts-1",
         enabled=True,
-        params_json=json.dumps({"audio_protocol_id": "openai_audio_speech"}),
+        params_json=json.dumps(provider_params),
     )
     captured: dict = {}
 
@@ -1602,20 +1510,21 @@ async def test_audio_provider_routes_audio_http_v1(monkeypatch):
         assert kind == "audio"
         return provider
 
-    async def fake_call_audio_http_v1(**kwargs):
+    async def fake_submit_audio(**kwargs):
         captured.update(kwargs)
         return {
             "ok": True,
             "status": "completed",
             "provider": provider.name,
             "model": provider.model_name,
-            "voice": kwargs["extra_override"]["voice"],
-            "format": kwargs["extra_override"]["format"],
-            "style": kwargs["style"],
+            "url": "https://assets.example/audio.wav",
         }
 
     monkeypatch.setattr(media_provider, "_get_active_provider", fake_get_active_provider)
-    monkeypatch.setattr(media_provider, "_call_audio_http_v1", fake_call_audio_http_v1)
+    monkeypatch.setattr(
+        "app.services.universal_adapter_service.universal_adapter_service.submit_audio",
+        fake_submit_audio,
+    )
 
     result = await media_provider.generate_audio_with_provider(
         project_id="proj-1",
@@ -1626,48 +1535,11 @@ async def test_audio_provider_routes_audio_http_v1(monkeypatch):
 
     assert result["ok"] is True
     assert result["provider"] == "tts-provider"
+    assert captured["provider_params"] == provider_params
     assert captured["project_id"] == "proj-1"
     assert captured["prompt"] == "生成一句旁白"
     assert captured["style"] == "温和"
-    assert captured["extra_override"] == {"voice": "nova", "format": "wav"}
-
-
-def test_audio_http_v1_response_parser_handles_newapi_suno_items():
-    protocol, error = media_provider._audio_http_v1_protocol_from_catalog("newapi_suno_music")
-    assert error is None
-    assert protocol is not None
-
-    items = media_provider._audio_http_v1_collect_audio_items(protocol, {
-        "code": "success",
-        "data": {
-            "status": "SUCCESS",
-            "data": [
-                {
-                    "id": "song-1",
-                    "title": "Theme",
-                    "audio_url": "https://example.com/theme.mp3",
-                    "source_audio_url": "https://example.com/source.mp3",
-                    "image_url": "https://example.com/theme.png",
-                    "duration": 42.5,
-                    "tags": "cinematic, pop",
-                }
-            ],
-        },
-    })
-
-    assert items == [
-        {
-            "id": "song-1",
-            "title": "Theme",
-            "url": "https://example.com/theme.mp3",
-            "remote_url": "https://example.com/theme.mp3",
-            "source_audio_url": "https://example.com/source.mp3",
-            "stream_audio_url": "https://example.com/theme.mp3",
-            "image_url": "https://example.com/theme.png",
-            "duration_seconds": 42.5,
-            "tags": "cinematic, pop",
-        }
-    ]
+    assert captured["extra"] == {"voice": "nova", "format": "wav"}
 
 
 @pytest.mark.asyncio

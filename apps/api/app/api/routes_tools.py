@@ -18,6 +18,7 @@ from app.db.session import get_session
 from app.mcp_tools import canvas_tools, config_tools, mcp_meta_tools
 from app.mcp_tools.registry import registry
 from app.services import media_provider, node_contract
+from app.services.audio_target_catalog import list_audio_model_targets
 from app.services.video_target_catalog import list_video_model_targets
 
 
@@ -160,7 +161,7 @@ async def describe_node_contract(
     catalog = {
         "image": media_provider.list_image_http_v1_protocol_catalog,
         "video": list_video_model_targets,
-        "audio": media_provider.list_audio_http_v1_protocol_catalog,
+        "audio": list_audio_model_targets,
     }.get(req.type)
     return node_contract.build_node_contract(
         node_type=req.type,
@@ -204,9 +205,9 @@ async def read_image_protocols() -> dict[str, Any]:
     return media_provider.list_image_http_v1_protocol_catalog()
 
 
-@router.get("/config/audio-protocols")
-async def read_audio_protocols() -> dict[str, Any]:
-    return media_provider.list_audio_http_v1_protocol_catalog()
+@router.get("/config/audio-model-targets")
+async def read_audio_model_targets() -> dict[str, Any]:
+    return list_audio_model_targets()
 
 
 @router.post("/config/validate")

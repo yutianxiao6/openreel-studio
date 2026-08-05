@@ -1,0 +1,84 @@
+{
+  "format": "uma.protocol/v2",
+  "id": "newapi.suno-music-task",
+  "version": "2.0.0",
+  "kind": ["audio"],
+  "metadata": {"title": "New API Suno Music task"},
+  "bases": {"api": {"$ref": "provider:/bases/api"}},
+  "auth": {
+    "api": {"type": "bearer", "credential": {"$ref": "credential:/api_key"}}
+  },
+  "operations": {
+    "submit": {
+      "base": "api",
+      "auth": "api",
+      "method": "POST",
+      "path": "/submit/music",
+      "encoding": "json",
+      "body": {
+        "gpt_description_prompt": {"$ref": "request:/input/prompt"},
+        "prompt": {"$ref": "request:/parameters/lyrics", "omit_if": "missing"},
+        "tags": {"$ref": "request:/input/style", "omit_if": "missing"},
+        "title": {"$ref": "request:/input/title", "omit_if": "missing"},
+        "make_instrumental": {"$ref": "request:/input/instrumental", "omit_if": "missing"},
+        "mv": {"$ref": "request:/parameters/mv", "omit_if": "missing"},
+        "notify_hook": {"$ref": "request:/parameters/notify_hook", "omit_if": "missing"}
+      },
+      "accept_http": [200, 201, 202],
+      "read": {
+        "task_id": "/json/data",
+        "error_message": "/json/message",
+        "error_code": "/json/code"
+      }
+    },
+    "poll": {
+      "base": "api",
+      "auth": "api",
+      "method": "GET",
+      "path": {"$concat": ["/fetch/", {"$ref": "task:/id"}]},
+      "accept_http": [200],
+      "read": {
+        "status": "/json/data/status",
+        "success": ["success", "succeeded", "completed", "done"],
+        "failure": ["fail", "failed", "failure", "error", "cancelled", "canceled", "expired"],
+        "progress": "/json/data/progress",
+        "error_message": "/json/data/fail_reason",
+        "error_code": "/json/code",
+        "artifacts": {
+          "audio_1": {
+            "kind": "audio",
+            "path": "/json/data/data/0/audio_url",
+            "required": true,
+            "mime_type": "audio/mpeg",
+            "fields": {"duration_seconds": "/json/data/data/0/duration"}
+          },
+          "audio_2": {
+            "kind": "audio",
+            "path": "/json/data/data/1/audio_url",
+            "required": false,
+            "mime_type": "audio/mpeg",
+            "fields": {"duration_seconds": "/json/data/data/1/duration"}
+          }
+        }
+      }
+    }
+  },
+  "entrypoints": {
+    "audio.generate": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {"prompt": {"type": "string", "minLength": 1}},
+            "required": ["prompt"]
+          },
+          "parameters": {"type": "object"}
+        },
+        "required": ["input"]
+      },
+      "submit": "submit",
+      "poll": "poll"
+    }
+  }
+}

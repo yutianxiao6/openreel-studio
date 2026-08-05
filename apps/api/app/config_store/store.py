@@ -84,6 +84,78 @@ def _mask_runtime(data: dict) -> dict:
     return out
 
 
+_AUDIO_UMA_MIGRATIONS: dict[str, dict[str, str]] = {
+    "openai_audio_speech": {
+        "protocol_id": "openai.media",
+        "operation": "audio.speech",
+        "target_profile_id": "openai.media:generic-speech",
+    },
+    "newapi_suno_music": {
+        "protocol_id": "newapi.suno-music-task",
+        "operation": "audio.generate",
+        "target_profile_id": "newapi.suno-music-task:generic",
+    },
+    "suno_compatible_generate": {
+        "protocol_id": "suno.compatible-generate-task",
+        "operation": "audio.generate",
+        "target_profile_id": "suno.compatible-generate-task:generic",
+    },
+}
+
+_AUDIO_UMA_POLL_OPTION_MIGRATIONS = {
+    "_poll_interval_seconds": "poll_interval_seconds",
+    "_poll_timeout_seconds": "task_timeout_seconds",
+}
+
+_AUDIO_UMA_STATIC_INPUT_MIGRATIONS = {
+    "title": "title",
+    "style": "style",
+    "instrumental": "instrumental",
+    "make_instrumental": "instrumental",
+}
+
+
+def _migrate_audio_providers_to_uma(data: Any) -> tuple[Any, bool]:
+    """Upgrade known pre-UMA audio rows before validating persisted config."""
+    if not isinstance(data, dict) or not isinstance(data.get("media_providers"), list):
+        return data, False
+    migrated = False
+    for provider in data["media_providers"]:
+        if not isinstance(provider, dict) or provider.get("kind") != "audio":
+            continue
+        if provider.get("api_format") != "audio_http_v1":
+            continue
+        params = provider.get("params") if isinstance(provider.get("params"), dict) else {}
+        protocol_id = str(params.get("audio_protocol_id") or "").strip()
+        target = _AUDIO_UMA_MIGRATIONS.get(protocol_id)
+        if target is None:
+            continue
+        remaining = {
+            key: value
+            for key, value in params.items()
+            if key not in {"audio_protocol_id", "audio_protocol", "protocol"}
+        }
+        uma = dict(target)
+        provider_defaults: dict[str, Any] = {}
+        static_input: dict[str, Any] = {}
+        for key, value in remaining.items():
+            option_name = _AUDIO_UMA_POLL_OPTION_MIGRATIONS.get(key)
+            if option_name:
+                uma[option_name] = value
+            elif input_name := _AUDIO_UMA_STATIC_INPUT_MIGRATIONS.get(key):
+                static_input[input_name] = value
+            else:
+                provider_defaults[key] = value
+        if static_input:
+            uma["static_input"] = static_input
+        if provider_defaults:
+            uma["target_defaults"] = {"parameters": provider_defaults}
+        provider["api_format"] = "universal_adapter"
+        provider["params"] = {"uma": uma}
+        migrated = True
+    return data, migrated
+
+
 class ConfigStore:
     def __init__(self, file_path: Path) -> None:
         self.file_path = file_path
@@ -216,6 +288,7 @@ class ConfigStore:
             parsed = json5.loads(raw_text)
         except Exception as exc:
             return False, [f"JSON5 parse error: {exc}"]
+        parsed, migrated = _migrate_audio_providers_to_uma(parsed)
         try:
             cfg = RuntimeConfig.model_validate(parsed)
         except ValidationError as exc:
@@ -223,6 +296,12 @@ class ConfigStore:
         except Exception as exc:
             return False, [f"config validation error: {exc}"]
         await _sync_to_db(cfg)
+        if migrated:
+            raw_text = _format_jsonc(parsed, header=True)
+            tmp = self.file_path.with_suffix(self.file_path.suffix + ".tmp")
+            tmp.write_text(raw_text, encoding="utf-8")
+            os.replace(tmp, self.file_path)
+            logger.info("已把音频 provider 配置升级为 Universal Model Adapter")
         self._cached = cfg
         self._raw_text = raw_text
         return True, []

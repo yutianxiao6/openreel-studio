@@ -161,7 +161,8 @@ def parse_universal_adapter_options(
             "params.uma contains inline protocol fields; keep protocol documents in the protocol catalog"
         )
     merged = dict(raw)
-    if str(getattr(provider, "kind", "") or "").strip() == "video":
+    kind = str(getattr(provider, "kind", "") or "").strip()
+    if kind == "video":
         from app.services.video_target_catalog import (
             compile_video_target_options,
             resolve_video_target,
@@ -184,6 +185,35 @@ def parse_universal_adapter_options(
                 "video universal_adapter provider must reference a matching target_profile_id"
             )
         merged = _deep_merge_dict(compile_video_target_options(target), raw)
+        merged.setdefault("target_profile_id", target["id"])
+    elif kind == "audio":
+        from app.services.audio_target_catalog import (
+            compile_audio_target_options,
+            resolve_audio_target,
+        )
+
+        protocol_id = str(raw.get("protocol_id") or "").strip()
+        profile_id = str(raw.get("target_profile_id") or "").strip()
+        if not profile_id:
+            raise ValueError(
+                "audio universal_adapter provider requires an explicit target_profile_id"
+            )
+        model_name = str(getattr(provider, "model_name", "") or "").strip()
+        target = resolve_audio_target(
+            protocol_id=protocol_id,
+            model_name=model_name,
+            profile_id=profile_id,
+        )
+        if target is None:
+            raise ValueError(
+                "audio universal_adapter provider must reference a matching target_profile_id"
+            )
+        requested_operation = str(raw.get("operation") or "").strip()
+        if requested_operation and requested_operation != target["operation"]:
+            raise ValueError(
+                "audio universal_adapter provider operation must match its target_profile_id"
+            )
+        merged = _deep_merge_dict(compile_audio_target_options(target), raw)
         merged.setdefault("target_profile_id", target["id"])
     return UniversalAdapterProviderOptions.model_validate(merged)
 

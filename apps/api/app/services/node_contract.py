@@ -596,9 +596,7 @@ def build_node_contract(
                     "supported_sizes": list(protocol.get("supported_sizes") or []) if protocol else [],
                 }
             elif node_type == "audio":
-                capabilities = {
-                    "result_type": protocol.get("result_type") if protocol else None,
-                }
+                capabilities = deepcopy(profile or {})
 
     for field in required:
         if not _filled(normalized.get(field)):

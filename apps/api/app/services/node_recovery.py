@@ -27,8 +27,12 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
 
 
 STALE_RUNNING_MEDIA_SECONDS = _env_int("DRAMA_STALE_RUNNING_MEDIA_SECONDS", 660, minimum=60)
-FAILED_VIDEO_RESUME_SECONDS = _env_int("DRAMA_FAILED_VIDEO_RESUME_SECONDS", 86400, minimum=60)
-RESUMABLE_VIDEO_ERROR_KINDS = {"network", "rate_limit", "server_error", "timeout"}
+FAILED_UMA_MEDIA_RESUME_SECONDS = _env_int(
+    "DRAMA_FAILED_UMA_MEDIA_RESUME_SECONDS",
+    86400,
+    minimum=60,
+)
+RESUMABLE_UMA_ERROR_KINDS = {"network", "rate_limit", "server_error", "timeout"}
 
 
 def _parse_json_value(raw: str | None) -> Any:
@@ -44,8 +48,8 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _resumable_video_output(node: WorkflowNode, output: Any) -> bool:
-    if node.type != "video" or not isinstance(output, dict):
+def _resumable_uma_media_output(node: WorkflowNode, output: Any) -> bool:
+    if node.type not in {"video", "audio"} or not isinstance(output, dict):
         return False
     if media_history.is_successful_media_output(output):
         return False
@@ -53,25 +57,29 @@ def _resumable_video_output(node: WorkflowNode, output: Any) -> bool:
         return False
     if not str(output.get("job_id") or "").strip():
         return False
+    if not str(output.get("provider_task_id") or "").strip():
+        return False
+    if not isinstance(output.get("adapter_resume_request"), dict):
+        return False
     status = str(output.get("status") or "").strip().lower()
     error_kind = str(output.get("error_kind") or "").strip().lower()
-    return status in {"queued", "running", "processing", "pending"} or error_kind in RESUMABLE_VIDEO_ERROR_KINDS
+    return status in {"queued", "running", "processing", "pending"} or error_kind in RESUMABLE_UMA_ERROR_KINDS
 
 
-async def recover_interrupted_video_polls(
+async def recover_interrupted_uma_media_polls(
     *,
     project_id: str | None = None,
 ) -> dict[str, Any]:
-    """Resume persisted video provider jobs after an API restart."""
+    """Resume persisted UMA audio/video provider jobs after an API restart."""
 
     from app.services import media_generation
 
     now = datetime.utcnow()
-    failed_cutoff = now - timedelta(seconds=FAILED_VIDEO_RESUME_SECONDS)
+    failed_cutoff = now - timedelta(seconds=FAILED_UMA_MEDIA_RESUME_SECONDS)
     candidates: list[dict[str, Any]] = []
     async with session_scope() as session:
         stmt = select(WorkflowNode).where(
-            WorkflowNode.type == "video",
+            WorkflowNode.type.in_(("video", "audio")),
             WorkflowNode.status.in_({"running", "failed"}),
         )
         if project_id:
@@ -79,7 +87,7 @@ async def recover_interrupted_video_polls(
         result = await session.exec(stmt)
         for node in result.all():
             output = _parse_json_value(node.output_json)
-            if not _resumable_video_output(node, output):
+            if not _resumable_uma_media_output(node, output):
                 continue
             if node.status == "failed" and node.updated_at and node.updated_at < failed_cutoff:
                 continue
@@ -90,25 +98,32 @@ async def recover_interrupted_video_polls(
                 "prompt": str(node.prompt or ""),
                 "input_data": input_data if isinstance(input_data, dict) else {},
                 "output": output,
+                "node_type": node.type,
             })
 
     resumed: list[str] = []
     failed: list[str] = []
     for candidate in candidates:
         try:
-            if await media_generation.resume_persisted_video_poll(**candidate):
+            node_type = candidate.pop("node_type")
+            resume = (
+                media_generation.resume_persisted_video_poll
+                if node_type == "video"
+                else media_generation.resume_persisted_audio_poll
+            )
+            if await resume(**candidate):
                 resumed.append(candidate["node_id"])
             else:
                 failed.append(candidate["node_id"])
         except Exception:
             failed.append(candidate["node_id"])
             logger.exception(
-                "resume interrupted video poll failed node_id=%s",
+                "resume interrupted UMA media poll failed node_id=%s",
                 candidate["node_id"],
             )
     if candidates:
         logger.info(
-            "recovered interrupted video polls project_id=%s candidates=%s resumed=%s failed=%s",
+            "recovered interrupted UMA media polls project_id=%s candidates=%s resumed=%s failed=%s",
             project_id or "*",
             len(candidates),
             len(resumed),
@@ -189,7 +204,7 @@ async def cleanup_interrupted_media_nodes(
                 node.status = "completed"
                 node.error_message = None
                 completed += 1
-            elif _resumable_video_output(node, output):
+            elif _resumable_uma_media_output(node, output):
                 continue
             else:
                 node.status = "failed"
