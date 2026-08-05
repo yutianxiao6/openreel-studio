@@ -99,6 +99,19 @@ def test_video_sound_control_follows_the_selected_protocol_capability() -> None:
     assert ": null" in normalize
 
 
+def test_audio_node_card_has_embedded_playback_and_live_frequency_visualizer() -> None:
+    nodes = read("components/canvas/SmartNode.tsx")
+
+    assert "const audioRef = useRef<HTMLAudioElement | null>(null)" in nodes
+    assert "context.createMediaElementSource(player)" in nodes
+    assert "canAnalyseAudioSource(player.currentSrc || player.src)" in nodes
+    assert "analyser.getByteFrequencyData(frequencyData)" in nodes
+    assert 'data-openreel-audio-frequency="true"' in nodes
+    assert 'aria-label={cardAudioPlaying ? "暂停音频预览" : "播放音频预览"}' in nodes
+    assert "onClick={toggleCardAudioPlayback}" in nodes
+    assert "audioContextRef.current.close()" in nodes
+
+
 def test_asset_library_escapes_the_chat_pane_stacking_context() -> None:
     chat = read("components/chat/ChatPanel.tsx")
 

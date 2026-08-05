@@ -149,6 +149,7 @@ const NODE_MIN_WIDTH = 160
 const NODE_MIN_HEIGHT = 110
 const NODE_MAX_WIDTH = 900
 const NODE_MAX_HEIGHT = 720
+const AUDIO_VISUALIZER_BAR_COUNT = 18
 const GRID_PRESETS = [
   { label: "2x2", rows: 2, cols: 2 },
   { label: "2x3", rows: 2, cols: 3 },
@@ -275,6 +276,31 @@ function videoMimeType(src: string): string {
   if (path.endsWith(".webm")) return "video/webm"
   if (path.endsWith(".mov")) return "video/quicktime"
   return "video/mp4"
+}
+
+function audioCrossOrigin(src: string): "anonymous" | undefined {
+  if (typeof window === "undefined" || !src || src.startsWith("data:") || src.startsWith("blob:")) return undefined
+  try {
+    const mediaUrl = new URL(src, window.location.href)
+    if (mediaUrl.origin === window.location.origin) return undefined
+    const loopback = new Set(["localhost", "127.0.0.1", "::1", "[::1]"])
+    return loopback.has(mediaUrl.hostname) && loopback.has(window.location.hostname)
+      ? "anonymous"
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function canAnalyseAudioSource(src: string): boolean {
+  if (typeof window === "undefined" || !src) return false
+  if (src.startsWith("data:") || src.startsWith("blob:")) return true
+  try {
+    const mediaUrl = new URL(src, window.location.href)
+    return mediaUrl.origin === window.location.origin || audioCrossOrigin(src) === "anonymous"
+  } catch {
+    return false
+  }
 }
 
 function isPanoramaImage(preview?: PreviewData, title?: string, prompt?: string): boolean {
@@ -590,8 +616,17 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
   const [panoramaConfirmOpen, setPanoramaConfirmOpen] = useState(false)
   const imageToolbarHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const audioAnalyserRef = useRef<AnalyserNode | null>(null)
+  const audioSourceRef = useRef<MediaElementAudioSourceNode | null>(null)
+  const audioFrequencyDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null)
+  const audioAnimationFrameRef = useRef<number | null>(null)
+  const audioBarElementsRef = useRef<Array<HTMLSpanElement | null>>([])
+  const audioAnalysisUnavailableRef = useRef(false)
   const lastAutoSizeRef = useRef<string | null>(null)
   const [cardVideoPlaying, setCardVideoPlaying] = useState(false)
+  const [cardAudioPlaying, setCardAudioPlaying] = useState(false)
   const previewText = canvasNodeDisplayText({
     type: data.type,
     input: data.input,
@@ -700,6 +735,102 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
     }
   }, [clearImageToolbarHideTimer, showNodeToolbar])
 
+  const resetAudioFrequencyBars = useCallback(() => {
+    audioBarElementsRef.current.forEach((bar, index) => {
+      if (!bar) return
+      const idleScale = 0.16 + ((index * 7) % 5) * 0.035
+      bar.style.transform = `scaleY(${idleScale})`
+      bar.style.opacity = "0.42"
+    })
+  }, [])
+
+  const stopAudioFrequencyAnimation = useCallback((reset = true) => {
+    if (audioAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(audioAnimationFrameRef.current)
+      audioAnimationFrameRef.current = null
+    }
+    if (reset) resetAudioFrequencyBars()
+  }, [resetAudioFrequencyBars])
+
+  const ensureAudioAnalyser = useCallback((): AnalyserNode | null => {
+    const player = audioRef.current
+    if (!player || audioAnalysisUnavailableRef.current || typeof window === "undefined") return null
+    if (audioAnalyserRef.current && audioContextRef.current) {
+      if (audioContextRef.current.state === "suspended") {
+        void audioContextRef.current.resume().catch(() => undefined)
+      }
+      return audioAnalyserRef.current
+    }
+    if (!canAnalyseAudioSource(player.currentSrc || player.src)) {
+      // Preserve normal playback for remote media without a known CORS path.
+      // Routing such media through Web Audio can otherwise make it silent.
+      audioAnalysisUnavailableRef.current = true
+      return null
+    }
+
+    const AudioContextConstructor = window.AudioContext
+      || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!AudioContextConstructor) {
+      audioAnalysisUnavailableRef.current = true
+      return null
+    }
+
+    let context: AudioContext | null = null
+    try {
+      context = new AudioContextConstructor()
+      const analyser = context.createAnalyser()
+      analyser.fftSize = 128
+      analyser.smoothingTimeConstant = 0.72
+      const source = context.createMediaElementSource(player)
+      source.connect(analyser)
+      analyser.connect(context.destination)
+      audioContextRef.current = context
+      audioAnalyserRef.current = analyser
+      audioSourceRef.current = source
+      audioFrequencyDataRef.current = new Uint8Array(analyser.frequencyBinCount)
+      if (context.state === "suspended") void context.resume().catch(() => undefined)
+      return analyser
+    } catch (error) {
+      audioAnalysisUnavailableRef.current = true
+      if (context && context.state !== "closed") void context.close().catch(() => undefined)
+      console.warn("Failed to initialize canvas audio frequency analyser", error)
+      return null
+    }
+  }, [])
+
+  const startAudioFrequencyAnimation = useCallback(() => {
+    const player = audioRef.current
+    const analyser = audioAnalyserRef.current
+    const frequencyData = audioFrequencyDataRef.current
+    if (!player || !analyser || !frequencyData) return
+    stopAudioFrequencyAnimation(false)
+
+    const draw = () => {
+      if (!audioRef.current || audioRef.current.paused || audioRef.current.ended) {
+        audioAnimationFrameRef.current = null
+        resetAudioFrequencyBars()
+        return
+      }
+      analyser.getByteFrequencyData(frequencyData)
+      const lastBin = Math.max(0, frequencyData.length - 1)
+      audioBarElementsRef.current.forEach((bar, index) => {
+        if (!bar) return
+        const position = AUDIO_VISUALIZER_BAR_COUNT > 1
+          ? index / (AUDIO_VISUALIZER_BAR_COUNT - 1)
+          : 0
+        const bin = Math.min(lastBin, Math.round(Math.pow(position, 1.55) * lastBin))
+        const nextBin = Math.min(lastBin, bin + 1)
+        const energy = ((frequencyData[bin] ?? 0) * 0.72 + (frequencyData[nextBin] ?? 0) * 0.28) / 255
+        const scale = Math.max(0.12, Math.min(1, 0.12 + energy * 0.96))
+        bar.style.transform = `scaleY(${scale.toFixed(3)})`
+        bar.style.opacity = String(Math.min(1, 0.52 + energy * 0.58))
+      })
+      audioAnimationFrameRef.current = window.requestAnimationFrame(draw)
+    }
+
+    audioAnimationFrameRef.current = window.requestAnimationFrame(draw)
+  }, [resetAudioFrequencyBars, stopAudioFrequencyAnimation])
+
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation()
     if (gridToolActive) return
@@ -707,12 +838,31 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
       videoRef.current.pause()
       setCardVideoPlaying(false)
     }
+    if (data.type === "audio" && audioRef.current && !audioRef.current.paused) {
+      audioRef.current.pause()
+      setCardAudioPlaying(false)
+    }
     selectNode(id)
   }
 
   useEffect(() => {
     setCardVideoPlaying(false)
   }, [video?.src])
+
+  useEffect(() => {
+    setCardAudioPlaying(false)
+    stopAudioFrequencyAnimation()
+    if (!audioAnalyserRef.current) audioAnalysisUnavailableRef.current = false
+  }, [audio?.src, stopAudioFrequencyAnimation])
+
+  useEffect(() => () => {
+    stopAudioFrequencyAnimation(false)
+    audioSourceRef.current?.disconnect()
+    audioAnalyserRef.current?.disconnect()
+    if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+      void audioContextRef.current.close().catch(() => undefined)
+    }
+  }, [stopAudioFrequencyAnimation])
   const handleResize = useCallback((_event: unknown, params: { width: number; height: number }) => {
     resizeCanvasNode(id, params.width, params.height)
   }, [id, resizeCanvasNode])
@@ -807,6 +957,30 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
     player.pause()
     setCardVideoPlaying(false)
   }, [])
+
+  const toggleCardAudioPlayback = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const player = audioRef.current
+    if (!player) return
+    if (player.paused || player.ended) {
+      ensureAudioAnalyser()
+      void player.play()
+        .then(() => {
+          setCardAudioPlaying(true)
+          startAudioFrequencyAnimation()
+        })
+        .catch((error) => {
+          setCardAudioPlaying(false)
+          stopAudioFrequencyAnimation()
+          console.warn("Failed to play canvas audio preview", error)
+        })
+      return
+    }
+    player.pause()
+    setCardAudioPlaying(false)
+    stopAudioFrequencyAnimation()
+  }, [ensureAudioAnalyser, startAudioFrequencyAnimation, stopAudioFrequencyAnimation])
 
   const requestAddImageToAssetLibrary = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -1240,15 +1414,73 @@ export const SmartNode = memo(function SmartNode(props: NodeProps<NodeData>) {
             </div>
           ) : data.type === "audio" && audio?.src ? (
             <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_18%_12%,rgba(245,158,11,0.24),transparent_32%),linear-gradient(135deg,#111827,#18181b)] px-5">
-              <div className="pointer-events-none flex h-16 w-full max-w-[220px] items-end justify-center gap-2 rounded-md border border-white/10 bg-black/24 px-4 py-3 shadow-inner shadow-black/20">
-                {[0.35, 0.72, 0.48, 0.86, 0.55, 0.68, 0.4, 0.78, 0.5, 0.62].map((height, index) => (
+              <audio
+                ref={audioRef}
+                className="pointer-events-none absolute h-px w-px opacity-0"
+                crossOrigin={audioCrossOrigin(audio.src)}
+                src={audio.src}
+                preload="metadata"
+                onPlay={() => {
+                  setCardAudioPlaying(true)
+                  ensureAudioAnalyser()
+                  startAudioFrequencyAnimation()
+                }}
+                onPause={() => {
+                  setCardAudioPlaying(false)
+                  stopAudioFrequencyAnimation()
+                }}
+                onEnded={() => {
+                  setCardAudioPlaying(false)
+                  stopAudioFrequencyAnimation()
+                }}
+                onError={() => {
+                  setCardAudioPlaying(false)
+                  stopAudioFrequencyAnimation()
+                }}
+              />
+              <div
+                data-openreel-audio-frequency="true"
+                aria-hidden="true"
+                className={cn(
+                  "pointer-events-none flex h-[72px] w-full max-w-[220px] items-stretch justify-center gap-1.5 rounded-md border border-white/10 bg-black/24 px-4 py-3 shadow-inner shadow-black/20 transition",
+                  cardAudioPlaying && "border-amber-100/20 bg-black/32 shadow-[inset_0_0_28px_rgba(245,158,11,0.08)]",
+                )}
+              >
+                {Array.from({ length: AUDIO_VISUALIZER_BAR_COUNT }, (_, index) => (
                   <span
                     key={index}
-                    className="w-2 rounded-full bg-amber-200/80"
-                    style={{ height: `${Math.round(height * 100)}%` }}
+                    ref={(element) => {
+                      audioBarElementsRef.current[index] = element
+                    }}
+                    className={cn(
+                      "h-full min-w-[3px] flex-1 rounded-full bg-amber-200/75 opacity-40 transition-[background-color] duration-150",
+                      cardAudioPlaying && "bg-amber-100 shadow-[0_0_10px_rgba(251,191,36,0.28)]",
+                    )}
+                    style={{ transform: `scaleY(${0.16 + ((index * 7) % 5) * 0.035})` }}
                   />
                 ))}
               </div>
+              <button
+                type="button"
+                aria-label={cardAudioPlaying ? "暂停音频预览" : "播放音频预览"}
+                aria-pressed={cardAudioPlaying}
+                onClick={toggleCardAudioPlayback}
+                onMouseDown={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+                className={cn(
+                  "nodrag absolute left-1/2 top-1/2 z-30 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/18 bg-black/70 text-white shadow-2xl shadow-black/35 backdrop-blur transition hover:scale-105 hover:bg-black/85",
+                  cardAudioPlaying && "md:opacity-0 md:group-hover:opacity-100",
+                )}
+              >
+                {cardAudioPlaying ? (
+                  <span className="flex items-center gap-1">
+                    <span className="h-4 w-1.5 rounded-sm bg-white" />
+                    <span className="h-4 w-1.5 rounded-sm bg-white" />
+                  </span>
+                ) : (
+                  <span className="ml-0.5 h-0 w-0 border-y-[9px] border-l-[14px] border-y-transparent border-l-white" />
+                )}
+              </button>
               {isRunning && (
                 <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/38 backdrop-blur-[1px]">
                   <div className="flex min-w-[150px] items-center gap-2 rounded-md border border-blue-200/20 bg-black/70 px-3 py-2 text-xs font-medium text-blue-100 shadow-xl shadow-black/30">
