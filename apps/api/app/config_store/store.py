@@ -115,13 +115,66 @@ _AUDIO_UMA_STATIC_INPUT_MIGRATIONS = {
 }
 
 
-def _migrate_audio_providers_to_uma(data: Any) -> tuple[Any, bool]:
-    """Upgrade known pre-UMA audio rows before validating persisted config."""
+_IMAGE_UMA_PROFILE_IDS = {
+    model: f"openai.compatible-images-generations:{model}"
+    for model in (
+        "gpt-image-1",
+        "gpt-image-2",
+        "dall-e-3",
+        "dall-e-2",
+        "grok-4-fast-non-reasoning",
+        "doubao-seedream-5-0-pro-260628",
+    )
+}
+
+
+def _migrate_image_provider_to_uma(provider: dict[str, Any]) -> bool:
+    if provider.get("kind") != "image" or provider.get("api_format") != "image_http_v1":
+        return False
+    params = provider.get("params") if isinstance(provider.get("params"), dict) else {}
+    if str(params.get("image_protocol_id") or "").strip() != "openai_images_generations":
+        return False
+    model_name = str(provider.get("model_name") or "").strip()
+    uma: dict[str, Any] = {
+        "protocol_id": "openai.compatible-images-generations",
+        "operation": "image.generate",
+        "target_profile_id": _IMAGE_UMA_PROFILE_IDS.get(
+            model_name,
+            "openai.compatible-images-generations:generic",
+        ),
+    }
+    ignored = {
+        "image_protocol_id",
+        "image_protocol",
+        "protocol",
+        "image_transport",
+        "public_base_url",
+        "site_base_url",
+    }
+    defaults = {
+        key: value
+        for key, value in params.items()
+        if key not in ignored and not str(key).startswith("_")
+    }
+    if defaults:
+        uma["target_defaults"] = {"parameters": defaults}
+    provider["api_format"] = "universal_adapter"
+    provider["params"] = {"uma": uma}
+    return True
+
+
+def _migrate_media_providers_to_uma(data: Any) -> tuple[Any, bool]:
+    """Upgrade known pre-UMA image/audio rows before validating persisted config."""
     if not isinstance(data, dict) or not isinstance(data.get("media_providers"), list):
         return data, False
     migrated = False
     for provider in data["media_providers"]:
-        if not isinstance(provider, dict) or provider.get("kind") != "audio":
+        if not isinstance(provider, dict):
+            continue
+        if _migrate_image_provider_to_uma(provider):
+            migrated = True
+            continue
+        if provider.get("kind") != "audio":
             continue
         if provider.get("api_format") != "audio_http_v1":
             continue
@@ -288,7 +341,7 @@ class ConfigStore:
             parsed = json5.loads(raw_text)
         except Exception as exc:
             return False, [f"JSON5 parse error: {exc}"]
-        parsed, migrated = _migrate_audio_providers_to_uma(parsed)
+        parsed, migrated = _migrate_media_providers_to_uma(parsed)
         try:
             cfg = RuntimeConfig.model_validate(parsed)
         except ValidationError as exc:
@@ -301,7 +354,7 @@ class ConfigStore:
             tmp = self.file_path.with_suffix(self.file_path.suffix + ".tmp")
             tmp.write_text(raw_text, encoding="utf-8")
             os.replace(tmp, self.file_path)
-            logger.info("已把音频 provider 配置升级为 Universal Model Adapter")
+            logger.info("已把旧媒体 provider 配置升级为 Universal Model Adapter")
         self._cached = cfg
         self._raw_text = raw_text
         return True, []

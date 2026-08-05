@@ -342,7 +342,16 @@ class UniversalAdapterService:
             binding = await self._binding(provider, provider_params)
             request_input, parameters = _request_payload(
                 binding,
-                input_values={"prompt": prompt},
+                input_values={
+                    "prompt": prompt,
+                    "mode": (
+                        "reference_multiple"
+                        if len(reference_images or []) > 1
+                        else "reference_single"
+                        if reference_images
+                        else "text_to_image"
+                    ),
+                },
                 parameter_values={
                     "negative_prompt": negative_prompt,
                     "size": size,

@@ -2255,9 +2255,9 @@ export async function getVideoProviderProtocols<T = unknown>(): Promise<T> {
   return asJson<T>(res)
 }
 
-export async function getImageProviderProtocols<T = unknown>(): Promise<T> {
+export async function getImageModelTargets<T = unknown>(): Promise<T> {
   const base = await getApiBase()
-  const res = await fetch(`${base}/api/tools/config/image-protocols`)
+  const res = await fetch(`${base}/api/tools/config/image-model-targets`)
   return asJson<T>(res)
 }
 
@@ -2345,7 +2345,7 @@ export const api = {
   readAgentArtifact,
   listMcpServers,
   getRuntimeConfigFile,
-  getImageProviderProtocols,
+  getImageModelTargets,
   getVideoProviderProtocols,
   getAudioModelTargets,
   validateRuntimeConfig,

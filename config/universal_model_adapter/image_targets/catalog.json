@@ -1,0 +1,117 @@
+{
+  "version": "openreel.uma_image_targets.v1",
+  "targets": [
+    {
+      "id": "openai.compatible-images-generations:gpt-image-1",
+      "protocol_id": "openai.compatible-images-generations",
+      "protocol_label": "OpenAI-compatible images.generations",
+      "match": "gpt-image-1",
+      "label": "GPT Image 1",
+      "operation": "image.generate",
+      "capabilities": {
+        "supports_reference_images": true,
+        "max_reference_images": 16,
+        "max_outputs": 4,
+        "default_size": "1024x1024"
+      },
+      "accepted_media_roles": ["reference_image"],
+      "defaults": {"count": 1, "size": "1024x1024", "response_format": "url"}
+    },
+    {
+      "id": "openai.compatible-images-generations:gpt-image-2",
+      "protocol_id": "openai.compatible-images-generations",
+      "protocol_label": "OpenAI-compatible images.generations",
+      "match": "gpt-image-2",
+      "label": "GPT Image 2",
+      "operation": "image.generate",
+      "capabilities": {
+        "supports_reference_images": true,
+        "max_reference_images": 16,
+        "max_outputs": 4,
+        "default_size": "1024x1024"
+      },
+      "accepted_media_roles": ["reference_image"],
+      "defaults": {"count": 1, "size": "1024x1024", "response_format": "url"}
+    },
+    {
+      "id": "openai.compatible-images-generations:dall-e-3",
+      "protocol_id": "openai.compatible-images-generations",
+      "protocol_label": "OpenAI-compatible images.generations",
+      "match": "dall-e-3",
+      "label": "DALL-E 3",
+      "operation": "image.generate",
+      "capabilities": {
+        "supports_reference_images": false,
+        "max_reference_images": 0,
+        "max_outputs": 1,
+        "supported_sizes": ["1024x1024", "1792x1024", "1024x1792"],
+        "default_size": "1792x1024"
+      },
+      "defaults": {"count": 1, "size": "1792x1024", "quality": "hd", "response_format": "url"}
+    },
+    {
+      "id": "openai.compatible-images-generations:dall-e-2",
+      "protocol_id": "openai.compatible-images-generations",
+      "protocol_label": "OpenAI-compatible images.generations",
+      "match": "dall-e-2",
+      "label": "DALL-E 2",
+      "operation": "image.generate",
+      "capabilities": {
+        "supports_reference_images": false,
+        "max_reference_images": 0,
+        "max_outputs": 4,
+        "supported_sizes": ["256x256", "512x512", "1024x1024"],
+        "default_size": "1024x1024"
+      },
+      "defaults": {"count": 1, "size": "1024x1024", "response_format": "url"}
+    },
+    {
+      "id": "openai.compatible-images-generations:grok-4-fast-non-reasoning",
+      "protocol_id": "openai.compatible-images-generations",
+      "protocol_label": "OpenAI-compatible images.generations",
+      "match": "grok-4-fast-non-reasoning",
+      "label": "Grok 4 Fast Image",
+      "operation": "image.generate",
+      "capabilities": {
+        "supports_reference_images": true,
+        "max_reference_images": 16,
+        "max_outputs": 4,
+        "default_size": "1024x1024"
+      },
+      "accepted_media_roles": ["reference_image"],
+      "defaults": {"count": 1, "size": "1024x1024", "response_format": "url"}
+    },
+    {
+      "id": "openai.compatible-images-generations:doubao-seedream-5-0-pro-260628",
+      "protocol_id": "openai.compatible-images-generations",
+      "protocol_label": "OpenAI-compatible images.generations",
+      "match": "doubao-seedream-5-0-pro-260628",
+      "label": "Doubao Seedream 5 Pro",
+      "operation": "image.generate",
+      "capabilities": {
+        "supports_reference_images": true,
+        "max_reference_images": 16,
+        "max_outputs": 4,
+        "default_size": "1024x1024"
+      },
+      "accepted_media_roles": ["reference_image"],
+      "defaults": {"count": 1, "size": "1024x1024", "response_format": "url"}
+    },
+    {
+      "id": "openai.compatible-images-generations:generic",
+      "protocol_id": "openai.compatible-images-generations",
+      "protocol_label": "OpenAI-compatible images.generations",
+      "match": "*",
+      "label": "OpenAI-compatible Image",
+      "operation": "image.generate",
+      "capabilities": {
+        "supports_reference_images": true,
+        "max_reference_images": 16,
+        "max_outputs": 4,
+        "default_size": "1024x1024"
+      },
+      "accepted_media_roles": ["reference_image"],
+      "defaults": {"count": 1, "size": "1024x1024", "response_format": "url"}
+    }
+  ]
+}

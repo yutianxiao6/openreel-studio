@@ -592,9 +592,7 @@ def build_node_contract(
                     field_sources["generate_audio"] = "provider_protocol.default_generate_audio"
                 errors.extend(_validate_video(normalized, capabilities, mode_config, reference_counts))
             elif node_type == "image":
-                capabilities = {
-                    "supported_sizes": list(protocol.get("supported_sizes") or []) if protocol else [],
-                }
+                capabilities = deepcopy(profile or {})
             elif node_type == "audio":
                 capabilities = deepcopy(profile or {})
 

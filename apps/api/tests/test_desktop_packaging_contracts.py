@@ -10,7 +10,7 @@ def test_windows_packaging_waits_for_windowless_api_smoke_test() -> None:
     )
 
     smoke_start = script.index('$env:OPENREEL_PACKAGING_SMOKE = "1"')
-    catalog_check = script.index("foreach ($ProtocolDirName", smoke_start)
+    catalog_check = script.index("$UmaImageTargetCatalog =", smoke_start)
     smoke_block = script[smoke_start:catalog_check]
 
     assert "Start-Process" in smoke_block
@@ -18,6 +18,8 @@ def test_windows_packaging_waits_for_windowless_api_smoke_test() -> None:
     assert "-PassThru" in smoke_block
     assert "$SmokeProcess.ExitCode" in smoke_block
     assert "Invoke-Native" not in smoke_block
+    assert "config\\universal_model_adapter\\image_targets\\catalog.json" in script
+    assert "openai-compatible-images-generations.json" in script
 
 
 def test_packaged_web_routes_and_browser_discovery_use_the_desktop_api() -> None:

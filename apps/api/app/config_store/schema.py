@@ -4,10 +4,7 @@
 """
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -15,51 +12,6 @@ from app.llm_limits import DEFAULT_LLM_MAX_OUTPUT_TOKENS
 
 
 # ── 子模型 ────────────────────────────────────────────────────────────────
-
-
-def _project_root() -> Path:
-    runtime_root = os.getenv("PROJECT_ROOT", "").strip()
-    if runtime_root:
-        return Path(runtime_root).expanduser().resolve()
-    return Path(__file__).resolve().parents[4]
-
-
-def _protocol_catalog_path(env_name: str, relative_path: str) -> Path:
-    override = os.getenv(env_name, "").strip()
-    if override:
-        path = Path(override).expanduser()
-        return path if path.is_absolute() else _project_root() / path
-    return _project_root() / relative_path
-
-
-def _protocols_from_catalog(env_name: str, relative_path: str) -> dict[str, dict[str, Any]]:
-    path = _protocol_catalog_path(env_name, relative_path)
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    protocols = data.get("protocols") if isinstance(data, dict) else None
-    if not isinstance(protocols, dict):
-        return {}
-    return {
-        str(protocol_id): protocol
-        for protocol_id, protocol in protocols.items()
-        if str(protocol_id).strip() and isinstance(protocol, dict)
-    }
-
-
-def _protocol_ids_from_catalog(env_name: str, relative_path: str) -> set[str]:
-    return set(_protocols_from_catalog(env_name, relative_path))
-
-
-def _image_protocol_ids_from_catalog() -> set[str]:
-    return _protocol_ids_from_catalog(
-        "OPENREEL_IMAGE_PROTOCOLS_FILE",
-        "config/image_provider_protocols/catalog.json",
-    )
-
 
 class LlmProviderEntry(BaseModel):
     """单个 LLM provider，对应 llm_providers 表一行。"""
@@ -161,24 +113,16 @@ class MediaProviderEntry(BaseModel):
     @field_validator("api_format")
     @classmethod
     def _valid_api_format(cls, v: str) -> str:
-        if v not in ("universal_adapter", "raw", "image_http_v1"):
-            raise ValueError(
-                "api_format must be 'universal_adapter' or a supported image format, "
-                f"got {v!r}"
-            )
+        if v != "universal_adapter":
+            raise ValueError(f"api_format must be 'universal_adapter', got {v!r}")
         return v
 
     @model_validator(mode="after")
     def _validate_transport(self) -> "MediaProviderEntry":
-        allowed = {
-            "image": {"universal_adapter", "image_http_v1", "raw"},
-            "video": {"universal_adapter"},
-            "audio": {"universal_adapter"},
-        }[self.kind]
-        if self.api_format not in allowed:
+        if self.api_format != "universal_adapter":
             raise ValueError(
                 f"{self.kind} provider 不支持 api_format={self.api_format!r}；"
-                f"可用值：{', '.join(sorted(allowed))}"
+                "可用值：universal_adapter"
             )
         return self
 
@@ -195,7 +139,7 @@ class MediaProviderEntry(BaseModel):
         protocol_id = str(uma.get("protocol_id") or "").strip()
         if not protocol_id:
             raise ValueError("universal_adapter provider 必须设置 params.uma.protocol_id")
-        if self.kind in {"video", "audio"} and not str(uma.get("target_profile_id") or "").strip():
+        if not str(uma.get("target_profile_id") or "").strip():
             raise ValueError(
                 f"{self.kind} universal_adapter provider 必须设置 params.uma.target_profile_id"
             )
@@ -203,27 +147,6 @@ class MediaProviderEntry(BaseModel):
         if not operation.startswith(f"{self.kind}."):
             raise ValueError(
                 f"params.uma.operation={operation!r} 必须属于 {self.kind!r} 模态"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _validate_image_protocol_reference(self) -> "MediaProviderEntry":
-        if self.kind != "image" or self.api_format != "image_http_v1":
-            return self
-        params = self.params if isinstance(self.params, dict) else {}
-        if "image_protocol" in params or isinstance(params.get("protocol"), dict):
-            raise ValueError(
-                "image_http_v1 provider 只保存 params.image_protocol_id；协议 JSON 必须写在 config/image_provider_protocols/catalog.json"
-            )
-        protocol_id = str(params.get("image_protocol_id") or "").strip()
-        if not protocol_id:
-            raise ValueError("image_http_v1 provider 必须设置 params.image_protocol_id")
-        catalog_ids = _image_protocol_ids_from_catalog()
-        if not catalog_ids:
-            raise ValueError("image_http_v1 protocol catalog 缺失或没有可用协议")
-        if protocol_id not in catalog_ids:
-            raise ValueError(
-                f"params.image_protocol_id={protocol_id!r} 不在 config/image_provider_protocols/catalog.json 的 protocols 中"
             )
         return self
 

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { getAudioModelTargets, getImageProviderProtocols, getRuntimeConfigFile, getVideoProviderProtocols, isOpenReelDesktop, patchRuntimeConfig } from "@/lib/api"
+import { getAudioModelTargets, getImageModelTargets, getRuntimeConfigFile, getVideoProviderProtocols, isOpenReelDesktop, patchRuntimeConfig } from "@/lib/api"
 import { LlmTab } from "./tabs/LlmTab"
 import { MediaTab } from "./tabs/MediaTab"
 import { AgentTab } from "./tabs/AgentTab"
@@ -119,7 +119,7 @@ export function SettingsModal({ open, onClose }: Props) {
           valid: boolean
           errors: string[]
         }>(false),
-        getImageProviderProtocols<{
+        getImageModelTargets<{
           ok: boolean
           protocols: MediaProtocolSummary[]
         }>().catch(() => null),

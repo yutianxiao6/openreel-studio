@@ -120,13 +120,11 @@ if ! OPENREEL_USER_DATA_DIR="$smoke_root" \
   echo "Packaged API smoke test failed." >&2
   exit 1
 fi
-for protocol_dir_name in image_provider_protocols; do
-  if [[ ! -f "$smoke_root/config/$protocol_dir_name/catalog.json" ]]; then
-    rm -rf "$smoke_root"
-    echo "Packaged protocol catalog was not installed: config/$protocol_dir_name/catalog.json" >&2
-    exit 1
-  fi
-done
+if [[ ! -f "$smoke_root/config/universal_model_adapter/image_targets/catalog.json" ]]; then
+  rm -rf "$smoke_root"
+  echo "Packaged UMA image target catalog was not installed." >&2
+  exit 1
+fi
 if [[ ! -f "$smoke_root/config/universal_model_adapter/video_targets/catalog.json" ]]; then
   rm -rf "$smoke_root"
   echo "Packaged UMA video target catalog was not installed." >&2
@@ -145,6 +143,11 @@ fi
 if [[ ! -f "$smoke_root/config/universal_model_adapter/protocols/newapi-suno-music-task.json" ]]; then
   rm -rf "$smoke_root"
   echo "Packaged UMA audio protocols were not installed." >&2
+  exit 1
+fi
+if [[ ! -f "$smoke_root/config/universal_model_adapter/protocols/openai-compatible-images-generations.json" ]]; then
+  rm -rf "$smoke_root"
+  echo "Packaged UMA image protocols were not installed." >&2
   exit 1
 fi
 rm -rf "$smoke_root"

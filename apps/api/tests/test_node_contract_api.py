@@ -5,7 +5,7 @@ from fastapi import HTTPException
 
 from app.api import routes_tools
 from app.mcp_tools import config_tools
-from app.services import media_provider, node_contract
+from app.services import node_contract
 
 
 def _image_config() -> dict:
@@ -15,10 +15,16 @@ def _image_config() -> dict:
                 "kind": "image",
                 "name": "image-active",
                 "model_name": "image-v2",
-                "api_format": "image_http_v1",
+                "api_format": "universal_adapter",
                 "enabled": True,
                 "is_active": True,
-                "params": {"image_protocol_id": "image-contract"},
+                "params": {
+                    "uma": {
+                        "protocol_id": "image-contract",
+                        "operation": "image.generate",
+                        "target_profile_id": "image-contract:image-v2",
+                    }
+                },
             }
         ]
     }
@@ -224,9 +230,23 @@ async def test_node_contract_route_uses_masked_runtime_config(monkeypatch) -> No
 
     monkeypatch.setattr(config_tools, "config_read", fake_read)
     monkeypatch.setattr(
-        media_provider,
-        "list_image_http_v1_protocol_catalog",
-        lambda: {"ok": True, "protocols": [{"id": "image-contract"}]},
+        routes_tools,
+        "list_image_model_targets",
+        lambda: {
+            "ok": True,
+            "protocols": [
+                {
+                    "id": "image-contract",
+                    "targets": [
+                        {
+                            "id": "image-contract:image-v2",
+                            "model_match": "image-v2",
+                            "capabilities": {"supports_reference_images": True},
+                        }
+                    ],
+                }
+            ],
+        },
     )
     project = SimpleNamespace(
         state_json='{"output_settings":{"image":{"aspect_ratio":"9:16","resolution":"1440x2560"}}}'

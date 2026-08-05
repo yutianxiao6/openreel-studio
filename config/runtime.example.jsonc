@@ -27,8 +27,8 @@
     // or a complete endpoint. Protocol request paths only contain resources.
     // 每个 base_url 都是带版本或命名空间的 API Base URL，不是裸域名或完整接口；
     // 协议中的 request path 只保存资源路径。
-    // Universal Model Adapter keeps connection/model settings here while the
-    // immutable HTTP protocol comes from the bundled submodule catalog.
+    // Every media provider uses Universal Model Adapter. Runtime config keeps
+    // only connection/model settings and an explicit target reference.
     {
       "kind": "image",
       "name": "image-uma-openai-example",
@@ -41,11 +41,9 @@
       "notes": "Example only. Copy and enable after filling a real API key.",
       "params": {
         "uma": {
-          "protocol_id": "openai.media",
+          "protocol_id": "openai.compatible-images-generations",
           "operation": "image.generate",
-          "target_defaults": {
-            "parameters": {"output_format": "png"}
-          }
+          "target_profile_id": "openai.compatible-images-generations:gpt-image-1"
         }
       }
     },

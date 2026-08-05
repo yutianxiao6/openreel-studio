@@ -1,0 +1,170 @@
+{
+  "format": "uma.protocol/v2",
+  "id": "openai.compatible-images-generations",
+  "version": "2.0.0",
+  "kind": ["image"],
+  "metadata": {"title": "OpenAI-compatible images.generations"},
+  "bases": {"api": {"$ref": "provider:/bases/api"}},
+  "auth": {
+    "api": {"type": "bearer", "credential": {"$ref": "credential:/api_key"}}
+  },
+  "media": {
+    "images": {
+      "encode": {
+        "$concat": [
+          "data:",
+          {"$ref": "item:/mime_type"},
+          ";base64,",
+          {"$ref": "item:/data", "transform": "base64_encode"}
+        ]
+      }
+    }
+  },
+  "operations": {
+    "generate": {
+      "base": "api",
+      "auth": "api",
+      "method": "POST",
+      "path": "/images/generations",
+      "encoding": "json",
+      "body": {
+        "model": {"$ref": "target:/remote_model"},
+        "prompt": {"$ref": "request:/input/prompt"},
+        "n": {"$ref": "request:/parameters/count"},
+        "size": {"$ref": "request:/parameters/size", "omit_if": "missing"},
+        "quality": {"$ref": "request:/parameters/quality", "omit_if": "missing"},
+        "negative_prompt": {
+          "$ref": "request:/parameters/negative_prompt",
+          "omit_if": "missing"
+        },
+        "response_format": {
+          "$ref": "request:/parameters/response_format",
+          "omit_if": "missing"
+        },
+        "output_format": {
+          "$ref": "request:/parameters/output_format",
+          "omit_if": "missing"
+        },
+        "image": {
+          "$switch": [
+            {
+              "when": {
+                "equals": [
+                  {"$ref": "request:/input/mode"},
+                  "reference_single"
+                ]
+              },
+              "value": {"$ref": "media:/images/first/encoded"}
+            },
+            {
+              "when": {
+                "equals": [
+                  {"$ref": "request:/input/mode"},
+                  "reference_multiple"
+                ]
+              },
+              "value": {"$ref": "media:/images/encoded"}
+            }
+          ]
+        }
+      },
+      "accept_http": [200],
+      "max_response_bytes": 67108864,
+      "read": {
+        "mode": "sync",
+        "provider_request_id": "/headers/x-request-id",
+        "artifacts": {
+          "image_1_url": {
+            "kind": "image",
+            "path": "/json/data/0/url",
+            "required": false
+          },
+          "image_1_b64": {
+            "kind": "image",
+            "path": "/json/data/0/b64_json",
+            "required": false,
+            "encoding": "base64"
+          },
+          "image_2_url": {
+            "kind": "image",
+            "path": "/json/data/1/url",
+            "required": false
+          },
+          "image_2_b64": {
+            "kind": "image",
+            "path": "/json/data/1/b64_json",
+            "required": false,
+            "encoding": "base64"
+          },
+          "image_3_url": {
+            "kind": "image",
+            "path": "/json/data/2/url",
+            "required": false
+          },
+          "image_3_b64": {
+            "kind": "image",
+            "path": "/json/data/2/b64_json",
+            "required": false,
+            "encoding": "base64"
+          },
+          "image_4_url": {
+            "kind": "image",
+            "path": "/json/data/3/url",
+            "required": false
+          },
+          "image_4_b64": {
+            "kind": "image",
+            "path": "/json/data/3/b64_json",
+            "required": false,
+            "encoding": "base64"
+          }
+        },
+        "usage": {
+          "input_tokens": {
+            "$ref": "response:/json/usage/input_tokens",
+            "omit_if": "missing"
+          },
+          "output_tokens": {
+            "$ref": "response:/json/usage/output_tokens",
+            "omit_if": "missing"
+          },
+          "total_tokens": {
+            "$ref": "response:/json/usage/total_tokens",
+            "omit_if": "missing"
+          },
+          "source": "provider"
+        },
+        "error_message": "/json/error/message",
+        "error_code": "/json/error/code"
+      }
+    }
+  },
+  "entrypoints": {
+    "image.generate": {
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "object",
+            "properties": {
+              "prompt": {"type": "string", "minLength": 1},
+              "mode": {
+                "enum": ["text_to_image", "reference_single", "reference_multiple"]
+              }
+            },
+            "required": ["prompt", "mode"]
+          },
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "count": {"type": "integer", "minimum": 1, "maximum": 4}
+            }
+          },
+          "media": {"type": "array", "maxItems": 16}
+        },
+        "required": ["input", "parameters"]
+      },
+      "submit": "generate"
+    }
+  }
+}

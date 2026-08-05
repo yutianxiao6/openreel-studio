@@ -1105,53 +1105,6 @@ async def test_completed_fusion_stage_clears_previous_error_diagnostics(monkeypa
 
 
 
-@pytest.mark.asyncio
-async def test_media_provider_raw_http_fallback_parses_body_when_response_path_mismatch(monkeypatch):
-
-    class FakeResponse:
-        status_code = 200
-
-        def __init__(self, data: Any):
-            self._data = data
-            self.text = json.dumps(data)
-
-        def json(self):
-            return self._data
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def post(self, url: str, json: dict, headers: dict):
-            assert url == "https://example.test"
-            return FakeResponse({"result": {"data": {"url": "/api/media/project-1/generated.png"}}})
-
-    provider = SimpleNamespace(
-        base_url="https://example.test",
-        api_key="token",
-        params_json="{}",
-    )
-
-    monkeypatch.setattr(media_provider.httpx, "AsyncClient", FakeClient)
-
-    result = await media_provider._call_raw_http(
-        provider,
-        prompt="cute cat",
-        negative_prompt=None,
-        size="1080x1920",
-        reference_images=None,
-        extra_override={"_response_image_path": ["missing", "url"]},
-    )
-
-    assert result.get("images") == [{"url": "/api/media/project-1/generated.png", "b64": None}]
-
-
 def test_media_provider_timeout_default_is_interactive(monkeypatch):
     monkeypatch.delenv("DRAMA_IMAGE_PROVIDER_TIMEOUT_SECONDS", raising=False)
 
@@ -1163,49 +1116,6 @@ def test_media_provider_timeout_default_is_interactive(monkeypatch):
     assert timeout.pool == 300.0
 
 
-def test_openai_image_protocol_uses_versioned_provider_base_without_appending_v1():
-    provider = SimpleNamespace(
-        base_url="https://ark.cn-beijing.volces.com/api/v3",
-        api_key="ark-key",
-        api_format="image_http_v1",
-        model_name="doubao-seedream-5-0-pro-260628",
-        params_json=json.dumps({"image_protocol_id": "openai_images_generations"}),
-    )
-
-    protocol, error = media_provider._image_http_v1_protocol(provider)
-
-    assert error is None
-    assert protocol is not None
-    endpoint = media_provider._image_http_v1_endpoint_for(
-        provider,
-        protocol,
-        media_provider._image_http_v1_request_section(protocol),
-    )
-    assert endpoint == "https://ark.cn-beijing.volces.com/api/v3/images/generations"
-    assert "/api/v3/v1/" not in endpoint
-
-
-def test_openai_image_protocol_preserves_v1_when_it_is_part_of_provider_base():
-    provider = SimpleNamespace(
-        base_url="https://api.openai.com/v1",
-        api_key="openai-key",
-        api_format="image_http_v1",
-        model_name="gpt-image-1",
-        params_json=json.dumps({"image_protocol_id": "openai_images_generations"}),
-    )
-
-    protocol, error = media_provider._image_http_v1_protocol(provider)
-
-    assert error is None
-    assert protocol is not None
-    endpoint = media_provider._image_http_v1_endpoint_for(
-        provider,
-        protocol,
-        media_provider._image_http_v1_request_section(protocol),
-    )
-    assert endpoint == "https://api.openai.com/v1/images/generations"
-
-
 def _png_header(width: int, height: int) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big")
 
@@ -1215,16 +1125,28 @@ async def test_image_provider_rejects_downloaded_wrong_aspect_ratio(monkeypatch,
     provider = SimpleNamespace(
         name="fake-image",
         model_name="fake-model",
-        api_format="image_http_v1",
-        params_json=json.dumps({"image_protocol_id": "openai_images_generations"}),
+        api_format="universal_adapter",
+        params_json=json.dumps(
+            {
+                "uma": {
+                    "protocol_id": "openai.compatible-images-generations",
+                    "operation": "image.generate",
+                    "target_profile_id": "openai.compatible-images-generations:generic",
+                }
+            }
+        ),
     )
 
     async def fake_get_active_provider(kind: str):
         assert kind == "image"
         return provider
 
-    async def fake_call_image_http_v1(*args, **kwargs):
-        return {"images": [{"url": "https://example.test/generated.png"}]}
+    async def fake_generate_image(**kwargs):
+        return {
+            "ok": True,
+            "status": "completed",
+            "images": [{"url": "https://example.test/generated.png"}],
+        }
 
     class FakeResponse:
         status_code = 200
@@ -1245,7 +1167,10 @@ async def test_image_provider_rejects_downloaded_wrong_aspect_ratio(monkeypatch,
             return FakeResponse()
 
     monkeypatch.setattr(media_provider, "_get_active_provider", fake_get_active_provider)
-    monkeypatch.setattr(media_provider, "_call_image_http_v1", fake_call_image_http_v1)
+    monkeypatch.setattr(
+        "app.services.universal_adapter_service.universal_adapter_service.generate_image",
+        fake_generate_image,
+    )
     monkeypatch.setattr(media_provider.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(media_provider.settings, "STORAGE_DIR", str(tmp_path), raising=False)
 
@@ -2209,18 +2134,6 @@ def test_node_run_business_error_hints_prevent_duplicate_video_submissions():
     assert "不要立即重复 node.run" in unavailable_hint
     assert "参数校验拒绝" in invalid_request_hint
     assert "contract" in invalid_request_hint
-
-
-def test_public_url_mode_requires_public_base_for_local_media():
-    url, warning = media_provider._public_media_url_for_ref(
-        "proj-1",
-        "/api/media/proj-1/generated_images/source.png",
-        None,
-    )
-
-    assert url is None
-    assert warning is not None
-    assert "当前 provider 选择了公网 URL 图片输入模式" in warning
 
 
 def _seedance_video_http_protocol() -> dict[str, Any]:

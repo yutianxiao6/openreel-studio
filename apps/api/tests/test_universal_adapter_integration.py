@@ -20,6 +20,7 @@ from app.services.universal_adapter_config import (
 )
 from app.services.universal_adapter_service import UniversalAdapterService
 from app.services.audio_target_catalog import load_audio_target_catalog
+from app.services.image_target_catalog import load_image_target_catalog
 from app.services.video_target_catalog import load_video_target_catalog
 
 
@@ -64,23 +65,24 @@ def _service_with_binding(
     return service, binding
 
 
-def test_runtime_config_accepts_reference_only_universal_adapter_provider() -> None:
+def test_runtime_config_accepts_targeted_universal_adapter_provider() -> None:
     entry = MediaProviderEntry(
         kind="image",
         name="image-uma",
         base_url="https://provider.example.invalid",
         api_key="${IMAGE_API_KEY}",
-        model_name="image-v1",
+        model_name="gpt-image-2",
         api_format="universal_adapter",
         params={
             "uma": {
-                "protocol_id": "openai.media",
+                "protocol_id": "openai.compatible-images-generations",
                 "operation": "image.generate",
+                "target_profile_id": "openai.compatible-images-generations:gpt-image-2",
             }
         },
     )
 
-    assert entry.params["uma"]["protocol_id"] == "openai.media"
+    assert entry.params["uma"]["protocol_id"] == "openai.compatible-images-generations"
 
 
 def test_runtime_config_rejects_inline_universal_adapter_protocol() -> None:
@@ -111,7 +113,13 @@ def test_runtime_config_rejects_blank_universal_adapter_protocol_id() -> None:
             api_key="secret",
             model_name="image-v1",
             api_format="universal_adapter",
-            params={"uma": {"protocol_id": "   ", "operation": "image.generate"}},
+            params={
+                "uma": {
+                    "protocol_id": "   ",
+                    "operation": "image.generate",
+                    "target_profile_id": "openai.compatible-images-generations:generic",
+                }
+            },
         )
 
 
@@ -198,6 +206,33 @@ async def test_every_video_target_compiles_against_its_uma_protocol() -> None:
 
 
 @pytest.mark.asyncio
+async def test_every_image_target_compiles_against_its_uma_protocol() -> None:
+    for target in load_image_target_catalog()["targets"]:
+        model_name = target["match"] if target["match"] != "*" else "generic-image-model"
+        provider = SimpleNamespace(
+            kind="image",
+            name=f"compile-{target['id']}",
+            base_url="https://provider.example.invalid/v1",
+            api_key="secret-test-key",
+            model_name=model_name,
+            api_format="universal_adapter",
+        )
+        params = {
+            "uma": {
+                "protocol_id": target["protocol_id"],
+                "operation": target["operation"],
+                "target_profile_id": target["id"],
+            }
+        }
+        binding = create_universal_adapter_binding(provider, params)
+        try:
+            assert binding.options.target_profile_id == target["id"]
+            assert binding.options.protocol_id == target["protocol_id"]
+        finally:
+            await binding.client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_every_audio_target_compiles_against_its_uma_protocol() -> None:
     for target in load_audio_target_catalog()["targets"]:
         model_name = target["match"] if target["match"] != "*" else "generic-audio-model"
@@ -250,8 +285,8 @@ async def test_image_provider_calls_uma_image_backend() -> None:
             "model": "image-v1",
             "prompt": "A paper city",
             "n": 2,
-            "output_format": "png",
             "quality": "high",
+            "response_format": "url",
             "size": "2048x1152",
         }
         return httpx.Response(
@@ -262,10 +297,10 @@ async def test_image_provider_calls_uma_image_backend() -> None:
 
     provider, provider_params = _provider(
         kind="image",
-        protocol_id="openai.media",
+        protocol_id="openai.compatible-images-generations",
         operation="image.generate",
         model="image-v1",
-        uma={"target_defaults": {"parameters": {"output_format": "png"}}},
+        uma={"target_profile_id": "openai.compatible-images-generations:generic"},
     )
     service, _ = _service_with_binding(provider, provider_params, handler)
     try:
@@ -286,7 +321,56 @@ async def test_image_provider_calls_uma_image_backend() -> None:
 
     assert result["ok"] is True, result
     assert base64.b64decode(result["images"][0]["b64"]) == image_bytes
-    assert result["adapter_route"]["protocol_id"] == "openai.media"
+    assert result["adapter_route"]["protocol_id"] == "openai.compatible-images-generations"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reference_count", [1, 2])
+async def test_image_provider_encodes_reference_images_through_uma(
+    reference_count: int,
+) -> None:
+    reference_bytes = [f"reference-{index}".encode() for index in range(reference_count)]
+    reference_images = [
+        f"data:image/png;base64,{base64.b64encode(value).decode()}"
+        for value in reference_bytes
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        expected = reference_images[0] if reference_count == 1 else reference_images
+        assert body["image"] == expected
+        return httpx.Response(
+            200,
+            json={"data": [{"url": "https://assets.example.invalid/generated.png"}]},
+            request=request,
+        )
+
+    provider, provider_params = _provider(
+        kind="image",
+        protocol_id="openai.compatible-images-generations",
+        operation="image.generate",
+        model="image-v1",
+        uma={"target_profile_id": "openai.compatible-images-generations:generic"},
+    )
+    service, _ = _service_with_binding(provider, provider_params, handler)
+    try:
+        result = await service.generate_image(
+            provider=provider,
+            provider_params=provider_params,
+            project_id="project-image",
+            prompt="Preserve the subject",
+            negative_prompt=None,
+            size="1024x1024",
+            quality=None,
+            count=1,
+            reference_images=reference_images,
+            extra=None,
+        )
+    finally:
+        await service.aclose()
+
+    assert result["ok"] is True, result
+    assert result["images"][0]["url"] == "https://assets.example.invalid/generated.png"
 
 
 @pytest.mark.asyncio
@@ -637,10 +721,10 @@ async def test_media_is_rejected_when_target_does_not_declare_roles() -> None:
 
     provider, provider_params = _provider(
         kind="image",
-        protocol_id="openai.media",
+        protocol_id="openai.compatible-images-generations",
         operation="image.generate",
-        model="image-v1",
-        uma={"target_defaults": {"parameters": {"output_format": "png"}}},
+        model="dall-e-3",
+        uma={"target_profile_id": "openai.compatible-images-generations:dall-e-3"},
     )
     service, _ = _service_with_binding(provider, provider_params, handler)
     try:
@@ -671,10 +755,10 @@ async def test_media_generation_service_delegates_universal_adapter_provider(
 ) -> None:
     provider, provider_params = _provider(
         kind="image",
-        protocol_id="openai.media",
+        protocol_id="openai.compatible-images-generations",
         operation="image.generate",
         model="image-v1",
-        uma={"target_defaults": {"parameters": {"output_format": "png"}}},
+        uma={"target_profile_id": "openai.compatible-images-generations:generic"},
     )
     provider.params_json = json.dumps(provider_params)
     captured: dict[str, Any] = {}

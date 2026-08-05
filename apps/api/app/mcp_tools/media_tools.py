@@ -21,7 +21,7 @@ async def cancel_image_generation(project_id: str, reason: str = "") -> dict:
 async def get_presets(
     model_name: str | None = None,
 ) -> dict:
-    """Get image provider default parameters declared by the image protocol catalog."""
+    """Get image provider defaults declared by the UMA image target catalog."""
     from app.services.media_provider import match_preset, list_presets, get_preset_descriptions
 
     if model_name:

@@ -87,6 +87,7 @@ def _run_packaging_smoke() -> None:
     from app.config_store.schema import MediaProviderEntry
     from app.services import llm_service, media_operations, subprocess_utils
     from app.services.audio_target_catalog import load_audio_target_catalog
+    from app.services.image_target_catalog import load_image_target_catalog
     from app.services.video_target_catalog import load_video_target_catalog
 
     if not WORKFLOW_SPEC_V2_GUIDE.strip():
@@ -112,13 +113,21 @@ def _run_packaging_smoke() -> None:
         raise RuntimeError("UMA video target catalog was not bundled")
     if not load_audio_target_catalog().get("targets"):
         raise RuntimeError("UMA audio target catalog was not bundled")
+    if not load_image_target_catalog().get("targets"):
+        raise RuntimeError("UMA image target catalog was not bundled")
 
     samples = (
         (
             "image",
             "packaging-smoke-image",
-            "image_http_v1",
-            {"image_protocol_id": "openai_images_generations"},
+            "universal_adapter",
+            {
+                "uma": {
+                    "protocol_id": "openai.compatible-images-generations",
+                    "operation": "image.generate",
+                    "target_profile_id": "openai.compatible-images-generations:generic",
+                }
+            },
         ),
         (
             "video",

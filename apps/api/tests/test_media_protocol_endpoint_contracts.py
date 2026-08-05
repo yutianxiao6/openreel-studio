@@ -1,83 +1,27 @@
 import json
 from pathlib import Path
-from types import SimpleNamespace
-
 import pytest
 from pydantic import ValidationError
 from universal_model_adapter import ProtocolCatalog
 
 from app.config import settings
 from app.config_store.schema import MediaProviderEntry
-from app.config_store.store import _migrate_audio_providers_to_uma
-from app.services import media_provider
+from app.config_store.store import _migrate_media_providers_to_uma
 from app.services.audio_target_catalog import (
     compile_audio_target_options,
     list_audio_model_targets,
     load_audio_target_catalog,
+)
+from app.services.image_target_catalog import (
+    compile_image_target_options,
+    list_image_model_targets,
+    load_image_target_catalog,
 )
 from app.services.video_target_catalog import (
     compile_video_target_options,
     list_video_model_targets,
     load_video_target_catalog,
 )
-
-
-def _protocol(loader, protocol_id: str) -> dict:
-    protocol, error = loader(protocol_id)
-    assert error is None
-    assert protocol is not None
-    return protocol
-
-
-def test_host_catalog_is_limited_to_images() -> None:
-    protocol = _protocol(
-        media_provider._image_http_v1_protocol_from_catalog,
-        "openai_images_generations",
-    )
-    assert protocol["id"] == "openai_images_generations"
-
-
-def test_host_endpoint_builder_treats_provider_base_url_as_literal() -> None:
-    provider = SimpleNamespace(base_url="https://relay.example/api/v3", params_json="{}")
-    endpoint = media_provider._protocol_endpoint_for(
-        provider,
-        {"default_base_url": "https://ignored.example/v1"},
-        {"path": "/jobs"},
-    )
-    assert endpoint == "https://relay.example/api/v3/jobs"
-
-
-@pytest.mark.parametrize(
-    ("loader", "protocol_id", "base_url", "section_name", "task_id", "expected"),
-    [
-        (
-            media_provider._image_http_v1_protocol_from_catalog,
-            "openai_images_generations",
-            "https://provider.example/v1",
-            "request",
-            None,
-            "https://provider.example/v1/images/generations",
-        ),
-    ],
-)
-def test_remaining_host_protocol_endpoints(
-    loader,
-    protocol_id: str,
-    base_url: str,
-    section_name: str,
-    task_id: str | None,
-    expected: str,
-) -> None:
-    protocol = _protocol(loader, protocol_id)
-    provider = SimpleNamespace(base_url=base_url, params_json="{}")
-    endpoint = media_provider._protocol_endpoint_for(
-        provider,
-        protocol,
-        protocol[section_name],
-        task_id=task_id,
-    )
-    assert endpoint == expected
-
 
 def test_every_openreel_media_protocol_loads_through_uma_v2() -> None:
     protocol_dir = Path(settings.PROJECT_ROOT) / "config" / "universal_model_adapter" / "protocols"
@@ -91,6 +35,7 @@ def test_every_openreel_media_protocol_loads_through_uma_v2() -> None:
         "dramaagent.updream-video-task",
         "newapi.suno-music-task",
         "suno.compatible-generate-task",
+        "openai.compatible-images-generations",
     }
     assert all(item.document.format == "uma.protocol/v2" for item in catalog.list())
     assert all(item.document.version == "2.0.0" for item in catalog.list())
@@ -167,6 +112,86 @@ def test_audio_targets_keep_capabilities_separate_from_wire_protocols() -> None:
     options = compile_audio_target_options(target)
     assert options["target_defaults"]["parameters"]["voice"] == "alloy"
     assert options["parameter_map"]["format"] == "response_format"
+
+
+def test_image_targets_keep_capabilities_separate_from_wire_protocols() -> None:
+    catalog = load_image_target_catalog()
+    targets = catalog["targets"]
+    assert {target["operation"] for target in targets} == {"image.generate"}
+    assert {target["match"] for target in targets} >= {
+        "gpt-image-1",
+        "gpt-image-2",
+        "grok-4-fast-non-reasoning",
+        "doubao-seedream-5-0-pro-260628",
+        "*",
+    }
+    for target in targets:
+        serialized = json.dumps(target, ensure_ascii=False)
+        assert '"request"' not in serialized
+        assert '"response"' not in serialized
+        assert '"images_path"' not in serialized
+
+    public = list_image_model_targets()
+    protocol = next(
+        item
+        for item in public["protocols"]
+        if item["id"] == "openai.compatible-images-generations"
+    )
+    profiles = {item["match"]: item for item in protocol["model_profiles"]}
+    assert profiles["gpt-image-2"]["supports_reference_images"] is True
+    assert profiles["dall-e-3"]["max_reference_images"] == 0
+
+    target = next(item for item in targets if item["match"] == "gpt-image-2")
+    options = compile_image_target_options(target)
+    assert options["target_defaults"]["parameters"]["size"] == "1024x1024"
+    assert options["accepted_media_roles"] == ("reference_image",)
+    assert options["request_schema"]["properties"]["media"]["maxItems"] == 16
+
+
+def test_image_provider_schema_requires_universal_adapter_target() -> None:
+    entry = MediaProviderEntry(
+        kind="image",
+        name="image-uma",
+        base_url="https://provider.example/v1",
+        api_key="secret",
+        model_name="gpt-image-2",
+        api_format="universal_adapter",
+        params={
+            "uma": {
+                "protocol_id": "openai.compatible-images-generations",
+                "operation": "image.generate",
+                "target_profile_id": "openai.compatible-images-generations:gpt-image-2",
+            }
+        },
+    )
+    assert entry.api_format == "universal_adapter"
+
+    with pytest.raises(ValidationError, match="universal_adapter"):
+        MediaProviderEntry(
+            kind="image",
+            name="unsupported-image",
+            base_url="https://provider.example/v1",
+            api_key="secret",
+            model_name="gpt-image-2",
+            api_format="image_http_v1",
+            params={"image_protocol_id": "openai_images_generations"},
+        )
+
+    with pytest.raises(ValidationError, match="target_profile_id"):
+        MediaProviderEntry(
+            kind="image",
+            name="image-without-target",
+            base_url="https://provider.example/v1",
+            api_key="secret",
+            model_name="gpt-image-2",
+            api_format="universal_adapter",
+            params={
+                "uma": {
+                    "protocol_id": "openai.compatible-images-generations",
+                    "operation": "image.generate",
+                }
+            },
+        )
 
 
 def test_video_provider_schema_requires_universal_adapter() -> None:
@@ -274,7 +299,7 @@ def test_persisted_audio_provider_is_migrated_to_uma_before_validation() -> None
         ]
     }
 
-    migrated, changed = _migrate_audio_providers_to_uma(config)
+    migrated, changed = _migrate_media_providers_to_uma(config)
 
     assert changed is True
     provider = migrated["media_providers"][0]
@@ -292,5 +317,38 @@ def test_persisted_audio_provider_is_migrated_to_uma_before_validation() -> None
                     "mv": "chirp-v4",
                 }
             },
+        }
+    }
+
+
+def test_persisted_image_provider_is_migrated_to_uma_before_validation() -> None:
+    config = {
+        "media_providers": [
+            {
+                "kind": "image",
+                "name": "existing-image",
+                "model_name": "gpt-image-2",
+                "api_format": "image_http_v1",
+                "params": {
+                    "image_protocol_id": "openai_images_generations",
+                    "image_transport": "data_url",
+                    "quality": "high",
+                    "_response_image_path": ["data", 0, "url"],
+                },
+            }
+        ]
+    }
+
+    migrated, changed = _migrate_media_providers_to_uma(config)
+
+    assert changed is True
+    provider = migrated["media_providers"][0]
+    assert provider["api_format"] == "universal_adapter"
+    assert provider["params"] == {
+        "uma": {
+            "protocol_id": "openai.compatible-images-generations",
+            "operation": "image.generate",
+            "target_profile_id": "openai.compatible-images-generations:gpt-image-2",
+            "target_defaults": {"parameters": {"quality": "high"}},
         }
     }

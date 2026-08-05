@@ -2,15 +2,8 @@
 
 import { useState } from "react"
 import type { ConfigContext, MediaProviderEntry, MediaProtocolSummary } from "../SettingsModal"
-import {
-  VIDEO_IMAGE_TRANSPORT_OPTIONS,
-} from "@/lib/videoModelOptions"
 
 type MediaKind = "image" | "video" | "audio"
-
-function normalizeVideoImageTransport(value?: unknown): string {
-  return VIDEO_IMAGE_TRANSPORT_OPTIONS.some((item) => item.value === value) ? value as string : "data_url"
-}
 
 function normalizeMediaProvider(
   entry: MediaProviderEntry,
@@ -53,7 +46,7 @@ function videoModelTemplateOptions(protocols: MediaProtocolSummary[]): Array<{
   return options
 }
 
-function audioModelTemplateOptions(protocols: MediaProtocolSummary[]): Array<{
+function mediaModelTemplateOptions(protocols: MediaProtocolSummary[]): Array<{
   label: string
   value: string
   modelName: string
@@ -262,10 +255,7 @@ function ProviderSummary({
     : null
   const protocolId = String(
     (
-      entry.api_format === "universal_adapter" ? umaProtocolId
-      : entry.kind === "image" ? entry.params?.image_protocol_id
-      : entry.kind === "video" ? ""
-      : ""
+      entry.api_format === "universal_adapter" ? umaProtocolId : ""
     ) || "",
   )
   return (
@@ -321,7 +311,7 @@ function blank(kind: MediaKind): MediaProviderEntry {
     base_url: "",
     api_key: "",
     model_name: kind === "audio" ? "tts-1" : "",
-    api_format: kind === "audio" || kind === "video" ? "universal_adapter" : "image_http_v1",
+    api_format: "universal_adapter",
     is_active: false, enabled: true, notes: "", params: {},
   }
 }
@@ -340,7 +330,6 @@ function Row({
   audioProtocols: MediaProtocolSummary[]
 }) {
   const [draft, setDraft] = useState(() => normalizeMediaProvider(entry))
-  const [advancedOpen, setAdvancedOpen] = useState(false)
 
   if (!editing) {
     return (
@@ -377,13 +366,6 @@ function Row({
 
   const setField = (k: keyof MediaProviderEntry, v: string | boolean | object) =>
     setDraft({ ...draft, [k]: v } as MediaProviderEntry)
-  const setParamField = (key: string, value: string) => {
-    const nextParams = { ...(draft.params || {}) }
-    const clean = value.trim()
-    if (clean) nextParams[key] = clean
-    else delete nextParams[key]
-    setDraft({ ...draft, params: nextParams })
-  }
   const setVideoBaseField = (slot: string, value: string) => {
     const nextParams = { ...(draft.params || {}) }
     const uma = nextParams.uma && typeof nextParams.uma === "object"
@@ -401,12 +383,45 @@ function Row({
   }
   const setImageProtocolId = (value: string) => {
     const nextParams = { ...(draft.params || {}) }
-    delete nextParams.image_protocol
-    delete nextParams.protocol
+    const currentUma = nextParams.uma && typeof nextParams.uma === "object"
+      ? { ...(nextParams.uma as Record<string, unknown>) }
+      : {}
     const clean = value.trim()
-    if (clean) nextParams.image_protocol_id = clean
-    else delete nextParams.image_protocol_id
-    setDraft({ ...draft, api_format: "image_http_v1", params: nextParams })
+    if (clean) currentUma.protocol_id = clean
+    else delete currentUma.protocol_id
+    const selectedProtocol = imageProtocols.find((item) => item.id === clean)
+    const matchedProfile = selectedProtocol?.model_profiles?.find(
+      (item) => item.match === draft.model_name,
+    ) || selectedProtocol?.model_profiles?.find((item) => item.match === "*")
+    if (matchedProfile?.target_profile_id) {
+      currentUma.target_profile_id = matchedProfile.target_profile_id
+      currentUma.operation = matchedProfile.operation || "image.generate"
+    } else {
+      delete currentUma.target_profile_id
+      delete currentUma.operation
+    }
+    nextParams.uma = currentUma
+    setDraft({ ...draft, api_format: "universal_adapter", params: nextParams })
+  }
+  const setImageModelName = (value: string) => {
+    const nextParams = { ...(draft.params || {}) }
+    const currentUma = nextParams.uma && typeof nextParams.uma === "object"
+      ? { ...(nextParams.uma as Record<string, unknown>) }
+      : {}
+    const protocol = imageProtocols.find(
+      (item) => item.id === String(currentUma.protocol_id || ""),
+    )
+    const matchedProfile = protocol?.model_profiles?.find((item) => item.match === value)
+      || protocol?.model_profiles?.find((item) => item.match === "*")
+    if (matchedProfile?.target_profile_id) {
+      currentUma.target_profile_id = matchedProfile.target_profile_id
+      currentUma.operation = matchedProfile.operation || "image.generate"
+    } else {
+      delete currentUma.target_profile_id
+      delete currentUma.operation
+    }
+    nextParams.uma = currentUma
+    setDraft({ ...draft, model_name: value, params: nextParams })
   }
   const setVideoProtocolId = (value: string) => {
     const nextParams = { ...(draft.params || {}) }
@@ -521,7 +536,35 @@ function Row({
       && (!item.targetProfileId || item.targetProfileId === String(draftUma.target_profile_id || "")),
     )?.value || ""
     : ""
-  const audioModelTemplates = audioModelTemplateOptions(audioProtocols)
+  const imageModelTemplates = mediaModelTemplateOptions(imageProtocols)
+  const selectedImageTemplate = entry.kind === "image"
+    ? imageModelTemplates.find((item) =>
+      item.modelName === draft.model_name
+      && item.protocolId === String(draftUma.protocol_id || "")
+      && item.targetProfileId === String(draftUma.target_profile_id || ""),
+    )?.value || ""
+    : ""
+  const applyImageTemplate = (templateKey: string) => {
+    const template = imageModelTemplates.find((item) => item.value === templateKey)
+    if (!template) return
+    const nextParams = { ...(draft.params || {}) }
+    const currentUma = nextParams.uma && typeof nextParams.uma === "object"
+      ? { ...(nextParams.uma as Record<string, unknown>) }
+      : {}
+    nextParams.uma = {
+      ...currentUma,
+      protocol_id: template.protocolId,
+      operation: template.operation,
+      target_profile_id: template.targetProfileId,
+    }
+    setDraft({
+      ...draft,
+      model_name: template.modelName,
+      api_format: "universal_adapter",
+      params: nextParams,
+    })
+  }
+  const audioModelTemplates = mediaModelTemplateOptions(audioProtocols)
   const selectedAudioTemplate = entry.kind === "audio"
     ? audioModelTemplates.find((item) =>
       item.modelName === draft.model_name
@@ -549,8 +592,7 @@ function Row({
       params: nextParams,
     })
   }
-  const imageInputTransport = normalizeVideoImageTransport(draft.params?.image_transport)
-  const imageProtocolId = String(draft.params?.image_protocol_id || "")
+  const imageProtocolId = String(draftUma.protocol_id || "")
   const imageProtocolOptions = imageProtocols.map((item) => ({
     label: item.display_name && item.display_name !== item.id
       ? `${item.display_name} · ${item.id}`
@@ -560,7 +602,13 @@ function Row({
   const selectedCatalogImageProtocolId = imageProtocolOptions.some((item) => item.value === imageProtocolId)
     ? imageProtocolId
     : ""
-  const canSaveImageProtocol = draft.api_format !== "image_http_v1" || Boolean(selectedCatalogImageProtocolId)
+  const canSaveImageProtocol = draft.kind !== "image"
+    || (
+      draft.api_format === "universal_adapter"
+      && Boolean(selectedCatalogImageProtocolId)
+      && Boolean(String(draftUma.target_profile_id || "").trim())
+      && draftUma.operation === "image.generate"
+    )
   const videoProtocolId = String(draftUma.protocol_id || "")
   const videoProtocolOptions = videoProtocols.map((item) => ({
     label: item.display_name && item.display_name !== item.id
@@ -629,11 +677,25 @@ function Row({
           hint="填写带版本或 API 命名空间的接口基础地址，例如 /v1、/v2、/api/v3 或 /suno；不要只填裸域名，也不要填到 images、videos、files 等资源路径。后端原样使用，协议只追加资源路径。" />
         {entry.kind === "image" ? (
           <>
+            <SelectField
+              label="推荐模型"
+              value={selectedImageTemplate}
+              onChange={applyImageTemplate}
+              options={[
+                { label: imageModelTemplates.length ? "手动填写模型名" : "target 配置里没有具体模型建议", value: "" },
+                ...imageModelTemplates.map((item) => ({
+                  label: item.label,
+                  value: item.value,
+                })),
+              ]}
+              defaultText="可手填"
+              hint="选项来自独立的图片 target 配置；选择后会同时绑定模型名、UMA 协议、operation 和 target profile。"
+            />
             <F
               label="模型名"
               required
               value={draft.model_name}
-              onChange={(v) => setField("model_name", v)}
+              onChange={setImageModelName}
               hint="填写当前中转站或官方接口实际支持的图片模型 ID。"
             />
             <SelectField
@@ -645,43 +707,13 @@ function Row({
                 ...imageProtocolOptions,
               ]}
               required
-              hint="从 config/image_provider_protocols/catalog.json 动态读取；选择协议后系统按该协议构造请求和解析图片结果。"
+              hint="模型能力来自独立 target 配置；请求拼装、参考图编码和图片结果读取由 Universal Model Adapter V2 协议执行。"
             />
             {imageProtocolId && !selectedCatalogImageProtocolId && (
               <div className="col-span-2 rounded border border-amber-800 bg-amber-950/30 px-2 py-1 text-[10px] text-amber-200">
-                当前保存的协议 ID「{imageProtocolId}」不在配置文件中，请先在 catalog 中加入该协议，或改选已有协议。
+                当前保存的协议 ID「{imageProtocolId}」不在 UMA 图片 target 配置中，请改选已有协议。
               </div>
             )}
-            <div className="col-span-2 rounded border border-gray-800 bg-gray-950/35 p-2">
-              <button
-                type="button"
-                onClick={() => setAdvancedOpen((value) => !value)}
-                className="flex w-full items-center justify-between text-left text-[11px] text-gray-300"
-              >
-                <span>高级设置</span>
-                <span className="text-gray-500">{advancedOpen ? "收起" : "展开"}</span>
-              </button>
-              {advancedOpen && (
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <SelectField
-                    label="图片输入"
-                    value={imageInputTransport}
-                    onChange={(v) => setParamField("image_transport", v)}
-                    options={VIDEO_IMAGE_TRANSPORT_OPTIONS}
-                    hint="默认本地项目图转 Base64/data URL，已有公网 URL 原样传；公网 URL 模式需要服务商能直接访问图片地址。"
-                  />
-                  {imageInputTransport === "public_url" && (
-                    <F
-                      label="公网根地址"
-                      value={String(draft.params?.public_base_url || "")}
-                      onChange={(v) => setParamField("public_base_url", v)}
-                      defaultText="默认空"
-                      hint="用于把 /api/media/... 项目图片转成外网可访问 URL，例如 https://example.com。"
-                    />
-                  )}
-                </div>
-              )}
-            </div>
           </>
         ) : entry.kind === "video" ? (
           <>

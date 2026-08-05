@@ -11,10 +11,8 @@ documented in its [OpenReel video integration guide](https://github.com/yutianxi
 | Situation | Action |
 | --- | --- |
 | Configure an Agent LLM | Add it under **Settings → LLM models**. |
-| Configure a built-in audio or video target | Add the corresponding Provider and select its UMA protocol and recommended target. |
-| Add an audio or video API with a different wire contract | Add an `uma.protocol/v2` document and the corresponding OpenReel target. |
-| Configure an existing image protocol | Add the Provider in Image Settings. |
-| Add a new image HTTP contract | Extend the OpenReel image Catalog. |
+| Configure a built-in media target | Add the corresponding Provider and select its UMA protocol and recommended target. |
+| Add a media API with a different wire contract | Add an `uma.protocol/v2` document and the corresponding OpenReel target. |
 
 Matching model names do not prove that two APIs share a wire protocol. Compare
 the provider method, path, authentication, request body, upload flow, task
@@ -24,11 +22,9 @@ statuses, and result fields.
 
 ```mermaid
 flowchart LR
-  A[Provider API documentation] --> B[Audio/video: UMA V2 protocol]
-  A --> C[Image: OpenReel Catalog]
-  B --> D[OpenReel audio/video target]
+  A[Provider API documentation] --> B[UMA V2 protocol]
+  B --> D[OpenReel image/audio/video target]
   D --> E[Settings and runtime.jsonc]
-  C --> E
   F[Base URL / API key / model ID] --> E
   E --> G[Node selection and run]
 ```
@@ -36,15 +32,14 @@ flowchart LR
 | Source | Purpose |
 | --- | --- |
 | `config/runtime.jsonc` | Local accounts, Base URLs, API keys, model IDs, enabled/default state, and protocol/target references. |
-| `config/universal_model_adapter/protocols/*.json` | Audio/video HTTP, authentication, upload, provider task polling, status/error interpretation, and artifact extraction. |
+| `config/universal_model_adapter/protocols/*.json` | Media HTTP, authentication, upload, provider task polling, status/error interpretation, and artifact extraction. |
+| `config/universal_model_adapter/image_targets/catalog.json` | Image model matching, UI labels, reference limits, capabilities, and defaults. |
 | `config/universal_model_adapter/audio_targets/catalog.json` | Audio model matching, operation, UI labels, capabilities, and defaults. |
 | `config/universal_model_adapter/video_targets/catalog.json` | Video model matching, UI labels, modes, media limits, ratios, resolutions, durations, defaults, and extra Base URL slots. |
-| `config/image_provider_protocols/catalog.json` | Current OpenReel image HTTP contracts. |
 
-Audio and video Providers must use `api_format=universal_adapter` and explicitly reference
+All media Providers must use `api_format=universal_adapter` and explicitly reference
 both `params.uma.protocol_id` and `params.uma.target_profile_id`. OpenReel does
-not infer either value from the model name. Image continues using its current
-host Catalog format.
+not infer either value from the model name.
 
 A Workflow V2 Spec describes reusable inputs, steps, and dependencies. It does
 not store provider credentials or deployment-specific account selection.
@@ -75,8 +70,7 @@ Image, video, and audio accounts are independent.
 1. Open the corresponding media Provider tab and select **Add Provider**.
 2. Enter a unique name, versioned API Base URL, exact remote model ID, and API
    key.
-3. For audio or video, select one UMA protocol and its exact model target. For
-   image, select the matching OpenReel Catalog protocol.
+3. Select one UMA protocol and its exact model target.
 4. Configure required secondary Base URLs when the selected target or protocol
    declares them.
 5. Choose Default and Enabled as needed, then save.
@@ -99,14 +93,14 @@ Final URL:     https://relay.example.test/v1/videos/generations
 Do not put a complete generation endpoint in the Base URL. Additional upload or
 poll hosts use named Base URL slots exposed by the selected target.
 
-## Audio and video use the UMA submodule exclusively
+## All media use the UMA submodule exclusively
 
 OpenReel pins the `vendor/universal-model-adapter` submodule. The production
 boundary is:
 
 ```mermaid
 flowchart LR
-  A[node.run / workflow] --> B[OpenReel audio/video lifecycle]
+  A[node.run / workflow] --> B[OpenReel media lifecycle]
   B --> C[UMA AsyncClient]
   C --> D[UMA V2 protocol runtime]
   D --> E[Provider HTTP / upload / task API]
@@ -121,9 +115,9 @@ protection. UMA owns request construction, authentication, media upload,
 provider task-ID extraction, upstream polling, exact status/error
 interpretation, artifact extraction, and normalized results.
 
-OpenReel maps normalized `InvocationResult`, `AudioOutput`, and `VideoOutput` values into node
-fields. It does not inspect provider JSON or keep audio/video `status_path`, task-ID
-path, or result-URL parsing code.
+OpenReel maps normalized `InvocationResult`, `ImageOutput`, `AudioOutput`, and
+`VideoOutput` values into node fields. It does not inspect provider JSON or keep
+media status paths, task-ID paths, or result-URL parsing code.
 
 ### Runtime video example
 
@@ -173,25 +167,11 @@ Use the submodule guide for:
 
 Source of truth: [Universal Model Adapter — OpenReel video integration guide](https://github.com/yutianxiao6/universal-model-adapter/blob/main/docs/en/openreel-integration.md).
 
-## Image Catalog
-
-The current image declarative contract remains in:
-
-```text
-config/image_provider_protocols/catalog.json
-```
-
-The Catalog root and each entry use the OpenReel v1 schema. A Provider stores
-`params.image_protocol_id`. The
-Catalog owns request, optional polling, result extraction, and optional upload
-rules. It must never contain real credentials.
-
-Deployments may override this file with `OPENREEL_IMAGE_PROTOCOLS_FILE`. Audio
-and video protocol discovery use the UMA paths and
-optional `OPENREEL_UMA_PROTOCOLS` path list.
-
-After editing the image Catalog, refresh Settings and run one minimal node.
-For audio/video, validate the UMA protocol directory before refreshing:
+Image, audio, and video protocol discovery use the UMA paths and optional
+`OPENREEL_UMA_PROTOCOLS` path list. Target catalogs can be overridden with the
+corresponding `OPENREEL_UMA_IMAGE_TARGETS_FILE`,
+`OPENREEL_UMA_AUDIO_TARGETS_FILE`, or `OPENREEL_UMA_VIDEO_TARGETS_FILE`.
+Validate the UMA protocol directory before refreshing Settings:
 
 ```bash
 cd apps/api
@@ -202,12 +182,12 @@ uv run uma protocols validate ../../config/universal_model_adapter/protocols
 
 | Symptom | Check first |
 | --- | --- |
-| Audio/video save is disabled | `api_format`, Base URL, model ID, API key, explicit `protocol_id`, and exact `target_profile_id`. |
-| Audio/video protocol or target is absent | UMA protocol JSON, corresponding target catalog, protocol/target ID match, and `OPENREEL_UMA_PROTOCOLS`. |
+| Media save is disabled | `api_format`, Base URL, model ID, API key, explicit `protocol_id`, and exact `target_profile_id`. |
+| Media protocol or target is absent | UMA protocol JSON, corresponding target catalog, protocol/target ID match, and `OPENREEL_UMA_PROTOCOLS`. |
+| Image references are rejected before HTTP | Image target accepted roles and maximum reference count. |
 | Video mode or media is rejected before HTTP | Target modes, accepted roles, counts, duration, ratio, and resolution. |
 | Video request, polling status, or result is wrong | UMA V2 protocol document; do not add parsing to OpenReel. |
 | Video does not resume after restart | Persisted provider task ID, resume request, provider selection, and OpenReel recovery logs. |
-| Image protocol is absent | Image host Catalog path, JSON syntax/version, ID, and environment override. |
 | 401 / 403 | API key, authentication contract, and Base URL account ownership. |
 | 404 | Base URL version and duplicated or missing protocol resource path. |
 | 400 / 422 | Remote model ID, mode, fields, duration, ratio, resolution, and media count. |

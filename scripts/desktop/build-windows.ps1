@@ -104,11 +104,9 @@ try {
     if ($SmokeProcess.ExitCode -ne 0) {
       throw "Smoke-test packaged API resources failed with exit code $($SmokeProcess.ExitCode)"
     }
-    foreach ($ProtocolDirName in @("image_provider_protocols")) {
-      $CatalogPath = Join-Path $SmokeRoot "config\$ProtocolDirName\catalog.json"
-      if (-not (Test-Path $CatalogPath)) {
-        throw "Packaged protocol catalog was not installed: config\$ProtocolDirName\catalog.json"
-      }
+    $UmaImageTargetCatalog = Join-Path $SmokeRoot "config\universal_model_adapter\image_targets\catalog.json"
+    if (-not (Test-Path $UmaImageTargetCatalog)) {
+      throw "Packaged UMA image target catalog was not installed."
     }
     $UmaTargetCatalog = Join-Path $SmokeRoot "config\universal_model_adapter\video_targets\catalog.json"
     if (-not (Test-Path $UmaTargetCatalog)) {
@@ -125,6 +123,10 @@ try {
     $UmaAudioProtocol = Join-Path $SmokeRoot "config\universal_model_adapter\protocols\newapi-suno-music-task.json"
     if (-not (Test-Path $UmaAudioProtocol)) {
       throw "Packaged UMA audio protocols were not installed."
+    }
+    $UmaImageProtocol = Join-Path $SmokeRoot "config\universal_model_adapter\protocols\openai-compatible-images-generations.json"
+    if (-not (Test-Path $UmaImageProtocol)) {
+      throw "Packaged UMA image protocols were not installed."
     }
   }
   finally {
