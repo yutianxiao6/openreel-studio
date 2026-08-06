@@ -18,17 +18,29 @@ def _response(
         prompt = prompt_tokens or 0
         completion = completion_tokens or 0
         usage = SimpleNamespace(
-            prompt_tokens=prompt,
-            completion_tokens=completion,
+            input_tokens=prompt,
+            output_tokens=completion,
             total_tokens=prompt + completion,
         )
+    status = "incomplete" if finish_reason in {"length", "max_tokens", "max_output_tokens"} else "completed"
     return SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                finish_reason=finish_reason,
-                message=SimpleNamespace(content=content, tool_calls=None),
-            )
-        ],
+        id="resp-test",
+        model="test/model",
+        status=status,
+        incomplete_details=(
+            SimpleNamespace(reason="max_output_tokens") if status == "incomplete" else None
+        ),
+        output=[{
+            "id": "msg-test",
+            "type": "message",
+            "role": "assistant",
+            "status": status,
+            "content": (
+                content
+                if isinstance(content, list)
+                else [{"type": "output_text", "text": content}]
+            ),
+        }],
         usage=usage,
     )
 
@@ -69,7 +81,7 @@ async def test_llm_generate_retries_retryable_error(monkeypatch) -> None:
     class RateLimitError(Exception):
         status_code = 429
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
             raise RateLimitError("rate limited")
@@ -79,7 +91,7 @@ async def test_llm_generate_retries_retryable_error(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(llm_service, "_resolve_config", _fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
     monkeypatch.setattr(llm_service.asyncio, "sleep", fake_sleep)
 
     result = await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
@@ -105,7 +117,7 @@ async def test_llm_generate_reports_actual_fallback_model(monkeypatch) -> None:
             "fallback_model": "test/fallback",
         }
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         calls.append(kwargs["model"])
         if kwargs["model"] == "test/primary":
             raise RateLimitError("rate limited")
@@ -117,7 +129,7 @@ async def test_llm_generate_reports_actual_fallback_model(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
     monkeypatch.setattr(llm_service.asyncio, "sleep", fake_sleep)
 
     result = await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
@@ -260,12 +272,12 @@ async def test_node_override_provider_name_resolves_configured_llm_provider(monk
 async def test_llm_generate_does_not_retry_context_length(monkeypatch) -> None:
     calls = {"count": 0}
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         calls["count"] += 1
         raise RuntimeError("prompt too long: context length exceeded")
 
     monkeypatch.setattr(llm_service, "_resolve_config", _fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     with pytest.raises(RuntimeError):
         await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
@@ -274,10 +286,28 @@ async def test_llm_generate_does_not_retry_context_length(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_generate_rejects_failed_responses_status(monkeypatch) -> None:
+    async def fake_aresponses(**kwargs):
+        return SimpleNamespace(
+            id="resp-failed",
+            status="failed",
+            error={"code": "provider_error", "message": "upstream failed"},
+            output=[],
+            usage=None,
+        )
+
+    monkeypatch.setattr(llm_service, "_resolve_config", _fake_config)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
+
+    with pytest.raises(llm_service.LLMResponseStatusError, match="status=failed"):
+        await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.asyncio
 async def test_llm_generate_continues_truncated_text(monkeypatch) -> None:
     calls = {"count": 0}
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
             return _response(
@@ -294,7 +324,7 @@ async def test_llm_generate_continues_truncated_text(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(llm_service, "_resolve_config", _fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     result = await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
 
@@ -320,7 +350,7 @@ async def test_llm_generate_requires_complete_text_after_bounded_continuation(mo
             "provider_params": {"max_continuations": 1},
         }
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         calls["count"] += 1
         return _response(
             "part one" if calls["count"] == 1 else " part two",
@@ -328,7 +358,7 @@ async def test_llm_generate_requires_complete_text_after_bounded_continuation(mo
         )
 
     monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     with pytest.raises(LLMOutputTruncatedError) as exc_info:
         await LLMService().generate(
@@ -346,12 +376,12 @@ async def test_llm_generate_requires_complete_text_after_bounded_continuation(mo
 async def test_llm_generate_applies_explicit_output_limit(monkeypatch) -> None:
     captured: dict = {}
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         captured.update(kwargs)
         return _response("ok")
 
     monkeypatch.setattr(llm_service, "_resolve_config", _fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     await LLMService().generate(
         "agent_loop",
@@ -359,31 +389,33 @@ async def test_llm_generate_applies_explicit_output_limit(monkeypatch) -> None:
         max_tokens=12_000,
     )
 
-    assert captured["max_tokens"] == 12_000
+    assert captured["max_output_tokens"] == 12_000
+    assert captured["store"] is False
 
 
 @pytest.mark.asyncio
 async def test_generate_with_tools_does_not_continue_truncated_tool_arguments(monkeypatch) -> None:
     calls = {"count": 0}
-    tool_call = SimpleNamespace(
-        id="call-1",
-        function=SimpleNamespace(name="node__create", arguments='{"project_id":"p"'),
-    )
+    tool_call = {
+        "id": "fc-1",
+        "type": "function_call",
+        "call_id": "call-1",
+        "name": "node__create",
+        "arguments": '{"project_id":"p"',
+    }
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         calls["count"] += 1
         return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    finish_reason="length",
-                    message=SimpleNamespace(content="", tool_calls=[tool_call]),
-                )
-            ],
+            id="resp-tool",
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+            output=[tool_call],
             usage=None,
         )
 
     monkeypatch.setattr(llm_service, "_resolve_config", _fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     response = await LLMService().generate_with_tools(
         "agent_loop",
@@ -392,8 +424,7 @@ async def test_generate_with_tools_does_not_continue_truncated_tool_arguments(mo
     )
 
     assert calls["count"] == 1
-    assert response.choices[0].finish_reason == "length"
-    assert response.choices[0].message.tool_calls == [tool_call]
+    assert response.output == [tool_call]
     assert response._openreel_tool_call_truncated is True
 
 
@@ -411,7 +442,7 @@ def test_llm_request_policy_uses_provider_params() -> None:
     }
 
     policy = llm_service._llm_request_policy(cfg)
-    kwargs = llm_service._completion_kwargs(cfg)
+    kwargs = llm_service._responses_kwargs(cfg)
 
     assert policy == {
         "request_timeout_seconds": 240.0,
@@ -420,9 +451,13 @@ def test_llm_request_policy_uses_provider_params() -> None:
         "retry_backoff_seconds": 1.25,
         "max_continuations": 0,
         "accept_backend_content": True,
+        "include_reasoning_encrypted_content": True,
+        "use_chat_completions_api": False,
     }
     assert kwargs["timeout"] == 240.0
     assert kwargs["max_retries"] == 0
+    assert kwargs["store"] is False
+    assert kwargs["include"] == ["reasoning.encrypted_content"]
 
 
 @pytest.mark.asyncio
@@ -438,12 +473,12 @@ async def test_llm_generate_honors_zero_configured_retries(monkeypatch) -> None:
             "provider_params": {"max_retries": 0, "sdk_max_retries": 0},
         }
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         calls["count"] += 1
         raise ConnectionError("downstream disconnected")
 
     monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     with pytest.raises(ConnectionError):
         await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
@@ -479,11 +514,11 @@ async def test_llm_generate_recovers_standard_backend_content_from_exception(mon
             },
         }
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         raise RelayResponseError()
 
     monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     result = await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
 
@@ -508,14 +543,14 @@ async def test_failed_continuation_keeps_content_already_received(monkeypatch) -
             },
         }
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         calls["count"] += 1
         if calls["count"] == 1:
             return _response("content already received", finish_reason="length")
         raise ConnectionError("continuation disconnected")
 
     monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     result = await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
 
@@ -525,14 +560,14 @@ async def test_failed_continuation_keeps_content_already_received(monkeypatch) -
 
 @pytest.mark.asyncio
 async def test_message_content_accepts_backend_text_parts(monkeypatch) -> None:
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         return _response([
             {"type": "text", "text": "hello "},
             {"type": "output_text", "text": "world"},
         ])
 
     monkeypatch.setattr(llm_service, "_resolve_config", _fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     result = await LLMService().generate("agent_loop", [{"role": "user", "content": "hi"}])
 
@@ -552,12 +587,12 @@ async def test_deepseek_generate_with_tools_rejects_required_image_input(monkeyp
             "api_key": "test-key",
         }
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         captured.update(kwargs)
         return _response("ok")
 
     monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     with pytest.raises(llm_service.LLMImageInputUnsupportedError, match="does not support required image input"):
         await LLMService().generate_with_tools(
@@ -601,12 +636,12 @@ async def test_image_capable_generate_with_tools_keeps_image_parts(monkeypatch) 
             "api_key": None,
         }
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         captured.update(kwargs)
         return _response("ok")
 
     monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     await LLMService().generate_with_tools(
         "agent_loop",
@@ -622,9 +657,10 @@ async def test_image_capable_generate_with_tools_keeps_image_parts(monkeypatch) 
         tools=[],
     )
 
-    user_message = captured["messages"][0]
+    user_message = captured["input"][0]
     assert isinstance(user_message["content"], list)
-    assert user_message["content"][1]["type"] == "image_url"
+    assert user_message["content"][1]["type"] == "input_image"
+    assert user_message["content"][1]["image_url"].startswith("data:image/png")
 
 
 @pytest.mark.asyncio
@@ -640,12 +676,12 @@ async def test_generate_with_tools_accepts_call_level_max_tokens(monkeypatch) ->
             "api_key": None,
         }
 
-    async def fake_acompletion(**kwargs):
+    async def fake_aresponses(**kwargs):
         captured.update(kwargs)
         return _response("ok")
 
     monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
-    monkeypatch.setattr(llm_service.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
 
     await LLMService().generate_with_tools(
         "agent_loop",
@@ -654,4 +690,76 @@ async def test_generate_with_tools_accepts_call_level_max_tokens(monkeypatch) ->
         max_tokens=10000,
     )
 
-    assert captured["max_tokens"] == 10000
+    assert captured["max_output_tokens"] == 10000
+
+
+@pytest.mark.asyncio
+async def test_generate_with_tools_sends_native_responses_contract(monkeypatch) -> None:
+    captured: dict = {}
+
+    async def fake_config(*args, **kwargs):
+        return {
+            "model": "openai/gpt-5.5",
+            "temperature": 0.2,
+            "max_tokens": 2048,
+            "api_base": "https://responses.example.test/v1",
+            "api_key": "test-key",
+            "provider_params": {"use_chat_completions_api": False},
+        }
+
+    async def fake_aresponses(**kwargs):
+        captured.update(kwargs)
+        return _response("done")
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
+
+    await LLMService().generate_with_tools(
+        "agent_loop",
+        [{"role": "user", "content": "Read node 7."}],
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "node__get",
+                "description": "Read a node.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+        system="You are the OpenReel agent.",
+    )
+
+    assert "messages" not in captured
+    assert "max_tokens" not in captured
+    assert captured["instructions"] == "You are the OpenReel agent."
+    assert captured["input"] == [{"role": "user", "content": "Read node 7."}]
+    assert captured["tools"][0]["name"] == "node__get"
+    assert "function" not in captured["tools"][0]
+    assert captured["max_output_tokens"] == 2048
+    assert captured["store"] is False
+    assert captured["include"] == ["reasoning.encrypted_content"]
+    assert "use_chat_completions_api" not in captured
+
+
+def test_custom_openai_compatible_base_defaults_to_responses_bridge() -> None:
+    policy = llm_service._llm_request_policy({
+        "model": "openai/custom-model",
+        "api_base": "https://relay.example.test/v1",
+    })
+
+    assert policy["use_chat_completions_api"] is True
+    assert llm_service._responses_kwargs({
+        "model": "openai/custom-model",
+        "api_base": "https://relay.example.test/v1",
+        "max_tokens": 100,
+    })["use_chat_completions_api"] is True
+
+
+def test_custom_openai_compatible_base_can_opt_into_native_responses() -> None:
+    kwargs = llm_service._responses_kwargs({
+        "model": "openai/custom-model",
+        "api_base": "https://relay.example.test/v1",
+        "max_tokens": 100,
+        "provider_params": {"use_chat_completions_api": False},
+    })
+
+    assert "use_chat_completions_api" not in kwargs

@@ -79,6 +79,36 @@ def test_preserved_tail_keeps_tool_call_and_result_together() -> None:
     assert tail[2]["tool_call_id"] == "call-1"
 
 
+def test_preserved_tail_keeps_responses_function_call_and_output_together() -> None:
+    messages = [
+        {"role": "user", "content": "读取节点"},
+        {"id": "rs-1", "type": "reasoning", "encrypted_content": "opaque"},
+        {
+            "id": "fc-1",
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "node__get",
+            "arguments": '{"node_id":"7"}',
+        },
+        {"type": "function_call_output", "call_id": "call-1", "output": '{"ok":true}'},
+        {
+            "id": "msg-1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "已读取"}],
+        },
+    ]
+
+    tail = context_compact.compact_preserved_tail(messages, token_budget=300)
+
+    assert any(item.get("type") == "function_call" for item in tail)
+    assert any(
+        item.get("type") == "function_call_output" and item.get("call_id") == "call-1"
+        for item in tail
+    )
+    assert context_compact.estimate_tokens(tail) > 0
+
+
 def test_preserved_tail_skips_runtime_wrappers_and_current_user() -> None:
     messages = [
         {"role": "user", "content": "<system-reminder>runtime</system-reminder>"},
@@ -112,6 +142,18 @@ def test_estimate_tokens_counts_typed_images_without_serializing_bytes() -> None
         "content": [
             {"type": "text", "text": "看图"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ],
+    }]
+
+    assert context_compact.estimate_tokens(messages) >= context_compact.image_token_estimate()
+
+
+def test_estimate_tokens_counts_responses_input_images() -> None:
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": "看图"},
+            {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
         ],
     }]
 

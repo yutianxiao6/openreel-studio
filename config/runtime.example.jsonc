@@ -3,6 +3,10 @@
 // The API also auto-generates config/runtime.jsonc on first start from *_API_KEY env vars.
 {
   "$schema_version": 1,
+  // Agent LLM calls use the Responses contract internally. A custom
+  // provider="openai" base URL defaults to LiteLLM's Chat bridge for backward
+  // compatibility; set params.use_chat_completions_api=false when that relay
+  // has a native /responses endpoint.
   "llm_providers": [
     {
       "name": "deepseek-default",

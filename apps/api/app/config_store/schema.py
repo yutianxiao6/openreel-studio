@@ -48,7 +48,7 @@ class LlmProviderEntry(BaseModel):
     )
     supports_vision: Optional[bool] = Field(
         None,
-        description="聊天接口是否支持 image_url/视觉输入",
+        description="模型接口是否支持 Responses input_image 视觉输入",
     )
     tokenizer: Optional[str] = Field(
         None,
@@ -61,7 +61,13 @@ class LlmProviderEntry(BaseModel):
     )
     enabled: bool = True
     notes: Optional[str] = None
-    params: dict = Field(default_factory=dict, description="其他模型私有元数据，原样保存在配置中")
+    params: dict = Field(
+        default_factory=dict,
+        description=(
+            "其他模型私有元数据；自定义 OpenAI-compatible base URL 默认由 Chat Completions "
+            "桥接，原生支持 /responses 时设置 use_chat_completions_api=false"
+        ),
+    )
 
     @field_validator("tier")
     @classmethod

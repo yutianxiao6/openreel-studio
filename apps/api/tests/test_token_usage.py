@@ -42,6 +42,31 @@ def test_extract_usage_from_openai_style_response() -> None:
     assert usage["cache_supported"] is True
 
 
+def test_extract_usage_from_responses_style_response() -> None:
+    response = SimpleNamespace(
+        model="gpt-5.5",
+        usage={
+            "input_tokens": 1200,
+            "output_tokens": 200,
+            "total_tokens": 1400,
+            "input_tokens_details": {
+                "cached_tokens": 900,
+                "cache_write_tokens": 100,
+            },
+            "output_tokens_details": {"reasoning_tokens": 150},
+        },
+    )
+
+    usage = extract_usage_from_response(response)
+
+    assert usage["prompt_tokens"] == 1200
+    assert usage["completion_tokens"] == 200
+    assert usage["reasoning_tokens"] == 150
+    assert usage["cached_prompt_tokens"] == 900
+    assert usage["cache_creation_tokens"] == 100
+    assert usage["cache_hit_rate"] == 0.75
+
+
 def test_build_usage_snapshot_estimates_remaining_context() -> None:
     response = SimpleNamespace(
         model="deepseek/deepseek-chat",

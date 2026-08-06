@@ -77,7 +77,7 @@ from app.agent.tool_output import (
     build_tool_output_envelope,
     tool_done_event,
     tool_result_context_messages,
-    tool_result_message,
+    tool_result_input_item,
     tool_trace_fields,
 )
 from app.agent.lifecycle_hooks import (
@@ -101,6 +101,7 @@ from app.db.models import Message
 from app.llm_limits import DEFAULT_LLM_MAX_OUTPUT_TOKENS
 from app.mcp_tools.registry import registry
 from app.services.llm_service import LLMService, is_context_length_error
+from app.services.llm_responses import replay_output_items, response_view
 from app.services.node_service import NodeService
 from app.services.project_service import ProjectService
 
@@ -975,9 +976,62 @@ class AgentOrchestrator:
         rounds: list[dict] = []
         current: dict | None = None
         call_names: dict[str, str] = {}
+        pending_round_text = ""
+
+        def _output_text(value: Any) -> str:
+            if isinstance(value, str):
+                return value
+            if not isinstance(value, list):
+                return ""
+            return "".join(
+                str(block.get("text") or "")
+                for block in value
+                if isinstance(block, dict)
+                and block.get("type") in {"text", "input_text", "output_text"}
+            )
+
+        def _start_round(tools: list[str], round_text: str) -> dict[str, Any]:
+            clean_text = cls._clean_progress_commentary(round_text)
+            result = {
+                "round": len(rounds) + 1,
+                "content": clean_text,
+                "source": "model" if clean_text else "action_summary",
+                "tools": tools,
+                "status": "completed",
+                "results": [],
+            }
+            rounds.append(result)
+            return result
 
         for message in messages:
             if not isinstance(message, dict):
+                continue
+            item_type = message.get("type")
+            if item_type == "message" and message.get("role") == "assistant":
+                pending_round_text = _output_text(message.get("content"))
+                continue
+            if item_type == "function_call":
+                call_id = str(message.get("call_id") or message.get("id") or "")
+                name = registry.resolve_tool_name(str(message.get("name") or ""))
+                if current is None or current.get("results"):
+                    current = _start_round([name] if name else [], pending_round_text)
+                    call_names = {}
+                    pending_round_text = ""
+                elif name:
+                    current["tools"].append(name)
+                if call_id:
+                    call_names[call_id] = name or "tool"
+                continue
+            if item_type == "function_call_output" and current is not None:
+                call_id = str(message.get("call_id") or "")
+                tool_name = call_names.get(call_id, "tool")
+                result: Any = message.get("output")
+                if isinstance(result, str):
+                    try:
+                        result = json.loads(result)
+                    except json.JSONDecodeError:
+                        pass
+                current["results"].append(cls._summarize_round_tool_result(tool_name, result))
                 continue
             if message.get("role") == "assistant":
                 tool_calls = message.get("tool_calls")
@@ -998,33 +1052,7 @@ class AgentOrchestrator:
                         tools.append(name)
                         call_names[str(tool_call.get("id") or "")] = name
                 # Extract model's thinking text from LLM response
-                raw_content = message.get("content")
-                round_text = ""
-                if isinstance(raw_content, str):
-                    round_text = raw_content
-                elif isinstance(raw_content, list):
-                    for block in raw_content:
-                        if hasattr(block, "text") and block.text:
-                            round_text += block.text
-                        elif isinstance(block, dict) and block.get("type") == "text":
-                            round_text += str(block.get("text", ""))
-                round_text = cls._clean_progress_commentary(round_text)
-                event = {
-                    "type": "agent_round",
-                    "round": len(rounds) + 1,
-                    "content": round_text,
-                    "source": "model" if round_text else "action_summary",
-                    "tools": tools,
-                }
-                current = {
-                    "round": event["round"],
-                    "content": event["content"],
-                    "source": event["source"],
-                    "tools": event["tools"],
-                    "status": "completed",
-                    "results": [],
-                }
-                rounds.append(current)
+                current = _start_round(tools, _output_text(message.get("content")))
                 continue
             if message.get("role") == "tool" and current is not None:
                 tool_name = call_names.get(str(message.get("tool_call_id") or ""), "tool")
@@ -2164,8 +2192,9 @@ class AgentOrchestrator:
                     yield {"type": "error", "message": error_text}
                     return
 
-            choice = response.choices[0]
-            msg = choice.message
+            llm_response = response_view(response)
+            msg_content = llm_response.content
+            msg_tool_calls = list(llm_response.tool_calls)
             usage_snapshot = build_usage_snapshot(
                 response,
                 messages=messages,
@@ -2182,20 +2211,25 @@ class AgentOrchestrator:
             trace.emit(
                 "llm_response",
                 iteration=iteration,
-                transition_reason="tool_calls" if msg.tool_calls else "text_response",
+                transition_reason="tool_calls" if msg_tool_calls else "text_response",
                 duration_ms=elapsed_ms(llm_started_at),
-                tool_call_count=len(msg.tool_calls or []),
-                has_text=bool(msg.content),
-                finish_reason=str(getattr(choice, "finish_reason", "") or ""),
+                tool_call_count=len(msg_tool_calls),
+                has_text=bool(msg_content),
+                finish_reason=llm_response.finish_reason,
+                response_status=llm_response.status,
+                response_id=llm_response.response_id,
+                api_mode=llm_response.api_mode,
                 model=usage_snapshot.get("model"),
             )
-            if not msg.tool_calls and not msg.content:
+            if not msg_tool_calls and not msg_content:
                 trace.emit(
                     "llm_empty_response",
                     iteration=iteration,
                     transition_reason="empty_text_response",
                     duration_ms=elapsed_ms(llm_started_at),
-                    finish_reason=str(getattr(choice, "finish_reason", "") or ""),
+                    finish_reason=llm_response.finish_reason,
+                    response_status=llm_response.status,
+                    api_mode=llm_response.api_mode,
                     model=usage_snapshot.get("model"),
                     prompt_tokens=usage_snapshot.get("prompt_tokens"),
                     completion_tokens=usage_snapshot.get("completion_tokens"),
@@ -2224,9 +2258,9 @@ class AgentOrchestrator:
             }
 
             # No tool calls → output text, done(but check if audit needed first)
-            if not msg.tool_calls:
-                finish_reason = str(getattr(choice, "finish_reason", "") or "").strip().lower()
-                if not msg.content and finish_reason in {"length", "max_tokens"} and empty_length_retries < 2:
+            if not msg_tool_calls:
+                finish_reason = llm_response.finish_reason.strip().lower()
+                if not msg_content and finish_reason in {"length", "max_tokens", "max_output_tokens"} and empty_length_retries < 2:
                     empty_length_retries += 1
                     messages.append(
                         {
@@ -2245,8 +2279,8 @@ class AgentOrchestrator:
                         retry_count=empty_length_retries,
                     )
                     continue
-                raw_text = msg.content or ""
-                if raw_text and finish_reason in {"length", "max_tokens"}:
+                raw_text = msg_content or ""
+                if raw_text and finish_reason in {"length", "max_tokens", "max_output_tokens"}:
                     raw_text = (
                         f"{raw_text}\n\n"
                         "> 输出达到当前上限，已保留现有内容；如需剩余部分，请回复“继续”。"
@@ -2256,7 +2290,7 @@ class AgentOrchestrator:
                         iteration=iteration,
                         transition_reason="bounded_text_continuation_exhausted",
                         finish_reason=finish_reason,
-                        content_chars=len(str(msg.content or "")),
+                        content_chars=len(str(msg_content or "")),
                     )
                 proposed_plan_markdown = ""
                 if current_collaboration_mode(state) == "plan":
@@ -2312,13 +2346,13 @@ class AgentOrchestrator:
                 break
 
             # Has tool calls → validate and execute each one.
-            finish_reason = str(getattr(choice, "finish_reason", "") or "").strip().lower()
+            finish_reason = llm_response.finish_reason.strip().lower()
             stop_after_tool = False
             round_tool_calls: list[tuple[Any, str, dict]] = []
             round_tools: list[str] = []
             planned_actions: list[str] = []
             unsafe_tool_call_errors: dict[str, str] = {}
-            for tool_call in msg.tool_calls:
+            for tool_call in msg_tool_calls:
                 fn = tool_call.function
                 tool_name = registry.resolve_tool_name(fn.name)
                 parse_failed = False
@@ -2334,7 +2368,7 @@ class AgentOrchestrator:
                 is_write_tool = spec is None or not spec.is_read_only
                 if parse_failed:
                     unsafe_tool_call_errors[str(tool_call.id)] = "invalid_json"
-                elif finish_reason in {"length", "max_tokens"} and is_write_tool:
+                elif finish_reason in {"length", "max_tokens", "max_output_tokens"} and is_write_tool:
                     unsafe_tool_call_errors[str(tool_call.id)] = "output_truncated"
                 # Always use the real project_id, never trust LLM's value
                 tool_args["project_id"] = project_id
@@ -2347,20 +2381,10 @@ class AgentOrchestrator:
                 round_tool_calls.append((tool_call, tool_name, tool_args))
                 planned_actions.append(tool_name)
 
-            assistant_tool_message = msg.model_dump()
-            if unsafe_tool_call_errors and isinstance(assistant_tool_message, dict):
-                assistant_tool_message["content"] = ""
-                compact_calls = assistant_tool_message.get("tool_calls")
-                if isinstance(compact_calls, list):
-                    for call in compact_calls:
-                        if not isinstance(call, dict):
-                            continue
-                        if str(call.get("id") or "") not in unsafe_tool_call_errors:
-                            continue
-                        function = call.get("function")
-                        if isinstance(function, dict):
-                            function["arguments"] = "{}"
-            messages.append(assistant_tool_message)
+            messages.extend(replay_output_items(
+                response,
+                invalid_call_ids=set(unsafe_tool_call_errors),
+            ))
 
             trace.emit(
                 "tool_calls_requested",
@@ -2374,7 +2398,7 @@ class AgentOrchestrator:
             )
             round_progress_event = await self._build_live_agent_round_summary(
                 iteration,
-                msg.content,
+                msg_content,
                 round_tools,
                 message,
                 planned_actions,
@@ -2395,7 +2419,7 @@ class AgentOrchestrator:
             round_tool_context_messages: list[dict[str, Any]] = []
 
             def _append_tool_result_messages(tool_call_id: str, tool_output: dict[str, Any]) -> None:
-                messages.append(tool_result_message(tool_call_id, tool_output))
+                messages.append(tool_result_input_item(tool_call_id, tool_output))
                 round_tool_context_messages.extend(
                     tool_result_context_messages(tool_call_id, tool_output)
                 )

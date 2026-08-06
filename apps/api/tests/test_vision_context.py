@@ -10,7 +10,7 @@ from app.agent import context_compact, prompt_dump, vision_context
 from app.agent.tool_output import (
     build_tool_output_envelope,
     tool_result_context_messages,
-    tool_result_message,
+    tool_result_input_item,
     tool_trace_fields,
 )
 from app.agent.vision_context import (
@@ -344,11 +344,11 @@ async def test_vision_view_image_returns_multimodal_tool_context(tmp_path, monke
     assert "data:image/" not in json.dumps(tool_trace_fields(envelope), ensure_ascii=False)
 
     messages = [
-        tool_result_message("call-view-image", envelope),
+        tool_result_input_item("call-view-image", envelope),
         *tool_result_context_messages("call-view-image", envelope),
     ]
-    assert messages[0]["role"] == "tool"
-    assert messages[0]["tool_call_id"] == "call-view-image"
+    assert messages[0]["type"] == "function_call_output"
+    assert messages[0]["call_id"] == "call-view-image"
     assert messages[1]["role"] == "user"
     assert messages[1]["_tool_image_context"] is True
     assert messages[1]["content"][1]["type"] == "image_url"

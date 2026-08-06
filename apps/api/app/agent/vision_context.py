@@ -744,9 +744,9 @@ def message_text_for_compare(content: Any) -> str:
         chunks: list[str] = []
         for part in content:
             if isinstance(part, dict):
-                if part.get("type") == "text":
+                if part.get("type") in {"text", "input_text", "output_text"}:
                     chunks.append(str(part.get("text") or ""))
-                elif part.get("type") == "image_url":
+                elif part.get("type") in {"image_url", "input_image"}:
                     chunks.append("[image]")
         return "\n".join(chunk for chunk in chunks if chunk)
     return str(content or "")

@@ -37,7 +37,8 @@ def transcripts_dir() -> Path:
 def estimate_tokens(messages: list[dict]) -> int:
     total = 0
     for message in messages:
-        content = message.get("content", "")
+        item_type = message.get("type")
+        content = message.get("output", "") if item_type == "function_call_output" else message.get("content", "")
         content_has_images = False
         if isinstance(content, str):
             total += estimate_text_tokens(content)
@@ -45,9 +46,9 @@ def estimate_tokens(messages: list[dict]) -> int:
             for part in content:
                 if not isinstance(part, dict):
                     continue
-                if part.get("type") == "text":
+                if part.get("type") in {"text", "input_text", "output_text"}:
                     total += estimate_text_tokens(str(part.get("text") or ""))
-                elif part.get("type") == "image_url":
+                elif part.get("type") in {"image_url", "input_image"}:
                     content_has_images = True
                     total += image_token_estimate()
                 else:
@@ -61,22 +62,32 @@ def estimate_tokens(messages: list[dict]) -> int:
         tool_calls = message.get("tool_calls")
         if tool_calls:
             total += estimate_text_tokens(json.dumps(tool_calls, ensure_ascii=False, default=str))
+        if item_type == "function_call":
+            total += estimate_text_tokens(json.dumps({
+                "name": message.get("name"),
+                "arguments": message.get("arguments"),
+            }, ensure_ascii=False, default=str))
+        elif item_type == "reasoning":
+            total += estimate_text_tokens(json.dumps(message, ensure_ascii=False, default=str))
     return total
 
 
 def _estimate_text_tokens(messages: list[dict]) -> int:
     total = 0
     for message in messages:
-        content = message.get("content", "")
+        item_type = message.get("type")
+        content = message.get("output", "") if item_type == "function_call_output" else message.get("content", "")
         if isinstance(content, str):
             total += estimate_text_tokens(content)
         elif isinstance(content, list):
             for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
+                if isinstance(part, dict) and part.get("type") in {"text", "input_text", "output_text"}:
                     total += estimate_text_tokens(str(part.get("text") or ""))
         tool_calls = message.get("tool_calls")
         if tool_calls:
             total += estimate_text_tokens(json.dumps(tool_calls, ensure_ascii=False, default=str))
+        if item_type == "function_call":
+            total += estimate_text_tokens(str(message.get("arguments") or ""))
     return total
 
 
@@ -119,6 +130,9 @@ def compacted_context_ack_message() -> dict[str, str]:
 
 
 def _tool_call_ids(message: dict) -> list[str]:
+    if message.get("type") == "function_call":
+        call_id = message.get("call_id") or message.get("id")
+        return [str(call_id)] if call_id else []
     tool_calls = message.get("tool_calls")
     if not isinstance(tool_calls, list):
         return []
@@ -130,10 +144,24 @@ def _tool_call_ids(message: dict) -> list[str]:
 
 
 def _tool_result_id(message: dict) -> str | None:
+    if message.get("type") == "function_call_output":
+        call_id = message.get("call_id")
+        return str(call_id) if call_id else None
     if message.get("role") != "tool":
         return None
     call_id = message.get("tool_call_id")
     return str(call_id) if call_id else None
+
+
+def _message_role(message: dict) -> str:
+    item_type = message.get("type")
+    if item_type == "function_call":
+        return "assistant"
+    if item_type == "function_call_output":
+        return "tool"
+    if item_type == "reasoning":
+        return "assistant"
+    return str(message.get("role") or "")
 
 
 def _is_runtime_wrapper_message(message: dict) -> bool:
@@ -164,7 +192,7 @@ def compact_preserved_tail(
     if exclude_latest_user_content is not None:
         for index in range(len(messages) - 1, -1, -1):
             message = messages[index]
-            if message.get("role") == "user" and message_text_for_compare(
+            if _message_role(message) == "user" and message_text_for_compare(
                 message.get("content")
             ).startswith(exclude_latest_user_content):
                 excluded_user_index = index
@@ -172,7 +200,7 @@ def compact_preserved_tail(
 
     call_to_assistant_index: dict[str, int] = {}
     for index, message in enumerate(messages):
-        if message.get("role") == "assistant":
+        if _message_role(message) == "assistant":
             for call_id in _tool_call_ids(message):
                 call_to_assistant_index[call_id] = index
 
@@ -180,7 +208,7 @@ def compact_preserved_tail(
         index
         for index, message in enumerate(messages)
         if index != excluded_user_index
-        and message.get("role") in {"user", "assistant", "tool"}
+        and _message_role(message) in {"user", "assistant", "tool"}
         and not _is_runtime_wrapper_message(message)
     ]
     selected: list[int] = []
@@ -214,12 +242,12 @@ def compact_preserved_tail(
     complete: list[dict] = []
     dropped_calls: set[str] = set()
     for message in tail:
-        if message.get("role") == "assistant":
+        if _message_role(message) == "assistant":
             call_ids = _tool_call_ids(message)
             if call_ids and not all(call_id in included_results for call_id in call_ids):
                 dropped_calls.update(call_ids)
                 continue
-        if message.get("role") == "tool" and _tool_result_id(message) in dropped_calls:
+        if _message_role(message) == "tool" and _tool_result_id(message) in dropped_calls:
             continue
         complete.append(message)
     return complete
@@ -230,13 +258,21 @@ def build_compact_summary_prompt(messages: list[dict]) -> str:
     for message in messages:
         if _is_runtime_wrapper_message(message):
             continue
-        role = message.get("role", "?")
-        content = message.get("content", "")
+        role = _message_role(message) or "?"
+        item_type = message.get("type")
+        if item_type == "reasoning":
+            continue
+        if item_type == "function_call":
+            content = f"{message.get('name') or 'function'}({message.get('arguments') or ''})"
+        elif item_type == "function_call_output":
+            content = message.get("output", "")
+        else:
+            content = message.get("content", "")
         if isinstance(content, list):
             content = "\n".join(
                 str(part.get("text") or "")
                 for part in content
-                if isinstance(part, dict) and part.get("type") == "text"
+                if isinstance(part, dict) and part.get("type") in {"text", "input_text", "output_text"}
             )
         content = truncate_text_middle(
             str(content or ""),

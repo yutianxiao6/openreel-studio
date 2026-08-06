@@ -101,11 +101,12 @@ def build_tool_output_envelope(
     }
 
 
-def tool_result_message(tool_call_id: str, envelope: dict[str, Any]) -> dict[str, Any]:
+def tool_result_input_item(tool_call_id: str, envelope: dict[str, Any]) -> dict[str, Any]:
+    """Build a Responses function_call_output item for the next model turn."""
     return {
-        "role": "tool",
-        "tool_call_id": tool_call_id,
-        "content": str((envelope.get("model_visible") or {}).get("content") or ""),
+        "type": "function_call_output",
+        "call_id": tool_call_id,
+        "output": str((envelope.get("model_visible") or {}).get("content") or ""),
     }
 
 

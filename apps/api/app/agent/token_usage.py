@@ -27,6 +27,7 @@ _CACHE_READ_KEYS = (
     "cached_prompt_tokens",
 )
 _CACHE_CREATE_KEYS = (
+    "cache_write_tokens",
     "cache_creation_input_tokens",
     "cache_creation_tokens",
     "prompt_cache_miss_tokens",
@@ -35,6 +36,9 @@ _CACHE_CREATE_KEYS = (
 
 _LATEST_USAGE_KEYS = (
     "model",
+    "api_mode",
+    "response_status",
+    "response_id",
     "usage_scope",
     "estimated_input_tokens",
     "active_input_tokens",
@@ -440,7 +444,10 @@ def extract_usage_from_response(response: Any) -> dict[str, Any]:
         _first_int(details, _CACHED_KEYS),
         _first_int(usage, _CACHE_READ_KEYS),
     )
-    cache_creation_tokens = _first_int(usage, _CACHE_CREATE_KEYS) or 0
+    cache_creation_tokens = _max_int(
+        _first_int(details, _CACHE_CREATE_KEYS),
+        _first_int(usage, _CACHE_CREATE_KEYS),
+    )
     cached_prompt_tokens = cache_read_tokens
     reasoning_candidates = (
         _first_int(completion_details, _REASONING_KEYS),
@@ -507,6 +514,15 @@ def build_usage_snapshot(
         or model
         or ""
     )
+    is_responses = (
+        isinstance(response.get("output"), list)
+        if isinstance(response, dict)
+        else hasattr(response, "output") and not hasattr(response, "choices")
+    )
+    response_status = (
+        response.get("status") if isinstance(response, dict) else getattr(response, "status", None)
+    )
+    response_id = response.get("id") if isinstance(response, dict) else getattr(response, "id", None)
     estimate_messages = list(messages)
     if system:
         estimate_messages = [{"role": "system", "content": system}, *estimate_messages]
@@ -531,6 +547,9 @@ def build_usage_snapshot(
     usage.update(
         {
             "model": response_model or None,
+            "api_mode": "responses" if is_responses else "chat_completions_compat",
+            "response_status": str(response_status or "") or None,
+            "response_id": str(response_id or "") or None,
             "requested_model": getattr(response, "_openreel_requested_model", None),
             "fallback_used": getattr(response, "_openreel_fallback_used", None),
             "model_tier": metadata.get("tier"),

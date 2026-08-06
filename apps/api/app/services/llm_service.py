@@ -1,9 +1,12 @@
-"""LLM service — unified model gateway via LiteLLM.
+"""LLM service — unified Responses API gateway via LiteLLM.
 
 配置真相源是 config/runtime.jsonc（ConfigStore 同步到 DB）。本服务每次请求：
   1. 查 model_configs.task_type → llm_provider_name
   2. 查 llm_providers 拿 base_url / api_key / provider / model_name
-  3. 透传 api_base / api_key 给 litellm.acompletion（不依赖环境变量）
+  3. 透传 api_base / api_key 给 litellm.aresponses（不依赖环境变量）
+
+OpenReel 始终使用 Responses input/output items。暂不支持原生 Responses 的
+provider 由 LiteLLM 在这一层桥接到 Chat Completions，上层 Agent 不维护第二套合同。
 
 不再 _push_keys_to_env：这样改 runtime.jsonc 立即生效，无需重启。
 """
@@ -15,6 +18,7 @@ import logging
 import os
 import uuid
 from typing import Any, AsyncIterator
+from urllib.parse import urlparse
 
 import litellm
 from sqlmodel import select
@@ -24,6 +28,13 @@ from app.agent.token_usage import build_usage_snapshot, extract_usage_from_respo
 from app.config import settings
 from app.db.session import session_scope
 from app.llm_limits import DEFAULT_LLM_MAX_OUTPUT_TOKENS
+from app.services.llm_responses import (
+    prepare_response_input,
+    replay_output_items,
+    response_view,
+    responses_tools,
+    stream_text_delta,
+)
 
 
 _TASK_DEFAULTS = {
@@ -56,7 +67,7 @@ _CONTEXT_ERROR_MARKERS = (
     "too many tokens",
     "token limit",
 )
-_MAX_OUTPUT_FINISH_REASONS = {"length", "max_tokens"}
+_MAX_OUTPUT_FINISH_REASONS = {"length", "max_tokens", "max_output_tokens"}
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +89,10 @@ class LLMOutputTruncatedError(RuntimeError):
         super().__init__(message)
         self.partial_content = partial_content
         self.continuation_count = continuation_count
+
+
+class LLMResponseStatusError(RuntimeError):
+    """Raised when a non-background Responses request does not reach a usable state."""
 
 
 def _policy_int(value: Any, default: int, *, minimum: int, maximum: int) -> int:
@@ -138,6 +153,17 @@ def _llm_request_timeout_seconds(params: dict[str, Any] | None = None) -> float:
 
 def _llm_request_policy(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     params = _provider_params(cfg)
+    model = str((cfg or {}).get("model") or "").strip().lower()
+    api_base = str((cfg or {}).get("api_base") or "").strip()
+    api_host = (urlparse(api_base).hostname or "").lower() if api_base else ""
+    # Existing custom OpenAI-compatible relays predate Responses support and
+    # are therefore bridged by default. A relay with a native /responses
+    # endpoint opts in explicitly with use_chat_completions_api=false.
+    default_chat_bridge = bool(
+        model.startswith("openai/")
+        and api_host
+        and api_host not in {"api.openai.com"}
+    )
     return {
         # max_retries means retries after the first OpenReel attempt.
         "max_retries": _policy_int(
@@ -170,6 +196,18 @@ def _llm_request_policy(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "accept_backend_content": _policy_bool(
             params.get("accept_backend_content", os.getenv("DRAMA_LLM_ACCEPT_BACKEND_CONTENT", "true")),
             True,
+        ),
+        # Stateless Responses calls replay typed output items locally. Including
+        # encrypted reasoning keeps that replay valid for reasoning models.
+        "include_reasoning_encrypted_content": _policy_bool(
+            params.get("include_reasoning_encrypted_content", True),
+            True,
+        ),
+        # Explicit compatibility bridge for OpenAI-compatible relays that only
+        # expose /chat/completions. OpenReel still receives Responses objects.
+        "use_chat_completions_api": _policy_bool(
+            params.get("use_chat_completions_api", default_chat_bridge),
+            default_chat_bridge,
         ),
     }
 
@@ -429,14 +467,15 @@ def _config_from_provider_row(
     }
 
 
-def _completion_kwargs(cfg: dict, *, with_tools: list | None = None,
-                       stream: bool = False) -> dict[str, Any]:
-    """构造透传 api_base/api_key 的 acompletion 参数。"""
+def _responses_kwargs(cfg: dict, *, with_tools: list | None = None,
+                      stream: bool = False) -> dict[str, Any]:
+    """构造透传 api_base/api_key 的 stateless Responses 参数。"""
     policy = _llm_request_policy(cfg)
     kwargs: dict[str, Any] = {
         "model": cfg["model"],
         "temperature": cfg.get("temperature", 0.7),
-        "max_tokens": cfg.get("max_tokens", DEFAULT_LLM_MAX_OUTPUT_TOKENS),
+        "max_output_tokens": cfg.get("max_tokens", DEFAULT_LLM_MAX_OUTPUT_TOKENS),
+        "store": False,
         "timeout": policy["request_timeout_seconds"],
         # LiteLLM passes this to the OpenAI client. It must be explicit so its
         # retry loop cannot silently multiply OpenReel's configured attempts.
@@ -449,7 +488,11 @@ def _completion_kwargs(cfg: dict, *, with_tools: list | None = None,
     if cfg.get("api_key"):
         kwargs["api_key"] = cfg["api_key"]
     if with_tools:
-        kwargs["tools"] = with_tools
+        kwargs["tools"] = responses_tools(with_tools)
+    if policy["include_reasoning_encrypted_content"]:
+        kwargs["include"] = ["reasoning.encrypted_content"]
+    if policy["use_chat_completions_api"]:
+        kwargs["use_chat_completions_api"] = True
     if stream:
         kwargs["stream"] = True
     return kwargs
@@ -483,7 +526,7 @@ def model_supports_image_input(
     api_base: str | None = None,
     supports_vision: bool | None = None,
 ) -> bool:
-    """Return whether the chat endpoint accepts OpenAI-style image_url parts."""
+    """Return whether the selected model accepts Responses image input parts."""
     if isinstance(supports_vision, bool):
         return supports_vision
     name = (model or "").lower()
@@ -494,19 +537,25 @@ def model_supports_image_input(
 
 def _messages_have_image_input(messages: list[dict]) -> bool:
     for message in messages:
+        if message.get("type") == "input_image":
+            return True
         content = message.get("content")
         if not isinstance(content, list):
             continue
-        if any(isinstance(part, dict) and part.get("type") == "image_url" for part in content):
+        if any(
+            isinstance(part, dict)
+            and part.get("type") in {"image_url", "input_image"}
+            for part in content
+        ):
             return True
     return False
 
 
-def _build_messages_for_config(
+def _build_response_request_for_config(
     messages: list[dict],
     system_prompt: str | None,
     cfg: dict[str, Any],
-) -> list[dict]:
+) -> tuple[list[dict[str, Any]], str | None]:
     supports_images = model_supports_image_input(
         cfg.get("model"),
         cfg.get("api_base"),
@@ -517,75 +566,11 @@ def _build_messages_for_config(
             "selected model does not support required image input: "
             f"{cfg.get('model') or '<unknown>'}; choose a vision-capable model or set supports_vision=true"
         )
-    return _build_messages(messages, system_prompt, allow_image_input=supports_images)
-
-
-_MESSAGE_API_KEYS = {
-    "role",
-    "content",
-    "name",
-    "tool_call_id",
-    "tool_calls",
-    "function_call",
-}
-
-
-def _text_only_content(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return str(content or "")
-
-    texts: list[str] = []
-    omitted_images = 0
-    for part in content:
-        if not isinstance(part, dict):
-            text = str(part or "")
-            if text:
-                texts.append(text)
-            continue
-        kind = part.get("type")
-        if kind == "text":
-            text = str(part.get("text") or "")
-            if text:
-                texts.append(text)
-        elif kind == "image_url":
-            omitted_images += 1
-        else:
-            text = str(part.get("content") or part.get("text") or "")
-            if text:
-                texts.append(text)
-    if omitted_images:
-        texts.append(
-            f"[{omitted_images} image_url part(s) omitted: selected model endpoint accepts text-only chat messages.]"
-        )
-    return "\n".join(texts)
-
-
-def _message_for_api(message: dict, *, allow_image_input: bool = True) -> dict:
-    clean = {
-        key: value
-        for key, value in message.items()
-        if key in _MESSAGE_API_KEYS and value is not None
-    }
-    if not allow_image_input and "content" in clean:
-        clean["content"] = _text_only_content(clean.get("content"))
-    return clean
-
-
-def _build_messages(
-    messages: list[dict],
-    system_prompt: str | None,
-    *,
-    allow_image_input: bool = True,
-) -> list[dict]:
-    clean_messages = [
-        _message_for_api(message, allow_image_input=allow_image_input)
-        for message in messages
-    ]
-    if system_prompt:
-        return [{"role": "system", "content": system_prompt}, *clean_messages]
-    return clean_messages
+    return prepare_response_input(
+        messages,
+        system_prompt,
+        allow_image_input=supports_images,
+    )
 
 
 def _exc_status_code(exc: Exception) -> int | None:
@@ -691,6 +676,23 @@ def _recover_backend_response(exc: Exception, *, model: str) -> Any | None:
         if isinstance(nested, dict):
             candidates.append(nested)
         for payload in candidates:
+            if isinstance(payload.get("output"), list) and payload.get("output"):
+                normalized = dict(payload)
+                normalized.setdefault("id", f"resp_recovered_{uuid.uuid4().hex[:12]}")
+                normalized.setdefault("created_at", 0)
+                normalized.setdefault("model", model)
+                normalized.setdefault("status", "completed")
+                try:
+                    response = litellm.ResponsesAPIResponse(**normalized)
+                except Exception:
+                    response = None
+                if response is not None:
+                    try:
+                        setattr(response, "_openreel_recovered_from_exception", True)
+                        setattr(response, "_openreel_recovery_exception_type", exc.__class__.__name__)
+                    except Exception:
+                        pass
+                    return response
             if not _payload_message_content(payload).strip():
                 continue
             normalized = dict(payload)
@@ -708,7 +710,7 @@ def _recover_backend_response(exc: Exception, *, model: str) -> Any | None:
     return None
 
 
-async def _acompletion_with_retries(
+async def _aresponses_with_retries(
     kwargs: dict[str, Any],
     *,
     fallback_model: str | None = None,
@@ -737,16 +739,28 @@ async def _acompletion_with_retries(
                     attempt + 1,
                     max_attempts,
                 )
-                response = await litellm.acompletion(**call_kwargs)
+                response = await litellm.aresponses(**call_kwargs)
+                view = response_view(response)
+                if view.status in {"failed", "cancelled", "queued", "in_progress"}:
+                    raw_error = (
+                        response.get("error")
+                        if isinstance(response, dict)
+                        else getattr(response, "error", None)
+                    )
+                    raise LLMResponseStatusError(
+                        f"Responses request ended with status={view.status}: {raw_error or 'no error details'}"
+                    )
                 logger.info(
-                    "LLM request completed request_id=%s model=%s attempt=%s/%s elapsed=%.3fs finish_reason=%s has_content=%s",
+                    "LLM Responses request completed request_id=%s model=%s attempt=%s/%s elapsed=%.3fs status=%s finish_reason=%s tool_calls=%s has_content=%s",
                     request_id,
                     model,
                     attempt + 1,
                     max_attempts,
                     asyncio.get_running_loop().time() - started_at,
-                    _choice_finish_reason(response),
-                    bool(_message_content(response).strip()),
+                    view.status,
+                    view.finish_reason,
+                    len(view.tool_calls),
+                    bool(view.content.strip()),
                 )
                 try:
                     setattr(response, "_openreel_requested_model", kwargs["model"])
@@ -798,31 +812,29 @@ async def _acompletion_with_retries(
     raise last_exc
 
 
-def _choice_message(response: Any) -> Any:
-    return response.choices[0].message
+def _response_finish_reason(response: Any) -> str:
+    return response_view(response).finish_reason
 
 
-def _choice_finish_reason(response: Any) -> str:
-    return str(getattr(response.choices[0], "finish_reason", "") or "")
-
-
-def _message_content(response: Any) -> str:
-    return _content_text(getattr(_choice_message(response), "content", None))
+def _response_content(response: Any) -> str:
+    return response_view(response).content
 
 
 def _copy_response_with_content(response: Any, content: str) -> Any:
     try:
-        response.choices[0].message.content = content
+        setattr(response, "_openreel_combined_content", content)
     except Exception:
-        pass
+        if isinstance(response, dict):
+            response["_openreel_combined_content"] = content
     return response
 
 
 def _set_response_finish_reason(response: Any, finish_reason: str) -> None:
     try:
-        response.choices[0].finish_reason = finish_reason
+        setattr(response, "_openreel_final_finish_reason", finish_reason)
     except Exception:
-        pass
+        if isinstance(response, dict):
+            response["_openreel_final_finish_reason"] = finish_reason
 
 
 def _aggregate_response_usage(responses: list[Any]) -> dict[str, Any]:
@@ -894,35 +906,34 @@ async def _continue_text_if_truncated(
     accept_backend_content: bool = True,
     require_complete: bool = False,
 ) -> Any:
-    finish_reason = _choice_finish_reason(response)
+    finish_reason = _response_finish_reason(response)
     if finish_reason not in _MAX_OUTPUT_FINISH_REASONS:
         return response
-    msg = _choice_message(response)
-    if getattr(msg, "tool_calls", None):
+    if response_view(response).tool_calls:
         try:
             setattr(response, "_openreel_tool_call_truncated", True)
         except Exception:
             pass
         return response
 
-    combined = _message_content(response)
+    combined = _response_content(response)
     if not combined:
         return response
 
     continue_kwargs = dict(kwargs)
-    base_messages = list(kwargs.get("messages") or [])
+    continuation_input = list(kwargs.get("input") or [])
     responses = [response]
     continuation_count = 0
     continuation_error: str | None = None
     for _ in range(max_continuations):
-        continue_messages = [
-            *base_messages,
-            {"role": "assistant", "content": combined},
+        continue_input = [
+            *continuation_input,
+            *replay_output_items(responses[-1]),
             {"role": "user", "content": "Continue exactly where you stopped. Do not repeat previous text."},
         ]
-        continue_kwargs["messages"] = continue_messages
+        continue_kwargs["input"] = continue_input
         try:
-            next_response = await _acompletion_with_retries(
+            next_response = await _aresponses_with_retries(
                 continue_kwargs,
                 fallback_model=fallback_model,
                 max_attempts=max_attempts,
@@ -957,9 +968,10 @@ async def _continue_text_if_truncated(
                 pass
             break
         responses.append(next_response)
+        continuation_input = continue_input
         continuation_count += 1
-        combined += _message_content(next_response)
-        finish_reason = _choice_finish_reason(next_response)
+        combined += _response_content(next_response)
+        finish_reason = _response_finish_reason(next_response)
         if finish_reason not in _MAX_OUTPUT_FINISH_REASONS:
             break
     exhausted = finish_reason in _MAX_OUTPUT_FINISH_REASONS
@@ -989,7 +1001,7 @@ def _apply_call_max_tokens(cfg: dict[str, Any], kwargs: dict[str, Any], max_toke
     provider_limit = metadata.get("max_output_tokens") if isinstance(metadata, dict) else None
     if isinstance(provider_limit, int) and provider_limit > 0:
         requested = min(requested, provider_limit)
-    kwargs["max_tokens"] = requested
+    kwargs["max_output_tokens"] = requested
 
 
 class LLMService:
@@ -1010,10 +1022,13 @@ class LLMService:
     ) -> dict[str, Any]:
         cfg = await _resolve_config(task_type, self.db, node_override)
         policy = _llm_request_policy(cfg)
-        kwargs = _completion_kwargs(cfg)
+        kwargs = _responses_kwargs(cfg)
         _apply_call_max_tokens(cfg, kwargs, max_tokens)
-        kwargs["messages"] = _build_messages_for_config(messages, system, cfg)
-        response = await _acompletion_with_retries(
+        input_items, instructions = _build_response_request_for_config(messages, system, cfg)
+        kwargs["input"] = input_items
+        if instructions:
+            kwargs["instructions"] = instructions
+        response = await _aresponses_with_retries(
             kwargs,
             fallback_model=cfg.get("fallback_model"),
             max_attempts=policy["max_retries"] + 1,
@@ -1031,21 +1046,26 @@ class LLMService:
             require_complete=require_complete,
         )
         response = _attach_model_metadata(response, cfg.get("model_metadata") or {})
-        content = _message_content(response)
+        view = response_view(response)
+        content = view.content
         actual_model = str(getattr(response, "_openreel_actual_model", "") or kwargs["model"])
         return {
             "content": content,
             "model": actual_model,
             "usage": build_usage_snapshot(
                 response,
-                messages=kwargs["messages"],
+                messages=input_items,
+                system=instructions,
                 model=actual_model,
                 model_metadata=cfg.get("model_metadata") or {},
             ),
             "finish_reason": str(
                 getattr(response, "_openreel_final_finish_reason", "")
-                or _choice_finish_reason(response)
+                or view.finish_reason
             ),
+            "response_id": view.response_id,
+            "response_status": view.status,
+            "api_mode": view.api_mode,
             "continuation_count": int(
                 getattr(response, "_openreel_continuation_count", 0) or 0
             ),
@@ -1064,18 +1084,20 @@ class LLMService:
         require_complete: bool = False,
     ) -> str:
         policy = _llm_request_policy({})
-        kwargs: dict[str, Any] = {
+        cfg: dict[str, Any] = {
             "model": model or settings.DEFAULT_FAST_MODEL,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "timeout": policy["request_timeout_seconds"],
-            "max_retries": policy["sdk_max_retries"],
         }
-        env_key = _resolve_env_key_for_default(kwargs["model"])
+        env_key = _resolve_env_key_for_default(cfg["model"])
         if env_key:
-            kwargs["api_key"] = env_key
-        kwargs["messages"] = _build_messages_for_config(messages, system_prompt, kwargs)
-        response = await _acompletion_with_retries(
+            cfg["api_key"] = env_key
+        kwargs = _responses_kwargs(cfg)
+        input_items, instructions = _build_response_request_for_config(messages, system_prompt, cfg)
+        kwargs["input"] = input_items
+        if instructions:
+            kwargs["instructions"] = instructions
+        response = await _aresponses_with_retries(
             kwargs,
             max_attempts=policy["max_retries"] + 1,
             retry_backoff_seconds=policy["retry_backoff_seconds"],
@@ -1090,7 +1112,7 @@ class LLMService:
             accept_backend_content=policy["accept_backend_content"],
             require_complete=require_complete,
         )
-        return _message_content(response)
+        return _response_content(response)
 
     async def stream(
         self,
@@ -1102,9 +1124,12 @@ class LLMService:
     ) -> AsyncIterator[str]:
         cfg = await _resolve_config(task_type, self.db, node_override)
         policy = _llm_request_policy(cfg)
-        kwargs = _completion_kwargs(cfg, stream=True)
-        kwargs["messages"] = _build_messages_for_config(messages, system, cfg)
-        response = await _acompletion_with_retries(
+        kwargs = _responses_kwargs(cfg, stream=True)
+        input_items, instructions = _build_response_request_for_config(messages, system, cfg)
+        kwargs["input"] = input_items
+        if instructions:
+            kwargs["instructions"] = instructions
+        response = await _aresponses_with_retries(
             kwargs,
             fallback_model=cfg.get("fallback_model"),
             max_attempts=policy["max_retries"] + 1,
@@ -1112,15 +1137,12 @@ class LLMService:
             accept_backend_content=policy["accept_backend_content"],
         )
         if not hasattr(response, "__aiter__"):
-            content = _message_content(response)
+            content = _response_content(response)
             if content:
                 yield content
             return
-        async for chunk in response:
-            try:
-                delta = chunk.choices[0].delta.content
-            except (AttributeError, IndexError):
-                delta = None
+        async for event in response:
+            delta = stream_text_delta(event)
             if delta:
                 yield delta
 
@@ -1137,10 +1159,13 @@ class LLMService:
         """LLM call with function-calling tools. Returns the full response object."""
         cfg = await _resolve_config(task_type, self.db, node_override)
         policy = _llm_request_policy(cfg)
-        kwargs = _completion_kwargs(cfg, with_tools=tools)
+        kwargs = _responses_kwargs(cfg, with_tools=tools)
         _apply_call_max_tokens(cfg, kwargs, max_tokens)
-        kwargs["messages"] = _build_messages_for_config(messages, system, cfg)
-        response = await _acompletion_with_retries(
+        input_items, instructions = _build_response_request_for_config(messages, system, cfg)
+        kwargs["input"] = input_items
+        if instructions:
+            kwargs["instructions"] = instructions
+        response = await _aresponses_with_retries(
             kwargs,
             fallback_model=cfg.get("fallback_model"),
             max_attempts=policy["max_retries"] + 1,

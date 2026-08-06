@@ -45,6 +45,11 @@ from app.config import settings
 from app.db.models import Project
 from app.db.session import session_scope
 from app.services.llm_service import LLMService
+from app.services.llm_responses import (
+    function_call_output_item,
+    replay_output_items,
+    response_view,
+)
 
 
 # ── Role presets ────────────────────────────────────────────────────────
@@ -419,31 +424,6 @@ def _parse_subagent_final_result(raw: str) -> dict[str, Any] | None:
             result_payload = {"status": status, "value": result_payload}
 
     return {"result": result_payload, "summary": summary}
-
-
-def _assistant_message_payload(message: Any) -> dict[str, Any]:
-    try:
-        payload = message.model_dump()
-        if isinstance(payload, dict):
-            payload.setdefault("role", "assistant")
-            return payload
-    except Exception:
-        pass
-    tool_calls: list[dict[str, Any]] = []
-    for index, tool_call in enumerate(list(getattr(message, "tool_calls", None) or [])):
-        name, arguments = _tool_call_function_payload(tool_call)
-        if not isinstance(arguments, str):
-            arguments = json.dumps(arguments or {}, ensure_ascii=False, default=str)
-        tool_calls.append({
-            "id": _tool_call_id(tool_call, f"subagent-call-{index}"),
-            "type": "function",
-            "function": {"name": name, "arguments": arguments},
-        })
-    return {
-        "role": "assistant",
-        "content": getattr(message, "content", None),
-        "tool_calls": tool_calls,
-    }
 
 
 def _tool_call_id(tool_call: Any, fallback: str) -> str:
@@ -2544,10 +2524,9 @@ async def _subagent_loop(
             if preset.get("max_output_tokens") is not None:
                 llm_kwargs["max_tokens"] = int(preset["max_output_tokens"])
             response = await svc.generate_with_tools(**llm_kwargs)
-            choice = response.choices[0]
-            msg = choice.message
-            raw = str(getattr(msg, "content", None) or "")
-            tool_calls = list(getattr(msg, "tool_calls", None) or [])
+            llm_response = response_view(response)
+            raw = llm_response.content
+            tool_calls = list(llm_response.tool_calls)
             usage = build_usage_snapshot(
                 response,
                 messages=messages_for_call,
@@ -2574,7 +2553,10 @@ async def _subagent_loop(
                 commentary=response_payload.get("commentary") or response_payload.get("progress") or raw,
                 summary=response_payload.get("summary"),
                 raw_chars=len(raw),
-                finish_reason=str(getattr(choice, "finish_reason", "") or ""),
+                finish_reason=llm_response.finish_reason,
+                response_status=llm_response.status,
+                response_id=llm_response.response_id,
+                api_mode=llm_response.api_mode,
                 model=usage.get("model"),
                 prompt_cache_key=prompt_package["cache_key"],
                 stable_system_hash=prompt_package["diagnostics"].get("stable_system_hash"),
@@ -2583,8 +2565,8 @@ async def _subagent_loop(
                 visual_tail_images=_subagent_visual_tail_image_count(visual_tail),
             )
 
+            transcript.extend(replay_output_items(response))
             if not tool_calls:
-                transcript.append({"role": "assistant", "content": raw})
                 parsed_final = _parse_subagent_final_result(raw)
                 if not parsed_final:
                     _append_subagent_trace(
@@ -2657,7 +2639,6 @@ async def _subagent_loop(
                     "error": "",
                 }
 
-            transcript.append(_assistant_message_payload(msg))
             for index, tool_call in enumerate(tool_calls):
                 tool_call_id = _tool_call_id(tool_call, f"subagent-call-{step_no}-{index}")
                 llm_tool_name, raw_arguments = _tool_call_function_payload(tool_call)
@@ -2677,11 +2658,10 @@ async def _subagent_loop(
                         tool=tool_name,
                         allowed_tools=preset["allowed_tools"],
                     )
-                    transcript.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": json.dumps({"ok": False, "error": denial}, ensure_ascii=False),
-                    })
+                    transcript.append(function_call_output_item(
+                        tool_call_id,
+                        {"ok": False, "error": denial},
+                    ))
                     continue
 
                 if role == IMAGE_EDITOR_ROLE_NAME:
@@ -2720,11 +2700,7 @@ async def _subagent_loop(
                         error_kind=scope_error.get("error_kind"),
                         input=tool_input,
                     )
-                    transcript.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": json.dumps(scope_error, ensure_ascii=False),
-                    })
+                    transcript.append(function_call_output_item(tool_call_id, scope_error))
                     continue
 
                 progress_text = _subagent_progress_text(response_payload, role=role, step_no=step_no, tool_name=tool_name)
@@ -2794,11 +2770,7 @@ async def _subagent_loop(
                         result_keys=list(result.keys())[:20] if isinstance(result, dict) else [type(result).__name__],
                         candidate_lifecycle=_image_editor_lifecycle_summary(image_editor_state),
                     )
-                    transcript.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": rendered,
-                    })
+                    transcript.append(function_call_output_item(tool_call_id, rendered))
                     model_parts = list(output_envelope["model_visible"]["content_parts"])
                     if model_parts:
                         _append_subagent_visual_context(
@@ -2827,14 +2799,10 @@ async def _subagent_loop(
                         tool=tool_name,
                         error=str(exc),
                     )
-                    transcript.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": json.dumps(
-                            {"ok": False, "error": f"工具 {tool_name} 抛错:{exc}。换个思路或结束。"},
-                            ensure_ascii=False,
-                        ),
-                    })
+                    transcript.append(function_call_output_item(
+                        tool_call_id,
+                        {"ok": False, "error": f"工具 {tool_name} 抛错:{exc}。换个思路或结束。"},
+                    ))
             continue
 
 

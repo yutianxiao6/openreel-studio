@@ -7,7 +7,7 @@ from app.agent.tool_output import (
     build_tool_output_envelope,
     tool_done_event,
     tool_result_context_messages,
-    tool_result_message,
+    tool_result_input_item,
     tool_trace_fields,
 )
 
@@ -34,7 +34,12 @@ def test_small_result_stays_inline_with_v2_contract(tmp_path, monkeypatch) -> No
     assert observation["tool_observation_version"] == "tool_observation_v2"
     assert observation["result"] == result
     assert envelope["model_visible"]["tokens"] <= GLOBAL_MODEL_ITEM_MAX_TOKENS
-    assert tool_result_message("call-1", envelope)["content"] == envelope["model_visible"]["content"]
+    item = tool_result_input_item("call-1", envelope)
+    assert item == {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": envelope["model_visible"]["content"],
+    }
     assert tool_done_event("tool.small", 2, envelope)["result"] == result
     assert tool_trace_fields(envelope)["tool_result_compacted"] is False
 

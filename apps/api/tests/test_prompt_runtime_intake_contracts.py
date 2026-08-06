@@ -1174,30 +1174,32 @@ async def test_orchestrator_video_intake_basic_intake_emits_structured_event(mon
             ),
         )
 
-    class FakeMessage:
-        content = "我先整理需要你确认的信息。"
-        tool_calls = [FakeToolCall()]
-
-        def model_dump(self):
-            return {
-                "role": "assistant",
-                "content": self.content,
-                "tool_calls": [
-                    {
-                        "id": FakeToolCall.id,
-                        "function": {
-                            "name": FakeToolCall.function.name,
-                            "arguments": FakeToolCall.function.arguments,
-                        },
-                    }
-                ],
-            }
-
     class FakeLLMService:
         async def generate_with_tools(self, *args, **kwargs):
             return SimpleNamespace(
-                choices=[SimpleNamespace(message=FakeMessage())],
-                usage={"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150},
+                id="resp-intake",
+                status="completed",
+                incomplete_details=None,
+                output=[
+                    {
+                        "id": "msg-intake",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{
+                            "type": "output_text",
+                            "text": "我先整理需要你确认的信息。",
+                        }],
+                    },
+                    {
+                        "id": "fc-intake",
+                        "type": "function_call",
+                        "call_id": FakeToolCall.id,
+                        "name": FakeToolCall.function.name,
+                        "arguments": FakeToolCall.function.arguments,
+                    },
+                ],
+                usage={"input_tokens": 120, "output_tokens": 30, "total_tokens": 150},
                 model="fake-model",
             )
 

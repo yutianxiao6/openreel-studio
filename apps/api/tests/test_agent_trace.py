@@ -156,9 +156,10 @@ def test_prompt_dump_full_mode_writes_complete_request_each_iteration(tmp_path, 
     path = tmp_path / "project-1" / "run-full.jsonl"
     record = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
     assert record["dump_mode"] == "full"
-    assert record["tools"][0]["function"]["parameters"]["type"] == "object"
-    assert record["api_request"]["messages"][0] == {"role": "system", "content": "system"}
-    assert record["api_request"]["messages"][1] == {"role": "user", "content": "hi"}
+    assert record["tools"][0]["parameters"]["type"] == "object"
+    assert record["api_request"]["instructions"] == "system"
+    assert record["api_request"]["input"] == [{"role": "user", "content": "hi"}]
+    assert record["api_request"]["store"] is False
 
 
 def test_prompt_dump_metadata_mode_omits_user_and_prompt_content(tmp_path, monkeypatch) -> None:

@@ -1,4 +1,4 @@
-"""把每次 LLM 调用前组装好的 system / messages / tools 落盘,排查提示词问题用。
+"""把每次 LLM 调用前组装好的 instructions / input / tools 落盘,排查提示词问题用。
 
 默认写到 apps/api/data/prompts/{project_id}/{run_id}.jsonl。生产环境可通过
 DRAMA_PROMPT_DUMP_DIR=/workspace/data/prompt_dumps 写到宿主机挂载目录。
@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.vision_context import redact_image_data_urls
+from app.services.llm_responses import prepare_response_input, responses_tools
 
 logger = logging.getLogger(__name__)
 
@@ -134,11 +135,12 @@ def dump_llm_request(
         _prune_old_dumps(dump_root)
         path = out_dir / f"{run_id}.jsonl"
 
+        response_input, instructions = prepare_response_input(messages, system)
+        response_tool_schemas = responses_tools(tools)
         if full_dump or iteration == 0:
-            tools_payload: Any = tools
+            tools_payload: Any = response_tool_schemas
         else:
-            tools_payload = [t.get("function", {}).get("name", "?") for t in tools]
-        api_messages = [{"role": "system", "content": system}, *messages] if system else list(messages)
+            tools_payload = [str(t.get("name") or "?") for t in response_tool_schemas]
 
         record: dict[str, Any] = {
             "ts": datetime.now().isoformat(timespec="milliseconds"),
@@ -149,12 +151,12 @@ def dump_llm_request(
             "tools_count": len(tools),
             "token_estimate": {
                 "system_tokens": _estimate_text_tokens(system or ""),
-                "messages_tokens": _estimate_payload_tokens(messages),
-                "tool_schema_tokens": _estimate_payload_tokens(tools),
+                "messages_tokens": _estimate_payload_tokens(response_input),
+                "tool_schema_tokens": _estimate_payload_tokens(response_tool_schemas),
                 "total_input_tokens": (
-                    _estimate_text_tokens(system or "")
-                    + _estimate_payload_tokens(messages)
-                    + _estimate_payload_tokens(tools)
+                    _estimate_text_tokens(instructions or "")
+                    + _estimate_payload_tokens(response_input)
+                    + _estimate_payload_tokens(response_tool_schemas)
                 ),
                 **_section_token_estimates(prompt_assembly),
             },
@@ -168,14 +170,16 @@ def dump_llm_request(
             })
         else:
             record["tool_names"] = [
-                tool.get("function", {}).get("name", "?")
-                for tool in tools
+                str(tool.get("name") or "?")
+                for tool in response_tool_schemas
                 if isinstance(tool, dict)
             ]
         if full_dump:
             record["api_request"] = _redact({
-                "messages": api_messages,
-                "tools": tools,
+                "instructions": instructions,
+                "input": response_input,
+                "tools": response_tool_schemas,
+                "store": False,
             })
         if prompt_assembly is not None:
             record["prompt_assembly"] = _redact(prompt_assembly)

@@ -471,37 +471,6 @@ async def test_subagent_loop_uses_native_tool_calls(monkeypatch) -> None:
         id = "call-node-get"
         function = SimpleNamespace(name="node__get", arguments=json.dumps({"node_id": "12"}))
 
-    class FakeToolMessage:
-        content = "我先读取节点。"
-        tool_calls = [FakeToolCall()]
-
-        def model_dump(self):
-            return {
-                "role": "assistant",
-                "content": self.content,
-                "tool_calls": [
-                    {
-                        "id": FakeToolCall.id,
-                        "type": "function",
-                        "function": {
-                            "name": FakeToolCall.function.name,
-                            "arguments": FakeToolCall.function.arguments,
-                        },
-                    }
-                ],
-            }
-
-    class FakeFinalMessage:
-        content = json.dumps(
-            {
-                "status": "completed",
-                "summary": "节点已读取。",
-                "result": {"status": "completed", "answer": "ok"},
-            },
-            ensure_ascii=False,
-        )
-        tool_calls = []
-
     class FakeLLMService:
         def __init__(self, db):
             self.db = db
@@ -514,10 +483,40 @@ async def test_subagent_loop_uses_native_tool_calls(monkeypatch) -> None:
                 "system": system,
                 "project_id": project_id,
             })
-            message = FakeToolMessage() if len(captured["llm_calls"]) == 1 else FakeFinalMessage()
+            is_first = len(captured["llm_calls"]) == 1
+            text = (
+                "我先读取节点。"
+                if is_first
+                else json.dumps(
+                    {
+                        "status": "completed",
+                        "summary": "节点已读取。",
+                        "result": {"status": "completed", "answer": "ok"},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            output = [{
+                "id": f"msg-{len(captured['llm_calls'])}",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text}],
+            }]
+            if is_first:
+                output.append({
+                    "id": "fc-node-get",
+                    "type": "function_call",
+                    "call_id": FakeToolCall.id,
+                    "name": FakeToolCall.function.name,
+                    "arguments": FakeToolCall.function.arguments,
+                })
             return SimpleNamespace(
-                choices=[SimpleNamespace(message=message, finish_reason="stop")],
-                usage={"prompt_tokens": 120, "completion_tokens": 20, "total_tokens": 140},
+                id=f"resp-{len(captured['llm_calls'])}",
+                status="completed",
+                incomplete_details=None,
+                output=output,
+                usage={"input_tokens": 120, "output_tokens": 20, "total_tokens": 140},
                 model="fake-model",
             )
 
@@ -563,9 +562,9 @@ async def test_subagent_loop_uses_native_tool_calls(monkeypatch) -> None:
     assert first_prompt_assembly["tool_schema_hash"]
     assert prompt_dumps[1]["prompt_assembly"]["cache_key"] == first_prompt_assembly["cache_key"]
     second_messages = llm_calls[1]["messages"]
-    assert any(message.get("role") == "assistant" and message.get("tool_calls") for message in second_messages)
+    assert any(message.get("type") == "function_call" for message in second_messages)
     assert any(
-        message.get("role") == "tool" and message.get("tool_call_id") == "call-node-get"
+        message.get("type") == "function_call_output" and message.get("call_id") == "call-node-get"
         for message in second_messages
     )
     assert result["result"]["status"] == "completed"
