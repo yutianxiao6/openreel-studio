@@ -1175,7 +1175,8 @@ async def test_orchestrator_video_intake_basic_intake_emits_structured_event(mon
         )
 
     class FakeLLMService:
-        async def generate_with_tools(self, *args, **kwargs):
+        @staticmethod
+        def _response():
             return SimpleNamespace(
                 id="resp-intake",
                 status="completed",
@@ -1202,6 +1203,48 @@ async def test_orchestrator_video_intake_basic_intake_emits_structured_event(mon
                 usage={"input_tokens": 120, "output_tokens": 30, "total_tokens": 150},
                 model="fake-model",
             )
+
+        async def stream_with_tools(self, *args, **kwargs):
+            response = self._response()
+            yield SimpleNamespace(
+                kind="output_item_added",
+                item=response.output[0],
+                delta="",
+                response=None,
+            )
+            yield SimpleNamespace(
+                kind="text_delta",
+                item=None,
+                delta="我先整理",
+                response=None,
+            )
+            yield SimpleNamespace(
+                kind="text_delta",
+                item=None,
+                delta="需要你确认的信息。",
+                response=None,
+            )
+            yield SimpleNamespace(
+                kind="output_item_done",
+                item=response.output[0],
+                delta="",
+                response=None,
+            )
+            yield SimpleNamespace(
+                kind="output_item_done",
+                item=response.output[1],
+                delta="",
+                response=None,
+            )
+            yield SimpleNamespace(
+                kind="terminal",
+                item=None,
+                delta="",
+                response=response,
+            )
+
+        async def generate_with_tools(self, *args, **kwargs):
+            return self._response()
 
         async def generate(self, *args, **kwargs):
             return {"content": "正在整理需要你确认的信息。"}
@@ -1263,6 +1306,16 @@ async def test_orchestrator_video_intake_basic_intake_emits_structured_event(mon
     assert "agent_round" in event_types
     assert any(args and args[0] == "llm_response" for args, _kwargs in holder["trace"])
     assistant_text = "".join(str(event.get("content") or "") for event in events if event.get("type") == "text_delta")
+    preamble_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.get("type") == "text_delta" and "我先整理" in event.get("content", "")
+    )
+    interaction_index = next(
+        index for index, event in enumerate(events) if event.get("type") == "interaction_input_requested"
+    )
+    assert preamble_index < interaction_index
+    assert "我先整理需要你确认的信息" in assistant_text
     assert "视频主题" in assistant_text
     assert "先选一下视频制作方式" not in assistant_text
     assert holder["saved"][1][2]["interactionInput"]["stage"] == "basic"

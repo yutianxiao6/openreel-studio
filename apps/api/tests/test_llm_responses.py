@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from enum import Enum
 from types import SimpleNamespace
 
 from app.services.llm_responses import (
     function_call_output_item,
     prepare_response_input,
     replay_output_items,
+    response_stream_update,
     response_view,
     responses_tools,
     stream_text_delta,
@@ -140,3 +142,55 @@ def test_stream_text_delta_reads_typed_responses_event() -> None:
         "delta": "hello",
     }) == "hello"
     assert stream_text_delta({"type": "response.completed"}) == ""
+
+
+def test_response_stream_update_preserves_codex_style_event_boundaries() -> None:
+    added = response_stream_update({
+        "type": "response.output_item.added",
+        "item": {
+            "id": "fc-1",
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "node__get",
+            "arguments": "",
+        },
+    })
+    arguments = response_stream_update({
+        "type": "response.function_call_arguments.delta",
+        "item_id": "fc-1",
+        "delta": '{"node_id":',
+    })
+    done = response_stream_update({
+        "type": "response.output_item.done",
+        "item": {
+            "id": "fc-1",
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "node__get",
+            "arguments": '{"node_id":"7"}',
+        },
+    })
+
+    assert added is not None and added.kind == "output_item_added"
+    assert added.call_id == "call-1"
+    assert arguments is not None and arguments.kind == "tool_call_input_delta"
+    assert arguments.delta == '{"node_id":'
+    assert done is not None and done.kind == "output_item_done"
+    assert done.item is not None
+    assert done.item["arguments"] == '{"node_id":"7"}'
+
+
+def test_response_stream_update_accepts_litellm_string_enum_event_types() -> None:
+    class EventType(str, Enum):
+        COMPLETED = "response.completed"
+
+    response = SimpleNamespace(id="resp-enum", status="completed", output=[])
+    update = response_stream_update({
+        "type": EventType.COMPLETED,
+        "response": response,
+    })
+
+    assert update is not None
+    assert update.kind == "terminal"
+    assert update.event_type == "response.completed"
+    assert update.response is response

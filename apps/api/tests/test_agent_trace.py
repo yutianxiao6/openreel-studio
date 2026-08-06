@@ -151,6 +151,7 @@ def test_prompt_dump_full_mode_writes_complete_request_each_iteration(tmp_path, 
         messages=[{"role": "user", "content": "hi"}],
         tools=[{"function": {"name": "node__create", "parameters": {"type": "object"}}}],
         user_message=None,
+        stream=True,
     )
 
     path = tmp_path / "project-1" / "run-full.jsonl"
@@ -160,6 +161,8 @@ def test_prompt_dump_full_mode_writes_complete_request_each_iteration(tmp_path, 
     assert record["api_request"]["instructions"] == "system"
     assert record["api_request"]["input"] == [{"role": "user", "content": "hi"}]
     assert record["api_request"]["store"] is False
+    assert record["stream"] is True
+    assert record["api_request"]["stream"] is True
 
 
 def test_prompt_dump_metadata_mode_omits_user_and_prompt_content(tmp_path, monkeypatch) -> None:

@@ -47,6 +47,12 @@ def as_mapping(value: Any) -> dict[str, Any]:
     for key in (
         "id",
         "type",
+        "delta",
+        "response",
+        "item",
+        "item_id",
+        "output_index",
+        "sequence_number",
         "call_id",
         "role",
         "status",
@@ -275,6 +281,24 @@ class ResponseView:
     api_mode: str
 
 
+@dataclass(frozen=True)
+class ResponseStreamUpdate:
+    """Small, provider-neutral projection of one Responses stream event.
+
+    This mirrors the event boundary used by Codex: text deltas are presentation
+    events, completed output items are the durable model actions, and the
+    terminal response owns usage/status metadata.
+    """
+
+    kind: str
+    event_type: str
+    delta: str = ""
+    item: dict[str, Any] | None = None
+    item_id: str = ""
+    call_id: str = ""
+    response: Any | None = None
+
+
 def is_responses_response(response: Any) -> bool:
     if isinstance(response, dict):
         return isinstance(response.get("output"), list) and not response.get("choices")
@@ -437,3 +461,87 @@ def stream_text_delta(event: Any) -> str:
     except (AttributeError, IndexError, KeyError, TypeError):
         return ""
     return delta if isinstance(delta, str) else ""
+
+
+def response_stream_update(event: Any) -> ResponseStreamUpdate | None:
+    """Normalize a native/LiteLLM Responses stream event.
+
+    Unknown event types are intentionally ignored. The caller must still
+    require a terminal ``response.completed`` or ``response.incomplete`` event
+    so a prematurely closed stream can never be mistaken for a full response.
+    """
+
+    payload = event if isinstance(event, dict) else as_mapping(event)
+    raw_event_type = payload.get("type")
+    event_type = str(getattr(raw_event_type, "value", raw_event_type) or "")
+
+    if event_type == "response.created":
+        return ResponseStreamUpdate(
+            kind="created",
+            event_type=event_type,
+            response=payload.get("response"),
+        )
+    if event_type == "response.output_item.added":
+        item = as_mapping(payload.get("item"))
+        return ResponseStreamUpdate(
+            kind="output_item_added",
+            event_type=event_type,
+            item=item or None,
+            item_id=str(payload.get("item_id") or item.get("id") or ""),
+            call_id=str(item.get("call_id") or ""),
+        )
+    if event_type == "response.output_item.done":
+        item = as_mapping(payload.get("item"))
+        return ResponseStreamUpdate(
+            kind="output_item_done",
+            event_type=event_type,
+            item=item or None,
+            item_id=str(payload.get("item_id") or item.get("id") or ""),
+            call_id=str(item.get("call_id") or ""),
+        )
+    if event_type == "response.output_text.delta":
+        delta = payload.get("delta")
+        if not isinstance(delta, str) or not delta:
+            return None
+        return ResponseStreamUpdate(
+            kind="text_delta",
+            event_type=event_type,
+            delta=delta,
+            item_id=str(payload.get("item_id") or ""),
+        )
+    if event_type in {
+        "response.function_call_arguments.delta",
+        "response.custom_tool_call_input.delta",
+    }:
+        delta = payload.get("delta")
+        if not isinstance(delta, str) or not delta:
+            return None
+        return ResponseStreamUpdate(
+            kind="tool_call_input_delta",
+            event_type=event_type,
+            delta=delta,
+            item_id=str(payload.get("item_id") or ""),
+            call_id=str(payload.get("call_id") or ""),
+        )
+    if event_type in {
+        "response.completed",
+        "response.incomplete",
+        "response.failed",
+        "response.cancelled",
+    }:
+        return ResponseStreamUpdate(
+            kind="terminal",
+            event_type=event_type,
+            response=payload.get("response"),
+        )
+
+    # Compatibility for custom test doubles and old LiteLLM Chat stream
+    # wrappers. Production providers are normalized to typed Responses events.
+    delta = stream_text_delta(event)
+    if delta:
+        return ResponseStreamUpdate(
+            kind="text_delta",
+            event_type="chat.completion.delta.compat",
+            delta=delta,
+        )
+    return None

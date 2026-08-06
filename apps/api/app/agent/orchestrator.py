@@ -101,7 +101,10 @@ from app.db.models import Message
 from app.llm_limits import DEFAULT_LLM_MAX_OUTPUT_TOKENS
 from app.mcp_tools.registry import registry
 from app.services.llm_service import LLMService, is_context_length_error
-from app.services.llm_responses import replay_output_items, response_view
+from app.services.llm_responses import (
+    replay_output_items,
+    response_view,
+)
 from app.services.node_service import NodeService
 from app.services.project_service import ProjectService
 
@@ -139,6 +142,48 @@ def _sanitize_user_visible_text(text: str) -> str:
     cleaned = cleaned.replace("API 名", "内部接口名")
     cleaned = cleaned.replace("api 名", "内部接口名")
     return cleaned
+
+
+class _StreamingUserVisibleText:
+    """Incrementally sanitize model text without leaking split identifiers.
+
+    Only the trailing ASCII identifier (and a possible internal ``key=...``
+    expression) is retained. Chinese text and completed words are therefore
+    emitted immediately while identifiers split as ``node.`` / ``create`` are
+    sanitized as one token.
+    """
+
+    _TRAILING_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_.]+\Z")
+    _PENDING_INTERNAL_PARAM_RE = re.compile(
+        r"\b(?:scope|node_id|project_id|tool|function|api|API)"
+        r"(?:\s*=\s*(?:['\"][^'\"]*)?)?\Z"
+    )
+
+    def __init__(self) -> None:
+        self._pending = ""
+
+    def push(self, delta: str) -> str:
+        if not delta:
+            return ""
+        self._pending += delta
+        hold_at = len(self._pending)
+        identifier = self._TRAILING_IDENTIFIER_RE.search(self._pending)
+        if identifier is not None:
+            hold_at = min(hold_at, identifier.start())
+        internal_param = self._PENDING_INTERNAL_PARAM_RE.search(self._pending)
+        if internal_param is not None:
+            hold_at = min(hold_at, internal_param.start())
+        return self._flush_prefix(hold_at)
+
+    def finish(self) -> str:
+        return self._flush_prefix(len(self._pending))
+
+    def _flush_prefix(self, end: int) -> str:
+        if end <= 0:
+            return ""
+        prefix = self._pending[:end]
+        self._pending = self._pending[end:]
+        return _sanitize_user_visible_text(prefix)
 
 
 def _message_model_visible(metadata: dict[str, Any]) -> bool:
@@ -1788,6 +1833,92 @@ class AgentOrchestrator:
         empty_length_retries = 0
         truncated_tool_call_retries = 0
         max_iter = agent_prefs["max_iterations"]
+        model_max_output_tokens = agent_prefs.get(
+            "max_output_tokens",
+            DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+        )
+
+        async def _model_turn_updates(
+            call_messages: list[dict[str, Any]],
+            call_system: str,
+        ) -> AsyncGenerator[tuple[str, Any], None]:
+            """Yield visible text deltas followed by one terminal response record."""
+
+            stream_capability = getattr(type(self.llm_service), "stream_with_tools", None)
+            if stream_capability is None:
+                response = await self.llm_service.generate_with_tools(
+                    task_type="agent_loop",
+                    messages=call_messages,
+                    tools=tools,
+                    system=call_system,
+                    project_id=project_id,
+                    max_tokens=model_max_output_tokens,
+                )
+                yield "response", {
+                    "response": response,
+                    "streamed_raw_text": "",
+                    "streamed_visible_text": "",
+                    "text_delta_count": 0,
+                    "output_item_done_count": 0,
+                    "first_text_delta_ms": None,
+                    "native_stream": False,
+                }
+                return
+
+            sanitizer = _StreamingUserVisibleText()
+            streamed_raw_parts: list[str] = []
+            streamed_visible_parts: list[str] = []
+            text_delta_count = 0
+            output_item_done_count = 0
+            first_text_delta_ms: int | None = None
+            response: Any | None = None
+            defer_visible_text = current_collaboration_mode(state) == "plan"
+            stream_started_at = time.perf_counter()
+
+            async for update in self.llm_service.stream_with_tools(
+                task_type="agent_loop",
+                messages=call_messages,
+                tools=tools,
+                system=call_system,
+                project_id=project_id,
+                max_tokens=model_max_output_tokens,
+            ):
+                if update.kind == "text_delta":
+                    text_delta_count += 1
+                    streamed_raw_parts.append(update.delta)
+                    if first_text_delta_ms is None:
+                        first_text_delta_ms = elapsed_ms(stream_started_at)
+                    if defer_visible_text:
+                        continue
+                    visible_delta = sanitizer.push(update.delta)
+                    if visible_delta:
+                        streamed_visible_parts.append(visible_delta)
+                        yield "text_delta", visible_delta
+                    continue
+                if update.kind == "output_item_done":
+                    output_item_done_count += 1
+                    continue
+                if update.kind == "terminal":
+                    response = update.response
+
+            if response is None:
+                raise RuntimeError("Responses stream ended without a terminal response")
+
+            if not defer_visible_text:
+                visible_tail = sanitizer.finish()
+                if visible_tail:
+                    streamed_visible_parts.append(visible_tail)
+                    yield "text_delta", visible_tail
+            yield "response", {
+                "response": response,
+                "streamed_raw_text": "".join(streamed_raw_parts),
+                "streamed_visible_text": "".join(streamed_visible_parts),
+                "text_delta_count": text_delta_count,
+                "output_item_done_count": output_item_done_count,
+                "first_text_delta_ms": first_text_delta_ms,
+                "native_stream": True,
+            }
+
         EXTRACT_EVERY = 10  # 每 N 个 iteration 周期抽取一次关键事实
         for iteration in range(max_iter):
             # 每个 iteration 开始前检查用户是否追加了新消息
@@ -1986,6 +2117,7 @@ class AgentOrchestrator:
                 tools=tools,
                 user_message=message if iteration == 0 else None,
                 prompt_assembly=prompt_assembly_diag,
+                stream=True,
             )
 
             # LLM call with tools
@@ -2003,20 +2135,31 @@ class AgentOrchestrator:
 
             progress_system = system
             llm_started_at = time.perf_counter()
+            response: Any | None = None
+            round_stream_info: dict[str, Any] = {
+                "streamed_raw_text": "",
+                "streamed_visible_text": "",
+                "text_delta_count": 0,
+                "output_item_done_count": 0,
+                "first_text_delta_ms": None,
+                "native_stream": False,
+            }
+            round_streamed_to_user = False
             try:
-                response = await self.llm_service.generate_with_tools(
-                    task_type="agent_loop",
-                    messages=messages,
-                    tools=tools,
-                    system=progress_system,
-                    project_id=project_id,
-                    max_tokens=agent_prefs.get(
-                        "max_output_tokens",
-                        DEFAULT_LLM_MAX_OUTPUT_TOKENS,
-                    ),
-                )
+                async for update_kind, update_payload in _model_turn_updates(
+                    messages,
+                    progress_system,
+                ):
+                    if update_kind == "text_delta":
+                        round_streamed_to_user = True
+                        yield {"type": "text_delta", "content": str(update_payload)}
+                    elif update_kind == "response":
+                        round_stream_info = dict(update_payload)
+                        response = round_stream_info.pop("response", None)
+                if response is None:
+                    raise RuntimeError("model turn completed without a response")
             except Exception as exc:
-                if is_context_length_error(exc):
+                if is_context_length_error(exc) and not round_streamed_to_user:
                     trace.emit(
                         "loop_transition",
                         iteration=iteration,
@@ -2122,17 +2265,27 @@ class AgentOrchestrator:
                         )
                         messages = before_model_call.messages
                         llm_started_at = time.perf_counter()
-                        response = await self.llm_service.generate_with_tools(
-                            task_type="agent_loop",
-                            messages=messages,
-                            tools=tools,
-                            system=progress_system,
-                            project_id=project_id,
-                            max_tokens=agent_prefs.get(
-                                "max_output_tokens",
-                                DEFAULT_LLM_MAX_OUTPUT_TOKENS,
-                            ),
-                        )
+                        response = None
+                        round_stream_info = {
+                            "streamed_raw_text": "",
+                            "streamed_visible_text": "",
+                            "text_delta_count": 0,
+                            "output_item_done_count": 0,
+                            "first_text_delta_ms": None,
+                            "native_stream": False,
+                        }
+                        async for update_kind, update_payload in _model_turn_updates(
+                            messages,
+                            progress_system,
+                        ):
+                            if update_kind == "text_delta":
+                                round_streamed_to_user = True
+                                yield {"type": "text_delta", "content": str(update_payload)}
+                            elif update_kind == "response":
+                                round_stream_info = dict(update_payload)
+                                response = round_stream_info.pop("response", None)
+                        if response is None:
+                            raise RuntimeError("compacted model turn completed without a response")
                         trace.emit(
                             "loop_transition",
                             iteration=iteration,
@@ -2195,6 +2348,8 @@ class AgentOrchestrator:
             llm_response = response_view(response)
             msg_content = llm_response.content
             msg_tool_calls = list(llm_response.tool_calls)
+            streamed_raw_text = str(round_stream_info.get("streamed_raw_text") or "")
+            streamed_visible_text = str(round_stream_info.get("streamed_visible_text") or "")
             usage_snapshot = build_usage_snapshot(
                 response,
                 messages=messages,
@@ -2220,6 +2375,13 @@ class AgentOrchestrator:
                 response_id=llm_response.response_id,
                 api_mode=llm_response.api_mode,
                 model=usage_snapshot.get("model"),
+                native_stream=bool(round_stream_info.get("native_stream")),
+                text_delta_count=int(round_stream_info.get("text_delta_count") or 0),
+                streamed_text_chars=len(str(round_stream_info.get("streamed_raw_text") or "")),
+                output_item_done_count=int(
+                    round_stream_info.get("output_item_done_count") or 0
+                ),
+                first_text_delta_ms=round_stream_info.get("first_text_delta_ms"),
             )
             if not msg_tool_calls and not msg_content:
                 trace.emit(
@@ -2257,6 +2419,26 @@ class AgentOrchestrator:
                 **usage_payload,
             }
 
+            if msg_tool_calls:
+                tool_round_text = _sanitize_user_visible_text(msg_content or streamed_raw_text)
+                if tool_round_text:
+                    if not streamed_visible_text:
+                        yield {"type": "text_delta", "content": tool_round_text}
+                    elif not tool_round_text.startswith(streamed_visible_text):
+                        trace.emit(
+                            "llm_stream_text_mismatch",
+                            iteration=iteration,
+                            transition_reason="tool_round_stream_text_mismatch",
+                            streamed_chars=len(streamed_visible_text),
+                            final_chars=len(tool_round_text),
+                        )
+                    elif len(tool_round_text) > len(streamed_visible_text):
+                        yield {
+                            "type": "text_delta",
+                            "content": tool_round_text[len(streamed_visible_text):],
+                        }
+                    full_response += tool_round_text
+
             # No tool calls → output text, done(but check if audit needed first)
             if not msg_tool_calls:
                 finish_reason = llm_response.finish_reason.strip().lower()
@@ -2279,7 +2461,7 @@ class AgentOrchestrator:
                         retry_count=empty_length_retries,
                     )
                     continue
-                raw_text = msg_content or ""
+                raw_text = msg_content or streamed_raw_text
                 if raw_text and finish_reason in {"length", "max_tokens", "max_output_tokens"}:
                     raw_text = (
                         f"{raw_text}\n\n"
@@ -2297,7 +2479,21 @@ class AgentOrchestrator:
                     raw_text, proposed_plan_markdown = split_proposed_plan_blocks(raw_text)
                 text = _sanitize_user_visible_text(raw_text)
                 if text:
-                    yield {"type": "text_delta", "content": text}
+                    if not streamed_visible_text:
+                        yield {"type": "text_delta", "content": text}
+                    elif not text.startswith(streamed_visible_text):
+                        trace.emit(
+                            "llm_stream_text_mismatch",
+                            iteration=iteration,
+                            transition_reason="final_stream_text_mismatch",
+                            streamed_chars=len(streamed_visible_text),
+                            final_chars=len(text),
+                        )
+                    elif len(text) > len(streamed_visible_text):
+                        yield {
+                            "type": "text_delta",
+                            "content": text[len(streamed_visible_text):],
+                        }
                     full_response += text
                 if proposed_plan_markdown:
                     plan_doc = build_proposed_plan_doc(

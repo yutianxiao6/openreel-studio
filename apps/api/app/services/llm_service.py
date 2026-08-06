@@ -29,8 +29,10 @@ from app.config import settings
 from app.db.session import session_scope
 from app.llm_limits import DEFAULT_LLM_MAX_OUTPUT_TOKENS
 from app.services.llm_responses import (
+    ResponseStreamUpdate,
     prepare_response_input,
     replay_output_items,
+    response_stream_update,
     response_view,
     responses_tools,
     stream_text_delta,
@@ -68,6 +70,15 @@ _CONTEXT_ERROR_MARKERS = (
     "token limit",
 )
 _MAX_OUTPUT_FINISH_REASONS = {"length", "max_tokens", "max_output_tokens"}
+_RETRYABLE_STREAM_ERROR_MARKERS = (
+    "service_unavailable",
+    "upstream_unavailable",
+    "server_overloaded",
+    "rate_limit",
+    "timeout",
+    "temporarily unavailable",
+    "connection",
+)
 
 logger = logging.getLogger(__name__)
 
@@ -602,6 +613,16 @@ def _is_retryable_llm_error(exc: Exception) -> bool:
     return any(marker in name for marker in ("ratelimit", "timeout", "connection", "serviceunavailable"))
 
 
+def _is_retryable_stream_status(response: Any) -> bool:
+    raw_error = (
+        response.get("error")
+        if isinstance(response, dict)
+        else getattr(response, "error", None)
+    )
+    text = json.dumps(raw_error, ensure_ascii=False, default=str).lower()
+    return any(marker in text for marker in _RETRYABLE_STREAM_ERROR_MARKERS)
+
+
 def _content_text(value: Any) -> str:
     if isinstance(value, str):
         return value
@@ -740,6 +761,25 @@ async def _aresponses_with_retries(
                     max_attempts,
                 )
                 response = await litellm.aresponses(**call_kwargs)
+                try:
+                    setattr(response, "_openreel_requested_model", kwargs["model"])
+                    setattr(response, "_openreel_actual_model", model)
+                    setattr(response, "_openreel_fallback_used", model != kwargs["model"])
+                except Exception:
+                    if isinstance(response, dict):
+                        response["_openreel_requested_model"] = kwargs["model"]
+                        response["_openreel_actual_model"] = model
+                        response["_openreel_fallback_used"] = model != kwargs["model"]
+                if hasattr(response, "__aiter__"):
+                    logger.info(
+                        "LLM Responses stream established request_id=%s model=%s attempt=%s/%s elapsed=%.3fs",
+                        request_id,
+                        model,
+                        attempt + 1,
+                        max_attempts,
+                        asyncio.get_running_loop().time() - started_at,
+                    )
+                    return response
                 view = response_view(response)
                 if view.status in {"failed", "cancelled", "queued", "in_progress"}:
                     raw_error = (
@@ -762,15 +802,6 @@ async def _aresponses_with_retries(
                     len(view.tool_calls),
                     bool(view.content.strip()),
                 )
-                try:
-                    setattr(response, "_openreel_requested_model", kwargs["model"])
-                    setattr(response, "_openreel_actual_model", model)
-                    setattr(response, "_openreel_fallback_used", model != kwargs["model"])
-                except Exception:
-                    if isinstance(response, dict):
-                        response["_openreel_requested_model"] = kwargs["model"]
-                        response["_openreel_actual_model"] = model
-                        response["_openreel_fallback_used"] = model != kwargs["model"]
                 return response
             except Exception as exc:
                 last_exc = exc
@@ -1145,6 +1176,169 @@ class LLMService:
             delta = stream_text_delta(event)
             if delta:
                 yield delta
+
+    async def stream_with_tools(
+        self,
+        task_type: str,
+        messages: list[dict],
+        tools: list[dict],
+        system: str | None = None,
+        project_id: str | None = None,
+        node_override: str | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[ResponseStreamUpdate]:
+        """Stream a tool-capable Responses turn as typed lifecycle updates.
+
+        Text deltas may be presented immediately. Durable model actions come
+        from completed output items and the terminal response. A stream ending
+        without a terminal event is an error, matching the Codex turn-loop
+        invariant and preventing partial output from being committed as final.
+        """
+
+        cfg = await _resolve_config(task_type, self.db, node_override)
+        policy = _llm_request_policy(cfg)
+        kwargs = _responses_kwargs(cfg, with_tools=tools, stream=True)
+        _apply_call_max_tokens(cfg, kwargs, max_tokens)
+        input_items, instructions = _build_response_request_for_config(messages, system, cfg)
+        kwargs["input"] = input_items
+        if instructions:
+            kwargs["instructions"] = instructions
+        stream_attempts = policy["max_retries"] + 1
+        for stream_attempt in range(stream_attempts):
+            emitted_text = False
+            retry_error: Exception | None = None
+            try:
+                stream = await _aresponses_with_retries(
+                    kwargs,
+                    fallback_model=cfg.get("fallback_model"),
+                    max_attempts=1,
+                    retry_backoff_seconds=policy["retry_backoff_seconds"],
+                    accept_backend_content=policy["accept_backend_content"],
+                )
+
+                if not hasattr(stream, "__aiter__"):
+                    response = _attach_model_metadata(stream, cfg.get("model_metadata") or {})
+                    yield ResponseStreamUpdate(
+                        kind="terminal",
+                        event_type="response.completed.compat",
+                        response=response,
+                    )
+                    return
+
+                actual_model = str(
+                    getattr(stream, "_openreel_actual_model", "")
+                    or cfg.get("model")
+                    or ""
+                )
+                terminal_seen = False
+                async for raw_event in stream:
+                    update = response_stream_update(raw_event)
+                    if update is None:
+                        continue
+                    if update.kind != "terminal":
+                        emitted_text |= update.kind == "text_delta"
+                        yield update
+                        continue
+
+                    response = update.response
+                    if response is None:
+                        raise LLMResponseStatusError(
+                            f"Responses stream emitted {update.event_type} "
+                            "without a response payload"
+                        )
+                    response = _attach_model_metadata(
+                        response,
+                        cfg.get("model_metadata") or {},
+                    )
+                    try:
+                        setattr(response, "_openreel_requested_model", cfg.get("model"))
+                        setattr(response, "_openreel_actual_model", actual_model)
+                        setattr(
+                            response,
+                            "_openreel_fallback_used",
+                            actual_model != cfg.get("model"),
+                        )
+                    except Exception:
+                        if isinstance(response, dict):
+                            response["_openreel_requested_model"] = cfg.get("model")
+                            response["_openreel_actual_model"] = actual_model
+                            response["_openreel_fallback_used"] = (
+                                actual_model != cfg.get("model")
+                            )
+
+                    view = response_view(response)
+                    failed = (
+                        update.event_type in {"response.failed", "response.cancelled"}
+                        or view.status in {
+                            "failed",
+                            "cancelled",
+                            "queued",
+                            "in_progress",
+                        }
+                    )
+                    if failed:
+                        raw_error = (
+                            response.get("error")
+                            if isinstance(response, dict)
+                            else getattr(response, "error", None)
+                        )
+                        status_error = LLMResponseStatusError(
+                            "Responses stream ended with "
+                            f"status={view.status or update.event_type}: "
+                            f"{raw_error or 'no error details'}"
+                        )
+                        if (
+                            not emitted_text
+                            and stream_attempt < stream_attempts - 1
+                            and _is_retryable_stream_status(response)
+                        ):
+                            retry_error = status_error
+                            break
+                        raise status_error
+
+                    terminal_seen = True
+                    yield ResponseStreamUpdate(
+                        kind="terminal",
+                        event_type=update.event_type,
+                        response=response,
+                    )
+                    return
+
+                if retry_error is None and not terminal_seen:
+                    closed_error = LLMResponseStatusError(
+                        "Responses stream closed before response.completed or "
+                        "response.incomplete"
+                    )
+                    if not emitted_text and stream_attempt < stream_attempts - 1:
+                        retry_error = closed_error
+                    else:
+                        raise closed_error
+            except Exception as exc:
+                if (
+                    not emitted_text
+                    and stream_attempt < stream_attempts - 1
+                    and _is_retryable_llm_error(exc)
+                ):
+                    retry_error = exc
+                else:
+                    raise
+
+            if retry_error is not None:
+                logger.warning(
+                    "LLM Responses stream retrying attempt=%s/%s exception=%s",
+                    stream_attempt + 1,
+                    stream_attempts,
+                    retry_error.__class__.__name__,
+                )
+                await asyncio.sleep(
+                    min(
+                        60.0,
+                        policy["retry_backoff_seconds"] * (2 ** stream_attempt),
+                    )
+                )
+                continue
+
+        raise LLMResponseStatusError("Responses stream retries exhausted")
 
     async def generate_with_tools(
         self,

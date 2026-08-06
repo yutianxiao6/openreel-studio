@@ -120,6 +120,7 @@ def dump_llm_request(
     tools: list[dict],
     user_message: str | None = None,
     prompt_assembly: dict | None = None,
+    stream: bool = False,
 ) -> None:
     if not _truthy_env("DRAMA_PROMPT_DUMP_ENABLED"):
         return
@@ -149,6 +150,7 @@ def dump_llm_request(
             "system_len": len(system or ""),
             "messages_count": len(messages),
             "tools_count": len(tools),
+            "stream": bool(stream),
             "token_estimate": {
                 "system_tokens": _estimate_text_tokens(system or ""),
                 "messages_tokens": _estimate_payload_tokens(response_input),
@@ -180,6 +182,7 @@ def dump_llm_request(
                 "input": response_input,
                 "tools": response_tool_schemas,
                 "store": False,
+                "stream": bool(stream),
             })
         if prompt_assembly is not None:
             record["prompt_assembly"] = _redact(prompt_assembly)

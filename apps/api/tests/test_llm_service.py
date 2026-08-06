@@ -4,6 +4,7 @@ import pytest
 
 from app.services import llm_service
 from app.services.llm_service import LLMOutputTruncatedError, LLMService
+from app.services.llm_responses import response_view
 
 
 def _response(
@@ -738,6 +739,268 @@ async def test_generate_with_tools_sends_native_responses_contract(monkeypatch) 
     assert captured["store"] is False
     assert captured["include"] == ["reasoning.encrypted_content"]
     assert "use_chat_completions_api" not in captured
+
+
+@pytest.mark.asyncio
+async def test_stream_with_tools_yields_typed_deltas_items_and_terminal_response(monkeypatch) -> None:
+    captured: dict = {}
+    final_response = SimpleNamespace(
+        id="resp-stream",
+        model="test/model",
+        status="completed",
+        incomplete_details=None,
+        output=[
+            {
+                "id": "msg-1",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "Hello"}],
+            },
+            {
+                "id": "fc-1",
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "node__get",
+                "arguments": '{"node_id":"7"}',
+            },
+        ],
+        usage=SimpleNamespace(input_tokens=20, output_tokens=8, total_tokens=28),
+    )
+
+    class FakeResponsesStream:
+        def __init__(self):
+            self._events = iter([
+                {"type": "response.created", "response": {"id": "resp-stream"}},
+                {
+                    "type": "response.output_item.added",
+                    "item": {
+                        "id": "msg-1",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": [],
+                    },
+                },
+                {"type": "response.output_text.delta", "item_id": "msg-1", "delta": "Hel"},
+                {"type": "response.output_text.delta", "item_id": "msg-1", "delta": "lo"},
+                {
+                    "type": "response.output_item.done",
+                    "item": final_response.output[0],
+                },
+                {
+                    "type": "response.output_item.added",
+                    "item": {
+                        "id": "fc-1",
+                        "type": "function_call",
+                        "call_id": "call-1",
+                        "name": "node__get",
+                        "arguments": "",
+                    },
+                },
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": "fc-1",
+                    "delta": '{"node_id":"7"}',
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": final_response.output[1],
+                },
+                {"type": "response.completed", "response": final_response},
+            ])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._events)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    async def fake_aresponses(**kwargs):
+        captured.update(kwargs)
+        return FakeResponsesStream()
+
+    monkeypatch.setattr(llm_service, "_resolve_config", _fake_config)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
+
+    updates = [
+        update
+        async for update in LLMService().stream_with_tools(
+            "agent_loop",
+            [{"role": "user", "content": "Read node 7."}],
+            tools=[{
+                "type": "function",
+                "function": {
+                    "name": "node__get",
+                    "description": "Read a node.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }],
+        )
+    ]
+
+    assert captured["stream"] is True
+    assert captured["store"] is False
+    assert captured["tools"][0]["name"] == "node__get"
+    assert [update.delta for update in updates if update.kind == "text_delta"] == ["Hel", "lo"]
+    assert len([update for update in updates if update.kind == "output_item_done"]) == 2
+    terminal = updates[-1]
+    assert terminal.kind == "terminal"
+    assert terminal.response is final_response
+    assert terminal.response._openreel_actual_model == "test/model"
+
+
+@pytest.mark.asyncio
+async def test_stream_with_tools_rejects_stream_closed_before_completed(monkeypatch) -> None:
+    class TruncatedResponsesStream:
+        def __init__(self):
+            self._events = iter([
+                {"type": "response.output_text.delta", "delta": "partial"},
+            ])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._events)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    async def fake_aresponses(**kwargs):
+        return TruncatedResponsesStream()
+
+    monkeypatch.setattr(llm_service, "_resolve_config", _fake_config)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
+
+    with pytest.raises(
+        llm_service.LLMResponseStatusError,
+        match="closed before response.completed",
+    ):
+        async for _ in LLMService().stream_with_tools(
+            "agent_loop",
+            [{"role": "user", "content": "hi"}],
+            tools=[],
+        ):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_stream_with_tools_retries_retryable_terminal_before_text(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    async def fake_config(*args, **kwargs):
+        return {
+            **(await _fake_config()),
+            "provider_params": {"max_retries": 1, "retry_backoff_seconds": 0},
+        }
+
+    class EventStream:
+        def __init__(self, events):
+            self._events = iter(events)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._events)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    async def fake_aresponses(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return EventStream([{
+                "type": "response.failed",
+                "response": {
+                    "id": "resp-failed",
+                    "status": "failed",
+                    "output": [],
+                    "error": {
+                        "type": "service_unavailable",
+                        "code": "upstream_unavailable",
+                    },
+                },
+            }])
+        return EventStream([{
+            "type": "response.completed",
+            "response": _response("recovered"),
+        }])
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
+
+    updates = [
+        update
+        async for update in LLMService().stream_with_tools(
+            "agent_loop",
+            [{"role": "user", "content": "hi"}],
+            tools=[],
+        )
+    ]
+
+    assert calls["count"] == 2
+    assert updates[-1].kind == "terminal"
+    assert response_view(updates[-1].response).content == "recovered"
+
+
+@pytest.mark.asyncio
+async def test_stream_with_tools_does_not_retry_after_text_delta(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    async def fake_config(*args, **kwargs):
+        return {
+            **(await _fake_config()),
+            "provider_params": {"max_retries": 2, "retry_backoff_seconds": 0},
+        }
+
+    class FailedAfterTextStream:
+        def __init__(self):
+            self._events = iter([
+                {"type": "response.output_text.delta", "delta": "visible"},
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "id": "resp-failed-after-text",
+                        "status": "failed",
+                        "output": [],
+                        "error": {"type": "service_unavailable"},
+                    },
+                },
+            ])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._events)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    async def fake_aresponses(**kwargs):
+        calls["count"] += 1
+        return FailedAfterTextStream()
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
+
+    deltas = []
+    with pytest.raises(llm_service.LLMResponseStatusError, match="status=failed"):
+        async for update in LLMService().stream_with_tools(
+            "agent_loop",
+            [{"role": "user", "content": "hi"}],
+            tools=[],
+        ):
+            if update.kind == "text_delta":
+                deltas.append(update.delta)
+
+    assert calls["count"] == 1
+    assert deltas == ["visible"]
 
 
 def test_custom_openai_compatible_base_defaults_to_responses_bridge() -> None:
