@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import json
@@ -29,6 +30,16 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.agent.token_usage import build_usage_snapshot, extract_usage_from_response
+from app.agent.context_compact import (
+    CODEX_COMPACTION_PROMPT,
+    codex_local_compacted_history,
+    compaction_threshold,
+    count_input_images,
+    ensure_latest_user_message,
+    remove_oldest_compaction_unit,
+    sanitize_remote_compaction_items,
+    trim_function_outputs_for_compaction,
+)
 from app.config import settings
 from app.db.session import session_scope
 from app.llm_limits import DEFAULT_LLM_MAX_OUTPUT_TOKENS
@@ -47,7 +58,6 @@ from app.services.llm_responses import (
 _TASK_DEFAULTS = {
     "agent_loop": "DEFAULT_FAST_MODEL",
     "agent_review": "DEFAULT_REVIEW_MODEL",
-    "agent_compact": "DEFAULT_FAST_MODEL",
     "agent_aux": "DEFAULT_FAST_MODEL",
     "script_review": "DEFAULT_REVIEW_MODEL",
     "subagent_node_producer": "DEFAULT_TEXT_MODEL",
@@ -56,7 +66,6 @@ _TASK_DEFAULTS = {
 }
 _TASK_CONFIG_FALLBACKS = {
     "agent_review": "agent_loop",
-    "agent_compact": "agent_loop",
     "subagent_node_producer": "agent_loop",
     "subagent_image_editor": "agent_loop",
     "subagent_workflow_spec": "agent_loop",
@@ -214,6 +223,11 @@ def _llm_request_policy(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         and (not api_host or api_host == "api.openai.com")
         and not default_chat_bridge
     )
+    default_responses_compact = bool(
+        (model.startswith("openai/") or model.startswith("gpt-"))
+        and (not api_host or api_host == "api.openai.com")
+        and not default_chat_bridge
+    )
     return {
         # max_retries means retries after the first OpenReel attempt.
         "max_retries": _policy_int(
@@ -265,6 +279,12 @@ def _llm_request_policy(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "supports_responses_websocket": _policy_bool(
             params.get("supports_responses_websocket", default_responses_websocket),
             default_responses_websocket,
+        ),
+        # The public /responses/compact endpoint is provider-specific. Official
+        # OpenAI endpoints default on; custom native relays can opt in.
+        "supports_responses_compact": _policy_bool(
+            params.get("supports_responses_compact", default_responses_compact),
+            default_responses_compact,
         ),
     }
 
@@ -1288,11 +1308,243 @@ def _apply_call_max_tokens(cfg: dict[str, Any], kwargs: dict[str, Any], max_toke
     kwargs["max_output_tokens"] = requested
 
 
+async def _native_responses_compact_request(
+    cfg: dict[str, Any],
+    *,
+    input_items: list[dict[str, Any]],
+    instructions: str | None,
+    tools: list[dict[str, Any]] | None,
+    prompt_cache_key: str | None,
+) -> Any:
+    """Call the official standalone Responses compaction endpoint."""
+
+    from openai import AsyncOpenAI
+
+    api_key = _resolve_key_reference(str(cfg.get("api_key") or ""))
+    if not api_key:
+        raise LLMConfigurationError("Responses compaction requires a configured API key")
+    policy = _llm_request_policy(cfg)
+    client_kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "timeout": policy["request_timeout_seconds"],
+        "max_retries": policy["sdk_max_retries"],
+    }
+    if cfg.get("api_base"):
+        client_kwargs["base_url"] = str(cfg["api_base"])
+    client = AsyncOpenAI(**client_kwargs)
+    request: dict[str, Any] = {
+        "model": _responses_websocket_model(str(cfg.get("model") or "")),
+        "input": input_items,
+    }
+    if instructions:
+        request["instructions"] = instructions
+    if tools:
+        # The current public SDK types expose the core compact fields only,
+        # while Codex's compact request also carries the active Responses tool
+        # schemas. ``extra_body`` preserves that wire contract until the SDK
+        # grows first-class parameters for these fields.
+        request["extra_body"] = {
+            "tools": responses_tools(tools),
+            "parallel_tool_calls": True,
+        }
+    if prompt_cache_key:
+        request["prompt_cache_key"] = prompt_cache_key
+    try:
+        return await client.responses.compact(**request)
+    finally:
+        await client.close()
+
+
 class LLMService:
     """Class form used by the orchestrator (needs db handle for model config)."""
 
     def __init__(self, db: AsyncSession | None = None):
         self.db = db
+
+    async def get_compaction_policy(
+        self,
+        task_type: str = "agent_loop",
+        node_override: str | None = None,
+    ) -> dict[str, Any]:
+        cfg = await _resolve_config(task_type, self.db, node_override)
+        metadata = cfg.get("model_metadata") if isinstance(cfg.get("model_metadata"), dict) else {}
+        params = _provider_params(cfg)
+        threshold = compaction_threshold(
+            context_window_tokens=metadata.get("context_window_tokens"),
+            max_input_tokens=metadata.get("max_input_tokens"),
+            explicit_limit=(
+                params.get("auto_compact_token_limit")
+                or params.get("auto_compact_token_limit_tokens")
+            ),
+        )
+        policy = _llm_request_policy(cfg)
+        return {
+            "threshold_tokens": threshold,
+            "context_window_tokens": metadata.get("context_window_tokens"),
+            "max_input_tokens": metadata.get("max_input_tokens"),
+            "model": cfg.get("model"),
+            "supports_responses_compact": bool(
+                policy["supports_responses_compact"]
+                and not policy["use_chat_completions_api"]
+            ),
+        }
+
+    async def compact_conversation(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        system: str | None,
+        tools: list[dict[str, Any]] | None = None,
+        project_id: str | None,
+        task_type: str = "agent_loop",
+        node_override: str | None = None,
+    ) -> dict[str, Any]:
+        """Return a canonical Codex-style context checkpoint.
+
+        Native OpenAI providers use ``/responses/compact``. Other providers,
+        and native endpoint failures, fall back to Codex's local checkpoint
+        prompt and recent-real-user-message reconstruction.
+        """
+
+        cfg = await _resolve_config(task_type, self.db, node_override)
+        policy = _llm_request_policy(cfg)
+        metadata = cfg.get("model_metadata") if isinstance(cfg.get("model_metadata"), dict) else {}
+        compact_input_messages, trimmed_tool_outputs, trimmed_tool_output_tokens = (
+            trim_function_outputs_for_compaction(
+                messages,
+                max_input_tokens=(
+                    metadata.get("max_input_tokens")
+                    or metadata.get("context_window_tokens")
+                ),
+                system=system,
+            )
+        )
+        input_items, instructions = _build_response_request_for_config(
+            compact_input_messages,
+            system,
+            cfg,
+        )
+        cache_key = _prompt_cache_key(
+            cfg,
+            project_id=project_id,
+            task_type=task_type,
+        )
+        remote_error = ""
+        if policy["supports_responses_compact"] and not policy["use_chat_completions_api"]:
+            try:
+                response = await _native_responses_compact_request(
+                    cfg,
+                    input_items=input_items,
+                    instructions=instructions,
+                    tools=tools,
+                    prompt_cache_key=cache_key,
+                )
+                output_items = sanitize_remote_compaction_items(
+                    response_output_items(response)
+                )
+                if not output_items or not any(
+                    item.get("type") == "compaction" for item in output_items
+                ):
+                    raise LLMResponseStatusError(
+                        "Responses compact returned no canonical compaction item"
+                    )
+                output_items = ensure_latest_user_message(output_items, messages)
+                usage = build_usage_snapshot(
+                    response,
+                    messages=input_items,
+                    system=instructions,
+                    model=str(cfg.get("model") or ""),
+                    model_metadata=cfg.get("model_metadata") or {},
+                )
+                return {
+                    "items": output_items,
+                    "implementation": "responses_compact",
+                    "usage": usage,
+                    "model": usage.get("model") or cfg.get("model"),
+                    "response_id": str(getattr(response, "id", "") or ""),
+                    "summary": "",
+                    "remote_error": "",
+                    "retained_images": count_input_images(output_items),
+                    "trimmed_tool_outputs": trimmed_tool_outputs,
+                    "trimmed_tool_output_tokens": trimmed_tool_output_tokens,
+                }
+            except Exception as exc:
+                remote_error = exc.__class__.__name__
+                logger.warning(
+                    "native Responses compaction failed; using local fallback: %s",
+                    exc.__class__.__name__,
+                )
+
+        working = [
+            deepcopy(message)
+            for message in compact_input_messages
+            if isinstance(message, dict)
+        ]
+        while True:
+            compact_messages = [
+                *working,
+                {"role": "user", "content": CODEX_COMPACTION_PROMPT},
+            ]
+            kwargs = _responses_kwargs(
+                cfg,
+                with_tools=tools,
+                prompt_cache_key=cache_key,
+            )
+            local_input, local_instructions = _build_response_request_for_config(
+                compact_messages,
+                system,
+                cfg,
+            )
+            kwargs["input"] = local_input
+            if local_instructions:
+                kwargs["instructions"] = local_instructions
+            try:
+                response = await _aresponses_with_retries(
+                    kwargs,
+                    fallback_model=cfg.get("fallback_model"),
+                    max_attempts=policy["max_retries"] + 1,
+                    retry_backoff_seconds=policy["retry_backoff_seconds"],
+                    accept_backend_content=policy["accept_backend_content"],
+                )
+                summary = _response_content(response).strip()
+                if not summary:
+                    raise LLMResponseStatusError("local compaction returned an empty summary")
+                usage = build_usage_snapshot(
+                    response,
+                    messages=local_input,
+                    system=local_instructions,
+                    model=str(cfg.get("model") or ""),
+                    model_metadata=cfg.get("model_metadata") or {},
+                )
+                output_items = codex_local_compacted_history(messages, summary)
+                return {
+                    "items": output_items,
+                    "implementation": "local_compact",
+                    "usage": usage,
+                    "model": usage.get("model") or cfg.get("model"),
+                    "response_id": str(
+                        getattr(response, "id", "")
+                        or (response.get("id") if isinstance(response, dict) else "")
+                        or ""
+                    ),
+                    "summary": summary,
+                    "remote_error": remote_error,
+                    "retained_images": count_input_images(output_items),
+                    "trimmed_tool_outputs": trimmed_tool_outputs,
+                    "trimmed_tool_output_tokens": trimmed_tool_output_tokens,
+                }
+            except Exception as exc:
+                if not is_context_length_error(exc):
+                    raise
+                reduced = remove_oldest_compaction_unit(working)
+                if not reduced and len(working) == 1:
+                    reduced = codex_local_compacted_history(
+                        working,
+                        "",
+                    )[:-1]
+                if not reduced or reduced == working:
+                    raise
+                working = reduced
 
     async def generate(
         self,

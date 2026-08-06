@@ -1,8 +1,8 @@
 """Memory tools — three layers of memory for the Agent.
 
-1. Short-term: active unarchived chat history until context compaction is needed.
-     Compaction replaces old transcript with a background summary plus a
-     token-budgeted concrete tail; it does not use a sliding message window.
+1. Short-term: model-visible chat history until context compaction is needed.
+     Compaction installs a typed Codex-style checkpoint. Replaced chat rows
+     remain visible in the UI but no longer enter later model requests.
 2. Project memory: durable facts scoped to one project
      - storage: state.memory.facts (list of {id, kind, content, created_at})
      - tools:   memory.save_fact / recall / forget / summarize_conversation
@@ -186,26 +186,16 @@ async def memory_summarize_conversation(
 
 async def memory_compact_context(
     project_id: str,
-    target_tail_tokens: int | None = None,
 ) -> dict:
-    """Persist a compacted background summary and archive replaced messages."""
-    from app.agent.context_compact import (
-        PRESERVED_TAIL_TOKEN_BUDGET,
-        TOKEN_THRESHOLD,
-        build_compact_summary_prompt,
-        compact_preserved_tail,
-        compacted_context_message,
-        estimate_tokens,
-        save_transcript,
-    )
-    from app.agent.rollout_context import persisted_rollout_tokens
+    """Persist a Codex-style model-context checkpoint."""
+    from app.agent.compaction_store import persist_compaction_checkpoint
+    from app.agent.collaboration_mode import current_collaboration_mode
+    from app.agent.context_compact import estimate_tokens, save_transcript
+    from app.agent.prompt_assembler import PromptContext, derive_status_flags, select_tool_profile
+    from app.agent.rollout_context import rollout_context_messages
+    from app.mcp_tools.registry import registry
     from app.services.llm_service import LLMService
 
-    try:
-        tail_token_budget = int(target_tail_tokens or PRESERVED_TAIL_TOKEN_BUDGET)
-    except (TypeError, ValueError):
-        tail_token_budget = PRESERVED_TAIL_TOKEN_BUDGET
-    tail_token_budget = max(0, min(tail_token_budget, 50000))
     async with session_scope() as session:
         result = await session.exec(
             select(Message)
@@ -213,125 +203,82 @@ async def memory_compact_context(
             .order_by(Message.created_at)
         )
         active = list(result.all())
-
-    payload = []
-    active_tokens = 0
-    for m in active:
-        if m.role not in ("user", "assistant", "developer"):
-            continue
-        metadata = _message_metadata(m)
-        if not _message_model_visible(metadata):
-            continue
-        message_entry = {
-            "role": m.role,
-            "content": m.content,
-            "_message_id": m.id,
-            "_metadata": metadata,
-        }
-        payload.append(message_entry)
-        rollout_tokens = (
-            persisted_rollout_tokens(getattr(m, "model_context_json", None))
-            if m.role == "assistant"
-            else 0
-        )
-        active_tokens += rollout_tokens or estimate_tokens([message_entry])
-    if active_tokens <= TOKEN_THRESHOLD:
-        return {
-            "archived": 0,
-            "active": len(active),
-            "active_tokens": active_tokens,
-            "transcript": None,
-            "facts": [],
-            "summary_inserted": False,
-            "reason": "below_token_threshold",
-        }
-
-    transcript = save_transcript(payload, project_id)
-    facts_result = {"facts": []}
-    fact_error = None
-    if payload:
-        try:
-            facts_result = await memory_summarize_conversation(project_id, payload)
-        except Exception as exc:
-            fact_error = str(exc)
-
-    summary_prompt = build_compact_summary_prompt(payload)
-    async with session_scope() as session:
-        svc = LLMService(session)
-        summary_result = await svc.generate(
-            task_type="agent_loop",
-            messages=[{"role": "user", "content": summary_prompt}],
-            system="You are a conversation summarizer. Be concise.",
-            project_id=project_id,
-        )
-    summary_text = str(summary_result.get("content") or "").strip()
-    if not summary_text:
-        summary_text = "历史上下文已压缩；继续前请以项目状态、任务和节点工具为准。"
-
-    preserved_tail = compact_preserved_tail(
-        payload,
-        token_budget=tail_token_budget,
-    )
-    preserved_ids = {
-        str(message.get("_message_id")) for message in preserved_tail if message.get("_message_id")
-    }
-    compacted_messages = [compacted_context_message(summary_text)]
-    for message in preserved_tail:
-        compacted_messages.append(
-            {
-                "role": str(message.get("role") or ""),
-                "content": str(message.get("content") or ""),
-                "_metadata": message.get("_metadata")
-                if isinstance(message.get("_metadata"), dict)
-                else {},
-            }
-        )
-
-    async with session_scope() as session:
-        archived_count = 0
+        payload: list[dict] = []
         for message in active:
-            row = await session.get(Message, message.id)
-            if row is not None:
-                row.archived = True
-                session.add(row)
-                archived_count += 1
-        for message in compacted_messages:
-            role = str(message.get("role") or "")
-            content = str(message.get("content") or "")
-            if role not in {"user", "assistant", "developer"} or not content:
+            if message.role not in ("user", "assistant", "developer"):
                 continue
-            metadata = (
-                dict(message.get("_metadata") or {})
-                if isinstance(message.get("_metadata"), dict)
-                else {}
-            )
-            metadata["kind"] = (
-                "compacted_context" if "<compacted_context" in content else "compacted_tail"
-            )
-            metadata["source"] = "memory.compact_context"
-            metadata["transcript"] = str(transcript)
-            session.add(
-                Message(
-                    project_id=project_id,
-                    role=role,
-                    content=content,
-                    metadata_json=json.dumps(metadata, ensure_ascii=False),
-                )
-            )
-        await session.commit()
+            metadata = _message_metadata(message)
+            if not _message_model_visible(metadata):
+                continue
+            model_context = rollout_context_messages(
+                getattr(message, "model_context_json", None),
+                fallback_assistant_text=(
+                    str(message.content or "") if message.role == "assistant" else ""
+                ),
+            ) if getattr(message, "model_context_json", None) else [
+                {"role": message.role, "content": message.content}
+            ]
+            for item in model_context:
+                payload.append(dict(item))
+        if not payload:
+            return {
+                "checkpoint_inserted": False,
+                "reason": "no_model_visible_history",
+                "active": len(active),
+            }
+
+        project = await session.get(Project, project_id)
+        state = json.loads(project.state_json or "{}") if project else {}
+        prompt_context = PromptContext(
+            project_id=project_id,
+            state=state,
+            collaboration_mode=current_collaboration_mode(state),
+            **derive_status_flags(state),
+        )
+        tools = registry.get_tools_for_agent_loop(
+            profile=select_tool_profile(prompt_context),
+        )
+
+        active_tokens = estimate_tokens(payload)
+        transcript = save_transcript(payload, project_id)
+        svc = LLMService(session)
+        compact_result = await svc.compact_conversation(
+            messages=payload,
+            system=None,
+            tools=tools,
+            project_id=project_id,
+            task_type="agent_loop",
+        )
+        items = [
+            dict(item)
+            for item in compact_result.get("items") or []
+            if isinstance(item, dict)
+        ]
+        persisted = await persist_compaction_checkpoint(
+            session,
+            project_id=project_id,
+            items=items,
+            source="memory.compact_context",
+            trigger="manual",
+            reason="user_requested",
+            phase="standalone",
+            implementation=str(compact_result.get("implementation") or "unknown"),
+            model=str(compact_result.get("model") or "") or None,
+            transcript_path=str(transcript),
+        )
 
     return {
-        "archived": archived_count,
-        "active": len(compacted_messages),
+        "checkpoint_inserted": True,
+        **persisted,
         "active_tokens_before": active_tokens,
-        "summary_inserted": True,
-        "preserved_tail_messages": len(preserved_tail),
-        "preserved_tail_tokens": estimate_tokens(preserved_tail),
-        "preserved_message_ids": sorted(preserved_ids),
+        "estimated_tokens_after": estimate_tokens(items),
+        "implementation": compact_result.get("implementation"),
+        "reason": "user_requested",
+        "phase": "standalone",
+        "retained_images": compact_result.get("retained_images", 0),
+        "remote_fallback_error": compact_result.get("remote_error") or None,
         "transcript": str(transcript),
-        "facts": facts_result.get("facts", []),
-        "fact_error": fact_error,
-        "summary_usage": summary_result.get("usage") if isinstance(summary_result, dict) else None,
+        "usage": compact_result.get("usage"),
     }
 
 

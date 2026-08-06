@@ -827,13 +827,23 @@ function buildTraceTimeline(events: Array<Record<string, unknown>>): TraceTimeli
 
   const compact = events.find((event) => event.event === "compact_boundary")
   if (compact) {
+    const before = asText(compact.estimated_tokens_before)
+    const after = asText(compact.estimated_tokens_after)
+    const implementation = asText(compact.implementation)
+    const phase = asText(compact.phase)
+    const retainedImages = asText(compact.retained_images)
+    const trimmedOutputs = asText(compact.trimmed_tool_outputs)
     out.push({
       kind: "compact",
       label: "Compact",
       badge: asText(compact.compact_kind) || undefined,
-      detail: asText(compact.estimated_tokens_before)
-        ? `${asText(compact.estimated_tokens_before)} tokens before`
-        : "context compacted",
+      detail: [
+        implementation,
+        phase,
+        before ? `${before} → ${after || "?"} tokens` : "",
+        retainedImages && retainedImages !== "0" ? `${retainedImages} images` : "",
+        trimmedOutputs && trimmedOutputs !== "0" ? `${trimmedOutputs} tool outputs trimmed` : "",
+      ].filter(Boolean).join(" · ") || "context compacted",
       tone: "amber",
     })
   }

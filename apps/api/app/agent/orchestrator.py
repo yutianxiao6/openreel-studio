@@ -66,11 +66,10 @@ from app.agent.context_compact import (
     TOKEN_THRESHOLD,
     auto_compact_needed,
     estimate_tokens,
+    estimate_request_tokens,
     save_transcript,
-    build_compact_summary_prompt,
-    compact_messages,
-    compact_preserved_tail,
 )
+from app.agent.compaction_store import persist_compaction_checkpoint
 from app.agent.model_context.artifact_store import list_run_tool_result_artifacts
 from app.agent.model_context.types import coerce_tool_output
 from app.agent.tool_errors import normalize_tool_result
@@ -83,6 +82,7 @@ from app.agent.tool_output import (
 )
 from app.agent.lifecycle_hooks import (
     PermissionDenialState,
+    install_history_instructions_after_compaction,
     prepend_history_instructions,
     run_before_model_call,
     run_pre_tool_use,
@@ -95,7 +95,6 @@ from app.agent.permission_policy import (
 )
 from app.agent.rollout_context import (
     encode_persisted_rollout,
-    persisted_rollout_tokens,
     rollout_context_messages,
 )
 from app.agent.tool_execution import (
@@ -1860,6 +1859,26 @@ class AgentOrchestrator:
             prompt_assembly=prompt_assembly_diag,
         )
 
+        try:
+            compaction_policy = await self.llm_service.get_compaction_policy(
+                task_type="agent_loop",
+            )
+        except Exception as exc:
+            logger.warning("failed to resolve model compaction policy: %s", exc)
+            compaction_policy = {
+                "threshold_tokens": TOKEN_THRESHOLD,
+                "context_window_tokens": None,
+                "max_input_tokens": None,
+                "model": None,
+                "supports_responses_compact": False,
+            }
+        trace.emit(
+            "compaction_policy",
+            iteration=0,
+            transition_reason="compaction_policy_resolved",
+            **compaction_policy,
+        )
+
         full_response = pre_loop_assistant_text
         _pending_meta: dict = {}  # accumulate plan/nodes data during loop → save with assistant msg
         tool_vision_contexts: list[dict[str, Any]] = []
@@ -1881,6 +1900,150 @@ class AgentOrchestrator:
             "max_output_tokens",
             DEFAULT_LLM_MAX_OUTPUT_TOKENS,
         )
+
+        async def _compact_current_context(
+            *,
+            compact_kind: str,
+            iteration: int,
+        ) -> dict[str, Any]:
+            compact_tokens_before = estimate_request_tokens(
+                messages,
+                system=system,
+                tools=tools,
+            )
+            transcript_path = save_transcript(messages, project_id)
+            tool_result_artifacts = list_run_tool_result_artifacts(
+                project_id=project_id,
+                run_id=run_id,
+            )
+            trace.emit(
+                "loop_transition",
+                iteration=iteration,
+                transition_reason=f"{compact_kind}_compact_started",
+                estimated_tokens_before=compact_tokens_before,
+                threshold_tokens=compaction_policy.get("threshold_tokens"),
+                transcript_path=str(transcript_path),
+            )
+            compact_result = await self.llm_service.compact_conversation(
+                messages=messages,
+                system=system,
+                tools=tools,
+                project_id=project_id,
+                task_type="agent_loop",
+            )
+            compacted_items = [
+                dict(item)
+                for item in compact_result.get("items") or []
+                if isinstance(item, dict)
+            ]
+            if not compacted_items:
+                raise RuntimeError("compaction produced no canonical input items")
+            vision_payloads = [
+                payload
+                for payload in [user_vision_metadata, *tool_vision_contexts]
+                if isinstance(payload, dict)
+            ]
+            compact_phase = (
+                "pre_turn"
+                if compact_kind == "auto" and iteration == 0
+                else "mid_turn"
+            )
+            persisted = await persist_compaction_checkpoint(
+                self.db,
+                project_id=project_id,
+                items=compacted_items,
+                source="agent_loop",
+                trigger=compact_kind,
+                reason="context_limit",
+                phase=compact_phase,
+                implementation=str(compact_result.get("implementation") or "unknown"),
+                model=str(compact_result.get("model") or "") or None,
+                transcript_path=str(transcript_path),
+                extra_vision_payloads=vision_payloads,
+                max_images=configured_max_images(
+                    agent_prefs.get("vision_context_max_images")
+                ),
+            )
+            turn_rollout_items.clear()
+            estimated_tokens_after = estimate_request_tokens(
+                compacted_items,
+                system=system,
+                tools=tools,
+            )
+            boundary = {
+                "compact_kind": compact_kind,
+                "implementation": compact_result.get("implementation"),
+                "reason": "context_limit",
+                "phase": compact_phase,
+                "estimated_tokens_before": compact_tokens_before,
+                "estimated_tokens_after": estimated_tokens_after,
+                "threshold_tokens": compaction_policy.get("threshold_tokens"),
+                "transcript_path": str(transcript_path),
+                "compacted_message_count": len(compacted_items),
+                "retained_images": compact_result.get("retained_images", 0),
+                "trimmed_tool_outputs": compact_result.get("trimmed_tool_outputs", 0),
+                "trimmed_tool_output_tokens": compact_result.get(
+                    "trimmed_tool_output_tokens",
+                    0,
+                ),
+                "remote_fallback_error": compact_result.get("remote_error") or None,
+                "tool_result_files": tool_result_artifacts,
+                **persisted,
+            }
+            trace.emit(
+                "compact_boundary",
+                iteration=iteration,
+                transition_reason=f"{compact_kind}_compact_completed",
+                **boundary,
+            )
+            return {
+                **compact_result,
+                "items": compacted_items,
+                "boundary": boundary,
+            }
+
+        async def _apply_compaction_usage(
+            compact_result: dict[str, Any],
+            *,
+            compact_kind: str,
+            iteration: int,
+        ) -> dict[str, Any] | None:
+            nonlocal run_token_totals, session_token_totals
+            usage = compact_result.get("usage")
+            usage_payload: dict[str, Any] | None = None
+            if isinstance(usage, dict):
+                run_token_totals = accumulate_usage(
+                    run_token_totals,
+                    usage,
+                    track_context_peak=False,
+                )
+                session_token_totals = accumulate_usage(
+                    session_token_totals,
+                    usage,
+                    track_context_peak=False,
+                )
+                usage_payload = build_usage_monitor_payload(
+                    usage,
+                    run_token_totals,
+                    session_token_totals,
+                )
+                trace.emit(
+                    "llm_usage",
+                    iteration=iteration,
+                    transition_reason=f"{compact_kind}_compact_usage",
+                    **usage_payload,
+                )
+            run_token_totals = reset_context_peak_usage(run_token_totals)
+            session_token_totals = reset_context_peak_usage(session_token_totals)
+            state["agent_token_usage"] = session_token_totals
+            try:
+                await self.project_service.update_project_state(
+                    project_id,
+                    {"agent_token_usage": session_token_totals},
+                )
+            except Exception:
+                logger.exception("failed to persist compact token usage")
+            return usage_payload
 
         async def _model_turn_updates(
             call_messages: list[dict[str, Any]],
@@ -2028,71 +2191,33 @@ class AgentOrchestrator:
                     limit=model_budget.limit,
                 )
                 break
-            # Context compression
-            if auto_compact_needed(messages):
-                compact_tokens_before = estimate_tokens(messages)
-                transcript_path = save_transcript(messages, project_id)
-                tool_result_artifacts = list_run_tool_result_artifacts(
-                    project_id=project_id,
-                    run_id=run_id,
-                )
-                trace.emit(
-                    "loop_transition",
-                    iteration=iteration,
-                    transition_reason="auto_compact_started",
-                    estimated_tokens_before=compact_tokens_before,
-                    transcript_path=str(transcript_path),
-                )
-                # P0-② 压缩前先抽 fact 落库,避免细节丢失
+            keep_compaction_last = False
+            # Codex compacts before a model call at 90% of the active model's
+            # context window. Disabling automatic compaction still leaves the
+            # reactive context-length recovery path below.
+            if agent_prefs["auto_archive"] and auto_compact_needed(
+                messages,
+                threshold=int(compaction_policy.get("threshold_tokens") or TOKEN_THRESHOLD),
+                system=system,
+                tools=tools,
+            ):
                 try:
-                    from app.mcp_tools.memory_tools import memory_summarize_conversation
-                    await memory_summarize_conversation(project_id, messages[-30:])
-                except Exception:
-                    logger.exception("pre-compact fact extraction failed")
-
-                summary_prompt = build_compact_summary_prompt(messages)
-                preserved_tail = compact_preserved_tail(
-                    messages,
-                    exclude_latest_user_content=message,
-                )
-                try:
-                    summary_result = await self.llm_service.generate(
-                        task_type="agent_compact",
-                        messages=[{"role": "user", "content": summary_prompt}],
-                        system="You are a conversation summarizer. Be concise.",
-                        project_id=project_id,
+                    compact_result = await _compact_current_context(
+                        compact_kind="auto",
+                        iteration=iteration,
                     )
-                    summary_usage = summary_result.get("usage")
-                    if isinstance(summary_usage, dict):
-                        run_token_totals = accumulate_usage(
-                            run_token_totals,
-                            summary_usage,
-                            track_context_peak=False,
-                        )
-                        session_token_totals = accumulate_usage(
-                            session_token_totals,
-                            summary_usage,
-                            track_context_peak=False,
-                        )
-                        usage_payload = build_usage_monitor_payload(
-                            summary_usage,
-                            run_token_totals,
-                            session_token_totals,
-                        )
-                        trace.emit(
-                            "llm_usage",
-                            iteration=iteration,
-                            transition_reason="auto_compact_usage",
-                            **usage_payload,
-                        )
-                        state["agent_token_usage"] = session_token_totals
-                        try:
-                            await self.project_service.update_project_state(
-                                project_id,
-                                {"agent_token_usage": session_token_totals},
-                            )
-                        except Exception:
-                            logger.exception("failed to persist auto compact token usage")
+                    messages = install_history_instructions_after_compaction(
+                        compact_result["items"],
+                        history_inject,
+                        mid_turn=iteration > 0,
+                    )
+                    keep_compaction_last = iteration > 0
+                    usage_payload = await _apply_compaction_usage(
+                        compact_result,
+                        compact_kind="auto",
+                        iteration=iteration,
+                    )
+                    if usage_payload:
                         yield {
                             "type": "token_usage",
                             "project_id": project_id,
@@ -2101,47 +2226,20 @@ class AgentOrchestrator:
                             "phase": "auto_compact",
                             **usage_payload,
                         }
-                    messages[:] = compact_messages(
-                        summary_result.get("content", ""),
-                        preserved_tail=preserved_tail,
-                    )
-                    run_token_totals = reset_context_peak_usage(run_token_totals)
-                    session_token_totals = reset_context_peak_usage(session_token_totals)
-                    state["agent_token_usage"] = session_token_totals
-                    try:
-                        await self.project_service.update_project_state(
-                            project_id,
-                            {"agent_token_usage": session_token_totals},
-                        )
-                    except Exception:
-                        logger.exception("failed to persist auto compact context peak reset")
-                    messages = prepend_history_instructions(messages, history_inject)
-                    messages.append({"role": "user", "content": message})
-                    apply_vision_context_to_latest_user(messages, message, vision_context)
                     trace.emit(
                         "loop_transition",
                         iteration=iteration,
                         transition_reason="auto_compact_completed",
                         compacted_message_count=len(messages),
-                        preserved_tail_count=len(preserved_tail),
+                        implementation=compact_result.get("implementation"),
                     )
-                    trace.emit(
-                        "compact_boundary",
-                        iteration=iteration,
-                        transition_reason="auto_compact_completed",
-                        compact_kind="auto",
-                        estimated_tokens_before=compact_tokens_before,
-                        transcript_path=str(transcript_path),
-                        compacted_message_count=len(messages),
-                        preserved_tail_count=len(preserved_tail),
-                        tool_result_files=tool_result_artifacts,
-                    )
-                except Exception:
+                except Exception as exc:
+                    logger.exception("automatic context compaction failed")
                     trace.emit(
                         "loop_transition",
                         iteration=iteration,
                         transition_reason="auto_compact_failed",
-                        error_kind="auto_compact_failed",
+                        error_kind=exc.__class__.__name__,
                     )
 
             # P1-④ 周期抽取:每 EXTRACT_EVERY 步把最近对话抽成 fact(后台跑不阻塞)
@@ -2168,6 +2266,7 @@ class AgentOrchestrator:
                 skills_context=skills_context,
                 skill_instructions=skill_instructions,
                 skill_warnings=skill_warnings,
+                keep_compaction_last=keep_compaction_last,
             )
             messages = before_model_call.messages
 
@@ -2230,66 +2329,26 @@ class AgentOrchestrator:
                     trace.emit(
                         "loop_transition",
                         iteration=iteration,
-                        transition_reason="reactive_compact_started",
+                        transition_reason="reactive_compact_triggered_by_context_error",
                         duration_ms=elapsed_ms(llm_started_at),
                         error_kind=exc.__class__.__name__,
                     )
                     try:
-                        compact_tokens_before = estimate_tokens(messages)
-                        transcript_path = save_transcript(messages, project_id)
-                        tool_result_artifacts = list_run_tool_result_artifacts(
-                            project_id=project_id,
-                            run_id=run_id,
-                        )
-                        trace.emit(
-                            "loop_transition",
+                        compact_result = await _compact_current_context(
+                            compact_kind="reactive",
                             iteration=iteration,
-                            transition_reason="reactive_compact_transcript_saved",
-                            estimated_tokens_before=compact_tokens_before,
-                            transcript_path=str(transcript_path),
                         )
-                        summary_prompt = build_compact_summary_prompt(messages)
-                        preserved_tail = compact_preserved_tail(
-                            messages,
-                            exclude_latest_user_content=message,
+                        messages = install_history_instructions_after_compaction(
+                            compact_result["items"],
+                            history_inject,
+                            mid_turn=True,
                         )
-                        summary_result = await self.llm_service.generate(
-                            task_type="agent_compact",
-                            messages=[{"role": "user", "content": summary_prompt}],
-                            system="You are a conversation summarizer. Be concise.",
-                            project_id=project_id,
+                        usage_payload = await _apply_compaction_usage(
+                            compact_result,
+                            compact_kind="reactive",
+                            iteration=iteration,
                         )
-                        summary_usage = summary_result.get("usage")
-                        if isinstance(summary_usage, dict):
-                            run_token_totals = accumulate_usage(
-                                run_token_totals,
-                                summary_usage,
-                                track_context_peak=False,
-                            )
-                            session_token_totals = accumulate_usage(
-                                session_token_totals,
-                                summary_usage,
-                                track_context_peak=False,
-                            )
-                            usage_payload = build_usage_monitor_payload(
-                                summary_usage,
-                                run_token_totals,
-                                session_token_totals,
-                            )
-                            trace.emit(
-                                "llm_usage",
-                                iteration=iteration,
-                                transition_reason="reactive_compact_usage",
-                                **usage_payload,
-                            )
-                            state["agent_token_usage"] = session_token_totals
-                            try:
-                                await self.project_service.update_project_state(
-                                    project_id,
-                                    {"agent_token_usage": session_token_totals},
-                                )
-                            except Exception:
-                                logger.exception("failed to persist reactive compact token usage")
+                        if usage_payload:
                             yield {
                                 "type": "token_usage",
                                 "project_id": project_id,
@@ -2298,23 +2357,6 @@ class AgentOrchestrator:
                                 "phase": "reactive_compact",
                                 **usage_payload,
                             }
-                        messages[:] = compact_messages(
-                            summary_result.get("content", ""),
-                            preserved_tail=preserved_tail,
-                        )
-                        run_token_totals = reset_context_peak_usage(run_token_totals)
-                        session_token_totals = reset_context_peak_usage(session_token_totals)
-                        state["agent_token_usage"] = session_token_totals
-                        try:
-                            await self.project_service.update_project_state(
-                                project_id,
-                                {"agent_token_usage": session_token_totals},
-                            )
-                        except Exception:
-                            logger.exception("failed to persist reactive compact context peak reset")
-                        messages = prepend_history_instructions(messages, history_inject)
-                        messages.append({"role": "user", "content": message})
-                        apply_vision_context_to_latest_user(messages, message, vision_context)
                         before_model_call = run_before_model_call(
                             messages,
                             checklist_reminder,
@@ -2322,6 +2364,7 @@ class AgentOrchestrator:
                             skills_context=skills_context,
                             skill_instructions=skill_instructions,
                             skill_warnings=skill_warnings,
+                            keep_compaction_last=True,
                         )
                         messages = before_model_call.messages
                         llm_started_at = time.perf_counter()
@@ -2355,18 +2398,7 @@ class AgentOrchestrator:
                             transition_reason="reactive_compact_retry_succeeded",
                             duration_ms=elapsed_ms(llm_started_at),
                             compacted_message_count=len(messages),
-                            preserved_tail_count=len(preserved_tail),
-                        )
-                        trace.emit(
-                            "compact_boundary",
-                            iteration=iteration,
-                            transition_reason="reactive_compact_retry_succeeded",
-                            compact_kind="reactive",
-                            estimated_tokens_before=compact_tokens_before,
-                            transcript_path=str(transcript_path),
-                            compacted_message_count=len(messages),
-                            preserved_tail_count=len(preserved_tail),
-                            tool_result_files=tool_result_artifacts,
+                            implementation=compact_result.get("implementation"),
                         )
                     except Exception as retry_exc:
                         logger.exception("LLM reactive compact retry failed")
@@ -3922,9 +3954,6 @@ class AgentOrchestrator:
         except Exception:
             pass
 
-        # Compress if needed
-        if agent_prefs["auto_archive"] and not full_reset_completed:
-            await self._maybe_compress_history(project_id)
         if full_reset_completed:
             completion_reason = "project_reset_completed"
         elif terminal_loop_error:
@@ -4053,7 +4082,7 @@ class AgentOrchestrator:
                     getattr(m, "model_context_json", None),
                     fallback_assistant_text=raw_content,
                 )
-                if m.role == "assistant"
+                if getattr(m, "model_context_json", None)
                 else [message]
             )
             vision_context = await build_vision_context_from_metadata(
@@ -4094,47 +4123,6 @@ class AgentOrchestrator:
         history = [message for message, _raw_content in history_entries]
         history.append({"role": "user", "content": current_message})
         return history
-
-    async def _maybe_compress_history(self, project_id: str) -> None:
-        try:
-            from app.mcp_tools.memory_tools import memory_compact_context
-            result = await self.db.exec(
-                select(Message).where(
-                    Message.project_id == project_id,
-                    Message.archived == False,  # noqa: E712
-                )
-            )
-            active_context_tokens = 0
-            for row in result.all():
-                if row.role not in ("user", "assistant", "developer"):
-                    continue
-                metadata: dict[str, Any] = {}
-                metadata_json = getattr(row, "metadata_json", None)
-                if metadata_json:
-                    try:
-                        parsed = json.loads(metadata_json)
-                        if isinstance(parsed, dict):
-                            metadata = parsed
-                    except (json.JSONDecodeError, TypeError):
-                        metadata = {}
-                if not _message_model_visible(metadata):
-                    continue
-                message_entry = {
-                    "role": row.role,
-                    "content": row.content,
-                    "_metadata": metadata,
-                }
-                rollout_tokens = (
-                    persisted_rollout_tokens(getattr(row, "model_context_json", None))
-                    if row.role == "assistant"
-                    else 0
-                )
-                active_context_tokens += rollout_tokens or estimate_tokens([message_entry])
-            if active_context_tokens <= TOKEN_THRESHOLD:
-                return
-            await memory_compact_context(project_id)
-        except Exception as exc:
-            logger.warning("Compression failed: %s", exc)
 
     @staticmethod
     def _build_checklist_reminder(

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.agent_trace import result_error_kind
+from app.agent.context_compact import CODEX_SUMMARY_PREFIX
 from app.agent.permission_policy import ToolPermissionContext, decide_tool_permission
 
 
@@ -125,7 +126,11 @@ def _is_managed_context_message(message: dict[str, Any]) -> bool:
     )
 
 
-def _context_insertion_index(messages: list[dict[str, Any]]) -> int:
+def _context_insertion_index(
+    messages: list[dict[str, Any]],
+    *,
+    keep_compaction_last: bool,
+) -> int:
     """Append contextual reminders so earlier prompt tokens stay cacheable.
 
     The reminders are per-call dynamic state. Inserting them before the latest
@@ -133,6 +138,17 @@ def _context_insertion_index(messages: list[dict[str, Any]]) -> int:
     before the user's turn. Keeping them at the tail preserves the stable
     system/history/current-user prefix and confines volatility to the end.
     """
+    if keep_compaction_last:
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if message.get("type") == "compaction":
+                return index
+            if (
+                message.get("role") == "user"
+                and isinstance(message.get("content"), str)
+                and message["content"].startswith(CODEX_SUMMARY_PREFIX)
+            ):
+                return index
     return len(messages)
 
 
@@ -164,6 +180,42 @@ def prepend_history_instructions(
     ]
 
 
+def install_history_instructions_after_compaction(
+    messages: list[dict[str, Any]],
+    instructions: str,
+    *,
+    mid_turn: bool,
+) -> list[dict[str, Any]]:
+    """Reinject canonical turn context at Codex's compaction boundary."""
+
+    cleaned = [
+        message
+        for message in messages
+        if not (
+            isinstance(message, dict)
+            and message.get("role") == "developer"
+            and isinstance(message.get("content"), str)
+            and message["content"].startswith(f"{HISTORY_INSTRUCTIONS_MARKER}\n")
+        )
+    ]
+    text = str(instructions or "").strip()
+    if not text:
+        return cleaned
+    block = {
+        "role": "developer",
+        "content": f"{HISTORY_INSTRUCTIONS_MARKER}\n{text}\n</agent-instructions>",
+    }
+    if not mid_turn:
+        return [*cleaned, block]
+    insertion_index = _context_insertion_index(
+        cleaned,
+        keep_compaction_last=True,
+    )
+    result = list(cleaned)
+    result.insert(insertion_index, block)
+    return result
+
+
 def run_before_model_call(
     messages: list[dict[str, Any]],
     checklist_reminder: str,
@@ -171,6 +223,7 @@ def run_before_model_call(
     skills_context: str = "",
     skill_instructions: tuple[str, ...] | list[str] = (),
     skill_warnings: tuple[str, ...] | list[str] = (),
+    keep_compaction_last: bool = False,
 ) -> BeforeModelCallHookResult:
     original_messages = list(messages)
     existing_context_messages = [
@@ -239,7 +292,10 @@ def run_before_model_call(
             skill_warnings_added=sum(1 for warning in skill_warnings if warning),
         )
     if context_messages:
-        insertion_index = _context_insertion_index(cleaned_messages)
+        insertion_index = _context_insertion_index(
+            cleaned_messages,
+            keep_compaction_last=keep_compaction_last,
+        )
         cleaned_messages[insertion_index:insertion_index] = context_messages
 
     return BeforeModelCallHookResult(

@@ -1,4 +1,5 @@
 from app.config_store.schema import RuntimeConfig
+from app.config_store.store import _remove_retired_agent_compact_assignment
 
 
 def test_llm_provider_accepts_model_context_metadata() -> None:
@@ -84,3 +85,17 @@ def test_runtime_config_accepts_tier_defaults_without_task_names() -> None:
         "balanced": None,
         "small": "small-provider",
     }
+
+
+def test_runtime_config_migration_removes_retired_agent_compact_assignment() -> None:
+    raw = {
+        "model_assignments": {
+            "agent_loop": "strong-provider",
+            "agent_compact": "old-compact-provider",
+        }
+    }
+
+    migrated, changed = _remove_retired_agent_compact_assignment(raw)
+
+    assert changed is True
+    assert migrated["model_assignments"] == {"agent_loop": "strong-provider"}

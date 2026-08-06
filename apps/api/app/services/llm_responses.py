@@ -15,6 +15,7 @@ from typing import Any, Iterable
 
 RESPONSES_API_MODE = "responses"
 _NATIVE_INPUT_ITEM_TYPES = {
+    "compaction",
     "computer_call_output",
     "function_call",
     "function_call_output",

@@ -577,6 +577,27 @@ def test_before_model_call_hook_appends_dynamic_context_for_cache_prefix() -> No
         "<runtime-context>\n## 运行时上下文\nstate\n</runtime-context>"
     )
 
+
+def test_before_model_call_keeps_mid_turn_compaction_item_last() -> None:
+    compaction = {
+        "type": "compaction",
+        "id": "cmp-1",
+        "encrypted_content": "opaque",
+    }
+    result = run_before_model_call(
+        [
+            {"role": "user", "content": "当前用户需求"},
+            compaction,
+        ],
+        "<execution-checklist>\nnext\n</execution-checklist>",
+        runtime_context="## 运行时上下文\nstate",
+        keep_compaction_last=True,
+    )
+
+    assert result.messages[-1] == compaction
+    assert result.messages[-3]["content"].startswith("<execution-checklist>")
+    assert result.messages[-2]["content"].startswith("<runtime-context>")
+
 def test_before_model_call_hook_appends_context_for_tool_continuation() -> None:
     result = run_before_model_call(
         [
@@ -663,6 +684,25 @@ def test_history_instructions_are_developer_context_without_fake_ack() -> None:
         {"role": "user", "content": "当前用户需求"},
     ]
     assert all(message.get("content") != "明白。我会按这些规则工作。" for message in result)
+
+
+def test_compaction_reinjects_history_after_pre_turn_and_before_mid_turn_checkpoint() -> None:
+    compaction = {"type": "compaction", "id": "cmp-1", "encrypted_content": "opaque"}
+    pre_turn = install_history_instructions_after_compaction(
+        [{"role": "user", "content": "当前需求"}, compaction],
+        "稳定执行规则",
+        mid_turn=False,
+    )
+    mid_turn = install_history_instructions_after_compaction(
+        [{"role": "user", "content": "当前需求"}, compaction],
+        "稳定执行规则",
+        mid_turn=True,
+    )
+
+    assert pre_turn[-2] == compaction
+    assert pre_turn[-1]["role"] == "developer"
+    assert mid_turn[-2]["role"] == "developer"
+    assert mid_turn[-1] == compaction
 
 def test_stop_hook_skips_completion_audit_without_pending_work() -> None:
     result = run_stop_after_text_response(
@@ -1392,9 +1432,6 @@ async def test_orchestrator_video_intake_basic_intake_emits_structured_event(mon
     async def fake_build_messages(project_id: str, message: str, include_history: bool = True, current_message_aliases=None):
         return [{"role": "user", "content": message}]
 
-    async def fake_maybe_compress_history(project_id: str):
-        return None
-
     monkeypatch.setattr(orchestrator_module, "AgentTrace", FakeTrace)
     monkeypatch.setattr(orchestrator_module, "_load_agent_settings", fake_settings)
 
@@ -1404,7 +1441,6 @@ async def test_orchestrator_video_intake_basic_intake_emits_structured_event(mon
     orchestrator._save_message = fake_save_message
     orchestrator._compute_canvas_summary = fake_compute_canvas_summary
     orchestrator._build_messages = fake_build_messages
-    orchestrator._maybe_compress_history = fake_maybe_compress_history
 
     events = [
         event
@@ -1516,9 +1552,6 @@ async def test_orchestrator_retries_empty_length_response(monkeypatch) -> None:
     async def fake_build_messages(project_id: str, message: str, include_history: bool = True, current_message_aliases=None):
         return [{"role": "user", "content": message}]
 
-    async def fake_maybe_compress_history(project_id: str):
-        return None
-
     monkeypatch.setattr(orchestrator_module, "AgentTrace", FakeTrace)
     monkeypatch.setattr(orchestrator_module, "_load_agent_settings", fake_settings)
 
@@ -1528,7 +1561,6 @@ async def test_orchestrator_retries_empty_length_response(monkeypatch) -> None:
     orchestrator._save_message = fake_save_message
     orchestrator._compute_canvas_summary = fake_compute_canvas_summary
     orchestrator._build_messages = fake_build_messages
-    orchestrator._maybe_compress_history = fake_maybe_compress_history
 
     events = [
         event
@@ -1643,9 +1675,6 @@ async def test_orchestrator_never_executes_truncated_write_tool_call(monkeypatch
     async def fake_build_messages(project_id: str, message: str, include_history: bool = True, current_message_aliases=None):
         return [{"role": "user", "content": message}]
 
-    async def fake_maybe_compress_history(project_id: str):
-        return None
-
     monkeypatch.setattr(orchestrator_module, "AgentTrace", FakeTrace)
     monkeypatch.setattr(orchestrator_module, "_load_agent_settings", fake_settings)
     monkeypatch.setattr(orchestrator_module.registry, "call", fake_registry_call)
@@ -1656,7 +1685,6 @@ async def test_orchestrator_never_executes_truncated_write_tool_call(monkeypatch
     orchestrator._save_message = fake_save_message
     orchestrator._compute_canvas_summary = fake_compute_canvas_summary
     orchestrator._build_messages = fake_build_messages
-    orchestrator._maybe_compress_history = fake_maybe_compress_history
 
     events = [
         event

@@ -209,6 +209,18 @@ def _migrate_media_providers_to_uma(data: Any) -> tuple[Any, bool]:
     return data, migrated
 
 
+def _remove_retired_agent_compact_assignment(data: Any) -> tuple[Any, bool]:
+    """Compaction now always follows the active agent_loop model."""
+
+    if not isinstance(data, dict):
+        return data, False
+    assignments = data.get("model_assignments")
+    if not isinstance(assignments, dict) or "agent_compact" not in assignments:
+        return data, False
+    assignments.pop("agent_compact", None)
+    return data, True
+
+
 class ConfigStore:
     def __init__(self, file_path: Path) -> None:
         self.file_path = file_path
@@ -342,6 +354,8 @@ class ConfigStore:
         except Exception as exc:
             return False, [f"JSON5 parse error: {exc}"]
         parsed, migrated = _migrate_media_providers_to_uma(parsed)
+        parsed, compact_assignment_removed = _remove_retired_agent_compact_assignment(parsed)
+        migrated = migrated or compact_assignment_removed
         try:
             cfg = RuntimeConfig.model_validate(parsed)
         except ValidationError as exc:
@@ -354,7 +368,7 @@ class ConfigStore:
             tmp = self.file_path.with_suffix(self.file_path.suffix + ".tmp")
             tmp.write_text(raw_text, encoding="utf-8")
             os.replace(tmp, self.file_path)
-            logger.info("已把旧媒体 provider 配置升级为 Universal Model Adapter")
+            logger.info("已把旧运行配置升级到当前合同")
         self._cached = cfg
         self._raw_text = raw_text
         return True, []

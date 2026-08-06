@@ -433,110 +433,26 @@ async def test_build_messages_window_zero_isolates_pending_confirmation_history(
     assert messages == [{"role": "user", "content": "确认"}]
 
 @pytest.mark.asyncio
-async def test_maybe_compress_history_does_not_archive_short_history_by_message_count(monkeypatch) -> None:
-    from app.mcp_tools import memory_tools
-
-    called = False
-
-    class FakeResult:
-        def all(self):
-            return [
-                SimpleNamespace(role="user", content=f"第 {index} 轮短消息")
-                for index in range(40)
-            ]
-
-    class FakeDB:
-        async def exec(self, statement):
-            return FakeResult()
-
-    async def fake_compact(project_id: str, target_tail_tokens: int | None = None):
-        nonlocal called
-        called = True
-        return {"archived": 1, "target_tail_tokens": target_tail_tokens}
-
-    monkeypatch.setattr(memory_tools, "memory_compact_context", fake_compact)
-
-    orchestrator = AgentOrchestrator.__new__(AgentOrchestrator)
-    orchestrator.db = FakeDB()
-
-    await orchestrator._maybe_compress_history("project-1")
-
-    assert called is False
-
-@pytest.mark.asyncio
-async def test_maybe_compress_history_ignores_slash_command_output_tokens(monkeypatch) -> None:
-    from app.mcp_tools import memory_tools
-
-    called = False
-
-    class FakeResult:
-        def all(self):
-            return [
-                SimpleNamespace(
-                    role="assistant",
-                    content="x" * 180000,
-                    metadata_json=json.dumps({"source": "slash_command", "command": "doctor"}, ensure_ascii=False),
-                ),
-                SimpleNamespace(role="user", content="继续正常任务", metadata_json=None),
-            ]
-
-    class FakeDB:
-        async def exec(self, statement):
-            return FakeResult()
-
-    async def fake_compact(project_id: str, target_tail_tokens: int | None = None):
-        nonlocal called
-        called = True
-        return {"archived": 1, "target_tail_tokens": target_tail_tokens}
-
-    monkeypatch.setattr(memory_tools, "memory_compact_context", fake_compact)
-
-    orchestrator = AgentOrchestrator.__new__(AgentOrchestrator)
-    orchestrator.db = FakeDB()
-
-    await orchestrator._maybe_compress_history("project-1")
-
-    assert called is False
-
-
-@pytest.mark.asyncio
-async def test_maybe_compress_history_archives_only_when_token_threshold_is_exceeded(monkeypatch) -> None:
-    from app.mcp_tools import memory_tools
-
-    captured = {}
-
-    class FakeResult:
-        def all(self):
-            return [
-                SimpleNamespace(role="user", content="x" * 180000),
-            ]
-
-    class FakeDB:
-        async def exec(self, statement):
-            return FakeResult()
-
-    async def fake_compact(project_id: str, target_tail_tokens: int | None = None):
-        captured["project_id"] = project_id
-        captured["target_tail_tokens"] = target_tail_tokens
-        return {"archived": 1, "target_tail_tokens": target_tail_tokens}
-
-    monkeypatch.setattr(memory_tools, "memory_compact_context", fake_compact)
-
-    orchestrator = AgentOrchestrator.__new__(AgentOrchestrator)
-    orchestrator.db = FakeDB()
-
-    await orchestrator._maybe_compress_history("project-1")
-
-    assert captured == {"project_id": "project-1", "target_tail_tokens": None}
-
-
-@pytest.mark.asyncio
-async def test_memory_compact_context_persists_summary_not_sliding_tail(monkeypatch) -> None:
+async def test_memory_compact_context_persists_checkpoint_without_archiving_chat(monkeypatch) -> None:
     from app.mcp_tools import memory_tools
 
     active_rows = [
-        SimpleNamespace(id="m1", role="user", content="x" * 180000, archived=False),
-        SimpleNamespace(id="m2", role="assistant", content="小尾部", archived=False),
+        SimpleNamespace(
+            id="m1",
+            role="user",
+            content="旧任务",
+            archived=False,
+            metadata_json=None,
+            model_context_json=None,
+        ),
+        SimpleNamespace(
+            id="m2",
+            role="assistant",
+            content="旧回答",
+            archived=False,
+            metadata_json=None,
+            model_context_json=None,
+        ),
     ]
     created_rows = []
 
@@ -569,24 +485,67 @@ async def test_memory_compact_context_persists_summary_not_sliding_tail(monkeypa
         def __init__(self, session):
             self.session = session
 
-        async def generate(self, *args, **kwargs):
-            return {"content": "压缩后的背景摘要", "usage": {"total_tokens": 10}}
+        async def compact_conversation(self, *args, **kwargs):
+            return {
+                "items": [
+                    {"role": "user", "content": "旧任务"},
+                    {"role": "user", "content": "Codex handoff: 下一步继续"},
+                ],
+                "implementation": "local_compact",
+                "usage": {"total_tokens": 10},
+                "retained_images": 0,
+                "remote_error": "",
+            }
 
     monkeypatch.setattr(memory_tools, "session_scope", lambda: FakeSessionScope())
     monkeypatch.setattr("app.services.llm_service.LLMService", FakeLLMService)
-    monkeypatch.setattr(memory_tools, "memory_summarize_conversation", AsyncMock(return_value={"facts": []}))
 
-    result = await memory_tools.memory_compact_context("project-1", target_tail_tokens=100)
+    result = await memory_tools.memory_compact_context("project-1")
 
-    assert result["summary_inserted"] is True
-    assert result["archived"] == 2
-    assert result["active"] == 2
-    assert all(row.archived for row in active_rows)
-    assert "<compacted_context kind=\"background_summary\">" in created_rows[0].content
-    assert "压缩后的背景摘要" in created_rows[0].content
+    assert result["checkpoint_inserted"] is True
+    assert result["replaced_messages"] == 2
+    assert all(row.archived is False for row in active_rows)
+    assert all(json.loads(row.metadata_json)["model_visible"] is False for row in active_rows)
+    assert len(created_rows) == 1
     assert created_rows[0].role == "developer"
-    assert created_rows[1].role == "assistant"
-    assert created_rows[1].content == "小尾部"
+    assert "<compacted_context kind=\"background_summary\">" in created_rows[0].content
+    assert created_rows[0].model_context_json
+
+
+@pytest.mark.asyncio
+async def test_compact_slash_command_runs_manual_checkpoint(monkeypatch) -> None:
+    from app.agent import slash_commands
+    from app.mcp_tools import memory_tools
+
+    saved: list[tuple[str, str]] = []
+
+    async def fake_compact(project_id: str):
+        assert project_id == "project-1"
+        return {
+            "checkpoint_inserted": True,
+            "implementation": "responses_compact",
+            "replaced_messages": 7,
+        }
+
+    async def fake_emit_text(project_id, command, text, *, ok=True):
+        saved.append((command.name, text))
+
+    monkeypatch.setattr(memory_tools, "memory_compact_context", fake_compact)
+    monkeypatch.setattr(slash_commands, "_emit_text", fake_emit_text)
+
+    events = [
+        event
+        async for event in slash_commands._compact_events(
+            "project-1",
+            slash_commands.SlashCommand(name="compact", args=[], raw="/compact"),
+        )
+    ]
+
+    assert events[0]["type"] == "slash_command"
+    assert events[0]["ok"] is True
+    assert events[-1] == {"type": "done", "status": "completed"}
+    assert "responses_compact" in saved[0][1]
+    assert "聊天记录仍保留" in saved[0][1]
 
 
 @pytest.mark.asyncio

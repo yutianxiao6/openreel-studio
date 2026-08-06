@@ -15,6 +15,7 @@ export const SLASH_COMMANDS: SlashCommandDef[] = [
   { name: "/help", description: "显示帮助" },
   { name: "/plan", description: "进入只读 Plan Mode", usage: "/plan [目标|execute|exit]" },
   { name: "/workflow", description: "进入工作流搭建模式", usage: "/workflow [exit]" },
+  { name: "/compact", description: "压缩模型上下文并保留聊天记录" },
   { name: "/reset", description: "清理失败节点或确认重置", usage: "/reset [failed|full|confirm|cancel]" },
   { name: "/doctor", description: "项目诊断快照" },
   { name: "/status", description: "系统状态(模型/工具/MCP)" },

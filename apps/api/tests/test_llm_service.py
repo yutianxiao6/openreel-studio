@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.agent.context_compact import CODEX_SUMMARY_PREFIX
 from app.services import llm_service
 from app.services.llm_service import LLMOutputTruncatedError, LLMService
 from app.services.llm_responses import response_view
@@ -288,6 +289,223 @@ async def test_llm_generate_does_not_retry_context_length(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_compaction_policy_uses_ninety_percent_and_provider_cap(monkeypatch) -> None:
+    async def fake_config(*args, **kwargs):
+        return {
+            "model": "openai/gpt-5.4",
+            "temperature": 0.0,
+            "max_tokens": 100,
+            "api_key": "sk-test",
+            "model_metadata": {
+                "context_window_tokens": 100_000,
+                "params": {"auto_compact_token_limit": 70_000},
+            },
+            "provider_params": {"auto_compact_token_limit": 70_000},
+        }
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+
+    policy = await LLMService().get_compaction_policy()
+
+    assert policy["threshold_tokens"] == 70_000
+    assert policy["supports_responses_compact"] is True
+
+
+@pytest.mark.asyncio
+async def test_native_responses_compaction_returns_canonical_items_and_cache_key(monkeypatch) -> None:
+    captured: dict = {}
+
+    async def fake_config(*args, **kwargs):
+        return {
+            "model": "openai/gpt-5.4",
+            "temperature": 0.0,
+            "max_tokens": 100,
+            "api_key": "sk-test",
+            "model_metadata": {
+                "context_window_tokens": 100_000,
+                "supports_prompt_cache": True,
+            },
+        }
+
+    async def fake_compact(cfg, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            id="cmp-response-1",
+            output=[
+                {"role": "developer", "content": "stale runtime"},
+                {"role": "user", "content": "当前任务"},
+                {"type": "compaction", "id": "cmp-1", "encrypted_content": "opaque"},
+            ],
+            usage=SimpleNamespace(input_tokens=100, output_tokens=20, total_tokens=120),
+        )
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service, "_native_responses_compact_request", fake_compact)
+
+    result = await LLMService().compact_conversation(
+        messages=[{"role": "user", "content": "当前任务"}],
+        system="system",
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "node__list",
+                "description": "List nodes.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+        project_id="project-1",
+    )
+
+    assert result["implementation"] == "responses_compact"
+    assert result["items"] == [
+        {"role": "user", "content": "当前任务"},
+        {"type": "compaction", "id": "cmp-1", "encrypted_content": "opaque"},
+    ]
+    assert captured["instructions"] == "system"
+    assert captured["tools"][0]["function"]["name"] == "node__list"
+    assert captured["prompt_cache_key"].startswith("openreel:agent_loop:")
+    assert result["usage"]["prompt_tokens"] == 100
+
+
+@pytest.mark.asyncio
+async def test_native_responses_compact_request_uses_public_sdk_contract(monkeypatch) -> None:
+    import openai
+
+    captured: dict = {}
+
+    class FakeResponses:
+        async def compact(self, **kwargs):
+            captured["request"] = kwargs
+            return SimpleNamespace(id="cmp-response", output=[], usage=None)
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.responses = FakeResponses()
+
+        async def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(openai, "AsyncOpenAI", FakeClient)
+
+    await llm_service._native_responses_compact_request(
+        {
+            "model": "openai/gpt-5.4",
+            "api_key": "sk-test",
+            "api_base": "https://api.openai.com/v1",
+            "provider_params": {"sdk_max_retries": 0},
+        },
+        input_items=[{"role": "user", "content": "当前任务"}],
+        instructions="system",
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "node__list",
+                "description": "List nodes.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }],
+        prompt_cache_key="cache-key",
+    )
+
+    assert captured["client"]["base_url"] == "https://api.openai.com/v1"
+    assert captured["request"] == {
+        "model": "gpt-5.4",
+        "input": [{"role": "user", "content": "当前任务"}],
+        "instructions": "system",
+        "extra_body": {
+            "tools": [{
+                "type": "function",
+                "name": "node__list",
+                "description": "List nodes.",
+                "parameters": {"type": "object", "properties": {}},
+                "strict": False,
+            }],
+            "parallel_tool_calls": True,
+        },
+        "prompt_cache_key": "cache-key",
+    }
+    assert captured["closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_native_compaction_omits_cache_key_when_provider_disables_cache(monkeypatch) -> None:
+    captured: dict = {}
+
+    async def fake_config(*args, **kwargs):
+        return {
+            "model": "openai/gpt-5.4",
+            "temperature": 0.0,
+            "max_tokens": 100,
+            "api_key": "sk-test",
+            "model_metadata": {"supports_prompt_cache": False},
+        }
+
+    async def fake_compact(cfg, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            id="cmp-response-1",
+            output=[
+                {"role": "user", "content": "当前任务"},
+                {"type": "compaction", "id": "cmp-1", "encrypted_content": "opaque"},
+            ],
+            usage=None,
+        )
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service, "_native_responses_compact_request", fake_compact)
+
+    await LLMService().compact_conversation(
+        messages=[{"role": "user", "content": "当前任务"}],
+        system="system",
+        project_id="project-1",
+    )
+
+    assert captured["prompt_cache_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_local_compaction_drops_oldest_function_pair_on_context_error(monkeypatch) -> None:
+    calls: list[list[dict]] = []
+
+    async def fake_config(*args, **kwargs):
+        return {
+            "model": "test/model",
+            "temperature": 0.0,
+            "max_tokens": 100,
+            "api_key": None,
+            "provider_params": {"max_retries": 0},
+        }
+
+    async def fake_aresponses(**kwargs):
+        calls.append(kwargs["input"])
+        if len(calls) == 1:
+            raise RuntimeError("prompt too long: context length exceeded")
+        return _response("完成 A；下一步 B", prompt_tokens=20, completion_tokens=8)
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
+
+    result = await LLMService().compact_conversation(
+        messages=[
+            {"type": "function_call", "call_id": "c1", "name": "node__list", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "{}"},
+            {"role": "user", "content": "当前任务"},
+        ],
+        system="system",
+        project_id="project-1",
+    )
+
+    assert len(calls) == 2
+    assert not any(item.get("type") == "function_call" for item in calls[1])
+    assert result["implementation"] == "local_compact"
+    assert result["items"][0] == {"role": "user", "content": "当前任务"}
+    assert result["items"][-1]["content"].startswith(
+        CODEX_SUMMARY_PREFIX
+    )
+
+
+@pytest.mark.asyncio
 async def test_llm_generate_rejects_failed_responses_status(monkeypatch) -> None:
     async def fake_aresponses(**kwargs):
         return SimpleNamespace(
@@ -456,6 +674,7 @@ def test_llm_request_policy_uses_provider_params() -> None:
         "include_reasoning_encrypted_content": True,
         "use_chat_completions_api": False,
         "supports_responses_websocket": True,
+        "supports_responses_compact": True,
     }
     assert kwargs["timeout"] == 240.0
     assert kwargs["max_retries"] == 0

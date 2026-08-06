@@ -61,12 +61,13 @@ async def test_slash_command_catalog_matches_frontend_backend_and_docs() -> None
     frontend_menu = _slash_menu_names()
     frontend_completions = _slash_completion_names()
     frontend_local = _local_slash_names()
-    backend_stream = {"/plan", "/workflow", "/reset", "/doctor"}
+    backend_stream = {"/plan", "/workflow", "/compact", "/reset", "/doctor"}
     backend_compat = {f"/{name}" for name in slash_commands._COMMANDS}  # noqa: SLF001
     expected_menu = {
         "/help",
         "/plan",
         "/workflow",
+        "/compact",
         "/reset",
         "/doctor",
         "/status",

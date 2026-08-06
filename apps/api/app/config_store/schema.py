@@ -167,7 +167,6 @@ ALLOWED_MODEL_TIERS = ("strong", "balanced", "small")
 ALLOWED_TASK_TYPES = (
     "agent_loop",
     "agent_review",
-    "agent_compact",
     "agent_aux",
     "text_generation",
     "workflow_text_generation",
@@ -179,7 +178,6 @@ ALLOWED_TASK_TYPES = (
 DEFAULT_MODEL_TASK_TIERS: dict[str, str] = {
     "agent_loop": "strong",
     "agent_review": "small",
-    "agent_compact": "balanced",
     "agent_aux": "small",
     "text_generation": "balanced",
     "workflow_text_generation": "balanced",

@@ -167,6 +167,8 @@ class SlashCommandEvent(ChatEvent):
     command: str
     action: str | None = None
     ok: bool = False
+    result: dict[str, Any] | None = None
+    error: str | None = None
 
 
 class DoctorResultEvent(ChatEvent):

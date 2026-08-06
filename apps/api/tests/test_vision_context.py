@@ -179,8 +179,10 @@ def test_prompt_dump_and_compaction_redact_image_data_urls(tmp_path, monkeypatch
     assert "<image data URL omitted" in dumped
     assert data_url not in json.dumps(vision_context.redact_image_data_urls({"source": data_url}))
 
-    summary_prompt = context_compact.build_compact_summary_prompt(messages)
-    assert data_url not in summary_prompt
+    checkpoint_items = context_compact.db_safe_compaction_items(messages)
+    checkpoint_json = json.dumps(checkpoint_items)
+    assert data_url not in checkpoint_json
+    assert "rehydrate from checkpoint metadata" in checkpoint_json
     transcript = context_compact.save_transcript(messages, project_id="project-1")
     assert data_url not in transcript.read_text(encoding="utf-8")
     assert context_compact.estimate_tokens(messages) >= vision_context.DEFAULT_IMAGE_TOKEN_ESTIMATE

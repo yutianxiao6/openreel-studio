@@ -25,6 +25,7 @@ from app.agent.confirmation_protocol import (
 from app.agent.context_policy import chat_history_visible_for_turn
 from app.agent.lifecycle_hooks import (
     PermissionDenialState,
+    install_history_instructions_after_compaction,
     next_permission_denial_state,
     prepend_history_instructions,
     run_before_model_call,

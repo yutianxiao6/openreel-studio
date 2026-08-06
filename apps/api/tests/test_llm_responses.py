@@ -64,6 +64,19 @@ def test_prepare_response_input_converts_messages_and_tool_rounds() -> None:
     assert input_items[5] == reasoning
 
 
+def test_prepare_response_input_replays_compaction_item_unchanged() -> None:
+    compaction = {
+        "type": "compaction",
+        "id": "cmp-1",
+        "encrypted_content": "opaque",
+    }
+
+    input_items, instructions = prepare_response_input([compaction], None)
+
+    assert instructions is None
+    assert input_items == [compaction]
+
+
 def test_responses_tools_flattens_function_schema() -> None:
     tools = responses_tools([{
         "type": "function",

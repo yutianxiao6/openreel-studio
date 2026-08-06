@@ -168,7 +168,6 @@ async def test_orchestrator_runs_complete_safe_read_round_concurrently(monkeypat
     orchestrator._save_message = fake_save_message
     orchestrator._compute_canvas_summary = fake_compute_canvas_summary
     orchestrator._build_messages = fake_build_messages
-    orchestrator._maybe_compress_history = fake_save_message
 
     events = [
         event

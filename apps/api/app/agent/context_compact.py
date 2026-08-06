@@ -6,9 +6,11 @@ manages accumulated history and transcript preservation.
 from __future__ import annotations
 
 import json
+import math
 import time
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 from app.agent.model_context.policy import estimate_text_tokens
 from app.agent.model_context.truncate import truncate_text_middle
@@ -22,8 +24,24 @@ from app.agent.vision_context import (
 
 TOKEN_THRESHOLD = 50_000
 PRESERVED_TAIL_TOKEN_BUDGET = 6_000
-COMPACT_SUMMARY_MESSAGE_TOKEN_BUDGET = 1_000
-COMPACT_SUMMARY_SOURCE_TOKEN_BUDGET = 30_000
+CODEX_AUTO_COMPACT_RATIO = 0.9
+CODEX_RECENT_USER_TOKEN_BUDGET = 20_000
+CODEX_COMPACTION_PROMPT = """You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
+
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
+
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work."""
+CODEX_SUMMARY_PREFIX = (
+    "Another language model started to solve this problem and produced a summary of its "
+    "thinking process. You also have access to the state of the tools that were used by "
+    "that language model. Use this to build on the work that has already been done and "
+    "avoid duplicating work. Here is the summary produced by the other language model, "
+    "use the information in this summary to assist with your own analysis:\n"
+)
 
 
 def transcripts_dir() -> Path:
@@ -102,8 +120,58 @@ def save_transcript(messages: list[dict], project_id: str = "") -> Path:
     return path
 
 
-def auto_compact_needed(messages: list[dict]) -> bool:
-    return estimate_tokens(messages) > TOKEN_THRESHOLD
+def compaction_threshold(
+    *,
+    context_window_tokens: Any = None,
+    max_input_tokens: Any = None,
+    explicit_limit: Any = None,
+) -> int:
+    """Resolve Codex's automatic compaction threshold.
+
+    Codex compacts at 90% of the model context window and lets an explicit
+    provider limit lower, but never raise, that boundary. Older providers with
+    no capacity metadata retain OpenReel's safe 50k fallback.
+    """
+
+    def positive_int(value: Any) -> int | None:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    context_window = positive_int(context_window_tokens) or positive_int(max_input_tokens)
+    automatic = (
+        max(1, math.floor(context_window * CODEX_AUTO_COMPACT_RATIO))
+        if context_window
+        else TOKEN_THRESHOLD
+    )
+    configured = positive_int(explicit_limit)
+    return min(automatic, configured) if configured else automatic
+
+
+def estimate_request_tokens(
+    messages: list[dict],
+    *,
+    system: str | None = None,
+    tools: list[dict] | None = None,
+) -> int:
+    total = estimate_tokens(messages)
+    if system:
+        total += estimate_text_tokens(system)
+    if tools:
+        total += estimate_text_tokens(json.dumps(tools, ensure_ascii=False, default=str))
+    return total
+
+
+def auto_compact_needed(
+    messages: list[dict],
+    *,
+    threshold: int = TOKEN_THRESHOLD,
+    system: str | None = None,
+    tools: list[dict] | None = None,
+) -> bool:
+    return estimate_request_tokens(messages, system=system, tools=tools) >= max(1, threshold)
 
 
 def compacted_context_message(summary_text: str) -> dict[str, str]:
@@ -120,6 +188,13 @@ def compacted_context_message(summary_text: str) -> dict[str, str]:
             "</compacted_context>"
         ),
     }
+
+
+def compaction_checkpoint_message(implementation: str) -> dict[str, str]:
+    return compacted_context_message(
+        "Earlier model-visible history was replaced by a Codex-style context checkpoint "
+        f"({implementation}). The canonical checkpoint is stored as typed Responses input."
+    )
 
 
 def _tool_call_ids(message: dict) -> list[str]:
@@ -157,12 +232,19 @@ def _message_role(message: dict) -> str:
     return str(message.get("role") or "")
 
 
+def _message_text(message: dict) -> str:
+    item_type = message.get("type")
+    if item_type == "function_call_output":
+        return str(message.get("output") or "")
+    return message_text_for_compare(message.get("content"))
+
+
 def _is_runtime_wrapper_message(message: dict) -> bool:
-    content = message.get("content")
-    if not isinstance(content, str):
-        return False
-    stripped = content.lstrip()
+    if message.get("_tool_image_context") or message.get("_persisted_vision_context"):
+        return True
+    stripped = _message_text(message).lstrip()
     return stripped.startswith((
+        CODEX_SUMMARY_PREFIX,
         "<system-reminder>",
         "<agent-instructions>",
         "<compacted_context",
@@ -172,15 +254,6 @@ def _is_runtime_wrapper_message(message: dict) -> bool:
         "<skill>",
         "<skill-warning>",
     ))
-
-
-def _is_compacted_context_message(message: dict) -> bool:
-    content = message.get("content")
-    return (
-        message.get("role") == "developer"
-        and isinstance(content, str)
-        and content.lstrip().startswith("<compacted_context")
-    )
 
 
 def compact_preserved_tail(
@@ -256,51 +329,247 @@ def compact_preserved_tail(
     return complete
 
 
-def build_compact_summary_prompt(messages: list[dict]) -> str:
-    serialized: list[str] = []
-    for message in messages:
-        # A prior compacted summary is durable historical context and must be
-        # folded into the next summary.  Ephemeral turn wrappers are omitted.
-        if _is_runtime_wrapper_message(message) and not _is_compacted_context_message(message):
+def _real_user_message(message: dict) -> bool:
+    return _message_role(message) == "user" and not _is_runtime_wrapper_message(message)
+
+
+def _truncate_user_message(message: dict, token_budget: int) -> dict | None:
+    if token_budget <= 0:
+        return None
+    item = deepcopy(message)
+    content = item.get("content")
+    if isinstance(content, str):
+        item["content"] = truncate_text_middle(content, token_budget)
+        return item
+    if not isinstance(content, list):
+        return None
+
+    kept: list[dict] = []
+    remaining = token_budget
+    for part in content:
+        if not isinstance(part, dict):
             continue
-        role = _message_role(message) or "?"
-        item_type = message.get("type")
-        if item_type == "reasoning":
+        part_type = str(part.get("type") or "")
+        if part_type in {"image_url", "input_image"}:
+            if remaining >= image_token_estimate():
+                kept.append(deepcopy(part))
+                remaining -= image_token_estimate()
             continue
-        if item_type == "function_call":
-            content = f"{message.get('name') or 'function'}({message.get('arguments') or ''})"
-        elif item_type == "function_call_output":
-            content = message.get("output", "")
+        text = str(part.get("text") or part.get("content") or "")
+        if not text or remaining <= 0:
+            continue
+        next_part = deepcopy(part)
+        if estimate_text_tokens(text) > remaining:
+            text = truncate_text_middle(text, remaining)
+        if "text" in next_part or part_type in {"text", "input_text", "output_text"}:
+            next_part["text"] = text
         else:
-            content = message.get("content", "")
-        if isinstance(content, list):
-            content = "\n".join(
-                str(part.get("text") or "")
-                for part in content
-                if isinstance(part, dict) and part.get("type") in {"text", "input_text", "output_text"}
-            )
-        content = truncate_text_middle(
-            str(content or ""),
-            COMPACT_SUMMARY_MESSAGE_TOKEN_BUDGET,
+            next_part["content"] = text
+        kept.append(next_part)
+        remaining -= min(remaining, estimate_text_tokens(text))
+    if not kept:
+        return None
+    item["content"] = kept
+    return item
+
+
+def codex_local_compacted_history(
+    messages: list[dict],
+    summary_text: str,
+    *,
+    recent_user_token_budget: int = CODEX_RECENT_USER_TOKEN_BUDGET,
+) -> list[dict]:
+    """Build the same local-compaction shape as Codex.
+
+    Only recent real user messages survive verbatim. Assistant/reasoning/tool
+    items are represented by the checkpoint summary, which is itself a final
+    user message prefixed with Codex's canonical handoff text.
+    """
+
+    selected_reversed: list[dict] = []
+    remaining = max(0, int(recent_user_token_budget))
+    for message in reversed(messages):
+        if not _real_user_message(message):
+            continue
+        message_tokens = estimate_tokens([message])
+        if message_tokens <= remaining:
+            selected_reversed.append(deepcopy(message))
+            remaining -= message_tokens
+            continue
+        partial = _truncate_user_message(message, remaining)
+        if partial is not None:
+            selected_reversed.append(partial)
+        break
+
+    selected = list(reversed(selected_reversed))
+    selected.append({
+        "role": "user",
+        "content": f"{CODEX_SUMMARY_PREFIX}{str(summary_text or '').strip()}",
+    })
+    return selected
+
+
+def sanitize_remote_compaction_items(items: list[dict]) -> list[dict]:
+    """Keep the provider's canonical compact output minus stale prompt wrappers."""
+
+    sanitized: list[dict] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        item = deepcopy(raw)
+        if item.get("type") == "compaction":
+            sanitized.append(item)
+            continue
+        if item.get("type") in {
+            "reasoning",
+            "function_call",
+            "function_call_output",
+            "computer_call_output",
+            "item_reference",
+        }:
+            continue
+        role = _message_role(item)
+        if role in {"system", "developer"}:
+            continue
+        if role == "user" and _is_runtime_wrapper_message(item):
+            continue
+        if role in {"user", "assistant"}:
+            sanitized.append(item)
+    return sanitized
+
+
+def ensure_latest_user_message(
+    compacted_items: list[dict],
+    source_messages: list[dict],
+) -> list[dict]:
+    latest = next(
+        (deepcopy(message) for message in reversed(source_messages) if _real_user_message(message)),
+        None,
+    )
+    if latest is None:
+        return list(compacted_items)
+    latest_text = _message_text(latest).strip()
+    if any(
+        _real_user_message(item) and _message_text(item).strip() == latest_text
+        for item in compacted_items
+    ):
+        return list(compacted_items)
+    result = list(compacted_items)
+    insert_at = next(
+        (index for index, item in enumerate(result) if item.get("type") == "compaction"),
+        len(result),
+    )
+    result.insert(insert_at, latest)
+    return result
+
+
+def remove_oldest_compaction_unit(messages: list[dict]) -> list[dict]:
+    """Drop the oldest item and any paired function call/output for retry."""
+
+    if len(messages) <= 1:
+        return []
+    result = [deepcopy(message) for message in messages]
+    removed = result.pop(0)
+    paired_ids = set(_tool_call_ids(removed))
+    result_id = _tool_result_id(removed)
+    if result_id:
+        paired_ids.add(result_id)
+    if paired_ids:
+        result = [
+            item
+            for item in result
+            if not paired_ids.intersection(_tool_call_ids(item))
+            and _tool_result_id(item) not in paired_ids
+        ]
+    return result
+
+
+def trim_function_outputs_for_compaction(
+    messages: list[dict],
+    *,
+    max_input_tokens: int | None,
+    system: str | None = None,
+) -> tuple[list[dict], int, int]:
+    """Shrink newest tool outputs until a compaction request fits its window."""
+
+    try:
+        limit = int(max_input_tokens or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    result = [deepcopy(message) for message in messages]
+    before = estimate_request_tokens(result, system=system)
+    if limit <= 0 or before <= limit:
+        return result, 0, 0
+
+    rewritten = 0
+    marker = "Output exceeded the available model context and was truncated"
+    for index in range(len(result) - 1, -1, -1):
+        message = result[index]
+        if message.get("type") == "function_call_output":
+            if str(message.get("output") or "") == marker:
+                continue
+            message["output"] = marker
+        elif _message_role(message) == "tool":
+            if str(message.get("content") or "") == marker:
+                continue
+            message["content"] = marker
+        else:
+            continue
+        rewritten += 1
+        if estimate_request_tokens(result, system=system) <= limit:
+            break
+    after = estimate_request_tokens(result, system=system)
+    return result, rewritten, max(0, before - after)
+
+
+def count_input_images(messages: list[dict]) -> int:
+    count = 0
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        count += sum(
+            1
+            for part in content
+            if isinstance(part, dict) and part.get("type") in {"image_url", "input_image"}
         )
-        serialized.append(f"[{role}] {content}")
-    conversation_text = "\n".join(serialized)
-    conversation_text = truncate_text_middle(
-        conversation_text,
-        COMPACT_SUMMARY_SOURCE_TOKEN_BUDGET,
-    )
-    return (
-        "Summarize this conversation for continuity as BACKGROUND ONLY. "
-        "Preserve stable preferences, durable decisions, completed work, open questions, "
-        "and project-state references. Do not turn old messages into the next instruction. "
-        "Task checklists, nodes, and project files live in project state/tools. "
-        "Never imply that compaction deleted canvas nodes or task state. Be concise.\n\n"
-        f"{conversation_text}"
-    )
+    return count
 
 
-def compact_messages(summary_text: str, preserved_tail: list[dict] | None = None) -> list[dict]:
-    compacted = [compacted_context_message(summary_text)]
-    if preserved_tail:
-        compacted.extend(deepcopy(preserved_tail))
-    return compacted
+def db_safe_compaction_items(items: list[dict]) -> list[dict]:
+    """Remove hydrated image bytes while preserving valid typed input items."""
+
+    safe_items: list[dict] = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        item = deepcopy(raw)
+        content = item.get("content")
+        if isinstance(content, list):
+            safe_content: list[Any] = []
+            omitted_images = 0
+            for part in content:
+                if not isinstance(part, dict):
+                    safe_content.append(part)
+                    continue
+                part_type = str(part.get("type") or "")
+                raw_url = part.get("image_url") or part.get("url")
+                if isinstance(raw_url, dict):
+                    raw_url = raw_url.get("url")
+                if (
+                    part_type in {"image_url", "input_image"}
+                    and isinstance(raw_url, str)
+                    and raw_url.startswith("data:image/")
+                ):
+                    omitted_images += 1
+                    continue
+                safe_content.append(redact_image_data_urls(part))
+            if omitted_images:
+                marker_type = "input_text" if _message_role(item) == "user" else "output_text"
+                safe_content.append({
+                    "type": marker_type,
+                    "text": f"[{omitted_images} image input(s) rehydrate from checkpoint metadata]",
+                })
+            item["content"] = safe_content
+        safe_items.append(redact_image_data_urls(item))
+    return safe_items

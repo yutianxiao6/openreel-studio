@@ -11,7 +11,11 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from app.agent.context_compact import compact_preserved_tail, estimate_tokens
+from app.agent.context_compact import (
+    compact_preserved_tail,
+    db_safe_compaction_items,
+    estimate_tokens,
+)
 from app.services.llm_responses import response_message_phase, response_message_text
 
 
@@ -92,6 +96,34 @@ def encode_persisted_rollout(
         "persisted_tokens": estimate_tokens(persisted_items),
     }
     return json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
+
+
+def encode_compaction_checkpoint(items: list[dict[str, Any]]) -> str | None:
+    """Persist a canonical checkpoint without tail truncation.
+
+    Opaque Responses ``compaction`` items must survive byte-for-byte. Hydrated
+    image data URLs are removed separately and restored from message metadata
+    when the checkpoint is loaded.
+    """
+
+    clean_items = db_safe_compaction_items(items)
+    if not clean_items:
+        return None
+    tokens = estimate_tokens(clean_items)
+    return json.dumps(
+        {
+            "version": PERSISTED_ROLLOUT_VERSION,
+            "kind": "compaction_checkpoint",
+            "items": clean_items,
+            "append_assistant_text": "",
+            "compacted": True,
+            "original_tokens": tokens,
+            "persisted_tokens": tokens,
+        },
+        ensure_ascii=False,
+        default=str,
+        separators=(",", ":"),
+    )
 
 
 def decode_persisted_rollout(value: str | None) -> PersistedRollout | None:

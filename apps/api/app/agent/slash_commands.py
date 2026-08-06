@@ -47,7 +47,7 @@ class SlashCommand:
     raw: str
 
 
-_COMMANDS = {"plan", "workflow", "reset", "doctor", "help"}
+_COMMANDS = {"plan", "workflow", "compact", "reset", "doctor", "help"}
 _PLAN_EXIT_ACTIONS = {"exit", "default", "off", "quit", "退出", "关闭"}
 _WORKFLOW_EXIT_ACTIONS = {"exit", "default", "off", "quit", "退出", "关闭"}
 _PLAN_EXECUTE_ACTIONS = {"execute", "run", "apply", "执行", "实施"}
@@ -118,6 +118,11 @@ async def slash_command_events(
             yield event
         return
 
+    if command.name == "compact":
+        async for event in _compact_events(project_id, command):
+            yield event
+        return
+
     if command.name == "reset":
         async for event in _reset_events(project_id, command):
             yield event
@@ -127,6 +132,57 @@ async def slash_command_events(
         async for event in _doctor_events(project_id, command):
             yield event
         return
+
+
+async def _compact_events(
+    project_id: str,
+    command: SlashCommand,
+) -> AsyncGenerator[dict[str, Any], None]:
+    if command.args:
+        text = "压缩命令不接受参数，请直接发送 `/compact`。"
+        await _emit_text(project_id, command, text, ok=False)
+        yield {
+            "type": "slash_command",
+            "command": "compact",
+            "ok": False,
+            "error": "invalid_compact_arguments",
+        }
+        yield {"type": "text_delta", "content": text}
+        yield {"type": "done", "status": "failed"}
+        return
+
+    from app.mcp_tools.memory_tools import memory_compact_context
+
+    try:
+        result = await memory_compact_context(project_id)
+    except Exception as exc:
+        text = f"上下文压缩失败：{exc}"
+        await _emit_text(project_id, command, text, ok=False)
+        yield {
+            "type": "slash_command",
+            "command": "compact",
+            "ok": False,
+            "error": exc.__class__.__name__,
+        }
+        yield {"type": "text_delta", "content": text}
+        yield {"type": "done", "status": "failed"}
+        return
+
+    if result.get("checkpoint_inserted"):
+        implementation = str(result.get("implementation") or "checkpoint")
+        replaced = int(result.get("replaced_messages") or 0)
+        text = f"已压缩模型上下文（{implementation}，替换 {replaced} 条模型历史）；聊天记录仍保留。"
+    else:
+        text = "当前没有需要压缩的模型历史。"
+    await _emit_text(project_id, command, text, ok=True)
+    yield {
+        "type": "slash_command",
+        "command": "compact",
+        "ok": True,
+        "result": result,
+    }
+    yield {"type": "text_delta", "content": text}
+    yield {"type": "done", "status": "completed"}
 
 
 def _slash_command_streams_to_agent(command: SlashCommand) -> bool:
@@ -723,6 +779,7 @@ def _help_text(prefix: str | None = None) -> str:
         "可用 slash commands：",
         "- /plan [目标|execute|exit]",
         "- /workflow [exit]",
+        "- /compact",
         "- /reset [failed|full|confirm|cancel]",
         "- /doctor",
     ])

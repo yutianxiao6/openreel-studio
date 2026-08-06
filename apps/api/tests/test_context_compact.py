@@ -6,34 +6,46 @@ from app.agent import context_compact
 def test_auto_compact_threshold(monkeypatch) -> None:
     monkeypatch.setattr(context_compact, "TOKEN_THRESHOLD", 10)
 
-    assert context_compact.auto_compact_needed([{"role": "user", "content": "甲" * 20}]) is True
+    assert context_compact.auto_compact_needed(
+        [{"role": "user", "content": "甲" * 20}],
+        threshold=10,
+    ) is True
     assert context_compact.auto_compact_needed([{"role": "user", "content": "ok"}]) is False
 
 
-def test_compact_summary_prompt_marks_summary_as_background_only() -> None:
-    prompt = context_compact.build_compact_summary_prompt([
-        {"role": "user", "content": "旧任务"},
-        {"role": "assistant", "content": "旧结果"},
-    ])
-
-    assert "BACKGROUND ONLY" in prompt
-    assert "next instruction" in prompt
-    assert "旧任务" in prompt
-
-
-def test_compact_summary_prompt_uses_token_budget_for_cjk_history() -> None:
-    prompt = context_compact.build_compact_summary_prompt([
-        {"role": "user", "content": "长" * 100_000},
-        {"role": "assistant", "content": "答" * 100_000},
-    ])
-
-    assert context_compact.estimate_text_tokens([{"role": "user", "content": prompt}]) <= 3_000
-    assert "tokens omitted" in prompt
+def test_compaction_threshold_matches_codex_ninety_percent_and_explicit_cap() -> None:
+    assert context_compact.compaction_threshold(context_window_tokens=100_000) == 90_000
+    assert context_compact.compaction_threshold(
+        context_window_tokens=100_000,
+        explicit_limit=70_000,
+    ) == 70_000
+    assert context_compact.compaction_threshold(
+        context_window_tokens=100_000,
+        explicit_limit=95_000,
+    ) == 90_000
 
 
-def test_compact_summary_omits_codex_skill_context_fragments() -> None:
-    prompt = context_compact.build_compact_summary_prompt([
+def test_auto_compact_counts_system_and_tool_schema() -> None:
+    assert context_compact.auto_compact_needed(
+        [{"role": "user", "content": "ok"}],
+        threshold=10,
+        system="s" * 30,
+        tools=[{"type": "function", "name": "node__list", "description": "d" * 30}],
+    ) is True
+
+
+def test_codex_compaction_prompt_is_checkpoint_handoff() -> None:
+    assert "CONTEXT CHECKPOINT COMPACTION" in context_compact.CODEX_COMPACTION_PROMPT
+    assert "Current progress and key decisions made" in context_compact.CODEX_COMPACTION_PROMPT
+    assert "What remains to be done" in context_compact.CODEX_COMPACTION_PROMPT
+
+
+def test_local_compaction_keeps_recent_real_users_and_one_summary_checkpoint() -> None:
+    messages = [
         {"role": "user", "content": "当前真实任务"},
+        {"role": "assistant", "content": "旧回答"},
+        {"type": "function_call", "call_id": "c1", "name": "node__list", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c1", "output": "{}"},
         {
             "role": "developer",
             "content": "<skills_instructions>\nCATALOG_BODY\n</skills_instructions>",
@@ -42,35 +54,60 @@ def test_compact_summary_omits_codex_skill_context_fragments() -> None:
             "role": "user",
             "content": "<skill>\n<name>demo</name>\nSKILL_BODY\n</skill>",
         },
+    ]
+
+    compacted = context_compact.codex_local_compacted_history(messages, "完成 A，下一步 B")
+
+    assert compacted[0] == {"role": "user", "content": "当前真实任务"}
+    assert all(item.get("role") != "assistant" for item in compacted)
+    assert all(item.get("type") not in {"function_call", "function_call_output"} for item in compacted)
+    assert compacted[-1]["role"] == "user"
+    assert compacted[-1]["content"].startswith(context_compact.CODEX_SUMMARY_PREFIX)
+    assert "完成 A，下一步 B" in compacted[-1]["content"]
+
+
+def test_remote_compaction_removes_stale_wrappers_but_keeps_opaque_item() -> None:
+    items = context_compact.sanitize_remote_compaction_items([
+        {"role": "developer", "content": "old runtime"},
+        {"role": "user", "content": "<skill>\nold skill\n</skill>"},
+        {"role": "user", "content": "真实任务"},
+        {"type": "function_call", "call_id": "c1", "name": "node__list", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c1", "output": "{}"},
+        {"type": "compaction", "id": "cmp_1", "encrypted_content": "opaque"},
     ])
 
-    assert "当前真实任务" in prompt
-    assert "CATALOG_BODY" not in prompt
-    assert "SKILL_BODY" not in prompt
+    assert items == [
+        {"role": "user", "content": "真实任务"},
+        {"type": "compaction", "id": "cmp_1", "encrypted_content": "opaque"},
+    ]
 
 
-def test_compact_messages_wraps_background_boundary() -> None:
-    messages = context_compact.compact_messages(
-        "稳定背景",
-        preserved_tail=[{"role": "user", "content": "最近问题"}],
+def test_remove_oldest_compaction_unit_keeps_function_pair_invariant() -> None:
+    reduced = context_compact.remove_oldest_compaction_unit([
+        {"type": "function_call", "call_id": "c1", "name": "node__list", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "c1", "output": "{}"},
+        {"role": "user", "content": "继续"},
+    ])
+
+    assert reduced == [{"role": "user", "content": "继续"}]
+
+
+def test_compaction_trims_newest_function_outputs_to_fit_model_window() -> None:
+    messages = [
+        {"role": "user", "content": "读取"},
+        {"type": "function_call_output", "call_id": "c1", "output": "x" * 4000},
+        {"type": "function_call_output", "call_id": "c2", "output": "y" * 4000},
+    ]
+
+    trimmed, rewritten, deleted_tokens = context_compact.trim_function_outputs_for_compaction(
+        messages,
+        max_input_tokens=500,
     )
 
-    assert messages[0]["role"] == "developer"
-    assert '<compacted_context kind="background_summary">' in messages[0]["content"]
-    assert messages[1] == {"role": "user", "content": "最近问题"}
-
-
-def test_compaction_carries_prior_developer_summary_forward() -> None:
-    prior = context_compact.compacted_context_message("第一阶段背景")
-
-    prompt = context_compact.build_compact_summary_prompt([
-        prior,
-        {"role": "user", "content": "新任务"},
-        {"role": "assistant", "content": "新结果"},
-    ])
-
-    assert "第一阶段背景" in prompt
-    assert "新任务" in prompt
+    assert rewritten >= 1
+    assert deleted_tokens > 0
+    assert "truncated" in trimmed[-1]["output"]
+    assert context_compact.estimate_tokens(trimmed) < context_compact.estimate_tokens(messages)
 
 
 def test_preserved_tail_keeps_tool_call_and_result_together() -> None:

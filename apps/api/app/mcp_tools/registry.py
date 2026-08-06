@@ -687,7 +687,7 @@ _STANDARD_DESCRIPTION_BASES: dict[str, str] = {
     "media.get_presets": "从图片协议 catalog 读取 provider 推荐参数预设",
     "media.list_providers": "读取已配置的媒体 provider 列表",
     "media.test_provider": "向指定媒体 provider 发送最小真实请求并返回测试结果",
-    "memory.compact_context": "压缩当前会话上下文，保存摘要和长期事实",
+    "memory.compact_context": "把模型可见历史压缩并持久化为上下文检查点",
     "memory.recall": "检索当前项目的相关记忆",
     "memory.recall_user": "检索跨项目用户偏好记忆",
     "memory.save_fact": "保存当前项目级长期事实",
@@ -1917,8 +1917,8 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         memory_tools.memory_compact_context,
         tags=["memory"],
       description=(
-          "在上下文接近上限时保存 transcript、提炼长期事实，并用背景摘要加 token 预算内的真实尾部替换旧聊天。"
-          "通常由 orchestrator 自动触发；target_tail_tokens 只调整尾部 token 预算，不使用固定消息条数窗口。"
+          "把当前模型可见历史压缩为 Codex 风格上下文检查点并保存 transcript；聊天界面记录保持可见。"
+          "原生 OpenAI Responses 使用 /responses/compact，其余模型使用同语义本地降级。"
         ),
     )
     R("memory.save_user_fact", memory_tools.memory_save_user_fact, tags=["memory", "user"])
