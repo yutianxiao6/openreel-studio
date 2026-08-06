@@ -486,6 +486,7 @@ def test_before_model_call_hook_replaces_execution_checklist_reminder() -> None:
     assert result.checklist_reminder_added is True
     assert old_reminder not in contents
     assert contents[-1] == new_reminder
+    assert result.messages[-1]["role"] == "developer"
 
 def test_before_model_call_hook_replaces_runtime_context_reminder() -> None:
     old_runtime = "<runtime-context>\nold\n</runtime-context>"
@@ -504,6 +505,7 @@ def test_before_model_call_hook_replaces_runtime_context_reminder() -> None:
     assert old_runtime not in contents
     assert contents[-2] == "继续"
     assert contents[-1] == "<runtime-context>\n## 运行时上下文\nnew\n</runtime-context>"
+    assert result.messages[-1]["role"] == "developer"
 
 
 def test_before_model_call_hook_replaces_codex_skills_developer_fragment() -> None:
@@ -549,8 +551,11 @@ def test_before_model_call_hook_replaces_current_turn_skill_instructions() -> No
     assert old_skill not in contents
     assert old_warning not in contents
     assert result.messages[-3] == {"role": "developer", "content": catalog}
-    assert contents[-2] == new_skill
-    assert contents[-1] == "<skill-warning>\n- new warning\n</skill-warning>"
+    assert result.messages[-2] == {"role": "user", "content": new_skill}
+    assert result.messages[-1] == {
+        "role": "developer",
+        "content": "<skill-warning>\n- new warning\n</skill-warning>",
+    }
 
 def test_before_model_call_hook_appends_dynamic_context_for_cache_prefix() -> None:
     checklist = "<execution-checklist>\nnext\n</execution-checklist>"
@@ -565,7 +570,9 @@ def test_before_model_call_hook_appends_dynamic_context_for_cache_prefix() -> No
     )
 
     assert result.messages[-3] == {"role": "user", "content": "当前用户需求"}
+    assert result.messages[-2]["role"] == "developer"
     assert result.messages[-2]["content"] == checklist
+    assert result.messages[-1]["role"] == "developer"
     assert result.messages[-1]["content"] == (
         "<runtime-context>\n## 运行时上下文\nstate\n</runtime-context>"
     )
@@ -590,6 +597,7 @@ def test_before_model_call_hook_appends_context_for_tool_continuation() -> None:
     )
 
     assert result.messages[-2]["role"] == "tool"
+    assert result.messages[-1]["role"] == "developer"
     assert result.messages[-1]["content"] == (
         "<runtime-context>\n## 运行时上下文\nstate\n</runtime-context>"
     )
@@ -607,6 +615,22 @@ def test_before_model_call_hook_removes_checklist_without_new_reminder() -> None
     assert result.removed_checklist_reminders == 1
     assert result.checklist_reminder_added is False
     assert result.messages == [{"role": "user", "content": "继续"}]
+
+
+def test_history_instructions_are_developer_context_without_fake_ack() -> None:
+    result = prepend_history_instructions(
+        [{"role": "user", "content": "当前用户需求"}],
+        "稳定执行规则",
+    )
+
+    assert result == [
+        {
+            "role": "developer",
+            "content": "<agent-instructions>\n稳定执行规则\n</agent-instructions>",
+        },
+        {"role": "user", "content": "当前用户需求"},
+    ]
+    assert all(message.get("content") != "明白。我会按这些规则工作。" for message in result)
 
 def test_stop_hook_skips_completion_audit_without_pending_work() -> None:
     result = run_stop_after_text_response(
@@ -1308,7 +1332,13 @@ async def test_orchestrator_video_intake_basic_intake_emits_structured_event(mon
         async def generate(self, *args, **kwargs):
             return {"content": "正在整理需要你确认的信息。"}
 
-    async def fake_save_message(project_id: str, role: str, content: str, metadata=None):
+    async def fake_save_message(
+        project_id: str,
+        role: str,
+        content: str,
+        metadata=None,
+        model_context_json=None,
+    ):
         holder["saved"].append((role, content, metadata))
 
     async def fake_settings():
@@ -1433,7 +1463,13 @@ async def test_orchestrator_retries_empty_length_response(monkeypatch) -> None:
         async def generate(self, *args, **kwargs):
             return {"content": "继续。"}
 
-    async def fake_save_message(project_id: str, role: str, content: str, metadata=None):
+    async def fake_save_message(
+        project_id: str,
+        role: str,
+        content: str,
+        metadata=None,
+        model_context_json=None,
+    ):
         holder["saved"].append((role, content, metadata))
 
     async def fake_settings():
@@ -1553,7 +1589,13 @@ async def test_orchestrator_never_executes_truncated_write_tool_call(monkeypatch
         holder["registry_calls"].append((name, kwargs))
         raise AssertionError("truncated write calls must not reach the registry")
 
-    async def fake_save_message(project_id: str, role: str, content: str, metadata=None):
+    async def fake_save_message(
+        project_id: str,
+        role: str,
+        content: str,
+        metadata=None,
+        model_context_json=None,
+    ):
         holder["saved"].append((role, content, metadata))
 
     async def fake_settings():

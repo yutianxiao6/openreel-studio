@@ -568,6 +568,7 @@ async def get_chat_history(
         .where(
             Message.project_id == project_id,
             Message.archived == False,  # noqa: E712
+            Message.role.in_(["user", "assistant"]),
         )
         .order_by(Message.created_at)
     )

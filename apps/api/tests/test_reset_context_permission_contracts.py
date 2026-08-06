@@ -580,12 +580,13 @@ async def test_memory_compact_context_persists_summary_not_sliding_tail(monkeypa
 
     assert result["summary_inserted"] is True
     assert result["archived"] == 2
-    assert result["active"] == 3
+    assert result["active"] == 2
     assert all(row.archived for row in active_rows)
     assert "<compacted_context kind=\"background_summary\">" in created_rows[0].content
     assert "压缩后的背景摘要" in created_rows[0].content
+    assert created_rows[0].role == "developer"
     assert created_rows[1].role == "assistant"
-    assert created_rows[2].content == "小尾部"
+    assert created_rows[1].content == "小尾部"
 
 
 @pytest.mark.asyncio

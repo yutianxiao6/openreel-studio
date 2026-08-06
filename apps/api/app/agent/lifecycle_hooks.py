@@ -24,6 +24,7 @@ RUNTIME_CONTEXT_MARKER = "<runtime-context>"
 SKILLS_CONTEXT_MARKER = "<skills_instructions>"
 SKILL_INSTRUCTIONS_MARKER = "<skill>"
 SKILL_WARNING_MARKER = "<skill-warning>"
+HISTORY_INSTRUCTIONS_MARKER = "<agent-instructions>"
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,7 @@ class StopHookResult:
 def _is_execution_checklist_message(message: dict[str, Any]) -> bool:
     return (
         isinstance(message, dict)
-        and message.get("role") == "user"
+        and message.get("role") in {"developer", "user"}
         and isinstance(message.get("content"), str)
         and EXECUTION_CHECKLIST_MARKER in message["content"]
     )
@@ -78,7 +79,7 @@ def _is_execution_checklist_message(message: dict[str, Any]) -> bool:
 def _is_runtime_context_message(message: dict[str, Any]) -> bool:
     return (
         isinstance(message, dict)
-        and message.get("role") == "user"
+        and message.get("role") in {"developer", "user"}
         and isinstance(message.get("content"), str)
         and RUNTIME_CONTEXT_MARKER in message["content"]
     )
@@ -107,7 +108,7 @@ def _is_skills_context_message(message: dict[str, Any]) -> bool:
 def _is_skill_warning_message(message: dict[str, Any]) -> bool:
     return (
         isinstance(message, dict)
-        and message.get("role") == "user"
+        and message.get("role") in {"developer", "user"}
         and isinstance(message.get("content"), str)
         and message["content"].startswith(SKILL_WARNING_MARKER)
         and message["content"].rstrip().endswith("</skill-warning>")
@@ -123,6 +124,34 @@ def _context_insertion_index(messages: list[dict[str, Any]]) -> int:
     system/history/current-user prefix and confines volatility to the end.
     """
     return len(messages)
+
+
+def prepend_history_instructions(
+    messages: list[dict[str, Any]],
+    instructions: str,
+) -> list[dict[str, Any]]:
+    """Install stable turn instructions as developer context, never fake chat."""
+
+    cleaned = [
+        message
+        for message in messages
+        if not (
+            isinstance(message, dict)
+            and message.get("role") == "developer"
+            and isinstance(message.get("content"), str)
+            and message["content"].startswith(f"{HISTORY_INSTRUCTIONS_MARKER}\n")
+        )
+    ]
+    text = str(instructions or "").strip()
+    if not text:
+        return cleaned
+    return [
+        {
+            "role": "developer",
+            "content": f"{HISTORY_INSTRUCTIONS_MARKER}\n{text}\n</agent-instructions>",
+        },
+        *cleaned,
+    ]
 
 
 def run_before_model_call(
@@ -159,12 +188,12 @@ def run_before_model_call(
 
     context_messages: list[dict[str, Any]] = []
     if checklist_reminder:
-        context_messages.append({"role": "user", "content": checklist_reminder})
+        context_messages.append({"role": "developer", "content": checklist_reminder})
     if runtime_context:
         context_messages.append(
             {
-            "role": "user",
-            "content": f"{RUNTIME_CONTEXT_MARKER}\n{runtime_context}\n</runtime-context>",
+                "role": "developer",
+                "content": f"{RUNTIME_CONTEXT_MARKER}\n{runtime_context}\n</runtime-context>",
             }
         )
     if skills_context:
@@ -177,7 +206,7 @@ def run_before_model_call(
         if warning_text:
             context_messages.append(
                 {
-                    "role": "user",
+                    "role": "developer",
                     "content": f"{SKILL_WARNING_MARKER}\n{warning_text}\n</skill-warning>",
                 }
             )

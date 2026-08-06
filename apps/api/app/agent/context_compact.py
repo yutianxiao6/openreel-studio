@@ -108,7 +108,7 @@ def auto_compact_needed(messages: list[dict]) -> bool:
 
 def compacted_context_message(summary_text: str) -> dict[str, str]:
     return {
-        "role": "user",
+        "role": "developer",
         "content": (
             "<compacted_context kind=\"background_summary\">\n"
             "Boundary:\n"
@@ -119,13 +119,6 @@ def compacted_context_message(summary_text: str) -> dict[str, str]:
             f"{summary_text.strip()}\n"
             "</compacted_context>"
         ),
-    }
-
-
-def compacted_context_ack_message() -> dict[str, str]:
-    return {
-        "role": "assistant",
-        "content": "Understood. I will treat the compacted context as background and follow the latest user message.",
     }
 
 
@@ -171,6 +164,7 @@ def _is_runtime_wrapper_message(message: dict) -> bool:
     stripped = content.lstrip()
     return stripped.startswith((
         "<system-reminder>",
+        "<agent-instructions>",
         "<compacted_context",
         "<execution-checklist>",
         "<runtime-context>",
@@ -178,6 +172,15 @@ def _is_runtime_wrapper_message(message: dict) -> bool:
         "<skill>",
         "<skill-warning>",
     ))
+
+
+def _is_compacted_context_message(message: dict) -> bool:
+    content = message.get("content")
+    return (
+        message.get("role") == "developer"
+        and isinstance(content, str)
+        and content.lstrip().startswith("<compacted_context")
+    )
 
 
 def compact_preserved_tail(
@@ -256,7 +259,9 @@ def compact_preserved_tail(
 def build_compact_summary_prompt(messages: list[dict]) -> str:
     serialized: list[str] = []
     for message in messages:
-        if _is_runtime_wrapper_message(message):
+        # A prior compacted summary is durable historical context and must be
+        # folded into the next summary.  Ephemeral turn wrappers are omitted.
+        if _is_runtime_wrapper_message(message) and not _is_compacted_context_message(message):
             continue
         role = _message_role(message) or "?"
         item_type = message.get("type")
@@ -295,7 +300,7 @@ def build_compact_summary_prompt(messages: list[dict]) -> str:
 
 
 def compact_messages(summary_text: str, preserved_tail: list[dict] | None = None) -> list[dict]:
-    compacted = [compacted_context_message(summary_text), compacted_context_ack_message()]
+    compacted = [compacted_context_message(summary_text)]
     if preserved_tail:
         compacted.extend(deepcopy(preserved_tail))
     return compacted

@@ -63,6 +63,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.agent.prompt_dump import dump_llm_request, new_run_id
 from app.agent.context_compact import (
+    TOKEN_THRESHOLD,
     auto_compact_needed,
     estimate_tokens,
     save_transcript,
@@ -82,11 +83,26 @@ from app.agent.tool_output import (
 )
 from app.agent.lifecycle_hooks import (
     PermissionDenialState,
+    prepend_history_instructions,
     run_before_model_call,
     run_pre_tool_use,
     run_stop_after_text_response,
 )
-from app.agent.permission_policy import ToolPermissionContext, plan_mode_allowed_tools
+from app.agent.permission_policy import (
+    ToolPermissionContext,
+    decide_tool_permission,
+    plan_mode_allowed_tools,
+)
+from app.agent.rollout_context import (
+    encode_persisted_rollout,
+    persisted_rollout_tokens,
+    rollout_context_messages,
+)
+from app.agent.tool_execution import (
+    ParallelToolCall,
+    contiguous_parallel_read_batch,
+    run_parallel_tool_calls,
+)
 from app.agent.reset_flow import (
     make_reset_confirm_token,
     reset_canvas_events,
@@ -1763,16 +1779,9 @@ class AgentOrchestrator:
             **vision_context.trace_payload(),
         )
 
-        # 首轮 history 注入：把详细规则塞进 messages，后续 iter 不重发。
-        if history_inject:
-            messages.insert(0, {
-                "role": "user",
-                "content": f"<system-reminder>\n{history_inject}\n</system-reminder>",
-            })
-            messages.insert(1, {
-                "role": "assistant",
-                "content": "明白。我会按这些规则工作。",
-            })
+        # Stable turn instructions are developer context, not a fabricated
+        # user/assistant exchange.
+        messages = prepend_history_instructions(messages, history_inject)
 
         from .prompt_assembler import (
             PromptContext,
@@ -1839,6 +1848,7 @@ class AgentOrchestrator:
         tool_error_counts: dict[tuple[str, str], int] = {}
         terminal_loop_error: dict[str, Any] | None = None
         no_text_fallback_used = False
+        turn_rollout_items: list[dict[str, Any]] = []
         empty_length_retries = 0
         truncated_tool_call_retries = 0
         max_iter = agent_prefs["max_iterations"]
@@ -2078,16 +2088,7 @@ class AgentOrchestrator:
                         )
                     except Exception:
                         logger.exception("failed to persist auto compact context peak reset")
-                    # Compact 抹掉了首轮注入的 <system-reminder>,重新注入一遍
-                    if history_inject:
-                        messages.insert(0, {
-                            "role": "user",
-                            "content": f"<system-reminder>\n{history_inject}\n</system-reminder>",
-                        })
-                        messages.insert(1, {
-                            "role": "assistant",
-                            "content": "明白。我会按这些规则工作。",
-                        })
+                    messages = prepend_history_instructions(messages, history_inject)
                     messages.append({"role": "user", "content": message})
                     apply_vision_context_to_latest_user(messages, message, vision_context)
                     trace.emit(
@@ -2283,15 +2284,7 @@ class AgentOrchestrator:
                             )
                         except Exception:
                             logger.exception("failed to persist reactive compact context peak reset")
-                        if history_inject:
-                            messages.insert(0, {
-                                "role": "user",
-                                "content": f"<system-reminder>\n{history_inject}\n</system-reminder>",
-                            })
-                            messages.insert(1, {
-                                "role": "assistant",
-                                "content": "明白。我会按这些规则工作。",
-                            })
+                        messages = prepend_history_instructions(messages, history_inject)
                         messages.append({"role": "user", "content": message})
                         apply_vision_context_to_latest_user(messages, message, vision_context)
                         before_model_call = run_before_model_call(
@@ -2499,6 +2492,11 @@ class AgentOrchestrator:
                         }
                     full_response += tool_round_body_text
 
+            if not msg_tool_calls:
+                completed_items = replay_output_items(response)
+                messages.extend(completed_items)
+                turn_rollout_items.extend(completed_items)
+
             if not msg_tool_calls and round_commentary:
                 yield self._build_agent_round_summary(
                     iteration,
@@ -2592,7 +2590,7 @@ class AgentOrchestrator:
                 )
                 audit_triggered = stop_hook.audit_triggered
                 if stop_hook.should_run_audit:
-                    messages.append({"role": "user", "content": stop_hook.audit_message})
+                    messages.append({"role": "developer", "content": stop_hook.audit_message})
                     trace.emit(
                         "loop_transition",
                         iteration=iteration,
@@ -2645,10 +2643,12 @@ class AgentOrchestrator:
                 round_tool_calls.append((tool_call, tool_name, tool_args))
                 planned_actions.append(tool_name)
 
-            messages.extend(replay_output_items(
+            replayed_items = replay_output_items(
                 response,
                 invalid_call_ids=set(unsafe_tool_call_errors),
-            ))
+            )
+            messages.extend(replayed_items)
+            turn_rollout_items.extend(replayed_items)
 
             trace.emit(
                 "tool_calls_requested",
@@ -2683,7 +2683,9 @@ class AgentOrchestrator:
             round_tool_context_messages: list[dict[str, Any]] = []
 
             def _append_tool_result_messages(tool_call_id: str, tool_output: dict[str, Any]) -> None:
-                messages.append(tool_result_input_item(tool_call_id, tool_output))
+                result_item = tool_result_input_item(tool_call_id, tool_output)
+                messages.append(result_item)
+                turn_rollout_items.append(result_item)
                 round_tool_context_messages.extend(
                     tool_result_context_messages(tool_call_id, tool_output)
                 )
@@ -2697,6 +2699,86 @@ class AgentOrchestrator:
                 images = payload.get("images")
                 if isinstance(images, list) and images:
                     tool_vision_contexts.append(payload)
+
+            parallel_results: dict[str, Any] = {}
+            parallel_started: set[str] = set()
+            parallel_candidates = [
+                ParallelToolCall(
+                    call_id=str(tool_call.id),
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    spec=registry.get(tool_name),
+                )
+                for tool_call, tool_name, tool_args in round_tool_calls
+            ]
+
+            def _parallel_call_is_eligible(call: ParallelToolCall) -> bool:
+                if unsafe_tool_call_errors.get(call.call_id):
+                    return False
+                permission = decide_tool_permission(
+                    ToolPermissionContext(
+                        tool_name=call.tool_name,
+                        state=state,
+                        user_message=message,
+                        tool_args=call.tool_args,
+                    )
+                )
+                return permission.allowed
+
+            safe_read_batch = contiguous_parallel_read_batch(
+                parallel_candidates,
+                0,
+                eligible=_parallel_call_is_eligible,
+            )
+            # A write or confirmation tool is a strict barrier.  We only start
+            # a parallel batch when the complete model batch consists of
+            # independent reads and the configured turn budget is unlimited.
+            if (
+                len(safe_read_batch) >= 2
+                and len(safe_read_batch) == len(parallel_candidates)
+                and turn_budget.limits.total_tool_calls == 0
+            ):
+                cancel_reason = await mq.get_cancel_reason(project_id)
+                if not cancel_reason:
+                    for call in safe_read_batch:
+                        parallel_started.add(call.call_id)
+                        yield {
+                            "type": "tool_start",
+                            "tool": call.tool_name,
+                            "round": iteration + 1,
+                            "content": round_tool_start_content,
+                            "agent": _agent_run_agent_name(call.tool_name, call.tool_args) or None,
+                        }
+                    trace.emit(
+                        "tool_parallel_batch_started",
+                        iteration=iteration,
+                        transition_reason="concurrency_safe_reads",
+                        tool_names=[call.tool_name for call in safe_read_batch],
+                        tool_count=len(safe_read_batch),
+                    )
+
+                    async def _invoke_parallel_read(call: ParallelToolCall) -> Any:
+                        call_kwargs = self._filter_kwargs(call.spec.handler, call.tool_args)
+                        return coerce_tool_output(
+                            await registry.call(call.tool_name, **call_kwargs)
+                        )
+
+                    batch_started_at = time.perf_counter()
+                    parallel_batch_results = await run_parallel_tool_calls(
+                        safe_read_batch,
+                        _invoke_parallel_read,
+                    )
+                    parallel_results = {
+                        result.call_id: result for result in parallel_batch_results
+                    }
+                    trace.emit(
+                        "tool_parallel_batch_completed",
+                        iteration=iteration,
+                        transition_reason="concurrency_safe_reads",
+                        duration_ms=elapsed_ms(batch_started_at),
+                        tool_names=[call.tool_name for call in safe_read_batch],
+                        tool_count=len(safe_read_batch),
+                    )
 
             for tool_call, tool_name, tool_args in round_tool_calls:
                 tool_started_at = time.perf_counter()
@@ -2911,13 +2993,14 @@ class AgentOrchestrator:
                     allowed=True,
                 )
 
-                yield {
-                    "type": "tool_start",
-                    "tool": tool_name,
-                    "round": iteration + 1,
-                    "content": round_tool_start_content,
-                    "agent": tool_agent_name or None,
-                }
+                if str(tool_call.id) not in parallel_started:
+                    yield {
+                        "type": "tool_start",
+                        "tool": tool_name,
+                        "round": iteration + 1,
+                        "content": round_tool_start_content,
+                        "agent": tool_agent_name or None,
+                    }
 
                 spec = registry.get(tool_name)
                 if not spec:
@@ -3039,9 +3122,15 @@ class AgentOrchestrator:
                     else:
                         if _destructive:
                             await self._drop_session_cache(node)
-                        runtime_output = coerce_tool_output(
-                            await registry.call(tool_name, **call_kwargs)
-                        )
+                        parallel_result = parallel_results.get(str(tool_call.id))
+                        if parallel_result is not None:
+                            if parallel_result.error is not None:
+                                raise parallel_result.error
+                            runtime_output = parallel_result.value
+                        else:
+                            runtime_output = coerce_tool_output(
+                                await registry.call(tool_name, **call_kwargs)
+                            )
                         raw_result = runtime_output.value
                         if _destructive:
                             await self._drop_session_cache(None)
@@ -3274,11 +3363,18 @@ class AgentOrchestrator:
                             str(result.get("assistant_text") or result.get("summary_text") or "请补充信息。")
                         )
                         assistant_metadata = {"interactionInput": intake} if isinstance(intake, dict) else None
+                        _append_tool_result_messages(tool_call.id, tool_output)
+                        model_context_json = encode_persisted_rollout(
+                            turn_rollout_items,
+                            assistant_text,
+                            normalize_text=_sanitize_user_visible_text,
+                        )
                         await self._save_message(
                             project_id,
                             "assistant",
                             assistant_text,
                             assistant_metadata,
+                            model_context_json=model_context_json,
                         )
                         yield event
                         if assistant_text:
@@ -3753,7 +3849,18 @@ class AgentOrchestrator:
                 meta_to_save = dict(meta_to_save or {})
                 meta_to_save.setdefault("source", "llm_empty_response_fallback")
                 meta_to_save.setdefault("model_visible", False)
-            await self._save_message(project_id, "assistant", full_response or "(tool calls)", meta_to_save)
+            model_context_json = encode_persisted_rollout(
+                turn_rollout_items,
+                full_response,
+                normalize_text=_sanitize_user_visible_text,
+            )
+            await self._save_message(
+                project_id,
+                "assistant",
+                full_response or "(tool calls)",
+                meta_to_save,
+                model_context_json=model_context_json,
+            )
 
         # 归档已完成的任务到历史，删除任务文件
         try:
@@ -3801,7 +3908,12 @@ class AgentOrchestrator:
             logger.exception("session cache drop failed")
 
     async def _save_message(
-        self, project_id: str, role: str, content: str, metadata: dict | None = None,
+        self,
+        project_id: str,
+        role: str,
+        content: str,
+        metadata: dict | None = None,
+        model_context_json: str | None = None,
     ) -> None:
         if role == "assistant":
             content = _sanitize_user_visible_text(content)
@@ -3810,6 +3922,7 @@ class AgentOrchestrator:
             role=role,
             content=content,
             metadata_json=json.dumps(metadata) if metadata else None,
+            model_context_json=model_context_json,
         )
         self.db.add(msg)
         await self.db.commit()
@@ -3858,7 +3971,7 @@ class AgentOrchestrator:
             .where(
                 Message.project_id == project_id,
                 Message.archived == False,  # noqa: E712
-                Message.role.in_(("user", "assistant")),
+                Message.role.in_(("user", "assistant", "developer")),
             )
             .order_by(Message.created_at.desc())
         )
@@ -3867,7 +3980,7 @@ class AgentOrchestrator:
 
         history_entries: list[tuple[dict, str | None]] = []
         for m in rows:
-            if m.role not in ("user", "assistant"):
+            if m.role not in ("user", "assistant", "developer"):
                 continue
             raw_content = str(m.content or "")
             message = {"role": m.role, "content": raw_content}
@@ -3882,6 +3995,14 @@ class AgentOrchestrator:
                     metadata = {}
             if not _message_model_visible(metadata):
                 continue
+            model_context = (
+                rollout_context_messages(
+                    getattr(m, "model_context_json", None),
+                    fallback_assistant_text=raw_content,
+                )
+                if m.role == "assistant"
+                else [message]
+            )
             vision_context = await build_vision_context_from_metadata(
                 project_id,
                 metadata,
@@ -3893,7 +4014,7 @@ class AgentOrchestrator:
                     message["content"] = multimodal_content(raw_content, vision_context)
                     history_entries.append((message, raw_content))
                 else:
-                    history_entries.append((message, raw_content))
+                    history_entries.extend((item, None) for item in model_context)
                     history_entries.append((
                         {
                             "role": "user",
@@ -3907,7 +4028,10 @@ class AgentOrchestrator:
                         None,
                     ))
             else:
-                history_entries.append((message, raw_content))
+                history_entries.extend(
+                    (item, raw_content if m.role == "user" else None)
+                    for item in model_context
+                )
 
         aliases = {current_message, *(current_message_aliases or [])}
         if history_entries:
@@ -3927,9 +4051,9 @@ class AgentOrchestrator:
                     Message.archived == False,  # noqa: E712
                 )
             )
-            active_messages = []
+            active_context_tokens = 0
             for row in result.all():
-                if row.role not in ("user", "assistant"):
+                if row.role not in ("user", "assistant", "developer"):
                     continue
                 metadata: dict[str, Any] = {}
                 metadata_json = getattr(row, "metadata_json", None)
@@ -3942,12 +4066,18 @@ class AgentOrchestrator:
                         metadata = {}
                 if not _message_model_visible(metadata):
                     continue
-                active_messages.append({
+                message_entry = {
                     "role": row.role,
                     "content": row.content,
                     "_metadata": metadata,
-                })
-            if not auto_compact_needed(active_messages):
+                }
+                rollout_tokens = (
+                    persisted_rollout_tokens(getattr(row, "model_context_json", None))
+                    if row.role == "assistant"
+                    else 0
+                )
+                active_context_tokens += rollout_tokens or estimate_tokens([message_entry])
+            if active_context_tokens <= TOKEN_THRESHOLD:
                 return
             await memory_compact_context(project_id)
         except Exception as exc:

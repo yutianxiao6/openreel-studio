@@ -63,6 +63,7 @@ async def init_db() -> None:
         await _ensure_column(
             conn, "messages", "archived", "BOOLEAN NOT NULL DEFAULT 0"
         )
+        await _ensure_column(conn, "messages", "model_context_json", "TEXT")
         await _ensure_column(conn, "llm_providers", "context_window_tokens", "INTEGER")
         await _ensure_column(conn, "llm_providers", "max_input_tokens", "INTEGER")
         await _ensure_column(conn, "llm_providers", "max_output_tokens", "INTEGER")

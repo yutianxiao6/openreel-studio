@@ -191,14 +191,14 @@ async def memory_compact_context(
     """Persist a compacted background summary and archive replaced messages."""
     from app.agent.context_compact import (
         PRESERVED_TAIL_TOKEN_BUDGET,
-        auto_compact_needed,
+        TOKEN_THRESHOLD,
         build_compact_summary_prompt,
         compact_preserved_tail,
-        compacted_context_ack_message,
         compacted_context_message,
         estimate_tokens,
         save_transcript,
     )
+    from app.agent.rollout_context import persisted_rollout_tokens
     from app.services.llm_service import LLMService
 
     try:
@@ -215,22 +215,27 @@ async def memory_compact_context(
         active = list(result.all())
 
     payload = []
+    active_tokens = 0
     for m in active:
-        if m.role not in ("user", "assistant"):
+        if m.role not in ("user", "assistant", "developer"):
             continue
         metadata = _message_metadata(m)
         if not _message_model_visible(metadata):
             continue
-        payload.append(
-            {
-                "role": m.role,
-                "content": m.content,
-                "_message_id": m.id,
-                "_metadata": metadata,
-            }
+        message_entry = {
+            "role": m.role,
+            "content": m.content,
+            "_message_id": m.id,
+            "_metadata": metadata,
+        }
+        payload.append(message_entry)
+        rollout_tokens = (
+            persisted_rollout_tokens(getattr(m, "model_context_json", None))
+            if m.role == "assistant"
+            else 0
         )
-    active_tokens = estimate_tokens(payload)
-    if not auto_compact_needed(payload):
+        active_tokens += rollout_tokens or estimate_tokens([message_entry])
+    if active_tokens <= TOKEN_THRESHOLD:
         return {
             "archived": 0,
             "active": len(active),
@@ -270,10 +275,7 @@ async def memory_compact_context(
     preserved_ids = {
         str(message.get("_message_id")) for message in preserved_tail if message.get("_message_id")
     }
-    compacted_messages = [
-        compacted_context_message(summary_text),
-        compacted_context_ack_message(),
-    ]
+    compacted_messages = [compacted_context_message(summary_text)]
     for message in preserved_tail:
         compacted_messages.append(
             {
@@ -296,7 +298,7 @@ async def memory_compact_context(
         for message in compacted_messages:
             role = str(message.get("role") or "")
             content = str(message.get("content") or "")
-            if role not in {"user", "assistant"} or not content:
+            if role not in {"user", "assistant", "developer"} or not content:
                 continue
             metadata = (
                 dict(message.get("_metadata") or {})

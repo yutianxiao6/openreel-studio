@@ -201,9 +201,12 @@ class Asset(AssetBase, table=True):
 
 class MessageBase(SQLModel):
     project_id: str = Field(foreign_key="projects.id", index=True)
-    role: str  # user | assistant | system | tool
+    role: str  # user | assistant | developer | system | tool
     content: str
     metadata_json: Optional[str] = None
+    # Internal typed Responses rollout. Excluded from public model_dump/API
+    # projections so reasoning and tool protocol items stay model-private.
+    model_context_json: Optional[str] = Field(default=None, exclude=True)
     archived: bool = False
 
 

@@ -1308,6 +1308,7 @@ async def list_messages(project_id: str, db: AsyncSession = Depends(get_session)
         .where(
             Message.project_id == project_id,
             Message.archived == False,  # noqa: E712
+            Message.role.in_(["user", "assistant"]),
         )
         .order_by(Message.created_at)
     )

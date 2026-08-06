@@ -55,10 +55,22 @@ def test_compact_messages_wraps_background_boundary() -> None:
         preserved_tail=[{"role": "user", "content": "最近问题"}],
     )
 
-    assert messages[0]["role"] == "user"
+    assert messages[0]["role"] == "developer"
     assert '<compacted_context kind="background_summary">' in messages[0]["content"]
-    assert messages[1]["role"] == "assistant"
-    assert messages[2] == {"role": "user", "content": "最近问题"}
+    assert messages[1] == {"role": "user", "content": "最近问题"}
+
+
+def test_compaction_carries_prior_developer_summary_forward() -> None:
+    prior = context_compact.compacted_context_message("第一阶段背景")
+
+    prompt = context_compact.build_compact_summary_prompt([
+        prior,
+        {"role": "user", "content": "新任务"},
+        {"role": "assistant", "content": "新结果"},
+    ])
+
+    assert "第一阶段背景" in prompt
+    assert "新任务" in prompt
 
 
 def test_preserved_tail_keeps_tool_call_and_result_together() -> None:

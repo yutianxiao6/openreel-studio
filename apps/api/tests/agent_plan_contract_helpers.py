@@ -26,6 +26,7 @@ from app.agent.context_policy import chat_history_visible_for_turn
 from app.agent.lifecycle_hooks import (
     PermissionDenialState,
     next_permission_denial_state,
+    prepend_history_instructions,
     run_before_model_call,
     run_pre_tool_use,
     run_stop_after_text_response,

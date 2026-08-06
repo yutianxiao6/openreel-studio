@@ -23,6 +23,7 @@ def test_prepare_response_input_converts_messages_and_tool_rounds() -> None:
     input_items, instructions = prepare_response_input(
         [
             {"role": "system", "content": "Additional stable rule."},
+            {"role": "developer", "content": "Dynamic runtime evidence."},
             {
                 "role": "user",
                 "content": [
@@ -46,20 +47,21 @@ def test_prepare_response_input_converts_messages_and_tool_rounds() -> None:
     )
 
     assert instructions == "Primary instructions.\n\nAdditional stable rule."
-    assert input_items[0]["role"] == "user"
-    assert input_items[0]["content"] == [
+    assert input_items[0] == {"role": "developer", "content": "Dynamic runtime evidence."}
+    assert input_items[1]["role"] == "user"
+    assert input_items[1]["content"] == [
         {"type": "input_text", "text": "Inspect this."},
         {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
     ]
-    assert input_items[1] == {"role": "assistant", "content": "I will inspect it."}
-    assert input_items[2] == {
+    assert input_items[2] == {"role": "assistant", "content": "I will inspect it."}
+    assert input_items[3] == {
         "type": "function_call",
         "call_id": "call-1",
         "name": "vision__view_image",
         "arguments": "{}",
     }
-    assert input_items[3] == function_call_output_item("call-1", '{"ok":true}')
-    assert input_items[4] == reasoning
+    assert input_items[4] == function_call_output_item("call-1", '{"ok":true}')
+    assert input_items[5] == reasoning
 
 
 def test_responses_tools_flattens_function_schema() -> None:
