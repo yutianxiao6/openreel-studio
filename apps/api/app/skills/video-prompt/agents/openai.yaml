@@ -1,0 +1,4 @@
+interface:
+  display_name: "视频生成提示词"
+  short_description: "Write executable video generation prompts"
+  default_prompt: "Use $video-prompt to write an executable video-generation prompt from the supplied story and references."

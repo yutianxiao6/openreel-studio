@@ -34,7 +34,7 @@ packages/
 config/                Runtime examples and media protocol catalogs
 docs/                  Separate Chinese and English documentation
 plugins/               Built-in or example plugins
-skills/                User-editable workflow, prompt, and review skills
+skills/                User-editable <kebab-name>/SKILL.md packages
 workflow_templates/    User workflow templates
 data/                  SQLite, traces, tool results, and caches
 storage/               Uploaded, generated, and exported assets
@@ -64,7 +64,7 @@ The backend lives in `apps/api/app`:
 - `mcp_tools/`: core and deferred tools available to agents.
 - `services/`: media generation, history, editing, export, and domain execution.
 - `config_store/`: validation and materialization of `config/runtime.jsonc`.
-- `skills/`: built-in runtime skills and templates.
+- `skills/`: built-in runtime Skills and their `agents/`, `references/`, `scripts/`, and `assets/` resources.
 
 ## Node-first model
 

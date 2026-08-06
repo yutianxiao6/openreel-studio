@@ -479,7 +479,7 @@ def test_canvas_workflow_summary_keeps_reviewable_metadata():
                 "instance_scope": {"episode": 1, "segment": 2},
                 "template_step_id": "storyboard",
                 "expand_when": "after_script_segments",
-                "prompt_ref": "shot_grid_prompt#grid_storyboard",
+                "prompt_ref": "shot-grid-prompt#grid_storyboard",
                 "prompt_spec": {"goal": "生成宫格分镜", "output": "image prompt", "private": "hidden"},
                 "runner": "node_producer",
                 "source_node_id": "singleStoryboard",
@@ -504,7 +504,7 @@ def test_canvas_workflow_summary_keeps_reviewable_metadata():
         "instance_scope": {"episode": 1, "segment": 2},
         "template_step_id": "storyboard",
         "expand_when": "after_script_segments",
-        "prompt_ref": "shot_grid_prompt#grid_storyboard",
+        "prompt_ref": "shot-grid-prompt#grid_storyboard",
         "prompt_spec": {"goal": "生成宫格分镜", "output": "image prompt"},
         "runner": "node_producer",
         "source_node_id": "singleStoryboard",
@@ -2525,12 +2525,12 @@ async def test_text_runner_uses_node_model_override(monkeypatch):
 @pytest.mark.asyncio
 async def test_workflow_runtime_skill_payload_prefers_compiled_prompt_template():
     payload = await node_universal._workflow_runtime_skill_payload(
-        {"primary_skill": "script_writing", "skill_category": "prompt", "skill_scope": "builtin"},
+        {"primary_skill": "script-writing", "skill_category": "prompt", "skill_scope": "builtin"},
         {"prompt_template": "SYSTEM: 写剧本", "rendered_prompt_template": "SYSTEM: 写剧本"},
     )
 
     assert payload == {
-        "name": "script_writing",
+        "name": "script-writing",
         "category": "prompt",
         "scope": "builtin",
         "content": "",
@@ -2748,10 +2748,10 @@ async def test_node_run_workflow_text_node_uses_one_shot_llm(monkeypatch):
                 "references": [{"ref": "node:1", "role": "context"}],
                 "workflow": {
                     "step_id": "script",
-                    "prompt_ref": "script_writing#script",
+                    "prompt_ref": "script-writing#script",
                     "prompt_spec": {"output": "fields.content"},
                     "prompt_template": "SYSTEM: 剧本写作者\nUSER: 主题={{inputs.plot}}；需求={{brief.output.content}}",
-                    "primary_skill": "script_writing",
+                    "primary_skill": "script-writing",
                     "skill_category": "prompt",
                     "acceptance": "写出可用于后续分镜的剧本。",
                     "input_facts": {"plot": "江湖雨夜相逢"},
@@ -2801,7 +2801,7 @@ async def test_node_run_workflow_text_node_uses_one_shot_llm(monkeypatch):
         assert "主题=江湖雨夜相逢" in kwargs["message"]
         assert "需求=江湖雨夜相逢，15秒。" in kwargs["message"]
         payload = json.loads(kwargs["message"])
-        assert payload["skill"]["name"] == "script_writing"
+        assert payload["skill"]["name"] == "script-writing"
         assert payload["skill"]["content"] == ""
         assert payload["skill"]["content_mode"] == "compiled_prompt_template"
         return {"content": "生成的剧本正文", "model": "test-model", "usage": {"total_tokens": 42}}
@@ -2927,7 +2927,7 @@ async def test_node_run_workflow_image_node_renders_existing_prompt_without_llm(
                 "workflow": {
                     "step_id": "scene_reference",
                     "prompt_template": "SYSTEM: 场景概念图提示词编写者\nUSER: {{scene.output}}",
-                    "primary_skill": "scene_prompt",
+                    "primary_skill": "scene-prompt",
                     "skill_category": "prompt",
                     "acceptance": "生成无人物场景参考图。",
                 },

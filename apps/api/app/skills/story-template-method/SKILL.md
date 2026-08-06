@@ -1,11 +1,9 @@
 ---
-name: story_template_method
-description: 故事模板图生视频方法。用户明确要求故事模板、复杂动作调度、强美术风格，或普通宫格/首尾帧不足以稳定表达空间和动作时使用；涵盖图片要求、image/video 节点组织和提示词写法。
-category: workflow
-applies_to: 故事模板 故事模板图 复杂动作调度 强美术风格 视觉开发板 story template action choreography
+name: story-template-method
+description: 使用 OpenReel 故事模板图或视觉开发板方法组织 image/video 节点并编写提示词。用户明确要求故事模板、复杂动作调度、强美术风格或 story template，或普通宫格/首尾帧不足以稳定表达空间和动作时使用；不作为普通视频的默认路径。
 ---
 
-# story_template_method
+# Story template method
 
 这是 OpenReel Studio 的可选图生视频制作方法 skill。内置 `general_short_drama_workflow` 把它作为与宫格分镜并列的画面制作模式，默认仍是宫格分镜。
 

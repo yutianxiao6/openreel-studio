@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenReel 项目导师"
+  short_description: "Navigate and audit OpenReel internals"
+  default_prompt: "Use $project-mentor to inspect this OpenReel architecture or diagnose a repository-level issue."

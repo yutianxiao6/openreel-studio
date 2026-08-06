@@ -1,8 +1,6 @@
 ---
-name: character_prompt
-description: 人物图提示词模块。用于主要人物 image 节点，生成角色视觉参考图、三视图或设定集风格人物图。
-category: prompt
-applies_to: 人物提示词 人物图 角色图 角色设定集 人物设定 角色参考图 人物参考图 三视图 四视图 模型图 服装拆解 装备拆解 character image character reference character sheet
+name: character-prompt
+description: 为 OpenReel image 节点编写人物参考图、角色设定集、三视图、服装或装备拆解提示词。用户要求人物图、角色图、定妆图、人物设定、角色参考图或 character sheet 时使用；不用于纯场景、分镜或视频提示词。
 ---
 
 # 人物图提示词 Skill

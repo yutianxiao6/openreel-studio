@@ -107,7 +107,7 @@ async def test_video_production_skill_guides_reference_driven_short_video_nodes(
     listed = coerce_tool_output(
         await skill_tools.skills_list({"kind": "orchestrator"})
     ).value
-    item = next(item for item in listed["skills"] if item["name"] == "video_production")
+    item = next(item for item in listed["skills"] if item["name"] == "video-production")
     full = coerce_tool_output(
         await skill_tools.skills_read(
             item["authority"], item["package"], item["main_resource"]
@@ -125,11 +125,11 @@ async def test_video_production_skill_guides_reference_driven_short_video_nodes(
     assert "workflow.run_step" in guide
     assert "workflow.run_next" in guide
     assert "workflow.run_all" in guide
-    assert "script_writing" in guide
-    assert "character_prompt" in guide
-    assert "scene_prompt" in guide
-    assert "shot_grid_prompt" in guide
-    assert "video_prompt" in guide
+    assert "script-writing" in guide
+    assert "character-prompt" in guide
+    assert "scene-prompt" in guide
+    assert "shot-grid-prompt" in guide
+    assert "video-prompt" in guide
     assert "Prompt Skill 索引" in guide
     assert "精确 `@参考图标签`" in guide
     assert "稳定的图片节点 ID" in guide
@@ -168,12 +168,12 @@ async def test_video_production_hands_off_explicit_story_template_requests() -> 
     listed = coerce_tool_output(
         await skill_tools.skills_list({"kind": "orchestrator"})
     ).value
-    item = next(item for item in listed["skills"] if item["name"] == "video_production")
+    item = next(item for item in listed["skills"] if item["name"] == "video-production")
     result = coerce_tool_output(
         await skill_tools.skills_read(item["authority"], item["package"], "SKILL.md")
     ).value
 
-    assert "story_template_method" in result["contents"]
+    assert "story-template-method" in result["contents"]
     assert "故事模板图/视觉开发板" in result["contents"]
 
 
@@ -193,7 +193,7 @@ async def test_story_template_method_is_separate_optional_guide() -> None:
     listed = coerce_tool_output(
         await skill_tools.skills_list({"kind": "orchestrator"})
     ).value
-    item = next(item for item in listed["skills"] if item["name"] == "story_template_method")
+    item = next(item for item in listed["skills"] if item["name"] == "story-template-method")
     assert "复杂动作" in item["description"]
     full = coerce_tool_output(
         await skill_tools.skills_read(item["authority"], item["package"], "SKILL.md")

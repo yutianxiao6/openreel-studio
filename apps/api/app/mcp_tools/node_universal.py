@@ -1909,7 +1909,7 @@ async def _node_create_one(
                 "hint": "parent_node_id 使用 node.list 返回的编号 id，或省略该字段。",
             }
 
-    # Gate 1 + 2:模式守卫。业务流程由 video_production markdown skill 承接。
+    # Gate 1 + 2:模式守卫。业务流程由 video-production Skill 承接。
     # 后端自动推断节点归属模式,不再强制旧 node.get_creation_guide 前置。
     gate_ok, gate_err = await _check_mode_and_guide_gate(project_id, type, fields)
     if not gate_ok:

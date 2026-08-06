@@ -34,7 +34,7 @@ packages/
 config/                运行配置示例和媒体协议目录
 docs/                  中文与英文公开文档
 plugins/               内置或示例插件
-skills/                用户可编辑的工作流、提示词和评审 Skill
+skills/                用户可编辑的 <kebab-name>/SKILL.md 标准 Skill 包
 workflow_templates/    用户工作流模板
 data/                  SQLite、trace、工具结果和缓存（运行数据）
 storage/               上传、生成和导出资产（运行数据）
@@ -64,7 +64,7 @@ storage/               上传、生成和导出资产（运行数据）
 - `mcp_tools/`：Agent 可调用的核心与延迟工具。
 - `services/`：媒体生成、历史、编辑、导出和业务执行。
 - `config_store/`：`config/runtime.jsonc` 的校验与运行时物化。
-- `skills/`：内置运行时 Skill 和模板。
+- `skills/`：内置运行时 Skill 及其 `agents/`、`references/`、`scripts/`、`assets/` 资源。
 
 ## 节点优先模型
 

@@ -273,10 +273,10 @@ def test_skills_context_separates_codex_catalog_from_runtime_state() -> None:
     context = result.skills_context
 
     assert "## Skills" in context
-    assert "video_production" in context
+    assert "video-production" in context
     assert "### Available skills" in context
     assert "orchestrator resource" in context
-    assert "skill://builtin/video_production/SKILL.md" in context
+    assert "skill://builtin/video-production/SKILL.md" in context
     assert "### How to use skills" in context
     assert "content_page" not in context
     assert "## Skills" not in result.runtime

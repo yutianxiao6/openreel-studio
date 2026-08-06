@@ -1,6 +1,8 @@
 import hashlib
+import re
 
 import pytest
+import yaml
 
 from app.agent.model_context.types import coerce_tool_output
 from app.mcp_tools import skill_tools
@@ -32,19 +34,18 @@ async def test_standard_skill_catalog_and_read_use_codex_handles(tmp_path, monke
     monkeypatch.setattr(skill_tools.settings, "PROJECT_ROOT", str(tmp_path))
     _write_skill(
         tmp_path / "skills",
-        "workflows/custom_flow",
-        name="custom_flow",
+        "workflows/custom-flow",
+        name="custom-flow",
         description="Use for custom video workflow requests.",
         body="Run the custom workflow.\n",
-        metadata="category: workflow\n",
     )
 
     listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
-    item = next(item for item in listed["skills"] if item["name"] == "custom_flow")
+    item = next(item for item in listed["skills"] if item["name"] == "custom-flow")
     assert item == {
         "authority": {"kind": "orchestrator"},
-        "package": "user/workflows/custom_flow",
-        "name": "custom_flow",
+        "package": "user/workflows/custom-flow",
+        "name": "custom-flow",
         "description": "Use for custom video workflow requests.",
         "main_resource": "SKILL.md",
     }
@@ -56,7 +57,7 @@ async def test_standard_skill_catalog_and_read_use_codex_handles(tmp_path, monke
     )
     assert set(loaded) == {"resource", "contents", "next_cursor"}
     assert loaded["resource"] == "SKILL.md"
-    assert "name: custom_flow" in loaded["contents"]
+    assert "name: custom-flow" in loaded["contents"]
     assert "Run the custom workflow" in loaded["contents"]
     assert loaded["next_cursor"] is None
 
@@ -93,8 +94,8 @@ async def test_skill_packages_are_never_imported_as_python_tools(tmp_path, monke
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
     skill_dir = _write_skill(
         skills_root,
-        "markdown_only",
-        name="markdown_only",
+        "markdown-only",
+        name="markdown-only",
         description="Use when a markdown-only Skill is requested.",
     )
     (skill_dir / "__init__.py").write_text(
@@ -102,7 +103,7 @@ async def test_skill_packages_are_never_imported_as_python_tools(tmp_path, monke
     )
 
     listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
-    assert "markdown_only" in {item["name"] for item in listed["skills"]}
+    assert "markdown-only" in {item["name"] for item in listed["skills"]}
 
 
 @pytest.mark.asyncio
@@ -111,14 +112,14 @@ async def test_legacy_frontmatter_fields_cannot_hide_a_standard_skill(tmp_path, 
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
     _write_skill(
         skills_root,
-        "legacy_extensions",
-        name="legacy_extensions",
+        "legacy-extensions",
+        name="legacy-extensions",
         description="Use to verify standard discovery ignores legacy routing fields.",
         metadata="source: internal_helper\ntool_name: internal.hidden\n",
     )
 
     listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
-    assert "legacy_extensions" in {item["name"] for item in listed["skills"]}
+    assert "legacy-extensions" in {item["name"] for item in listed["skills"]}
 
 
 @pytest.mark.asyncio
@@ -127,15 +128,15 @@ async def test_explicit_skills_root_is_an_orchestrator_package(tmp_path, monkeyp
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
     _write_skill(
         skills_root,
-        "bright_prompt",
-        name="bright_prompt",
+        "bright-prompt",
+        name="bright-prompt",
         description="Use for bright image prompts.",
         body="Keep the subject bright and clear.\n",
     )
 
     listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
-    item = next(item for item in listed["skills"] if item["name"] == "bright_prompt")
-    assert item["package"] == "user/bright_prompt"
+    item = next(item for item in listed["skills"] if item["name"] == "bright-prompt")
+    assert item["package"] == "user/bright-prompt"
     loaded = _value(
         await skill_tools.skills_read(item["authority"], item["package"], "SKILL.md")
     )
@@ -199,8 +200,8 @@ async def test_allow_implicit_false_hides_catalog_but_explicit_path_still_loads(
     skills_root = tmp_path / "skills"
     skill_dir = _write_skill(
         skills_root,
-        "explicit_only",
-        name="explicit_only",
+        "explicit-only",
+        name="explicit-only",
         description="Build for AWS: ECS deployment",
         body="Only load this Skill explicitly.\n",
     )
@@ -214,14 +215,14 @@ async def test_allow_implicit_false_hides_catalog_but_explicit_path_still_loads(
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
 
     listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
-    assert "explicit_only" not in {item["name"] for item in listed["skills"]}
-    assert "explicit_only" not in skill_tools.render_available_skills_context()
+    assert "explicit-only" not in {item["name"] for item in listed["skills"]}
+    assert "explicit-only" not in skill_tools.render_available_skills_context()
 
-    locator = "skill://user/explicit_only/SKILL.md"
+    locator = "skill://user/explicit-only/SKILL.md"
     injected = skill_tools.build_explicit_skill_injections(
-        f"Use [$explicit_only]({locator})."
+        f"Use [$explicit-only]({locator})."
     )
-    assert injected["selected_names"] == ("explicit_only",)
+    assert injected["selected_names"] == ("explicit-only",)
     assert f"<path>{locator}</path>" in injected["instructions"][0]
     assert "Only load this Skill explicitly" in injected["instructions"][0]
 
@@ -289,13 +290,13 @@ def test_explicit_prompt_uses_codex_utf8_byte_limit(tmp_path, monkeypatch) -> No
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
     _write_skill(
         skills_root,
-        "large_skill",
-        name="large_skill",
+        "large-skill",
+        name="large-skill",
         description="A large explicit Skill.",
         body="规则" * 5_000,
     )
 
-    injected = skill_tools.build_explicit_skill_injections("$large_skill")
+    injected = skill_tools.build_explicit_skill_injections("$large-skill")
     contents = injected["instructions"][0].split("\n", 3)[3].rsplit("\n</skill>", 1)[0]
     assert len(contents.encode("utf-8")) <= skill_tools.MAX_EXPLICIT_SKILL_PROMPT_BYTES
     assert "skills.read" in injected["warnings"][0]
@@ -439,8 +440,8 @@ def test_runtime_catalog_uses_skill_description_not_ui_short_description(
     monkeypatch.setenv("OPENREEL_SKILLS_DIR", str(skills_root))
     skill_dir = _write_skill(
         skills_root,
-        "release_brief",
-        name="release_brief",
+        "release-brief",
+        name="release-brief",
         description="Use when the user asks to turn completed changes into release notes.",
     )
     metadata_dir = skill_dir / "agents"
@@ -477,11 +478,54 @@ async def test_builtin_prompt_and_review_skills_are_listed_without_semantic_sear
     listed = _value(await skill_tools.skills_list({"kind": "orchestrator"}))
     names = {item["name"] for item in listed["skills"]}
     assert {
-        "script_writing",
-        "character_prompt",
-        "scene_prompt",
-        "shot_grid_prompt",
-        "video_prompt",
-        "storyboard_frame_check",
-        "video_production",
+        "script-writing",
+        "character-prompt",
+        "scene-prompt",
+        "shot-grid-prompt",
+        "video-prompt",
+        "storyboard-frame-check",
+        "video-production",
     } <= names
+
+
+def test_shipped_skill_packages_follow_codex_authoring_standard() -> None:
+    skill_files = sorted(skill_tools._BUILTIN_SKILLS_ROOT.glob("*/SKILL.md"))
+    expected_names = {
+        "character-prompt",
+        "general-short-drama-workflow",
+        "project-mentor",
+        "scene-prompt",
+        "script-writing",
+        "shot-grid-prompt",
+        "story-template-method",
+        "storyboard-frame-check",
+        "video-production",
+        "video-prompt",
+    }
+
+    assert len(skill_files) == len(expected_names)
+    discovered_names: set[str] = set()
+    for skill_file in skill_files:
+        raw = skill_file.read_text(encoding="utf-8")
+        frontmatter_text = raw.split("---", 2)[1]
+        frontmatter = yaml.safe_load(frontmatter_text)
+        assert set(frontmatter) == {"name", "description"}, skill_file
+
+        name = frontmatter["name"]
+        description = frontmatter["description"]
+        assert isinstance(name, str)
+        assert re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name), skill_file
+        assert len(name) <= 64
+        assert skill_file.parent.name == name
+        assert isinstance(description, str) and description.strip()
+        assert len(description) <= 1024
+        assert "<" not in description and ">" not in description
+
+        metadata_file = skill_file.parent / "agents" / "openai.yaml"
+        metadata = yaml.safe_load(metadata_file.read_text(encoding="utf-8"))
+        interface = metadata["interface"]
+        assert 25 <= len(interface["short_description"]) <= 64
+        assert f"${name}" in interface["default_prompt"]
+        discovered_names.add(name)
+
+    assert discovered_names == expected_names

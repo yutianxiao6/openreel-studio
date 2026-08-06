@@ -54,7 +54,7 @@ Business process and prompt-writing knowledge should live in Skills rather than 
 - Chinese documentation belongs in `docs/zh-CN/`; English documentation belongs in `docs/en/`.
 - Root `README.md` is the Chinese product entry; `README.en.md` is the English product entry.
 - User guides describe stable product behavior. Temporary implementation plans and debugging notes do not belong in the main navigation.
-- Markdown under `apps/api/app/skills/` is runtime source. Changes alter agent behavior and require contract tests.
+- Every built-in Skill under `apps/api/app/skills/` uses `<kebab-name>/SKILL.md`; frontmatter contains only `name` and `description`, while UI metadata belongs in `agents/openai.yaml`. Changes alter Agent behavior and require contract tests.
 - Screenshots must come from the real product and must not expose keys, private conversations, identities, or unlicensed content.
 
 ## Pull request guidance

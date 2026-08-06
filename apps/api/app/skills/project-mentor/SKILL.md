@@ -1,9 +1,9 @@
 ---
-name: project_mentor
-description: Use for OpenReel architecture, rules, node repair, delivery audit, debugging, or prompt maintenance.
+name: project-mentor
+description: Explain and audit OpenReel Studio architecture, repository rules, Agent orchestration, node repair, delivery checks, debugging, or prompt maintenance. Use when the user asks how the project works, where behavior lives, why an Agent or node failed, or how to verify a repository-level change; do not use for ordinary media creation.
 ---
 
-# project_mentor
+# Project mentor
 
 This skill explains OpenReel Studio project rules and points to the right local
 guide when the model needs more than workflow/prompt skills.
@@ -81,8 +81,8 @@ maintain separate canvas/panel state before work appears.
   `skills.read` uses the opaque `next_cursor` returned by its preceding page;
   continue until it becomes null.
 - User skills use `skills/<skill-name>/SKILL.md`. Standard frontmatter supplies
-  `name` and `description`; OpenReel optionally reads `category` and
-  `applies_to`. Supporting files stay inside the same package under
+  `name` and `description`; the kebab-case directory name matches `name`.
+  Supporting files stay inside the same package under
   `references/`, `scripts/`, `assets/`, `templates/`, or `agents/openai.yaml`.
   The runtime prompt carries only bounded metadata. Current-turn `$SkillName`,
   linked `skill://` / `SKILL.md` mentions, and structured `kind=skill` inputs
@@ -115,8 +115,8 @@ meta tools for discovering and running low-frequency deferred capabilities.
 - `apps/api/app/agent/prompts/`: short always-loaded prompt sections.
 - `apps/api/app/mcp_tools/registry.py`: tool exposure and core/deferred surface.
 - `apps/api/app/agent/orchestrator.py`: Agent loop and confirmation handling.
-- `apps/api/app/skills/video_production/`: default node-first workflow index.
-- `apps/api/app/skills/*_prompt/` and `script_writing/`: builtin prompt modules.
+- `apps/api/app/skills/video-production/`: default node-first workflow index.
+- `apps/api/app/skills/*-prompt/` and `script-writing/`: builtin prompt modules.
 
 ## Output
 

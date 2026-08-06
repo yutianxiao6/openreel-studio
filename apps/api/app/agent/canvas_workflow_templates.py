@@ -26,6 +26,7 @@ from app.agent.workflow_spec import (
 
 _APP_ROOT = Path(__file__).resolve().parents[1]
 _BUILTIN_TEMPLATE_ROOT = _APP_ROOT / "skills"
+_BUILTIN_TEMPLATE_GLOB = "*/assets/workflow-templates/*.json"
 WORKFLOW_SPEC_PROTOCOL_VERSION = WORKFLOW_SPEC_VERSION
 DEFAULT_WORKFLOW_TEMPLATE_ID = "general_short_drama_workflow"
 _VALID_NODE_TYPES = {"text", "image", "video", "audio"}
@@ -708,7 +709,7 @@ def load_builtin_templates(input_values: dict[str, Any] | None = None) -> list[d
             scope="builtin",
             source="builtin_template",
         )
-        for path in sorted(_BUILTIN_TEMPLATE_ROOT.glob("*/templates/*.json"))
+        for path in sorted(_BUILTIN_TEMPLATE_ROOT.glob(_BUILTIN_TEMPLATE_GLOB))
     ]
     templates.sort(key=lambda item: (item.get("id") != DEFAULT_WORKFLOW_TEMPLATE_ID, item.get("name") or ""))
     return templates
@@ -933,7 +934,10 @@ def _template_summary_from_raw(
 def list_template_summaries() -> list[dict[str, Any]]:
     from app.agent import workflow_template_store
 
-    builtin = [(path, _read_template_file(path)) for path in sorted(_BUILTIN_TEMPLATE_ROOT.glob("*/templates/*.json"))]
+    builtin = [
+        (path, _read_template_file(path))
+        for path in sorted(_BUILTIN_TEMPLATE_ROOT.glob(_BUILTIN_TEMPLATE_GLOB))
+    ]
     builtin_ids = {str(raw.get("id") or "") for _, raw in builtin}
     summaries: list[dict[str, Any]] = []
     user_ids: set[str] = set()

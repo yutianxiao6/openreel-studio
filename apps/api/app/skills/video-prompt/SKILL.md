@@ -1,8 +1,6 @@
 ---
-name: video_prompt
-description: 视频提示词模块。用于 video 节点，结合故事、分镜或参考图写最终可执行 video prompt。
-category: prompt
-applies_to: 视频提示词 文生视频 纯文生 图生视频 分镜写视频提示词 参考分镜写提示词 分镜图生视频 宫格分镜 故事模板 首帧 尾帧 镜头运动 时间码 短片 预告片 纪录片 广告片 短剧 一镜到底 video prompt image to video text to video
+name: video-prompt
+description: 为 OpenReel video 节点编写或改写可执行的视频生成提示词，结合剧情、分镜、故事模板图、首尾帧或其他参考图，组织时间码、镜头运动、动作与声音。用户要求视频 prompt、文生视频 prompt、图生视频 prompt、分镜转视频、一镜到底或首尾帧提示词时使用。
 ---
 
 # 视频提示词 Skill
@@ -155,7 +153,7 @@ prompt 写成连续视频描述。先写视频类型、主体、场景、整体�
 
 - `fields.purpose`: `final_video` 或当前段落用途
 - `fields.stage`: `video`
-- `fields.prompt_source`: `skill:video_prompt`
+- `fields.prompt_source`: `skill:video-prompt`
 - `fields.prompt_status`: `final_prompt`
 - `fields.production_path`: `text_to_video` 或 `image_to_video`
 - `fields.duration_seconds`: 用户指定或当前段落时长

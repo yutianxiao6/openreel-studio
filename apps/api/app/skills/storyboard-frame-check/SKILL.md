@@ -1,8 +1,6 @@
 ---
-name: storyboard_frame_check
-description: 分镜画面合理性检查 skill。用于检查分镜图、分镜节点、镜头序列或分镜提示词的叙事、情绪、衔接、视觉重点、冗余、人物心理和电影感。
-category: review
-applies_to: 分镜检查 分镜图检查 分镜合理性 故事板检查 镜头检查 storyboard shot review frame review 画面合理性 镜头衔接 电影感
+name: storyboard-frame-check
+description: 审查 OpenReel 分镜图、故事板、分镜节点、镜头序列或分镜提示词的叙事、情绪、镜头衔接、视觉重点、冗余、人物心理和电影感。用户要求检查分镜、分镜合理性、storyboard review 或 shot review 时使用；不用于从零编写分镜图提示词。
 ---
 
 # 分镜画面合理性检查

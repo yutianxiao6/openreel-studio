@@ -1,0 +1,4 @@
+interface:
+  display_name: "场景参考图提示词"
+  short_description: "Write multi-view environment prompts"
+  default_prompt: "Use $scene-prompt to write a reusable multi-view environment reference prompt."

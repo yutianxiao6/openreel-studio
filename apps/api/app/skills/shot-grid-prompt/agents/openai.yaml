@@ -1,0 +1,4 @@
+interface:
+  display_name: "宫格分镜提示词"
+  short_description: "Write coherent storyboard grid prompts"
+  default_prompt: "Use $shot-grid-prompt to convert the supplied story beats into a coherent storyboard-grid prompt."

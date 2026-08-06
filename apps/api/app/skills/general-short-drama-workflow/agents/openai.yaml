@@ -1,0 +1,4 @@
+interface:
+  display_name: "通用短剧工作流"
+  short_description: "Run the built-in short-drama workflow"
+  default_prompt: "Use $general-short-drama-workflow to run or maintain the built-in short-drama template."

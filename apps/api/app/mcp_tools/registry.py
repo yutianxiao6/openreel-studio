@@ -1982,7 +1982,7 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
           "Workflow 请求交给 workflow_spec 选择器；主 Agent 先自行读完匹配的 Skill，再传模板线索和已知输入。普通视频默认返回 general_short_drama_workflow 的 template_id。",
           "主 Agent 拿到 template_id/artifact_ref 和 input_fields 后，根据用户原话和历史状态判断是否提问；需要复查模板或 spec 时再读取 workflow.template.read 或 workflow.spec.read。",
           "tool.execute(name='agent.run', input={'agent':'workflow_spec','task':'为用户的视频请求选择可运行工作流模板','inputs':{'facts':{'plot':'江湖相逢'},'current_workflow':{}}})",
-          "tool.execute(name='agent.run', input={'agent':'node_producer','task':'补全并运行节点12的人物参考图；按选定人物 prompt skill 写入并生成，完成后看图自检。','inputs':{'node_id':'12','allowed_node_types':['image'],'basis':{'kind':'skill_plan'},'primary_skill':{'name':'character_prompt','category':'prompt','scope':'builtin'},'acceptance_criteria':['主体清晰','参考一致']},'max_steps':12})",
+          "tool.execute(name='agent.run', input={'agent':'node_producer','task':'补全并运行节点12的人物参考图；按选定人物 prompt skill 写入并生成，完成后看图自检。','inputs':{'node_id':'12','allowed_node_types':['image'],'basis':{'kind':'skill_plan'},'primary_skill':{'name':'character-prompt','category':'prompt','scope':'builtin'},'acceptance_criteria':['主体清晰','参考一致']},'max_steps':12})",
           "tool.execute(name='agent.run', input={'agent':'image_editor','task':'修复节点12的软件图标边角和外框；成品要主体完整、安全边距稳定、透明背景干净，提交前验证最终候选。','inputs':{'node_id':'12'},'max_steps':24})",
           "抠图、透明背景、图标圆角和复杂边缘清理交给 image_editor；它可以在隔离上下文中调用 image.segment 和 image.edit。",
           "node_producer 通常使用默认步数或 10-12；简单局部编辑通常 max_steps=12-16，复杂透明背景、抠图、图标修边或多轮预览可用 20-30。",

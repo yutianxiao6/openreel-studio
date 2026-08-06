@@ -131,9 +131,6 @@ def parse_skill_document(raw: str, *, default_name: str) -> dict[str, Any]:
         "name": name,
         "description": description,
         "short_description": short_description,
-        "category": _single_line(parsed.get("category")),
-        "applies_to": _single_line(parsed.get("applies_to")),
-        "frontmatter": parsed,
     }
 
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "剧本写作"
+  short_description: "Write production-ready story scripts"
+  default_prompt: "Use $script-writing to turn the supplied story material into a production-ready script."

@@ -366,7 +366,7 @@ const reliabilityItems: DetailItem[] = [
 ]
 
 const extensionItems: DetailItem[] = [
-  {title: "Skills", description: "把制作方法、提示词规则和审查标准写成可检索知识，避免塞进常驻系统提示词。", usage: "把自定义 markdown 放到 skills/workflows、skills/prompts 或 skills/review，Agent 会按任务搜索读取。", badge: "SKILL"},
+  {title: "Skills", description: "把制作方法、提示词规则和审查标准写成可自动匹配的标准 Skill，避免塞进常驻系统提示词。", usage: "每个自定义 Skill 放在 skills/<skill-name>/SKILL.md；Agent 会根据 name/description 选择，再读取完整正文。", badge: "SKILL"},
   {title: "工作流插件", description: "插件可增加低频执行能力，例如视频关键帧提取，同时保持核心工具面稳定。", usage: "把插件放入 plugins 并声明 capability；在工作流步骤 extension_config 中使用，缺能力会提前报错。", badge: "PLUGIN"},
   {title: "Web 与 Docker 部署", description: "支持本地开发、生产 Docker Compose、Caddy 网关与持久化目录挂载。", usage: "开发用 bash start.sh；服务器用 docker-compose.prod.yml 构建 API、Web 和 Gateway。", badge: "SERVER"},
   {title: "桌面安装包", description: "Windows、Linux、macOS 可通过 Electron/PyInstaller 打包，并由 GitHub Release 自动分发。", usage: "普通用户下载对应平台安装包；也可用 npm installer 一键安装最新版本。", badge: "DESKTOP"},

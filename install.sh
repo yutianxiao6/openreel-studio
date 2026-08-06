@@ -39,9 +39,7 @@ mkdir -p \
   assets \
   config \
   plugins \
-  skills/workflows \
-  skills/prompts \
-  skills/review \
+  skills \
   workflow_templates
 
 echo "Installing frontend dependencies..."

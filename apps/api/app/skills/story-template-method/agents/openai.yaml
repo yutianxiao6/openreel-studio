@@ -1,0 +1,4 @@
+interface:
+  display_name: "故事模板图方法"
+  short_description: "Build story-template visual workflows"
+  default_prompt: "Use $story-template-method to plan a story-template image and its downstream video workflow."

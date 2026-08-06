@@ -1,8 +1,6 @@
 ---
-name: script_writing
-description: 剧本写作模块。用于 text 节点的 fields.content，聚焦故事正文、动作、对白、情绪和因果推进。
-category: prompt
-applies_to: 写剧本 剧本 故事正文 分段故事 分集故事 script writing text content
+name: script-writing
+description: 为 OpenReel text 节点编写或改写剧本正文，聚焦情节、动作、对白、情绪与因果推进。用户要求写剧本、短剧、分段故事、分集故事或 script content 时使用；不用于图片、分镜或视频 prompt。
 ---
 
 # 剧本写作 Skill

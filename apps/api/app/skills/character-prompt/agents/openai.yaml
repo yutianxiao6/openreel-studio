@@ -1,0 +1,4 @@
+interface:
+  display_name: "人物参考图提示词"
+  short_description: "Write consistent character reference prompts"
+  default_prompt: "Use $character-prompt to write a production-ready character reference image prompt."

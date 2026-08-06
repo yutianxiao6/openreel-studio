@@ -1,8 +1,6 @@
 ---
-name: scene_prompt
-description: 场景图提示词模块。用于主场景 image 节点，生成无人物四宫格四视图场景设定图。
-category: prompt
-applies_to: 场景提示词 场景图 环境图 主场景 四宫格 scene image prompt environment
+name: scene-prompt
+description: 为 OpenReel image 节点编写无人物场景参考图、2×2 四视图或环境设定图提示词。用户要求场景图、环境图、空镜、主场景或 scene reference prompt 时使用；不用于人物设定、分镜或视频提示词。
 ---
 
 # 场景图提示词 Skill

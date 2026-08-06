@@ -37,13 +37,12 @@ def _tool_names(events: list[dict[str, Any]]) -> list[str]:
 
 
 def _write_workflow_skill(skills_root: Path) -> None:
-    workflow_dir = skills_root / "workflows"
+    workflow_dir = skills_root / "lunar-story-to-script"
     workflow_dir.mkdir(parents=True, exist_ok=True)
-    (workflow_dir / "lunar_story_to_script.md").write_text(
+    (workflow_dir / "SKILL.md").write_text(
         """---
-category: workflow
-description: 月影短剧剧情转剧本流程；用户输入 plot 剧情后生成剧本文本。
-applies_to: lunar_story_to_script 月影短剧 剧情输入 剧本 文字流程
+name: lunar-story-to-script
+description: 把用户输入的 plot 剧情转成月影短剧剧本文本。用户要求月影短剧、剧情转剧本或 lunar story to script 文字流程时使用。
 ---
 
 # 月影短剧剧情转剧本
@@ -82,7 +81,7 @@ def _seed_matching_template() -> None:
                     "node_type": "text",
                     "runner": "node.run",
                     "depends_on": ["brief"],
-                    "primary_skill": "script_writing",
+                    "primary_skill": "script-writing",
                     "skill_category": "prompt",
                     "prompt_template": "SYSTEM: 原始月影剧本模板\nUSER: {{inputs.plot}}\nOUTPUT: text",
                 },
@@ -95,7 +94,7 @@ def _seed_matching_template() -> None:
         applies_to="lunar_story_to_script 月影短剧 剧情输入 剧本 文字流程",
         source={
             "source_skill": {
-                "name": "lunar_story_to_script",
+                "name": "lunar-story-to-script",
                 "summary": "用户输入 plot 剧情后生成剧本文本。",
             }
         },
@@ -193,7 +192,7 @@ async def test_natural_language_skill_workflow_local_patch_and_template_save(
         api_client,
         project_id,
         (
-            "请使用本地 skill 目录里的 lunar_story_to_script 这个 workflow skill，"
+            "请使用本地 skill 目录里的 $lunar-story-to-script 这个 skill，"
             "直接帮我搭建并运行一个文字工作流：运行输入 plot 是“雨夜怀表”，"
             "流程要把剧情输入转成剧本文本。不要生成图片、视频或音频；"
             "不要保存成模板；不要再问我，直接执行。"

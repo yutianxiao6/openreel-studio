@@ -1,0 +1,4 @@
+interface:
+  display_name: "分镜画面检查"
+  short_description: "Review storyboard continuity and quality"
+  default_prompt: "Use $storyboard-frame-check to review the selected storyboard and return actionable corrections."

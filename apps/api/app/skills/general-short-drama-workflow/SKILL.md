@@ -1,8 +1,6 @@
 ---
-name: general_short_drama_workflow
-description: "通用视频制作工作流。用于默认视频制作路径：输入剧情和基础参数，选择宫格分镜或故事模板模式，生成总剧本、逐段剧本文本、视觉参考和最终视频节点。"
-category: workflow
-applies_to: "通用视频制作 默认视频制作 workflow 宫格分镜 故事模板 人物参考 场景参考 视频提示词 最终视频"
+name: general-short-drama-workflow
+description: 运行或维护 OpenReel 内置 general_short_drama_workflow 视频模板，从剧情和时长生成剧本、人物与场景参考、宫格分镜或故事模板图及最终视频节点。用户要求默认短剧流程、指定该 template_id，或需要解释、局部修改该模板时使用。
 ---
 
 # 通用视频制作工作流
@@ -63,12 +61,12 @@ production_plan.segments[] -> segment_script -> scene_plan -> scene_reference ->
 
 模板步骤使用这些内置 prompt skill：
 
-- 剧本与规划：`script_writing`
-- 人物参考图：`character_prompt`
-- 场景参考图：`scene_prompt`
-- 宫格分镜：`shot_grid_prompt`
-- 故事模板：`story_template_method`
-- 视频提示词：`video_prompt`
+- 剧本与规划：`script-writing`
+- 人物参考图：`character-prompt`
+- 场景参考图：`scene-prompt`
+- 宫格分镜：`shot-grid-prompt`
+- 故事模板：`story-template-method`
+- 视频提示词：`video-prompt`
 
 节点运行阶段以模板公开步骤里的 `prompt` 为准，运行器会生成私有提示词阶段。需要局部改提示词时，修改对应步骤的 `prompt`，再重跑该步骤及受影响下游。
 

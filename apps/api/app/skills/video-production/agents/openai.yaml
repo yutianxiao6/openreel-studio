@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenReel 视频制作"
+  short_description: "Plan and run OpenReel video production"
+  default_prompt: "Use $video-production to plan and run this video request with the appropriate existing workflow."

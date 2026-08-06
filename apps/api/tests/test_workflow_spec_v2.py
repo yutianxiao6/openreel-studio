@@ -2404,7 +2404,7 @@ def test_default_unnamed_label_does_not_overwrite_workflow_title(tmp_path) -> No
 
 def test_workflow_llm_routing_does_not_classify_titles_or_skills() -> None:
     for workflow, fields in (
-        ({"primary_skill": "character_prompt"}, {"title": "主要人物参考图提示词"}),
+        ({"primary_skill": "character-prompt"}, {"title": "主要人物参考图提示词"}),
         ({"llm_task_type": "script_generation"}, {"title": "剧本"}),
         ({}, {"title": "任意文本"}),
     ):

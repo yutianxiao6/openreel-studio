@@ -54,7 +54,7 @@ PYTHONPATH=. uv run pytest -q
 - 中文内容放在 `docs/zh-CN/`，英文内容放在 `docs/en/`。
 - 根 `README.md` 是中文产品入口，`README.en.md` 是英文产品入口。
 - 用户指南描述稳定产品行为；临时实施计划和排障记录不要放进主导航。
-- `apps/api/app/skills/` 下的 Markdown 是运行时源码，修改会改变 Agent 行为，需要配套合同测试。
+- `apps/api/app/skills/` 下的每个内置 Skill 都使用 `<kebab-name>/SKILL.md`，frontmatter 只保留 `name` / `description`，UI 元数据写入 `agents/openai.yaml`。修改会改变 Agent 行为，需要配套合同测试。
 - 截图应来自真实界面，不包含 API Key、私人聊天、用户身份或无授权素材。
 
 ## Pull Request 建议

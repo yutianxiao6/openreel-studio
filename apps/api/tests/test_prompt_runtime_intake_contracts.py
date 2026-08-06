@@ -175,7 +175,7 @@ def test_skills_context_is_a_complete_codex_developer_fragment() -> None:
     assert "### Available skills" in text
     assert "description, and source locator" in text
     assert "orchestrator resource" in text
-    assert "skill://builtin/video_production/SKILL.md" in text
+    assert "skill://builtin/video-production/SKILL.md" in text
     assert "### How to use skills" in text
     assert "read its `SKILL.md` completely before taking task actions" in text
     assert "Do not delegate reading, summarizing, or interpreting skill instructions" in text

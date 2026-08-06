@@ -1,15 +1,13 @@
 ---
-name: video_production
-description: 视频制作入口指南。用于选择通用视频制作 workflow、补齐运行输入、选择 prompt skill；视频请求默认使用 general_short_drama_workflow。
-category: workflow
-applies_to: 视频制作 视频工作流 默认视频流程 workflow template general_short_drama_workflow 文生视频 15秒分段 text image video
+name: video-production
+description: 规划并执行 OpenReel 视频制作：选择现有 workflow 模板、补齐剧情与时长等输入、选择所需提示词 Skill，再运行文本、图片和视频节点。用户要求制作视频、短剧、文生视频、图生视频、继续或修复视频工作流时使用；默认模板是 general_short_drama_workflow。
 ---
 
 # 视频制作入口指南
 
 ## 模型摘要
 
-- `video_production` 由自动 Skill 目录匹配，通过 `skills.list` / `skills.read` 读取；它不是 workflow 模板或 spec 来源，只提供视频制作入口规则和模块 Skill 索引。
+- `video-production` 由自动 Skill 目录匹配，通过 `skills.list` / `skills.read` 读取；它不是 workflow 模板或 spec 来源，只提供视频制作入口规则和模块 Skill 索引。
 - 普通“制作视频/短剧/文生视频”默认使用模板 `general_short_drama_workflow`（显示名“通用视频制作工作流”），通过 `tool.search`、`tool.describe` 和 `tool.execute` 调用 deferred `workflow.run_step`、`workflow.run_next` 或 `workflow.run_all`。
 - 工作流请求通过 `workflow_spec` 选择器返回现有模板引用；默认路径返回 `general_short_drama_workflow`，不重新生成 spec。
 - 默认视频运行模式只使用现有模板引用、补齐输入并运行 workflow。
@@ -17,11 +15,12 @@ applies_to: 视频制作 视频工作流 默认视频流程 workflow template ge
 - 运行前补齐阻塞输入：剧情/主题 `plot`、单集总时长 `duration_seconds`；可选输入是视觉风格 `style`、视频类型 `video_type`、画面制作模式 `visual_plan_mode`、集数 `episode_count` 和每段时长 `segment_seconds`。`visual_plan_mode` 默认 `storyboard`，用户可在前端改为 `story_template`。
 - workflow spec 保持可移植，只描述结构、提示词、依赖和业务字段。模型、画幅、清晰度、画质等媒体产物参数由前端运行配置提供；总时长和分段时长必须连续核算，末段终点精确等于 `duration_seconds`。
 - 模板里的 V2 逻辑步骤已经带 `prompt`；运行期编译成私有提示词阶段执行，不把完整 prompt skill 原文塞进主 Agent。
-- prompt 模块索引用于模板维护、局部改提示词或 standalone 节点：剧本 `script_writing`，人物图 `character_prompt`，场景图 `scene_prompt`，宫格分镜 `shot_grid_prompt`，视频提示词 `video_prompt`，故事模板图 `story_template_method`。
+- prompt 模块索引用于模板维护、局部改提示词或 standalone 节点：剧本 `script-writing`，人物图 `character-prompt`，场景图 `scene-prompt`，宫格分镜 `shot-grid-prompt`，视频提示词 `video-prompt`，故事模板图 `story-template-method`。
 - 每个节点都是独立任务单元；`task` 只记录进度；生产依赖写节点 `fields.references`，图片引用用 `role:"visual_reference"`，文字上下文用 `role:"context"`，直接采用已有图片用 `role:"source_image"`。
 - 最终 image/video prompt 提到参考图时使用候选表给出的精确 `@参考图标签`，标签沿用完整画布标题并保留其中的 `|`、`｜`、空格、书名号等字符，例如“人物沿用 `@《回头》主角｜15岁少年`，镜头沿用 `@宫格分镜图`”。后端把标签绑定到稳定的图片节点 ID，参考图列表换序后仍指向同一张图。
 - `fields.director_capture=true` 的图片是导演台构图参考，只继承人物/物体站位、朝向、姿态、比例、遮挡、景别和机位；正式分镜同时引用人物图与场景图重绘，不保留白模、色块、网格或编辑器外观，也不把构图参考自动当作视频首帧。
-- 当前轮通过 `$video_production` 或带精确 path 的结构化 Skill 引用显式选择时，正文会在模型调用前以 `<skill>` 块注入；否则先用 `skills.list(authority={"kind":"orchestrator"})` 获取精确 handle，再用 `skills.read` 读取 `main_resource`，沿 `next_cursor` 到 EOF。引用资源继续使用同一 authority/package；`skill://` 是 source locator，不是文件路径。
+- 当前轮通过 `$video-production` 或带精确 path 的结构化 Skill 引用显式选择时，正文会在模型调用前以 `<skill>` 块注入；否则先用 `skills.list(authority={"kind":"orchestrator"})` 获取精确 handle，再用 `skills.read` 读取 `main_resource`，沿 `next_cursor` 到 EOF。引用资源继续使用同一 authority/package；`skill://` 是 source locator，不是文件路径。
+- 只有用户要求诊断 UMA 视频调用、协议、target 或恢复行为时，再读取 `references/video-model-calling.md`。
 
 ## 默认模板
 
@@ -91,12 +90,12 @@ workflow.runtime_status
 
 | 阶段 | 默认内置 skill | 用途 |
 | --- | --- | --- |
-| 剧本 | `script_writing` | 剧本、分段和基础规划 |
-| 人物参考图 | `character_prompt` | 主要人物或配角参考图 |
-| 场景参考图 | `scene_prompt` | 无人物或低人物干扰的场景参考 |
-| 宫格分镜 | `shot_grid_prompt` | 默认视觉分支的分镜规划和宫格分镜图 |
-| 视频提示词 | `video_prompt` | 最终视频提示词 |
-| 故事模板图 | `story_template_method` | 可选视觉分支的故事模板图/视觉开发板、审核和看图转译 |
+| 剧本 | `script-writing` | 剧本、分段和基础规划 |
+| 人物参考图 | `character-prompt` | 主要人物或配角参考图 |
+| 场景参考图 | `scene-prompt` | 无人物或低人物干扰的场景参考 |
+| 宫格分镜 | `shot-grid-prompt` | 默认视觉分支的分镜规划和宫格分镜图 |
+| 视频提示词 | `video-prompt` | 最终视频提示词 |
+| 故事模板图 | `story-template-method` | 可选视觉分支的故事模板图/视觉开发板、审核和看图转译 |
 
 用户自定义 prompt skill 优先于内置 skill。模板维护时，把稳定写法写进对应公开 step 的 `prompt`。
 

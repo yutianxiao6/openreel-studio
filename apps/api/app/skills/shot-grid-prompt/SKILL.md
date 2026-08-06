@@ -1,8 +1,6 @@
 ---
-name: shot_grid_prompt
-description: 分镜宫格图提示词模块。用于 image 节点生成几宫格分镜图，按画格构图组织连续动作和镜头节奏。
-category: prompt
-applies_to: 分镜提示词 分镜图 宫格分镜 几宫格 镜头节奏 shot grid prompt
+name: shot-grid-prompt
+description: 为 OpenReel image 节点编写二宫格、四宫格、六宫格或九宫格分镜图提示词，按画格构图组织连续动作和镜头节奏。用户要求分镜图、宫格分镜、镜头格或 shot grid prompt 时使用；不用于对已生成分镜的审查。
 ---
 
 # 分镜宫格图提示词 Skill
