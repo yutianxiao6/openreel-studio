@@ -19,7 +19,9 @@
       "context_window_tokens": null,
       "max_input_tokens": null,
       "max_output_tokens": 12000,
-      "supports_prompt_cache": null,
+      // Default true: send a stable project-level prompt_cache_key. Set false
+      // to omit that request field entirely.
+      "supports_prompt_cache": true,
       "supports_vision": null,
       "tokenizer": null,
       "tier": "balanced",

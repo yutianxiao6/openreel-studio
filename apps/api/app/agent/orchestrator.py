@@ -1253,7 +1253,11 @@ class AgentOrchestrator:
             turn += 1
             llm_service = getattr(self, "llm_service", None)
             session_factory = getattr(llm_service, "new_turn_session", None)
-            llm_turn_session = session_factory() if callable(session_factory) else None
+            llm_turn_session = (
+                session_factory(project_id=project_id)
+                if callable(session_factory)
+                else None
+            )
             turn_kwargs = {
                 "referenced_node_ids": cur_referenced_node_ids,
                 "display_message": cur_display_message,
@@ -2056,6 +2060,7 @@ class AgentOrchestrator:
                         task_type="agent_compact",
                         messages=[{"role": "user", "content": summary_prompt}],
                         system="You are a conversation summarizer. Be concise.",
+                        project_id=project_id,
                     )
                     summary_usage = summary_result.get("usage")
                     if isinstance(summary_usage, dict):
@@ -2252,6 +2257,7 @@ class AgentOrchestrator:
                             task_type="agent_compact",
                             messages=[{"role": "user", "content": summary_prompt}],
                             system="You are a conversation summarizer. Be concise.",
+                            project_id=project_id,
                         )
                         summary_usage = summary_result.get("usage")
                         if isinstance(summary_usage, dict):

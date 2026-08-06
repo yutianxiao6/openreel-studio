@@ -1045,6 +1045,82 @@ def test_custom_native_responses_relay_can_declare_websocket_capability() -> Non
     assert policy["supports_responses_websocket"] is True
 
 
+@pytest.mark.parametrize(
+    ("supports_prompt_cache", "expects_key"),
+    [(True, True), (None, True), (False, False)],
+)
+@pytest.mark.asyncio
+async def test_prompt_cache_setting_controls_request_field(
+    monkeypatch,
+    supports_prompt_cache,
+    expects_key,
+) -> None:
+    captured = {}
+
+    async def fake_config(*_args, **_kwargs):
+        return {
+            "model": "openai/gpt-5.6",
+            "temperature": 0.2,
+            "max_tokens": 100,
+            "api_base": "https://api.openai.com/v1",
+            "api_key": "test-key",
+            "model_metadata": {
+                "supports_prompt_cache": supports_prompt_cache,
+            },
+        }
+
+    async def fake_aresponses(**kwargs):
+        captured.update(kwargs)
+        return _response("ok")
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
+
+    await LLMService().generate(
+        "agent_loop",
+        [{"role": "user", "content": "hi"}],
+        project_id="project-cache-setting",
+    )
+
+    if expects_key:
+        assert captured["prompt_cache_key"].startswith("openreel:agent_loop:")
+    else:
+        assert "prompt_cache_key" not in captured
+
+
+@pytest.mark.asyncio
+async def test_responses_websocket_connect_uses_codex_headers(monkeypatch) -> None:
+    from websockets.asyncio import client
+
+    captured = {}
+    socket = SimpleNamespace()
+
+    async def fake_connect(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return socket
+
+    monkeypatch.setattr(client, "connect", fake_connect)
+
+    result = await llm_service._connect_responses_websocket(
+        "wss://api.openai.com/v1/responses",
+        api_key="test-key",
+        timeout=90,
+        provider_params={},
+        session_id="session-1",
+        thread_id="thread-1",
+        turn_state="turn-state-1",
+    )
+
+    headers = dict(captured["additional_headers"])
+    assert result is socket
+    assert headers["OpenAI-Beta"] == "responses_websockets=2026-02-06"
+    assert headers["session-id"] == "session-1"
+    assert headers["thread-id"] == "thread-1"
+    assert headers["x-codex-turn-state"] == "turn-state-1"
+    assert headers["x-client-request-id"]
+
+
 @pytest.mark.asyncio
 async def test_turn_session_reuses_websocket_with_incremental_tool_output(monkeypatch) -> None:
     function_call = {
@@ -1149,6 +1225,8 @@ async def test_turn_session_reuses_websocket_with_incremental_tool_output(monkey
     await session.aclose()
 
     assert captured["url"] == "wss://api.openai.com/v1/responses"
+    assert captured["kwargs"]["session_id"]
+    assert captured["kwargs"]["thread_id"]
     assert socket.sent[0]["model"] == "gpt-5.6"
     assert socket.sent[0]["store"] is False
     assert "previous_response_id" not in socket.sent[0]
@@ -1158,6 +1236,201 @@ async def test_turn_session_reuses_websocket_with_incremental_tool_output(monkey
     assert second_updates[-1].response["_openreel_transport_incremental"] is True
     assert second_updates[-1].response["_openreel_transport_input_items_sent"] == 1
     assert socket.closed is True
+
+
+@pytest.mark.asyncio
+async def test_turn_sessions_reuse_project_websocket_across_user_turns(monkeypatch) -> None:
+    first_message = {
+        "id": "msg-1",
+        "type": "message",
+        "role": "assistant",
+        "phase": "final_answer",
+        "content": [{"type": "output_text", "text": "第一轮"}],
+    }
+    second_message = {
+        "id": "msg-2",
+        "type": "message",
+        "role": "assistant",
+        "phase": "final_answer",
+        "content": [{"type": "output_text", "text": "第二轮"}],
+    }
+    responses = [
+        {
+            "id": "resp-cross-1",
+            "model": "gpt-5.6",
+            "status": "completed",
+            "output": [first_message],
+        },
+        {
+            "id": "resp-cross-2",
+            "model": "gpt-5.6",
+            "status": "completed",
+            "output": [second_message],
+        },
+    ]
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+            self.events = []
+            self.closed = False
+
+        async def send(self, value: str):
+            self.sent.append(json.loads(value))
+            response = responses[len(self.sent) - 1]
+            self.events.append(json.dumps({
+                "type": "response.completed",
+                "response": response,
+            }))
+
+        async def recv(self):
+            return self.events.pop(0)
+
+        async def close(self):
+            self.closed = True
+
+    socket = FakeWebSocket()
+    calls = {"connect": 0}
+
+    async def fake_config(*_args, **_kwargs):
+        return {
+            "model": "openai/gpt-5.6",
+            "temperature": 0.2,
+            "max_tokens": 100,
+            "api_base": "https://api.openai.com/v1",
+            "api_key": "test-key",
+            "provider_params": {"max_retries": 0},
+            "model_metadata": {},
+        }
+
+    async def fake_connect(*_args, **_kwargs):
+        calls["connect"] += 1
+        return socket
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service, "_connect_responses_websocket", fake_connect)
+    await llm_service.close_responses_websocket_pool()
+    try:
+        first_session = LLMService().new_turn_session(project_id="project-cross-turn")
+        first_updates = [
+            update
+            async for update in first_session.stream_with_tools(
+                "agent_loop",
+                [{"role": "user", "content": "第一轮"}],
+                tools=[],
+                project_id="project-cross-turn",
+            )
+        ]
+        await first_session.aclose()
+
+        assert first_updates[-1].kind == "terminal"
+        assert socket.closed is False
+
+        second_session = LLMService().new_turn_session(project_id="project-cross-turn")
+        second_updates = [
+            update
+            async for update in second_session.stream_with_tools(
+                "agent_loop",
+                [
+                    {"role": "user", "content": "第一轮"},
+                    first_message,
+                    {"role": "user", "content": "第二轮"},
+                ],
+                tools=[],
+                project_id="project-cross-turn",
+            )
+        ]
+        await second_session.aclose()
+
+        assert second_updates[-1].kind == "terminal"
+        assert calls["connect"] == 1
+        assert socket.sent[1]["previous_response_id"] == "resp-cross-1"
+        assert len(socket.sent[1]["input"]) == 1
+        assert "第二轮" in json.dumps(socket.sent[1]["input"], ensure_ascii=False)
+    finally:
+        await llm_service.close_responses_websocket_pool()
+
+    assert socket.closed is True
+
+
+@pytest.mark.asyncio
+async def test_turn_session_reconnect_replays_current_turn_state(monkeypatch) -> None:
+    response = {
+        "id": "resp-reconnected",
+        "model": "gpt-5.6",
+        "status": "completed",
+        "output": [],
+    }
+
+    class FailedWebSocket:
+        response = SimpleNamespace(headers={"x-codex-turn-state": "turn-state-1"})
+
+        async def send(self, _value: str):
+            return None
+
+        async def recv(self):
+            raise ConnectionError("disconnected")
+
+        async def close(self):
+            return None
+
+    class ReconnectedWebSocket:
+        response = SimpleNamespace(headers={})
+
+        def __init__(self):
+            self.events = []
+
+        async def send(self, _value: str):
+            self.events.append(json.dumps({
+                "type": "response.completed",
+                "response": response,
+            }))
+
+        async def recv(self):
+            return self.events.pop(0)
+
+        async def close(self):
+            return None
+
+    sockets = [FailedWebSocket(), ReconnectedWebSocket()]
+    connects = []
+
+    async def fake_config(*_args, **_kwargs):
+        return {
+            "model": "openai/gpt-5.6",
+            "temperature": 0.2,
+            "max_tokens": 100,
+            "api_base": "https://api.openai.com/v1",
+            "api_key": "test-key",
+            "provider_params": {
+                "max_retries": 1,
+                "retry_backoff_seconds": 0,
+            },
+            "model_metadata": {},
+        }
+
+    async def fake_connect(*_args, **kwargs):
+        connects.append(kwargs)
+        return sockets[len(connects) - 1]
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service, "_connect_responses_websocket", fake_connect)
+
+    session = LLMService().new_turn_session()
+    updates = [
+        update
+        async for update in session.stream_with_tools(
+            "agent_loop",
+            [{"role": "user", "content": "重连"}],
+            tools=[],
+        )
+    ]
+    await session.aclose()
+
+    assert updates[-1].kind == "terminal"
+    assert len(connects) == 2
+    assert connects[0]["turn_state"] == ""
+    assert connects[1]["turn_state"] == "turn-state-1"
 
 
 def test_turn_session_does_not_chain_when_full_context_changed() -> None:

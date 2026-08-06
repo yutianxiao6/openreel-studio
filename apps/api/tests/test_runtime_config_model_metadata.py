@@ -77,6 +77,8 @@ def test_runtime_config_accepts_tier_defaults_without_task_names() -> None:
 
     assert cfg.llm_providers[0].tier == "strong"
     assert cfg.llm_providers[1].tier == "small"
+    assert cfg.llm_providers[0].supports_prompt_cache is True
+    assert cfg.llm_providers[1].supports_prompt_cache is True
     assert cfg.model_tier_defaults == {
         "strong": "strong-provider",
         "balanced": None,

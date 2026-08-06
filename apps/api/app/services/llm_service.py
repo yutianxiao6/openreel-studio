@@ -13,9 +13,13 @@ provider 由 LiteLLM 在这一层桥接到 Chat Completions，上层 Agent 不�
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
+from dataclasses import dataclass
+import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from typing import Any, AsyncIterator
 from urllib.parse import urlparse, urlunparse
@@ -82,6 +86,27 @@ _RETRYABLE_STREAM_ERROR_MARKERS = (
 )
 
 logger = logging.getLogger(__name__)
+
+_RESPONSES_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
+_RESPONSES_WEBSOCKET_CACHE_TTL_SECONDS = 300.0
+_RESPONSES_WEBSOCKET_CACHE_MAX_ENTRIES = 64
+
+
+@dataclass
+class _ResponsesWebSocketCacheEntry:
+    ws: Any
+    transport_key: str
+    last_request_fingerprint: str
+    last_request_input: list[dict[str, Any]]
+    last_response_items: list[dict[str, Any]]
+    last_response_id: str
+    cached_at: float
+
+
+# A worker-local cache mirrors Codex's separation between a physical Responses
+# WebSocket and a logical user turn. Entries are keyed by project so concurrent
+# projects never share transport or incremental response state.
+_RESPONSES_WEBSOCKET_CACHE: OrderedDict[str, _ResponsesWebSocketCacheEntry] = OrderedDict()
 
 
 class LLMConfigurationError(RuntimeError):
@@ -499,8 +524,34 @@ def _config_from_provider_row(
     }
 
 
+def _prompt_cache_enabled(cfg: dict[str, Any]) -> bool:
+    """Treat historical null values as the new default-on setting."""
+
+    metadata = cfg.get("model_metadata")
+    if isinstance(metadata, dict) and metadata.get("supports_prompt_cache") is False:
+        return False
+    return True
+
+
+def _prompt_cache_key(
+    cfg: dict[str, Any],
+    *,
+    project_id: str | None,
+    task_type: str,
+) -> str | None:
+    if not project_id or not _prompt_cache_enabled(cfg):
+        return None
+    project_digest = hashlib.sha256(str(project_id).encode("utf-8")).hexdigest()[:24]
+    task = "".join(
+        character if character.isalnum() or character in {"-", "_"} else "-"
+        for character in str(task_type or "agent_loop")
+    )[:32]
+    return f"openreel:{task or 'agent_loop'}:{project_digest}"
+
+
 def _responses_kwargs(cfg: dict, *, with_tools: list | None = None,
-                      stream: bool = False) -> dict[str, Any]:
+                      stream: bool = False,
+                      prompt_cache_key: str | None = None) -> dict[str, Any]:
     """构造透传 api_base/api_key 的 stateless Responses 参数。"""
     policy = _llm_request_policy(cfg)
     kwargs: dict[str, Any] = {
@@ -525,6 +576,8 @@ def _responses_kwargs(cfg: dict, *, with_tools: list | None = None,
         kwargs["include"] = ["reasoning.encrypted_content"]
     if policy["use_chat_completions_api"]:
         kwargs["use_chat_completions_api"] = True
+    if prompt_cache_key:
+        kwargs["prompt_cache_key"] = prompt_cache_key
     if stream:
         kwargs["stream"] = True
     return kwargs
@@ -574,10 +627,25 @@ async def _connect_responses_websocket(
     api_key: str,
     timeout: float,
     provider_params: dict[str, Any],
+    session_id: str,
+    thread_id: str,
+    turn_state: str = "",
 ) -> Any:
     from websockets.asyncio.client import connect
 
-    headers: list[tuple[str, str]] = [("Authorization", f"Bearer {api_key}")]
+    beta_header = str(
+        provider_params.get("responses_websocket_beta_header")
+        or _RESPONSES_WEBSOCKET_BETA
+    ).strip()
+    headers: list[tuple[str, str]] = [
+        ("Authorization", f"Bearer {api_key}"),
+        ("OpenAI-Beta", beta_header),
+        ("session-id", session_id),
+        ("thread-id", thread_id),
+        ("x-client-request-id", uuid.uuid4().hex),
+    ]
+    if turn_state:
+        headers.append(("x-codex-turn-state", turn_state))
     organization = str(provider_params.get("organization") or "").strip()
     project = str(provider_params.get("project") or "").strip()
     if organization:
@@ -593,6 +661,105 @@ async def _connect_responses_websocket(
         ping_timeout=20,
         max_size=16 * 1024 * 1024,
     )
+
+
+def _websocket_transport_key(cfg: dict[str, Any]) -> str:
+    api_key = _resolve_key_reference(str(cfg.get("api_key") or "")) or ""
+    params = _provider_params(cfg)
+    identity = {
+        "url": _responses_websocket_url(cfg.get("api_base")),
+        "model": _responses_websocket_model(str(cfg.get("model") or "")),
+        "organization": str(params.get("organization") or ""),
+        "project": str(params.get("project") or ""),
+        "beta": str(
+            params.get("responses_websocket_beta_header")
+            or _RESPONSES_WEBSOCKET_BETA
+        ),
+        "api_key_hash": hashlib.sha256(api_key.encode("utf-8")).hexdigest(),
+    }
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _websocket_is_closed(ws: Any) -> bool:
+    if bool(getattr(ws, "closed", False)):
+        return True
+    return getattr(ws, "close_code", None) is not None
+
+
+async def _close_responses_websocket(ws: Any | None) -> None:
+    if ws is None:
+        return
+    try:
+        await ws.close()
+    except Exception:
+        logger.debug("Responses WebSocket close failed", exc_info=True)
+
+
+async def _take_cached_responses_websocket(
+    project_id: str,
+    transport_key: str,
+) -> _ResponsesWebSocketCacheEntry | None:
+    entry = _RESPONSES_WEBSOCKET_CACHE.pop(project_id, None)
+    if entry is None:
+        return None
+    expired = (
+        time.monotonic() - entry.cached_at
+        > _RESPONSES_WEBSOCKET_CACHE_TTL_SECONDS
+    )
+    if expired or entry.transport_key != transport_key or _websocket_is_closed(entry.ws):
+        await _close_responses_websocket(entry.ws)
+        return None
+    return entry
+
+
+async def _store_cached_responses_websocket(
+    project_id: str,
+    entry: _ResponsesWebSocketCacheEntry,
+) -> None:
+    replaced = _RESPONSES_WEBSOCKET_CACHE.pop(project_id, None)
+    if replaced is not None and replaced.ws is not entry.ws:
+        await _close_responses_websocket(replaced.ws)
+    _RESPONSES_WEBSOCKET_CACHE[project_id] = entry
+    _RESPONSES_WEBSOCKET_CACHE.move_to_end(project_id)
+    while len(_RESPONSES_WEBSOCKET_CACHE) > _RESPONSES_WEBSOCKET_CACHE_MAX_ENTRIES:
+        _, evicted = _RESPONSES_WEBSOCKET_CACHE.popitem(last=False)
+        await _close_responses_websocket(evicted.ws)
+
+
+async def close_responses_websocket_pool() -> None:
+    """Close cached sockets; used by shutdown hooks and transport tests."""
+
+    entries = list(_RESPONSES_WEBSOCKET_CACHE.values())
+    _RESPONSES_WEBSOCKET_CACHE.clear()
+    for entry in entries:
+        await _close_responses_websocket(entry.ws)
+
+
+def _responses_websocket_turn_state(ws: Any) -> str:
+    response = getattr(ws, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return ""
+    try:
+        return str(headers.get("x-codex-turn-state") or "").strip()
+    except Exception:
+        return ""
+
+
+def _is_retryable_websocket_error(exc: Exception) -> bool:
+    code = str(getattr(exc, "code", "") or "").strip().lower()
+    if code in {
+        "previous_response_not_found",
+        "websocket_connection_limit_reached",
+        "rate_limit_exceeded",
+        "server_error",
+    }:
+        return True
+    if isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
+        return True
+    return _is_retryable_llm_error(exc)
 
 
 _TEXT_ONLY_IMAGE_UNSUPPORTED_MODEL_MARKERS = (
@@ -1139,7 +1306,14 @@ class LLMService:
     ) -> dict[str, Any]:
         cfg = await _resolve_config(task_type, self.db, node_override)
         policy = _llm_request_policy(cfg)
-        kwargs = _responses_kwargs(cfg)
+        kwargs = _responses_kwargs(
+            cfg,
+            prompt_cache_key=_prompt_cache_key(
+                cfg,
+                project_id=project_id,
+                task_type=task_type,
+            ),
+        )
         _apply_call_max_tokens(cfg, kwargs, max_tokens)
         input_items, instructions = _build_response_request_for_config(messages, system, cfg)
         kwargs["input"] = input_items
@@ -1241,7 +1415,15 @@ class LLMService:
     ) -> AsyncIterator[str]:
         cfg = await _resolve_config(task_type, self.db, node_override)
         policy = _llm_request_policy(cfg)
-        kwargs = _responses_kwargs(cfg, stream=True)
+        kwargs = _responses_kwargs(
+            cfg,
+            stream=True,
+            prompt_cache_key=_prompt_cache_key(
+                cfg,
+                project_id=project_id,
+                task_type=task_type,
+            ),
+        )
         input_items, instructions = _build_response_request_for_config(messages, system, cfg)
         kwargs["input"] = input_items
         if instructions:
@@ -1280,6 +1462,11 @@ class LLMService:
             tools=tools,
             system=system,
             max_tokens=max_tokens,
+            prompt_cache_key=_prompt_cache_key(
+                cfg,
+                project_id=project_id,
+                task_type=task_type,
+            ),
         ):
             yield update
 
@@ -1291,6 +1478,7 @@ class LLMService:
         tools: list[dict],
         system: str | None = None,
         max_tokens: int | None = None,
+        prompt_cache_key: str | None = None,
     ) -> AsyncIterator[ResponseStreamUpdate]:
         """Stream a tool-capable Responses turn as typed lifecycle updates.
 
@@ -1301,7 +1489,12 @@ class LLMService:
         """
 
         policy = _llm_request_policy(cfg)
-        kwargs = _responses_kwargs(cfg, with_tools=tools, stream=True)
+        kwargs = _responses_kwargs(
+            cfg,
+            with_tools=tools,
+            stream=True,
+            prompt_cache_key=prompt_cache_key,
+        )
         _apply_call_max_tokens(cfg, kwargs, max_tokens)
         input_items, instructions = _build_response_request_for_config(messages, system, cfg)
         kwargs["input"] = input_items
@@ -1444,10 +1637,13 @@ class LLMService:
 
         raise LLMResponseStatusError("Responses stream retries exhausted")
 
-    def new_turn_session(self) -> "LLMResponsesTurnSession":
+    def new_turn_session(
+        self,
+        project_id: str | None = None,
+    ) -> "LLMResponsesTurnSession":
         """Create isolated model transport state for one user turn."""
 
-        return LLMResponsesTurnSession(self)
+        return LLMResponsesTurnSession(self, project_id=project_id)
 
     async def generate_with_tools(
         self,
@@ -1462,7 +1658,15 @@ class LLMService:
         """LLM call with function-calling tools. Returns the full response object."""
         cfg = await _resolve_config(task_type, self.db, node_override)
         policy = _llm_request_policy(cfg)
-        kwargs = _responses_kwargs(cfg, with_tools=tools)
+        kwargs = _responses_kwargs(
+            cfg,
+            with_tools=tools,
+            prompt_cache_key=_prompt_cache_key(
+                cfg,
+                project_id=project_id,
+                task_type=task_type,
+            ),
+        )
         _apply_call_max_tokens(cfg, kwargs, max_tokens)
         input_items, instructions = _build_response_request_for_config(messages, system, cfg)
         kwargs["input"] = input_items
@@ -1489,22 +1693,43 @@ class LLMService:
 
 
 class LLMResponsesTurnSession:
-    """Turn-scoped Responses transport with Codex-style WebSocket fallback.
+    """Logical user turn over a reusable, project-isolated Responses socket."""
 
-    The socket, previous response id, and incremental-input cache never cross a
-    user-turn boundary. Providers without explicit WebSocket capability keep
-    using the existing stateless HTTP/SSE path.
-    """
-
-    def __init__(self, service: LLMService):
+    def __init__(self, service: LLMService, *, project_id: str | None = None):
         self._service = service
+        self._project_id = str(project_id or "").strip()
+        self._session_id = self._project_id or uuid.uuid4().hex
+        self._thread_id = self._project_id or self._session_id
         self._cfg: dict[str, Any] | None = None
         self._config_key: tuple[str, str] | None = None
         self._ws: Any | None = None
+        self._transport_key = ""
+        self._cache_checked = False
         self._websocket_disabled = False
+        # The server-provided turn state is scoped to this logical turn. It is
+        # replayed only when this turn reconnects and never enters the pool.
+        self._turn_state = ""
         self._last_request_fingerprint = ""
         self._last_request_input: list[dict[str, Any]] = []
         self._last_response_items: list[dict[str, Any]] = []
+        self._last_response_id = ""
+
+    def _bind_project_id(self, project_id: str | None) -> str:
+        value = str(project_id or "").strip()
+        if not value:
+            return self._project_id
+        if self._project_id and self._project_id != value:
+            raise ValueError("one Responses turn session cannot span multiple projects")
+        if not self._project_id:
+            self._project_id = value
+            self._session_id = value
+            self._thread_id = value
+        return self._project_id
+
+    def _clear_incremental_state(self) -> None:
+        self._last_request_fingerprint = ""
+        self._last_request_input = []
+        self._last_response_items = []
         self._last_response_id = ""
 
     async def _resolved_config(
@@ -1518,7 +1743,9 @@ class LLMResponsesTurnSession:
             self._config_key = key
         elif self._config_key != key:
             await self.aclose()
+            self._cache_checked = False
             self._websocket_disabled = False
+            self._turn_state = ""
             self._cfg = await _resolve_config(task_type, self._service.db, node_override)
             self._config_key = key
         return self._cfg
@@ -1574,17 +1801,41 @@ class LLMResponsesTurnSession:
         cfg: dict[str, Any],
         policy: dict[str, Any],
     ) -> Any:
-        if self._ws is not None:
+        if self._ws is not None and not _websocket_is_closed(self._ws):
             return self._ws
+        if self._ws is not None:
+            await _close_responses_websocket(self._ws)
+            self._ws = None
         api_key = _resolve_key_reference(str(cfg.get("api_key") or ""))
         if not api_key:
             raise LLMResponsesWebSocketError("Responses WebSocket requires an API key")
+        transport_key = _websocket_transport_key(cfg)
+        self._transport_key = transport_key
+        if self._project_id and not self._cache_checked:
+            self._cache_checked = True
+            cached = await _take_cached_responses_websocket(
+                self._project_id,
+                transport_key,
+            )
+            if cached is not None:
+                self._ws = cached.ws
+                self._last_request_fingerprint = cached.last_request_fingerprint
+                self._last_request_input = cached.last_request_input
+                self._last_response_items = cached.last_response_items
+                self._last_response_id = cached.last_response_id
+                return self._ws
         self._ws = await _connect_responses_websocket(
             _responses_websocket_url(cfg.get("api_base")),
             api_key=api_key,
             timeout=float(policy["request_timeout_seconds"]),
             provider_params=_provider_params(cfg),
+            session_id=self._session_id,
+            thread_id=self._thread_id,
+            turn_state=self._turn_state,
         )
+        handshake_turn_state = _responses_websocket_turn_state(self._ws)
+        if handshake_turn_state:
+            self._turn_state = handshake_turn_state
         return self._ws
 
     async def _stream_websocket(
@@ -1677,6 +1928,7 @@ class LLMResponsesTurnSession:
         system: str | None,
         max_tokens: int | None,
         reason: str,
+        prompt_cache_key: str | None,
     ) -> AsyncIterator[ResponseStreamUpdate]:
         async for update in self._service._stream_with_tools_resolved(
             cfg,
@@ -1684,6 +1936,7 @@ class LLMResponsesTurnSession:
             tools=tools,
             system=system,
             max_tokens=max_tokens,
+            prompt_cache_key=prompt_cache_key,
         ):
             if update.kind == "terminal" and update.response is not None:
                 self._set_response_metadata(
@@ -1704,9 +1957,14 @@ class LLMResponsesTurnSession:
         node_override: str | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[ResponseStreamUpdate]:
-        del project_id
+        effective_project_id = self._bind_project_id(project_id)
         cfg = await self._resolved_config(task_type, node_override)
         policy = _llm_request_policy(cfg)
+        prompt_cache_key = _prompt_cache_key(
+            cfg,
+            project_id=effective_project_id,
+            task_type=task_type,
+        )
         websocket_capable = bool(
             policy["supports_responses_websocket"]
             and not policy["use_chat_completions_api"]
@@ -1725,62 +1983,112 @@ class LLMResponsesTurnSession:
                 system=system,
                 max_tokens=max_tokens,
                 reason=reason,
+                prompt_cache_key=prompt_cache_key,
             ):
                 yield update
             return
 
-        kwargs = _responses_kwargs(cfg, with_tools=tools, stream=True)
+        kwargs = _responses_kwargs(
+            cfg,
+            with_tools=tools,
+            stream=True,
+            prompt_cache_key=prompt_cache_key,
+        )
         _apply_call_max_tokens(cfg, kwargs, max_tokens)
         full_input, instructions = _build_response_request_for_config(messages, system, cfg)
         kwargs["input"] = full_input
         if instructions:
             kwargs["instructions"] = instructions
 
-        emitted_text = False
-        try:
-            async for update in self._stream_websocket(cfg, policy, kwargs, full_input):
-                emitted_text |= update.kind == "text_delta"
-                yield update
-            return
-        except Exception as exc:
-            await self._disable_websocket()
-            if emitted_text:
-                raise
-            logger.warning(
-                "Responses WebSocket unavailable; falling back to HTTP for this turn: %s",
-                exc.__class__.__name__,
-            )
-            async for update in self._stream_http(
-                cfg,
-                messages=messages,
-                tools=tools,
-                system=system,
-                max_tokens=max_tokens,
-                reason=f"websocket_error:{getattr(exc, 'code', '') or exc.__class__.__name__}",
-            ):
-                yield update
-
-    async def _disable_websocket(self) -> None:
-        self._websocket_disabled = True
-        ws, self._ws = self._ws, None
-        self._last_request_fingerprint = ""
-        self._last_request_input = []
-        self._last_response_items = []
-        self._last_response_id = ""
-        if ws is not None:
+        websocket_attempts = policy["max_retries"] + 1
+        websocket_attempt = 0
+        previous_response_retry_used = False
+        while True:
+            websocket_attempt += 1
+            emitted_text = False
             try:
-                await ws.close()
-            except Exception:
-                logger.debug("Responses WebSocket close failed", exc_info=True)
+                async for update in self._stream_websocket(cfg, policy, kwargs, full_input):
+                    emitted_text |= update.kind == "text_delta"
+                    yield update
+                return
+            except Exception as exc:
+                code = str(getattr(exc, "code", "") or "").strip().lower()
+                if emitted_text:
+                    await self._drop_websocket(clear_incremental=True)
+                    raise
+
+                if code == "previous_response_not_found" and not previous_response_retry_used:
+                    previous_response_retry_used = True
+                    self._clear_incremental_state()
+                    logger.info(
+                        "Responses WebSocket retrying with full context after missing previous response"
+                    )
+                    continue
+
+                retryable = _is_retryable_websocket_error(exc)
+                if retryable and websocket_attempt < websocket_attempts:
+                    await self._drop_websocket(clear_incremental=False)
+                    logger.warning(
+                        "Responses WebSocket retrying attempt=%s/%s exception=%s code=%s",
+                        websocket_attempt,
+                        websocket_attempts,
+                        exc.__class__.__name__,
+                        code,
+                    )
+                    await asyncio.sleep(
+                        min(
+                            60.0,
+                            policy["retry_backoff_seconds"]
+                            * (2 ** (websocket_attempt - 1)),
+                        )
+                    )
+                    continue
+
+                self._websocket_disabled = True
+                await self._drop_websocket(clear_incremental=True)
+                logger.warning(
+                    "Responses WebSocket unavailable; falling back to HTTP for this turn: %s",
+                    exc.__class__.__name__,
+                )
+                async for update in self._stream_http(
+                    cfg,
+                    messages=messages,
+                    tools=tools,
+                    system=system,
+                    max_tokens=max_tokens,
+                    reason=f"websocket_error:{code or exc.__class__.__name__}",
+                    prompt_cache_key=prompt_cache_key,
+                ):
+                    yield update
+                return
+
+    async def _drop_websocket(self, *, clear_incremental: bool) -> None:
+        ws, self._ws = self._ws, None
+        await _close_responses_websocket(ws)
+        if clear_incremental:
+            self._clear_incremental_state()
 
     async def aclose(self) -> None:
         ws, self._ws = self._ws, None
-        self._last_request_fingerprint = ""
-        self._last_request_input = []
-        self._last_response_items = []
-        self._last_response_id = ""
-        if ws is not None:
-            try:
-                await ws.close()
-            except Exception:
-                logger.debug("Responses WebSocket close failed", exc_info=True)
+        if (
+            ws is not None
+            and self._project_id
+            and self._transport_key
+            and not self._websocket_disabled
+            and not _websocket_is_closed(ws)
+        ):
+            await _store_cached_responses_websocket(
+                self._project_id,
+                _ResponsesWebSocketCacheEntry(
+                    ws=ws,
+                    transport_key=self._transport_key,
+                    last_request_fingerprint=self._last_request_fingerprint,
+                    last_request_input=self._last_request_input,
+                    last_response_items=self._last_response_items,
+                    last_response_id=self._last_response_id,
+                    cached_at=time.monotonic(),
+                ),
+            )
+        else:
+            await _close_responses_websocket(ws)
+        self._clear_incremental_state()

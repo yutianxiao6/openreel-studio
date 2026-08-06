@@ -191,7 +191,7 @@ function blankProvider(tier: ModelTier): LlmProviderEntry {
     context_window_tokens: null,
     max_input_tokens: null,
     max_output_tokens: null,
-    supports_prompt_cache: null,
+    supports_prompt_cache: true,
     supports_vision: null,
     tokenizer: "",
     tier,
@@ -270,7 +270,7 @@ function ProviderRow({
               <span>上下文 {entry.context_window_tokens ?? "未填"}</span>
               <span>输入 {entry.max_input_tokens ?? "未填"}</span>
               <span>输出 {entry.max_output_tokens ?? "未填"}</span>
-              <span>缓存 {entry.supports_prompt_cache === true ? "支持" : entry.supports_prompt_cache === false ? "不支持" : "未填"}</span>
+              <span>缓存 {entry.supports_prompt_cache === false ? "关闭" : "开启"}</span>
               <span>视觉 {entry.supports_vision === true ? "支持" : entry.supports_vision === false ? "不支持" : "未填"}</span>
             </div>
           </div>
@@ -329,18 +329,20 @@ function ProviderRow({
           defaultText="默认 4000"
           hint="未单独设置任务 max_tokens 时使用。"
         />
-        <SelectField
-          label="Prompt Cache"
-          value={boolToInput(draft.supports_prompt_cache)}
-          onChange={(v) => setDraft({ ...draft, supports_prompt_cache: parseOptionalBool(v) })}
-          options={[
-            { label: "未填写", value: "" },
-            { label: "支持", value: "true" },
-            { label: "不支持", value: "false" },
-          ]}
-          defaultText="默认未填写"
-          hint="用于缓存命中率监控，不伪造 provider 未返回的 tokens。"
-        />
+        <label className="flex min-h-16 items-start gap-2 rounded border border-gray-800 bg-gray-950/30 px-3 py-2 text-xs text-gray-300">
+          <input
+            className="mt-0.5"
+            type="checkbox"
+            checked={draft.supports_prompt_cache !== false}
+            onChange={(e) => setDraft({ ...draft, supports_prompt_cache: e.target.checked })}
+          />
+          <span>
+            <span className="block text-gray-200">Prompt Cache <span className="text-[10px] text-gray-500">默认开启</span></span>
+            <span className="mt-1 block text-[10px] leading-4 text-gray-500">
+              开启时发送项目级缓存键；关闭后请求中不发送该字段。
+            </span>
+          </span>
+        </label>
         <SelectField
           label="视觉输入"
           value={boolToInput(draft.supports_vision)}

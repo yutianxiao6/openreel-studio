@@ -561,7 +561,7 @@ def _seed_default_config(env_keys: dict[str, str]) -> dict:
             "context_window_tokens": None,
             "max_input_tokens": None,
             "max_output_tokens": None,
-            "supports_prompt_cache": None,
+            "supports_prompt_cache": True,
             "supports_vision": None,
             "tokenizer": None,
             "tier": _seed_model_tier(model),

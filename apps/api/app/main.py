@@ -80,6 +80,11 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     try:
+        from app.services.llm_service import close_responses_websocket_pool
+        await close_responses_websocket_pool()
+    except Exception:
+        pass
+    try:
         await store.stop_watcher()
     except Exception:
         pass

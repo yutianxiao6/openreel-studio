@@ -43,8 +43,11 @@ class LlmProviderEntry(BaseModel):
         description="默认输出 token 上限；留空时使用系统默认 12000",
     )
     supports_prompt_cache: Optional[bool] = Field(
-        None,
-        description="模型/provider 是否支持 prompt cache 统计或计费",
+        True,
+        description=(
+            "是否向模型商发送项目级 prompt_cache_key；默认开启，关闭时不发送。"
+            "同时用于缓存命中率统计能力标记"
+        ),
     )
     supports_vision: Optional[bool] = Field(
         None,

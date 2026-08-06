@@ -206,7 +206,8 @@ async def test_queued_user_turns_get_isolated_llm_sessions() -> None:
             self.closed = True
 
     class FakeLLMService:
-        def new_turn_session(self):
+        def new_turn_session(self, project_id=None):
+            assert project_id == "turn-session-isolation"
             session = FakeTurnSession()
             sessions.append(session)
             return session

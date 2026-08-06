@@ -309,7 +309,7 @@ class LlmProviderBase(SQLModel):
     context_window_tokens: Optional[int] = None
     max_input_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
-    supports_prompt_cache: Optional[bool] = None
+    supports_prompt_cache: Optional[bool] = True
     supports_vision: Optional[bool] = None
     tokenizer: Optional[str] = None
     tier: str = "balanced"
