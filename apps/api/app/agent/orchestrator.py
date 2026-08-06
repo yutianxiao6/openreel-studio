@@ -211,6 +211,13 @@ def _message_model_visible(metadata: dict[str, Any]) -> bool:
     return True
 
 
+def _response_transport_value(response: Any, name: str, default: Any = None) -> Any:
+    key = f"_openreel_{name}"
+    if isinstance(response, dict):
+        return response.get(key, default)
+    return getattr(response, key, default)
+
+
 def _compact_summary(value: Any, limit: int = 520) -> str:
     text = " ".join(str(value or "").split())
     if not text:
@@ -1244,18 +1251,31 @@ class AgentOrchestrator:
                 return
 
             turn += 1
-            async for event in self._stream_one_turn(
-                project_id,
-                cur_msg,
-                cur_attachments,
-                referenced_node_ids=cur_referenced_node_ids,
-                display_message=cur_display_message,
-                user_metadata=cur_user_metadata,
-            ):
-                if event.get("type") == "done":
-                    final_status = str(event.get("status") or final_status or "completed")
-                    continue
-                yield event
+            llm_service = getattr(self, "llm_service", None)
+            session_factory = getattr(llm_service, "new_turn_session", None)
+            llm_turn_session = session_factory() if callable(session_factory) else None
+            turn_kwargs = {
+                "referenced_node_ids": cur_referenced_node_ids,
+                "display_message": cur_display_message,
+                "user_metadata": cur_user_metadata,
+            }
+            if llm_turn_session is not None:
+                turn_kwargs["llm_turn_session"] = llm_turn_session
+            try:
+                async for event in self._stream_one_turn(
+                    project_id,
+                    cur_msg,
+                    cur_attachments,
+                    **turn_kwargs,
+                ):
+                    if event.get("type") == "done":
+                        final_status = str(event.get("status") or final_status or "completed")
+                        continue
+                    yield event
+            finally:
+                close_turn_session = getattr(llm_turn_session, "aclose", None)
+                if callable(close_turn_session):
+                    await close_turn_session()
 
             # 一轮完了,看看用户在期间又发了什么
             pending = queued_backlog or await mq.pop_all(project_id)
@@ -1295,6 +1315,7 @@ class AgentOrchestrator:
         referenced_node_ids: list[str] | None = None,
         display_message: str | None = None,
         user_metadata: dict | None = None,
+        llm_turn_session: Any | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Pure Agent Loop: LLM decides everything."""
         from app.agent import message_queue as mq
@@ -1863,7 +1884,8 @@ class AgentOrchestrator:
         ) -> AsyncGenerator[tuple[str, Any], None]:
             """Yield visible text deltas followed by one terminal response record."""
 
-            stream_capability = getattr(type(self.llm_service), "stream_with_tools", None)
+            model_transport = llm_turn_session or self.llm_service
+            stream_capability = getattr(type(model_transport), "stream_with_tools", None)
             if stream_capability is None:
                 response = await self.llm_service.generate_with_tools(
                     task_type="agent_loop",
@@ -1901,7 +1923,7 @@ class AgentOrchestrator:
             defer_visible_text = current_collaboration_mode(state) == "plan"
             stream_started_at = time.perf_counter()
 
-            async for update in self.llm_service.stream_with_tools(
+            async for update in model_transport.stream_with_tools(
                 task_type="agent_loop",
                 messages=call_messages,
                 tools=tools,
@@ -2435,6 +2457,31 @@ class AgentOrchestrator:
                     round_stream_info.get("output_item_done_count") or 0
                 ),
                 first_text_delta_ms=round_stream_info.get("first_text_delta_ms"),
+                response_transport=str(
+                    _response_transport_value(
+                        response,
+                        "transport",
+                        (
+                            "responses_http_sse"
+                            if round_stream_info.get("native_stream")
+                            else "responses_http"
+                        ),
+                    )
+                ),
+                transport_incremental=bool(
+                    _response_transport_value(response, "transport_incremental", False)
+                ),
+                transport_reuse_reason=str(
+                    _response_transport_value(response, "transport_reuse_reason", "")
+                ),
+                transport_input_items_sent=_response_transport_value(
+                    response,
+                    "transport_input_items_sent",
+                ),
+                transport_full_input_items=_response_transport_value(
+                    response,
+                    "transport_full_input_items",
+                ),
             )
             if not msg_tool_calls and not msg_content:
                 trace.emit(

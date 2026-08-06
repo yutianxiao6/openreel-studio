@@ -602,6 +602,38 @@ def test_before_model_call_hook_appends_context_for_tool_continuation() -> None:
         "<runtime-context>\n## 运行时上下文\nstate\n</runtime-context>"
     )
 
+
+def test_before_model_call_preserves_unchanged_context_as_append_only_prefix() -> None:
+    first = run_before_model_call(
+        [{"role": "user", "content": "读取项目"}],
+        "<execution-checklist>\nread\n</execution-checklist>",
+        runtime_context="## 运行时上下文\nstable",
+    )
+    continued = [
+        *first.messages,
+        {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "project__get_state",
+            "arguments": "{}",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": '{"ok":true}',
+        },
+    ]
+
+    second = run_before_model_call(
+        continued,
+        "<execution-checklist>\nread\n</execution-checklist>",
+        runtime_context="## 运行时上下文\nstable",
+    )
+
+    assert second.messages == continued
+    assert second.removed_checklist_reminders == 0
+    assert second.removed_runtime_contexts == 0
+
 def test_before_model_call_hook_removes_checklist_without_new_reminder() -> None:
     old_reminder = "<execution-checklist>\nold\n</execution-checklist>"
     result = run_before_model_call(

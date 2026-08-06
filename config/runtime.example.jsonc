@@ -6,7 +6,9 @@
   // Agent LLM calls use the Responses contract internally. A custom
   // provider="openai" base URL defaults to LiteLLM's Chat bridge for backward
   // compatibility; set params.use_chat_completions_api=false when that relay
-  // has a native /responses endpoint.
+  // has a native /responses endpoint. Official OpenAI endpoints use the
+  // turn-scoped Responses WebSocket automatically. A compatible custom relay
+  // opts in with params.supports_responses_websocket=true.
   "llm_providers": [
     {
       "name": "deepseek-default",

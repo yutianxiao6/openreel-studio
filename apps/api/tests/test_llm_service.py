@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -454,6 +455,7 @@ def test_llm_request_policy_uses_provider_params() -> None:
         "accept_backend_content": True,
         "include_reasoning_encrypted_content": True,
         "use_chat_completions_api": False,
+        "supports_responses_websocket": True,
     }
     assert kwargs["timeout"] == 240.0
     assert kwargs["max_retries"] == 0
@@ -1010,6 +1012,7 @@ def test_custom_openai_compatible_base_defaults_to_responses_bridge() -> None:
     })
 
     assert policy["use_chat_completions_api"] is True
+    assert policy["supports_responses_websocket"] is False
     assert llm_service._responses_kwargs({
         "model": "openai/custom-model",
         "api_base": "https://relay.example.test/v1",
@@ -1026,3 +1029,282 @@ def test_custom_openai_compatible_base_can_opt_into_native_responses() -> None:
     })
 
     assert "use_chat_completions_api" not in kwargs
+
+
+def test_custom_native_responses_relay_can_declare_websocket_capability() -> None:
+    policy = llm_service._llm_request_policy({
+        "model": "openai/custom-model",
+        "api_base": "https://relay.example.test/v1",
+        "provider_params": {
+            "use_chat_completions_api": False,
+            "supports_responses_websocket": True,
+        },
+    })
+
+    assert policy["use_chat_completions_api"] is False
+    assert policy["supports_responses_websocket"] is True
+
+
+@pytest.mark.asyncio
+async def test_turn_session_reuses_websocket_with_incremental_tool_output(monkeypatch) -> None:
+    function_call = {
+        "id": "fc-1",
+        "type": "function_call",
+        "call_id": "call-1",
+        "name": "project__get_state",
+        "arguments": "{}",
+    }
+    first_response = {
+        "id": "resp-1",
+        "model": "gpt-5.6",
+        "status": "completed",
+        "output": [function_call],
+        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+    }
+    final_message = {
+        "id": "msg-2",
+        "type": "message",
+        "role": "assistant",
+        "phase": "final_answer",
+        "content": [{"type": "output_text", "text": "完成"}],
+    }
+    second_response = {
+        "id": "resp-2",
+        "model": "gpt-5.6",
+        "status": "completed",
+        "output": [final_message],
+        "usage": {"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+    }
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+            self.events = []
+            self.closed = False
+
+        async def send(self, value: str):
+            self.sent.append(json.loads(value))
+            response = first_response if len(self.sent) == 1 else second_response
+            done_item = function_call if len(self.sent) == 1 else final_message
+            self.events.extend([
+                json.dumps({"type": "response.created", "response": {"id": response["id"]}}),
+                json.dumps({"type": "response.output_item.done", "item": done_item}),
+                json.dumps({"type": "response.completed", "response": response}),
+            ])
+
+        async def recv(self):
+            return self.events.pop(0)
+
+        async def close(self):
+            self.closed = True
+
+    socket = FakeWebSocket()
+    captured = {}
+
+    async def fake_config(*_args, **_kwargs):
+        return {
+            "model": "openai/gpt-5.6",
+            "temperature": 0.2,
+            "max_tokens": 100,
+            "api_base": "https://api.openai.com/v1",
+            "api_key": "test-key",
+            "provider_params": {"max_retries": 0},
+            "model_metadata": {},
+        }
+
+    async def fake_connect(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return socket
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service, "_connect_responses_websocket", fake_connect)
+
+    session = LLMService().new_turn_session()
+    first_updates = [
+        update
+        async for update in session.stream_with_tools(
+            "agent_loop",
+            [{"role": "user", "content": "读取项目"}],
+            tools=[],
+        )
+    ]
+    tool_output = {
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": '{"ok":true}',
+    }
+    second_updates = [
+        update
+        async for update in session.stream_with_tools(
+            "agent_loop",
+            [
+                {"role": "user", "content": "读取项目"},
+                function_call,
+                tool_output,
+            ],
+            tools=[],
+        )
+    ]
+    await session.aclose()
+
+    assert captured["url"] == "wss://api.openai.com/v1/responses"
+    assert socket.sent[0]["model"] == "gpt-5.6"
+    assert socket.sent[0]["store"] is False
+    assert "previous_response_id" not in socket.sent[0]
+    assert socket.sent[1]["previous_response_id"] == "resp-1"
+    assert socket.sent[1]["input"] == [tool_output]
+    assert first_updates[-1].response["_openreel_transport_incremental"] is False
+    assert second_updates[-1].response["_openreel_transport_incremental"] is True
+    assert second_updates[-1].response["_openreel_transport_input_items_sent"] == 1
+    assert socket.closed is True
+
+
+def test_turn_session_does_not_chain_when_full_context_changed() -> None:
+    session = LLMService().new_turn_session()
+    previous_user = {"role": "user", "content": "旧上下文"}
+    previous_output = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "旧回答"}],
+    }
+    kwargs = {
+        "model": "openai/gpt-5.6",
+        "store": False,
+        "input": [],
+        "instructions": "stable",
+    }
+    session._last_response_id = "resp-old"
+    session._last_request_input = [previous_user]
+    session._last_response_items = [previous_output]
+    session._last_request_fingerprint = session._request_fingerprint(
+        llm_service._responses_websocket_body(kwargs)
+    )
+
+    changed_input = [{"role": "developer", "content": "compacted"}]
+    body, incremental, reason = session._request_body(kwargs, changed_input)
+
+    assert incremental is False
+    assert reason == "full_context_changed"
+    assert "previous_response_id" not in body
+    assert body["input"] == changed_input
+
+
+@pytest.mark.asyncio
+async def test_turn_session_falls_back_to_http_once_for_websocket_failure(monkeypatch) -> None:
+    calls = {"connect": 0, "http": 0}
+
+    async def fake_config(*_args, **_kwargs):
+        return {
+            "model": "openai/gpt-5.6",
+            "temperature": 0.2,
+            "max_tokens": 100,
+            "api_base": "https://api.openai.com/v1",
+            "api_key": "test-key",
+            "provider_params": {"max_retries": 0},
+            "model_metadata": {},
+        }
+
+    async def failed_connect(*_args, **_kwargs):
+        calls["connect"] += 1
+        raise ConnectionError("unavailable")
+
+    async def fake_http(self, cfg, **_kwargs):
+        calls["http"] += 1
+        yield llm_service.ResponseStreamUpdate(
+            kind="terminal",
+            event_type="response.completed",
+            response=_response("fallback"),
+        )
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service, "_connect_responses_websocket", failed_connect)
+    monkeypatch.setattr(LLMService, "_stream_with_tools_resolved", fake_http)
+
+    session = LLMService().new_turn_session()
+    responses = []
+    for _ in range(2):
+        updates = [
+            update
+            async for update in session.stream_with_tools(
+                "agent_loop",
+                [{"role": "user", "content": "继续"}],
+                tools=[],
+            )
+        ]
+        responses.append(updates[-1].response)
+    await session.aclose()
+
+    assert calls == {"connect": 1, "http": 2}
+    assert all(response._openreel_transport == "responses_http_sse" for response in responses)
+    assert all("websocket_" in response._openreel_transport_reuse_reason for response in responses)
+
+
+@pytest.mark.asyncio
+async def test_turn_session_never_replays_http_after_visible_websocket_text(monkeypatch) -> None:
+    calls = {"http": 0}
+
+    class FailingWebSocket:
+        def __init__(self):
+            self.recv_count = 0
+            self.closed = False
+
+        async def send(self, _value: str):
+            return None
+
+        async def recv(self):
+            self.recv_count += 1
+            if self.recv_count == 1:
+                return json.dumps({
+                    "type": "response.output_text.delta",
+                    "item_id": "msg-1",
+                    "delta": "已经显示",
+                })
+            raise ConnectionError("stream interrupted")
+
+        async def close(self):
+            self.closed = True
+
+    socket = FailingWebSocket()
+
+    async def fake_config(*_args, **_kwargs):
+        return {
+            "model": "openai/gpt-5.6",
+            "temperature": 0.2,
+            "max_tokens": 100,
+            "api_base": "https://api.openai.com/v1",
+            "api_key": "test-key",
+            "provider_params": {"max_retries": 0},
+            "model_metadata": {},
+        }
+
+    async def fake_connect(*_args, **_kwargs):
+        return socket
+
+    async def fake_http(self, cfg, **_kwargs):
+        calls["http"] += 1
+        yield llm_service.ResponseStreamUpdate(
+            kind="terminal",
+            event_type="response.completed",
+            response=_response("must not replay"),
+        )
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service, "_connect_responses_websocket", fake_connect)
+    monkeypatch.setattr(LLMService, "_stream_with_tools_resolved", fake_http)
+
+    session = LLMService().new_turn_session()
+    deltas = []
+    with pytest.raises(ConnectionError, match="stream interrupted"):
+        async for update in session.stream_with_tools(
+            "agent_loop",
+            [{"role": "user", "content": "继续"}],
+            tools=[],
+        ):
+            if update.kind == "text_delta":
+                deltas.append(update.delta)
+    await session.aclose()
+
+    assert deltas == ["已经显示"]
+    assert calls["http"] == 0
+    assert socket.closed is True

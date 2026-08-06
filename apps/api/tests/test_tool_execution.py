@@ -12,6 +12,7 @@ from app.agent.tool_execution import (
     run_parallel_tool_calls,
     supports_parallel_read,
 )
+from app.agent import message_queue as mq
 from app.agent import orchestrator as orchestrator_module
 from app.agent.orchestrator import AgentOrchestrator
 
@@ -187,3 +188,56 @@ async def test_orchestrator_runs_complete_safe_read_round_concurrently(monkeypat
         args and args[0] == "tool_parallel_batch_completed"
         for args, _kwargs in holder["trace"]
     )
+
+
+@pytest.mark.asyncio
+async def test_queued_user_turns_get_isolated_llm_sessions() -> None:
+    project_id = "turn-session-isolation"
+    await mq.pop_all(project_id)
+    await mq.clear_cancel(project_id)
+    sessions = []
+    calls = 0
+
+    class FakeTurnSession:
+        def __init__(self):
+            self.closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    class FakeLLMService:
+        def new_turn_session(self):
+            session = FakeTurnSession()
+            sessions.append(session)
+            return session
+
+    async def fake_stream_one_turn(
+        _project_id: str,
+        message: str,
+        _attachments=None,
+        **kwargs,
+    ):
+        nonlocal calls
+        calls += 1
+        assert kwargs["llm_turn_session"] is sessions[-1]
+        if calls == 1:
+            await mq.enqueue(project_id, "第二个用户轮")
+        yield {"type": "text_delta", "content": message}
+        yield {"type": "done", "status": "completed"}
+
+    orchestrator = AgentOrchestrator.__new__(AgentOrchestrator)
+    orchestrator.llm_service = FakeLLMService()
+    orchestrator._stream_one_turn = fake_stream_one_turn
+    try:
+        events = [event async for event in orchestrator.stream(project_id, "第一个用户轮")]
+    finally:
+        await mq.pop_all(project_id)
+        await mq.clear_cancel(project_id)
+
+    assert calls == 2
+    assert len(sessions) == 2
+    assert all(session.closed for session in sessions)
+    assert [event["content"] for event in events if event.get("type") == "text_delta"] == [
+        "第一个用户轮",
+        "第二个用户轮",
+    ]

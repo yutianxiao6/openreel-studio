@@ -115,6 +115,16 @@ def _is_skill_warning_message(message: dict[str, Any]) -> bool:
     )
 
 
+def _is_managed_context_message(message: dict[str, Any]) -> bool:
+    return bool(
+        _is_execution_checklist_message(message)
+        or _is_runtime_context_message(message)
+        or _is_skills_context_message(message)
+        or _is_skill_instruction_message(message)
+        or _is_skill_warning_message(message)
+    )
+
+
 def _context_insertion_index(messages: list[dict[str, Any]]) -> int:
     """Append contextual reminders so earlier prompt tokens stay cacheable.
 
@@ -162,6 +172,10 @@ def run_before_model_call(
     skill_instructions: tuple[str, ...] | list[str] = (),
     skill_warnings: tuple[str, ...] | list[str] = (),
 ) -> BeforeModelCallHookResult:
+    original_messages = list(messages)
+    existing_context_messages = [
+        message for message in original_messages if _is_managed_context_message(message)
+    ]
     cleaned_messages: list[dict[str, Any]] = []
     removed_checklist_count = 0
     removed_runtime_count = 0
@@ -210,6 +224,20 @@ def run_before_model_call(
                     "content": f"{SKILL_WARNING_MARKER}\n{warning_text}\n</skill-warning>",
                 }
             )
+    # Preserve byte-for-byte identical context blocks at their original
+    # positions. This keeps the next Responses request as an append-only
+    # extension, allowing a turn-scoped WebSocket to send only new tool items.
+    if existing_context_messages == context_messages:
+        return BeforeModelCallHookResult(
+            messages=original_messages,
+            checklist_reminder_added=bool(checklist_reminder),
+            runtime_context_added=bool(runtime_context),
+            skills_context_added=bool(skills_context),
+            skill_instructions_added=sum(
+                1 for instruction in skill_instructions if str(instruction or "").strip()
+            ),
+            skill_warnings_added=sum(1 for warning in skill_warnings if warning),
+        )
     if context_messages:
         insertion_index = _context_insertion_index(cleaned_messages)
         cleaned_messages[insertion_index:insertion_index] = context_messages

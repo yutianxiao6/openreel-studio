@@ -462,6 +462,7 @@ dependencies = [
     { name = "universal-model-adapter" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "watchfiles" },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -497,6 +498,7 @@ requires-dist = [
     { name = "universal-model-adapter", directory = "../../vendor/universal-model-adapter" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
     { name = "watchfiles", specifier = ">=1.1.1" },
+    { name = "websockets", specifier = ">=15,<17" },
 ]
 provides-extras = ["dev"]
 

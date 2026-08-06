@@ -18,7 +18,7 @@ import logging
 import os
 import uuid
 from typing import Any, AsyncIterator
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import litellm
 from sqlmodel import select
@@ -32,6 +32,7 @@ from app.services.llm_responses import (
     ResponseStreamUpdate,
     prepare_response_input,
     replay_output_items,
+    response_output_items,
     response_stream_update,
     response_view,
     responses_tools,
@@ -106,6 +107,14 @@ class LLMResponseStatusError(RuntimeError):
     """Raised when a non-background Responses request does not reach a usable state."""
 
 
+class LLMResponsesWebSocketError(RuntimeError):
+    """Raised when the turn-scoped Responses WebSocket cannot continue safely."""
+
+    def __init__(self, message: str, *, code: str = ""):
+        super().__init__(message)
+        self.code = code
+
+
 def _policy_int(value: Any, default: int, *, minimum: int, maximum: int) -> int:
     try:
         parsed = int(value)
@@ -175,6 +184,11 @@ def _llm_request_policy(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         and api_host
         and api_host not in {"api.openai.com"}
     )
+    default_responses_websocket = bool(
+        (model.startswith("openai/") or model.startswith("gpt-"))
+        and (not api_host or api_host == "api.openai.com")
+        and not default_chat_bridge
+    )
     return {
         # max_retries means retries after the first OpenReel attempt.
         "max_retries": _policy_int(
@@ -219,6 +233,13 @@ def _llm_request_policy(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         "use_chat_completions_api": _policy_bool(
             params.get("use_chat_completions_api", default_chat_bridge),
             default_chat_bridge,
+        ),
+        # Codex treats WebSocket support as a provider capability. Official
+        # OpenAI endpoints have that capability by default; custom native
+        # Responses relays must opt in explicitly.
+        "supports_responses_websocket": _policy_bool(
+            params.get("supports_responses_websocket", default_responses_websocket),
+            default_responses_websocket,
         ),
     }
 
@@ -507,6 +528,71 @@ def _responses_kwargs(cfg: dict, *, with_tools: list | None = None,
     if stream:
         kwargs["stream"] = True
     return kwargs
+
+
+def _responses_websocket_url(api_base: str | None) -> str:
+    base = str(api_base or "https://api.openai.com/v1").strip().rstrip("/")
+    parsed = urlparse(base)
+    if parsed.scheme not in {"http", "https", "ws", "wss"} or not parsed.netloc:
+        raise LLMResponsesWebSocketError("invalid Responses WebSocket API base")
+    scheme = "wss" if parsed.scheme in {"https", "wss"} else "ws"
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/responses"):
+        path = f"{path}/responses" if path else "/v1/responses"
+    return urlunparse((scheme, parsed.netloc, path, "", parsed.query, ""))
+
+
+def _responses_websocket_model(model: str) -> str:
+    value = str(model or "").strip()
+    return value.split("/", 1)[1] if value.startswith("openai/") else value
+
+
+def _responses_websocket_body(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Project a LiteLLM Responses request onto ``response.create`` fields."""
+
+    excluded = {
+        "api_base",
+        "api_key",
+        "max_retries",
+        "stream",
+        "timeout",
+        "use_chat_completions_api",
+    }
+    body = {
+        key: value
+        for key, value in kwargs.items()
+        if key not in excluded and value is not None
+    }
+    body["type"] = "response.create"
+    body["model"] = _responses_websocket_model(str(body.get("model") or ""))
+    return body
+
+
+async def _connect_responses_websocket(
+    url: str,
+    *,
+    api_key: str,
+    timeout: float,
+    provider_params: dict[str, Any],
+) -> Any:
+    from websockets.asyncio.client import connect
+
+    headers: list[tuple[str, str]] = [("Authorization", f"Bearer {api_key}")]
+    organization = str(provider_params.get("organization") or "").strip()
+    project = str(provider_params.get("project") or "").strip()
+    if organization:
+        headers.append(("OpenAI-Organization", organization))
+    if project:
+        headers.append(("OpenAI-Project", project))
+    return await connect(
+        url,
+        additional_headers=headers,
+        open_timeout=min(timeout, 30.0),
+        close_timeout=10,
+        ping_interval=20,
+        ping_timeout=20,
+        max_size=16 * 1024 * 1024,
+    )
 
 
 _TEXT_ONLY_IMAGE_UNSUPPORTED_MODEL_MARKERS = (
@@ -1187,6 +1273,25 @@ class LLMService:
         node_override: str | None = None,
         max_tokens: int | None = None,
     ) -> AsyncIterator[ResponseStreamUpdate]:
+        cfg = await _resolve_config(task_type, self.db, node_override)
+        async for update in self._stream_with_tools_resolved(
+            cfg,
+            messages=messages,
+            tools=tools,
+            system=system,
+            max_tokens=max_tokens,
+        ):
+            yield update
+
+    async def _stream_with_tools_resolved(
+        self,
+        cfg: dict[str, Any],
+        *,
+        messages: list[dict],
+        tools: list[dict],
+        system: str | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[ResponseStreamUpdate]:
         """Stream a tool-capable Responses turn as typed lifecycle updates.
 
         Text deltas may be presented immediately. Durable model actions come
@@ -1195,7 +1300,6 @@ class LLMService:
         invariant and preventing partial output from being committed as final.
         """
 
-        cfg = await _resolve_config(task_type, self.db, node_override)
         policy = _llm_request_policy(cfg)
         kwargs = _responses_kwargs(cfg, with_tools=tools, stream=True)
         _apply_call_max_tokens(cfg, kwargs, max_tokens)
@@ -1340,6 +1444,11 @@ class LLMService:
 
         raise LLMResponseStatusError("Responses stream retries exhausted")
 
+    def new_turn_session(self) -> "LLMResponsesTurnSession":
+        """Create isolated model transport state for one user turn."""
+
+        return LLMResponsesTurnSession(self)
+
     async def generate_with_tools(
         self,
         task_type: str,
@@ -1377,3 +1486,301 @@ class LLMService:
             accept_backend_content=policy["accept_backend_content"],
         )
         return response
+
+
+class LLMResponsesTurnSession:
+    """Turn-scoped Responses transport with Codex-style WebSocket fallback.
+
+    The socket, previous response id, and incremental-input cache never cross a
+    user-turn boundary. Providers without explicit WebSocket capability keep
+    using the existing stateless HTTP/SSE path.
+    """
+
+    def __init__(self, service: LLMService):
+        self._service = service
+        self._cfg: dict[str, Any] | None = None
+        self._config_key: tuple[str, str] | None = None
+        self._ws: Any | None = None
+        self._websocket_disabled = False
+        self._last_request_fingerprint = ""
+        self._last_request_input: list[dict[str, Any]] = []
+        self._last_response_items: list[dict[str, Any]] = []
+        self._last_response_id = ""
+
+    async def _resolved_config(
+        self,
+        task_type: str,
+        node_override: str | None,
+    ) -> dict[str, Any]:
+        key = (str(task_type or ""), str(node_override or ""))
+        if self._cfg is None:
+            self._cfg = await _resolve_config(task_type, self._service.db, node_override)
+            self._config_key = key
+        elif self._config_key != key:
+            await self.aclose()
+            self._websocket_disabled = False
+            self._cfg = await _resolve_config(task_type, self._service.db, node_override)
+            self._config_key = key
+        return self._cfg
+
+    @staticmethod
+    def _set_response_metadata(response: Any, **metadata: Any) -> Any:
+        for key, value in metadata.items():
+            attr = f"_openreel_{key}"
+            try:
+                setattr(response, attr, value)
+            except Exception:
+                if isinstance(response, dict):
+                    response[attr] = value
+        return response
+
+    @staticmethod
+    def _request_fingerprint(body: dict[str, Any]) -> str:
+        stable = {
+            key: value
+            for key, value in body.items()
+            if key not in {"input", "previous_response_id", "type"}
+        }
+        return json.dumps(stable, ensure_ascii=False, sort_keys=True, default=str)
+
+    def _request_body(
+        self,
+        kwargs: dict[str, Any],
+        full_input: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], bool, str]:
+        body = _responses_websocket_body(kwargs)
+        fingerprint = self._request_fingerprint(body)
+        expected_prefix = [
+            *self._last_request_input,
+            *self._last_response_items,
+        ]
+        can_increment = bool(
+            self._last_response_id
+            and fingerprint == self._last_request_fingerprint
+            and len(full_input) > len(expected_prefix)
+            and full_input[: len(expected_prefix)] == expected_prefix
+        )
+        if can_increment:
+            body["previous_response_id"] = self._last_response_id
+            body["input"] = full_input[len(expected_prefix) :]
+            return body, True, "incremental_extension"
+        body.pop("previous_response_id", None)
+        body["input"] = full_input
+        reason = "first_request" if not self._last_response_id else "full_context_changed"
+        return body, False, reason
+
+    async def _ensure_websocket(
+        self,
+        cfg: dict[str, Any],
+        policy: dict[str, Any],
+    ) -> Any:
+        if self._ws is not None:
+            return self._ws
+        api_key = _resolve_key_reference(str(cfg.get("api_key") or ""))
+        if not api_key:
+            raise LLMResponsesWebSocketError("Responses WebSocket requires an API key")
+        self._ws = await _connect_responses_websocket(
+            _responses_websocket_url(cfg.get("api_base")),
+            api_key=api_key,
+            timeout=float(policy["request_timeout_seconds"]),
+            provider_params=_provider_params(cfg),
+        )
+        return self._ws
+
+    async def _stream_websocket(
+        self,
+        cfg: dict[str, Any],
+        policy: dict[str, Any],
+        kwargs: dict[str, Any],
+        full_input: list[dict[str, Any]],
+    ) -> AsyncIterator[ResponseStreamUpdate]:
+        ws = await self._ensure_websocket(cfg, policy)
+        body, incremental, reuse_reason = self._request_body(kwargs, full_input)
+        sent_input_count = len(body.get("input") or [])
+        async with asyncio.timeout(float(policy["request_timeout_seconds"])):
+            await ws.send(json.dumps(body, ensure_ascii=False, default=str))
+            while True:
+                raw_event = await ws.recv()
+                if isinstance(raw_event, bytes):
+                    raw_event = raw_event.decode("utf-8", errors="replace")
+                try:
+                    payload = json.loads(raw_event)
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise LLMResponsesWebSocketError(
+                        "Responses WebSocket returned invalid JSON"
+                    ) from exc
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("type") == "error":
+                    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+                    code = str(error.get("code") or payload.get("code") or "")
+                    message = str(error.get("message") or payload.get("message") or code or "unknown error")
+                    raise LLMResponsesWebSocketError(message, code=code)
+
+                update = response_stream_update(payload)
+                if update is None:
+                    continue
+                if update.kind != "terminal":
+                    yield update
+                    continue
+
+                response = update.response
+                if response is None:
+                    raise LLMResponsesWebSocketError(
+                        f"Responses WebSocket emitted {update.event_type} without a response"
+                    )
+                response = _attach_model_metadata(response, cfg.get("model_metadata") or {})
+                response = self._set_response_metadata(
+                    response,
+                    requested_model=cfg.get("model"),
+                    actual_model=_responses_websocket_model(str(cfg.get("model") or "")),
+                    fallback_used=False,
+                    transport="responses_websocket",
+                    transport_incremental=incremental,
+                    transport_reuse_reason=reuse_reason,
+                    transport_input_items_sent=sent_input_count,
+                    transport_full_input_items=len(full_input),
+                )
+                view = response_view(response)
+                if (
+                    update.event_type in {"response.failed", "response.cancelled"}
+                    or view.status in {"failed", "cancelled", "queued", "in_progress"}
+                ):
+                    raw_error = (
+                        response.get("error")
+                        if isinstance(response, dict)
+                        else getattr(response, "error", None)
+                    )
+                    raise LLMResponsesWebSocketError(
+                        "Responses WebSocket ended with "
+                        f"status={view.status or update.event_type}: "
+                        f"{raw_error or 'no error details'}"
+                    )
+
+                self._last_request_fingerprint = self._request_fingerprint(body)
+                self._last_request_input = [dict(item) for item in full_input]
+                self._last_response_items = response_output_items(response)
+                self._last_response_id = view.response_id
+                yield ResponseStreamUpdate(
+                    kind="terminal",
+                    event_type=update.event_type,
+                    response=response,
+                )
+                return
+
+    async def _stream_http(
+        self,
+        cfg: dict[str, Any],
+        *,
+        messages: list[dict],
+        tools: list[dict],
+        system: str | None,
+        max_tokens: int | None,
+        reason: str,
+    ) -> AsyncIterator[ResponseStreamUpdate]:
+        async for update in self._service._stream_with_tools_resolved(
+            cfg,
+            messages=messages,
+            tools=tools,
+            system=system,
+            max_tokens=max_tokens,
+        ):
+            if update.kind == "terminal" and update.response is not None:
+                self._set_response_metadata(
+                    update.response,
+                    transport="responses_http_sse",
+                    transport_incremental=False,
+                    transport_reuse_reason=reason,
+                )
+            yield update
+
+    async def stream_with_tools(
+        self,
+        task_type: str,
+        messages: list[dict],
+        tools: list[dict],
+        system: str | None = None,
+        project_id: str | None = None,
+        node_override: str | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[ResponseStreamUpdate]:
+        del project_id
+        cfg = await self._resolved_config(task_type, node_override)
+        policy = _llm_request_policy(cfg)
+        websocket_capable = bool(
+            policy["supports_responses_websocket"]
+            and not policy["use_chat_completions_api"]
+            and _resolve_key_reference(str(cfg.get("api_key") or ""))
+        )
+        if self._websocket_disabled or not websocket_capable:
+            reason = (
+                "websocket_fallback"
+                if self._websocket_disabled
+                else "provider_not_websocket_capable"
+            )
+            async for update in self._stream_http(
+                cfg,
+                messages=messages,
+                tools=tools,
+                system=system,
+                max_tokens=max_tokens,
+                reason=reason,
+            ):
+                yield update
+            return
+
+        kwargs = _responses_kwargs(cfg, with_tools=tools, stream=True)
+        _apply_call_max_tokens(cfg, kwargs, max_tokens)
+        full_input, instructions = _build_response_request_for_config(messages, system, cfg)
+        kwargs["input"] = full_input
+        if instructions:
+            kwargs["instructions"] = instructions
+
+        emitted_text = False
+        try:
+            async for update in self._stream_websocket(cfg, policy, kwargs, full_input):
+                emitted_text |= update.kind == "text_delta"
+                yield update
+            return
+        except Exception as exc:
+            await self._disable_websocket()
+            if emitted_text:
+                raise
+            logger.warning(
+                "Responses WebSocket unavailable; falling back to HTTP for this turn: %s",
+                exc.__class__.__name__,
+            )
+            async for update in self._stream_http(
+                cfg,
+                messages=messages,
+                tools=tools,
+                system=system,
+                max_tokens=max_tokens,
+                reason=f"websocket_error:{getattr(exc, 'code', '') or exc.__class__.__name__}",
+            ):
+                yield update
+
+    async def _disable_websocket(self) -> None:
+        self._websocket_disabled = True
+        ws, self._ws = self._ws, None
+        self._last_request_fingerprint = ""
+        self._last_request_input = []
+        self._last_response_items = []
+        self._last_response_id = ""
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                logger.debug("Responses WebSocket close failed", exc_info=True)
+
+    async def aclose(self) -> None:
+        ws, self._ws = self._ws, None
+        self._last_request_fingerprint = ""
+        self._last_request_input = []
+        self._last_response_items = []
+        self._last_response_id = ""
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                logger.debug("Responses WebSocket close failed", exc_info=True)

@@ -23,6 +23,7 @@ dependencies = [
     "mcp>=1.27.1",
     "json5>=0.14.0",
     "watchfiles>=1.1.1",
+    "websockets>=15,<17",
     "pillow>=10.4.0",
     "opencv-python-headless>=4.13.0.92",
     "universal-model-adapter",
