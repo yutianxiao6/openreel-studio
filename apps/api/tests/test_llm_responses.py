@@ -101,6 +101,7 @@ def test_response_view_and_replay_keep_typed_output_items() -> None:
                 "id": "msg-1",
                 "type": "message",
                 "role": "assistant",
+                "phase": "commentary",
                 "status": "completed",
                 "content": [{"type": "output_text", "text": "Checking."}],
             },
@@ -119,6 +120,10 @@ def test_response_view_and_replay_keep_typed_output_items() -> None:
     assert view.response_id == "resp-1"
     assert view.finish_reason == "tool_calls"
     assert view.content == "Checking."
+    assert view.answer_content == ""
+    assert view.commentary_content == "Checking."
+    assert view.final_content == ""
+    assert view.unknown_content == ""
     assert view.tool_calls[0].id == "call-1"
     assert view.tool_calls[0].function.name == "node__get"
     assert replay_output_items(response) == response.output
@@ -136,6 +141,44 @@ def test_incomplete_response_maps_max_output_reason() -> None:
     assert view.status == "incomplete"
 
 
+def test_response_view_separates_commentary_final_and_legacy_text() -> None:
+    response = SimpleNamespace(
+        id="resp-phases",
+        status="completed",
+        incomplete_details=None,
+        output=[
+            {
+                "id": "msg-commentary",
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "I will inspect this."}],
+            },
+            {
+                "id": "msg-final",
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "Done."}],
+            },
+            {
+                "id": "msg-legacy",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": " Legacy."}],
+            },
+        ],
+    )
+
+    view = response_view(response)
+
+    assert view.content == "I will inspect this.Done. Legacy."
+    assert view.answer_content == "Done. Legacy."
+    assert view.commentary_content == "I will inspect this."
+    assert view.final_content == "Done."
+    assert view.unknown_content == " Legacy."
+
+
 def test_stream_text_delta_reads_typed_responses_event() -> None:
     assert stream_text_delta({
         "type": "response.output_text.delta",
@@ -145,6 +188,16 @@ def test_stream_text_delta_reads_typed_responses_event() -> None:
 
 
 def test_response_stream_update_preserves_codex_style_event_boundaries() -> None:
+    message_added = response_stream_update({
+        "type": "response.output_item.added",
+        "item": {
+            "id": "msg-1",
+            "type": "message",
+            "role": "assistant",
+            "phase": "commentary",
+            "content": [],
+        },
+    })
     added = response_stream_update({
         "type": "response.output_item.added",
         "item": {
@@ -171,6 +224,7 @@ def test_response_stream_update_preserves_codex_style_event_boundaries() -> None
         },
     })
 
+    assert message_added is not None and message_added.phase == "commentary"
     assert added is not None and added.kind == "output_item_added"
     assert added.call_id == "call-1"
     assert arguments is not None and arguments.kind == "tool_call_input_delta"

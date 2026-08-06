@@ -55,6 +55,7 @@ def as_mapping(value: Any) -> dict[str, Any]:
         "sequence_number",
         "call_id",
         "role",
+        "phase",
         "status",
         "content",
         "output",
@@ -274,6 +275,10 @@ class FunctionCall:
 @dataclass(frozen=True)
 class ResponseView:
     content: str
+    answer_content: str
+    commentary_content: str
+    final_content: str
+    unknown_content: str
     tool_calls: tuple[FunctionCall, ...]
     finish_reason: str
     status: str
@@ -296,6 +301,7 @@ class ResponseStreamUpdate:
     item: dict[str, Any] | None = None
     item_id: str = ""
     call_id: str = ""
+    phase: str = ""
     response: Any | None = None
 
 
@@ -319,6 +325,43 @@ def response_output_items(response: Any) -> list[dict[str, Any]]:
         payload.setdefault("role", "assistant")
         return [payload]
     return []
+
+
+def response_message_phase(item: Any) -> str:
+    """Return the normalized Responses assistant-message phase when present."""
+
+    payload = item if isinstance(item, dict) else as_mapping(item)
+    raw_phase = payload.get("phase")
+    phase = str(getattr(raw_phase, "value", raw_phase) or "").strip().lower()
+    return phase if phase in {"commentary", "final_answer"} else ""
+
+
+def response_message_text(item: Any) -> str:
+    payload = item if isinstance(item, dict) else as_mapping(item)
+    if payload.get("type") != "message" or payload.get("role") not in {None, "assistant"}:
+        return ""
+    return _content_text(payload.get("content"))
+
+
+def _response_text_by_phase(response: Any) -> tuple[str, str, str, str]:
+    commentary: list[str] = []
+    final: list[str] = []
+    unknown: list[str] = []
+    answer: list[str] = []
+    for item in response_output_items(response):
+        text = response_message_text(item)
+        if not text:
+            continue
+        phase = response_message_phase(item)
+        if phase == "commentary":
+            commentary.append(text)
+        elif phase == "final_answer":
+            final.append(text)
+            answer.append(text)
+        else:
+            unknown.append(text)
+            answer.append(text)
+    return "".join(commentary), "".join(final), "".join(unknown), "".join(answer)
 
 
 def _responses_content(response: Any) -> str:
@@ -373,8 +416,15 @@ def response_view(response: Any) -> ResponseView:
         response_id = str(
             (response.get("id") if isinstance(response, dict) else getattr(response, "id", "")) or ""
         )
+        commentary_content, final_content, unknown_content, answer_content = (
+            _response_text_by_phase(response)
+        )
         return ResponseView(
             content=_responses_content(response),
+            answer_content=answer_content,
+            commentary_content=commentary_content,
+            final_content=final_content,
+            unknown_content=unknown_content,
             tool_calls=tuple(calls),
             finish_reason=finish_reason,
             status=status,
@@ -386,7 +436,7 @@ def response_view(response: Any) -> ResponseView:
         choice = response.choices[0]
         message = choice.message
     except (AttributeError, IndexError, KeyError, TypeError):
-        return ResponseView("", (), "", "", "", "unknown")
+        return ResponseView("", "", "", "", "", (), "", "", "", "unknown")
     calls = []
     for index, raw_call in enumerate(list(getattr(message, "tool_calls", None) or [])):
         call = _tool_call_mapping(raw_call)
@@ -397,8 +447,13 @@ def response_view(response: Any) -> ResponseView:
                 arguments=str(call.get("arguments") or ""),
             ),
         ))
+    content = _content_text(getattr(message, "content", None))
     return ResponseView(
-        content=_content_text(getattr(message, "content", None)),
+        content=content,
+        answer_content=content,
+        commentary_content="",
+        final_content="",
+        unknown_content=content,
         tool_calls=tuple(calls),
         finish_reason=str(getattr(choice, "finish_reason", "") or ""),
         status="completed",
@@ -489,6 +544,7 @@ def response_stream_update(event: Any) -> ResponseStreamUpdate | None:
             item=item or None,
             item_id=str(payload.get("item_id") or item.get("id") or ""),
             call_id=str(item.get("call_id") or ""),
+            phase=response_message_phase(item),
         )
     if event_type == "response.output_item.done":
         item = as_mapping(payload.get("item"))
@@ -498,6 +554,7 @@ def response_stream_update(event: Any) -> ResponseStreamUpdate | None:
             item=item or None,
             item_id=str(payload.get("item_id") or item.get("id") or ""),
             call_id=str(item.get("call_id") or ""),
+            phase=response_message_phase(item),
         )
     if event_type == "response.output_text.delta":
         delta = payload.get("delta")
@@ -508,6 +565,7 @@ def response_stream_update(event: Any) -> ResponseStreamUpdate | None:
             event_type=event_type,
             delta=delta,
             item_id=str(payload.get("item_id") or ""),
+            phase=response_message_phase(payload),
         )
     if event_type in {
         "response.function_call_arguments.delta",

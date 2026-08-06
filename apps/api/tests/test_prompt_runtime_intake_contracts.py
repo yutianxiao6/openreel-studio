@@ -292,7 +292,9 @@ def test_working_loop_stays_domain_neutral_with_core_prompt() -> None:
     assert "Workflow Build Mode" not in working_loop.PROMPT
     assert "tools change state" in working_loop.PROMPT
     assert "Skills guide work" in working_loop.PROMPT
-    assert "Before tools, write one progress sentence" in working_loop.PROMPT
+    assert "Before tools, write one progress sentence" not in working_loop.PROMPT
+    assert "Answer quick requests directly" in working_loop.PROMPT
+    assert "Share progress for longer work or before slow actions" in working_loop.PROMPT
     assert "finalize_tree_draft" not in working_loop.PROMPT
     assert "agent.review" not in working_loop.PROMPT
     assert "workflow_spec returns" not in working_loop.PROMPT
@@ -730,6 +732,50 @@ def test_agent_round_history_persists_compact_tool_results() -> None:
                 }
             ],
         }
+    ]
+
+
+def test_agent_round_history_only_uses_explicit_commentary_text() -> None:
+    rounds = AgentOrchestrator._extract_agent_round_history(
+        [
+            {
+                "id": "msg-commentary",
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "I will inspect this."}],
+            },
+            {
+                "id": "call-1",
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "node__list",
+                "arguments": "{}",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": '{"ok":true}',
+            },
+            {
+                "id": "msg-legacy",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Legacy answer text."}],
+            },
+            {
+                "id": "call-2",
+                "type": "function_call",
+                "call_id": "call-2",
+                "name": "project__get_state",
+                "arguments": "{}",
+            },
+        ]
+    )
+
+    assert [round_item["content"] for round_item in rounds] == [
+        "I will inspect this.",
+        "",
     ]
 
 def test_repeated_tool_error_fallback_names_tool_kind_count_and_next_step() -> None:
@@ -1186,6 +1232,7 @@ async def test_orchestrator_video_intake_basic_intake_emits_structured_event(mon
                         "id": "msg-intake",
                         "type": "message",
                         "role": "assistant",
+                        "phase": "commentary",
                         "status": "completed",
                         "content": [{
                             "type": "output_text",
@@ -1209,36 +1256,48 @@ async def test_orchestrator_video_intake_basic_intake_emits_structured_event(mon
             yield SimpleNamespace(
                 kind="output_item_added",
                 item=response.output[0],
+                item_id="msg-intake",
+                phase="commentary",
                 delta="",
                 response=None,
             )
             yield SimpleNamespace(
                 kind="text_delta",
                 item=None,
+                item_id="msg-intake",
+                phase="commentary",
                 delta="我先整理",
                 response=None,
             )
             yield SimpleNamespace(
                 kind="text_delta",
                 item=None,
+                item_id="msg-intake",
+                phase="commentary",
                 delta="需要你确认的信息。",
                 response=None,
             )
             yield SimpleNamespace(
                 kind="output_item_done",
                 item=response.output[0],
+                item_id="msg-intake",
+                phase="commentary",
                 delta="",
                 response=None,
             )
             yield SimpleNamespace(
                 kind="output_item_done",
                 item=response.output[1],
+                item_id="fc-intake",
+                phase="",
                 delta="",
                 response=None,
             )
             yield SimpleNamespace(
                 kind="terminal",
                 item=None,
+                item_id="",
+                phase="",
                 delta="",
                 response=response,
             )
@@ -1306,16 +1365,18 @@ async def test_orchestrator_video_intake_basic_intake_emits_structured_event(mon
     assert "agent_round" in event_types
     assert any(args and args[0] == "llm_response" for args, _kwargs in holder["trace"])
     assistant_text = "".join(str(event.get("content") or "") for event in events if event.get("type") == "text_delta")
-    preamble_index = next(
-        index
-        for index, event in enumerate(events)
-        if event.get("type") == "text_delta" and "我先整理" in event.get("content", "")
+    preamble_event = next(
+        event
+        for event in events
+        if event.get("type") == "agent_round" and "我先整理" in event.get("content", "")
     )
+    preamble_index = events.index(preamble_event)
     interaction_index = next(
         index for index, event in enumerate(events) if event.get("type") == "interaction_input_requested"
     )
     assert preamble_index < interaction_index
-    assert "我先整理需要你确认的信息" in assistant_text
+    assert preamble_event["source"] == "model"
+    assert "我先整理需要你确认的信息" not in assistant_text
     assert "视频主题" in assistant_text
     assert "先选一下视频制作方式" not in assistant_text
     assert holder["saved"][1][2]["interactionInput"]["stage"] == "basic"

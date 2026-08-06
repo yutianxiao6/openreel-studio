@@ -103,6 +103,7 @@ from app.mcp_tools.registry import registry
 from app.services.llm_service import LLMService, is_context_length_error
 from app.services.llm_responses import (
     replay_output_items,
+    response_message_phase,
     response_view,
 )
 from app.services.node_service import NodeService
@@ -1053,7 +1054,11 @@ class AgentOrchestrator:
                 continue
             item_type = message.get("type")
             if item_type == "message" and message.get("role") == "assistant":
-                pending_round_text = _output_text(message.get("content"))
+                pending_round_text = (
+                    _output_text(message.get("content"))
+                    if response_message_phase(message) == "commentary"
+                    else ""
+                )
                 continue
             if item_type == "function_call":
                 call_id = str(message.get("call_id") or message.get("id") or "")
@@ -1096,8 +1101,12 @@ class AgentOrchestrator:
                     if name:
                         tools.append(name)
                         call_names[str(tool_call.get("id") or "")] = name
-                # Extract model's thinking text from LLM response
-                current = _start_round(tools, _output_text(message.get("content")))
+                round_text = (
+                    _output_text(message.get("content"))
+                    if response_message_phase(message) == "commentary"
+                    else ""
+                )
+                current = _start_round(tools, round_text)
                 continue
             if message.get("role") == "tool" and current is not None:
                 tool_name = call_names.get(str(message.get("tool_call_id") or ""), "tool")
@@ -1858,6 +1867,9 @@ class AgentOrchestrator:
                     "response": response,
                     "streamed_raw_text": "",
                     "streamed_visible_text": "",
+                    "streamed_commentary_text": "",
+                    "streamed_unknown_text": "",
+                    "streamed_final_text": "",
                     "text_delta_count": 0,
                     "output_item_done_count": 0,
                     "first_text_delta_ms": None,
@@ -1868,6 +1880,10 @@ class AgentOrchestrator:
             sanitizer = _StreamingUserVisibleText()
             streamed_raw_parts: list[str] = []
             streamed_visible_parts: list[str] = []
+            streamed_commentary_parts: list[str] = []
+            streamed_unknown_parts: list[str] = []
+            streamed_final_parts: list[str] = []
+            message_phases: dict[str, str] = {}
             text_delta_count = 0
             output_item_done_count = 0
             first_text_delta_ms: int | None = None
@@ -1883,11 +1899,28 @@ class AgentOrchestrator:
                 project_id=project_id,
                 max_tokens=model_max_output_tokens,
             ):
+                update_item_id = str(getattr(update, "item_id", "") or "")
+                update_phase = str(getattr(update, "phase", "") or "")
+                if update.kind in {"output_item_added", "output_item_done"}:
+                    item = getattr(update, "item", None)
+                    if isinstance(item, dict):
+                        item_id = str(item.get("id") or update_item_id)
+                        item_phase = response_message_phase(item) or update_phase
+                        if item_id and item_phase:
+                            message_phases[item_id] = item_phase
                 if update.kind == "text_delta":
                     text_delta_count += 1
-                    streamed_raw_parts.append(update.delta)
                     if first_text_delta_ms is None:
                         first_text_delta_ms = elapsed_ms(stream_started_at)
+                    phase = update_phase or message_phases.get(update_item_id, "")
+                    if phase == "commentary":
+                        streamed_commentary_parts.append(update.delta)
+                        continue
+                    streamed_raw_parts.append(update.delta)
+                    if phase == "final_answer":
+                        streamed_final_parts.append(update.delta)
+                    else:
+                        streamed_unknown_parts.append(update.delta)
                     if defer_visible_text:
                         continue
                     visible_delta = sanitizer.push(update.delta)
@@ -1913,6 +1946,9 @@ class AgentOrchestrator:
                 "response": response,
                 "streamed_raw_text": "".join(streamed_raw_parts),
                 "streamed_visible_text": "".join(streamed_visible_parts),
+                "streamed_commentary_text": "".join(streamed_commentary_parts),
+                "streamed_unknown_text": "".join(streamed_unknown_parts),
+                "streamed_final_text": "".join(streamed_final_parts),
                 "text_delta_count": text_delta_count,
                 "output_item_done_count": output_item_done_count,
                 "first_text_delta_ms": first_text_delta_ms,
@@ -2139,6 +2175,9 @@ class AgentOrchestrator:
             round_stream_info: dict[str, Any] = {
                 "streamed_raw_text": "",
                 "streamed_visible_text": "",
+                "streamed_commentary_text": "",
+                "streamed_unknown_text": "",
+                "streamed_final_text": "",
                 "text_delta_count": 0,
                 "output_item_done_count": 0,
                 "first_text_delta_ms": None,
@@ -2269,6 +2308,9 @@ class AgentOrchestrator:
                         round_stream_info = {
                             "streamed_raw_text": "",
                             "streamed_visible_text": "",
+                            "streamed_commentary_text": "",
+                            "streamed_unknown_text": "",
+                            "streamed_final_text": "",
                             "text_delta_count": 0,
                             "output_item_done_count": 0,
                             "first_text_delta_ms": None,
@@ -2346,7 +2388,22 @@ class AgentOrchestrator:
                     return
 
             llm_response = response_view(response)
-            msg_content = llm_response.content
+            streamed_unknown_text = str(
+                round_stream_info.get("streamed_unknown_text") or ""
+            )
+            commentary_streamed_as_legacy_answer = bool(
+                llm_response.commentary_content
+                and streamed_unknown_text
+                and llm_response.commentary_content == streamed_unknown_text
+            )
+            round_commentary = (
+                ""
+                if commentary_streamed_as_legacy_answer
+                else llm_response.commentary_content
+            )
+            msg_content = llm_response.answer_content
+            if commentary_streamed_as_legacy_answer:
+                msg_content = llm_response.commentary_content + msg_content
             msg_tool_calls = list(llm_response.tool_calls)
             streamed_raw_text = str(round_stream_info.get("streamed_raw_text") or "")
             streamed_visible_text = str(round_stream_info.get("streamed_visible_text") or "")
@@ -2378,6 +2435,9 @@ class AgentOrchestrator:
                 native_stream=bool(round_stream_info.get("native_stream")),
                 text_delta_count=int(round_stream_info.get("text_delta_count") or 0),
                 streamed_text_chars=len(str(round_stream_info.get("streamed_raw_text") or "")),
+                commentary_chars=len(round_commentary),
+                answer_chars=len(msg_content),
+                commentary_streamed_as_legacy_answer=commentary_streamed_as_legacy_answer,
                 output_item_done_count=int(
                     round_stream_info.get("output_item_done_count") or 0
                 ),
@@ -2420,24 +2480,32 @@ class AgentOrchestrator:
             }
 
             if msg_tool_calls:
-                tool_round_text = _sanitize_user_visible_text(msg_content or streamed_raw_text)
-                if tool_round_text:
+                tool_round_body_text = _sanitize_user_visible_text(msg_content or streamed_raw_text)
+                if tool_round_body_text:
                     if not streamed_visible_text:
-                        yield {"type": "text_delta", "content": tool_round_text}
-                    elif not tool_round_text.startswith(streamed_visible_text):
+                        yield {"type": "text_delta", "content": tool_round_body_text}
+                    elif not tool_round_body_text.startswith(streamed_visible_text):
                         trace.emit(
                             "llm_stream_text_mismatch",
                             iteration=iteration,
                             transition_reason="tool_round_stream_text_mismatch",
                             streamed_chars=len(streamed_visible_text),
-                            final_chars=len(tool_round_text),
+                            final_chars=len(tool_round_body_text),
                         )
-                    elif len(tool_round_text) > len(streamed_visible_text):
+                    elif len(tool_round_body_text) > len(streamed_visible_text):
                         yield {
                             "type": "text_delta",
-                            "content": tool_round_text[len(streamed_visible_text):],
+                            "content": tool_round_body_text[len(streamed_visible_text):],
                         }
-                    full_response += tool_round_text
+                    full_response += tool_round_body_text
+
+            if not msg_tool_calls and round_commentary:
+                yield self._build_agent_round_summary(
+                    iteration,
+                    round_commentary,
+                    [],
+                )
+                yield {"type": "agent_round_done", "round": iteration + 1}
 
             # No tool calls → output text, done(but check if audit needed first)
             if not msg_tool_calls:
@@ -2594,7 +2662,7 @@ class AgentOrchestrator:
             )
             round_progress_event = await self._build_live_agent_round_summary(
                 iteration,
-                msg_content,
+                round_commentary,
                 round_tools,
                 message,
                 planned_actions,
