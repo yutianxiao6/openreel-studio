@@ -42,6 +42,7 @@ config/runtime.jsonc
 plugins/wechat-openreel-bot/
 data/skills/
 data/review_skills/
+data/events/
 /skills/
 data/*.db
 data/*.db-journal
@@ -99,3 +100,6 @@ deploy/certs/*.crt
 deploy/certs/*.key
 deploy/agent-wechat/
 test-results/
+
+# ---- Local backups ----
+*.bak

@@ -34,3 +34,4 @@ plugins/*/__pycache__
 *.tsbuildinfo
 tmp_*
 *.log
+*.bak
