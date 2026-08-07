@@ -465,6 +465,79 @@ async def test_native_compaction_omits_cache_key_when_provider_disables_cache(mo
 
 
 @pytest.mark.asyncio
+async def test_remote_compaction_with_multiple_compaction_items_uses_local_fallback(monkeypatch) -> None:
+    async def fake_config(*args, **kwargs):
+        return {
+            "model": "openai/gpt-5.4",
+            "temperature": 0.0,
+            "max_tokens": 100,
+            "api_key": "sk-test",
+            "model_metadata": {"supports_responses_compact": True},
+        }
+
+    async def fake_compact(cfg, **kwargs):
+        return SimpleNamespace(
+            id="cmp-invalid",
+            output=[
+                {"type": "compaction", "id": "cmp-1", "encrypted_content": "one"},
+                {"type": "compaction", "id": "cmp-2", "encrypted_content": "two"},
+            ],
+            usage=None,
+        )
+
+    captured = {}
+
+    async def fake_aresponses(**kwargs):
+        captured.update(kwargs)
+        return _response("本地检查点")
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service, "_native_responses_compact_request", fake_compact)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
+
+    result = await LLMService().compact_conversation(
+        messages=[{"role": "user", "content": "当前任务"}],
+        system="system",
+        tools=[{"type": "function", "function": {"name": "node__list"}}],
+        project_id="project-1",
+    )
+
+    assert result["implementation"] == "local_compact"
+    assert result["remote_error"] == "LLMResponseStatusError"
+    assert "tools" not in captured
+
+
+@pytest.mark.asyncio
+async def test_local_compaction_never_exposes_agent_tools(monkeypatch) -> None:
+    async def fake_config(*args, **kwargs):
+        return {
+            "model": "test/model",
+            "temperature": 0.0,
+            "max_tokens": 100,
+            "api_key": None,
+            "provider_params": {"max_retries": 0},
+        }
+
+    captured = {}
+
+    async def fake_aresponses(**kwargs):
+        captured.update(kwargs)
+        return _response("完成 A；下一步 B")
+
+    monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
+    monkeypatch.setattr(llm_service.litellm, "aresponses", fake_aresponses)
+
+    await LLMService().compact_conversation(
+        messages=[{"role": "user", "content": "当前任务"}],
+        system="system",
+        tools=[{"type": "function", "function": {"name": "node__list"}}],
+        project_id="project-1",
+    )
+
+    assert "tools" not in captured
+
+
+@pytest.mark.asyncio
 async def test_local_compaction_drops_oldest_function_pair_on_context_error(monkeypatch) -> None:
     calls: list[list[dict]] = []
 
@@ -1458,7 +1531,7 @@ async def test_turn_session_reuses_websocket_with_incremental_tool_output(monkey
 
 
 @pytest.mark.asyncio
-async def test_turn_sessions_reuse_project_websocket_across_user_turns(monkeypatch) -> None:
+async def test_turn_sessions_never_reuse_websocket_state_across_user_turns(monkeypatch) -> None:
     first_message = {
         "id": "msg-1",
         "type": "message",
@@ -1473,7 +1546,7 @@ async def test_turn_sessions_reuse_project_websocket_across_user_turns(monkeypat
         "phase": "final_answer",
         "content": [{"type": "output_text", "text": "第二轮"}],
     }
-    responses = [
+    responses = iter([
         {
             "id": "resp-cross-1",
             "model": "gpt-5.6",
@@ -1486,20 +1559,20 @@ async def test_turn_sessions_reuse_project_websocket_across_user_turns(monkeypat
             "status": "completed",
             "output": [second_message],
         },
-    ]
+    ])
 
     class FakeWebSocket:
-        def __init__(self):
+        def __init__(self, response):
+            self.response = response
             self.sent = []
             self.events = []
             self.closed = False
 
         async def send(self, value: str):
             self.sent.append(json.loads(value))
-            response = responses[len(self.sent) - 1]
             self.events.append(json.dumps({
                 "type": "response.completed",
-                "response": response,
+                "response": self.response,
             }))
 
         async def recv(self):
@@ -1508,7 +1581,7 @@ async def test_turn_sessions_reuse_project_websocket_across_user_turns(monkeypat
         async def close(self):
             self.closed = True
 
-    socket = FakeWebSocket()
+    sockets = []
     calls = {"connect": 0}
 
     async def fake_config(*_args, **_kwargs):
@@ -1524,52 +1597,49 @@ async def test_turn_sessions_reuse_project_websocket_across_user_turns(monkeypat
 
     async def fake_connect(*_args, **_kwargs):
         calls["connect"] += 1
+        socket = FakeWebSocket(next(responses))
+        sockets.append(socket)
         return socket
 
     monkeypatch.setattr(llm_service, "_resolve_config", fake_config)
     monkeypatch.setattr(llm_service, "_connect_responses_websocket", fake_connect)
-    await llm_service.close_responses_websocket_pool()
-    try:
-        first_session = LLMService().new_turn_session(project_id="project-cross-turn")
-        first_updates = [
-            update
-            async for update in first_session.stream_with_tools(
-                "agent_loop",
-                [{"role": "user", "content": "第一轮"}],
-                tools=[],
-                project_id="project-cross-turn",
-            )
-        ]
-        await first_session.aclose()
+    first_session = LLMService().new_turn_session(project_id="project-cross-turn")
+    first_updates = [
+        update
+        async for update in first_session.stream_with_tools(
+            "agent_loop",
+            [{"role": "user", "content": "第一轮"}],
+            tools=[],
+            project_id="project-cross-turn",
+        )
+    ]
+    await first_session.aclose()
 
-        assert first_updates[-1].kind == "terminal"
-        assert socket.closed is False
+    assert first_updates[-1].kind == "terminal"
+    assert sockets[0].closed is True
 
-        second_session = LLMService().new_turn_session(project_id="project-cross-turn")
-        second_updates = [
-            update
-            async for update in second_session.stream_with_tools(
-                "agent_loop",
-                [
-                    {"role": "user", "content": "第一轮"},
-                    first_message,
-                    {"role": "user", "content": "第二轮"},
-                ],
-                tools=[],
-                project_id="project-cross-turn",
-            )
-        ]
-        await second_session.aclose()
+    second_session = LLMService().new_turn_session(project_id="project-cross-turn")
+    second_updates = [
+        update
+        async for update in second_session.stream_with_tools(
+            "agent_loop",
+            [
+                {"role": "user", "content": "第一轮"},
+                first_message,
+                {"role": "user", "content": "第二轮"},
+            ],
+            tools=[],
+            project_id="project-cross-turn",
+        )
+    ]
+    await second_session.aclose()
 
-        assert second_updates[-1].kind == "terminal"
-        assert calls["connect"] == 1
-        assert socket.sent[1]["previous_response_id"] == "resp-cross-1"
-        assert len(socket.sent[1]["input"]) == 1
-        assert "第二轮" in json.dumps(socket.sent[1]["input"], ensure_ascii=False)
-    finally:
-        await llm_service.close_responses_websocket_pool()
-
-    assert socket.closed is True
+    assert second_updates[-1].kind == "terminal"
+    assert calls["connect"] == 2
+    assert "previous_response_id" not in sockets[1].sent[0]
+    assert len(sockets[1].sent[0]["input"]) == 3
+    assert "第二轮" in json.dumps(sockets[1].sent[0]["input"], ensure_ascii=False)
+    assert sockets[1].closed is True
 
 
 @pytest.mark.asyncio

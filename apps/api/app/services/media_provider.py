@@ -23,6 +23,11 @@ from sqlmodel import select
 from app.config import settings
 from app.db.models import Asset, MediaProvider, WorkflowNode
 from app.db.session import session_scope
+from app.services.media_path_security import (
+    path_is_within_roots,
+    project_media_roots,
+    resolve_project_media_file,
+)
 
 
 ProgressCallback = Callable[[dict[str, Any]], Any]
@@ -167,7 +172,11 @@ def _project_media_path_from_url(project_id: str, url: str | None) -> str | None
         root = Path(raw_root).resolve() / project_id
         for rel_path in rel_paths:
             candidate = (root / rel_path).resolve()
-            if candidate.exists() and candidate.is_file():
+            if (
+                path_is_within_roots(candidate, [root])
+                and candidate.exists()
+                and candidate.is_file()
+            ):
                 return str(candidate)
     return None
 
@@ -189,8 +198,9 @@ def _collect_output_image_refs(value: Any) -> list[str]:
 async def _pick_node_output_reference(project_id: str, node_id: str) -> str | None:
     async with session_scope() as session:
         node = await session.get(WorkflowNode, node_id)
-    if not node or not node.output_json:
+    if not node or node.project_id != project_id or not node.output_json:
         return None
+    allowed_roots = await project_media_roots(project_id)
     try:
         output = json.loads(node.output_json)
     except (json.JSONDecodeError, TypeError):
@@ -201,9 +211,13 @@ async def _pick_node_output_reference(project_id: str, node_id: str) -> str | No
         media_path = _project_media_path_from_url(project_id, candidate)
         if media_path:
             return media_path
-        path = Path(candidate).expanduser()
-        if path.is_absolute() and path.exists() and path.is_file():
-            return str(path.resolve())
+        path = resolve_project_media_file(
+            project_id,
+            candidate,
+            allowed_roots=allowed_roots,
+        )
+        if path is not None:
+            return str(path)
     return None
 
 
@@ -278,7 +292,7 @@ async def _resolve_node_id_for_reference(project_id: str, node_ref: str) -> tupl
         if exact and exact.project_id == project_id:
             return node_id, None
         if len(node_id) >= 36:
-            return node_id, None
+            return None, f"找不到当前项目节点 {node_id}"
         stmt = select(WorkflowNode).where(
             WorkflowNode.project_id == project_id,
             WorkflowNode.id.like(f"{node_id}%"),
@@ -297,17 +311,17 @@ async def _resolve_reference_images(
 ) -> tuple[list[str], list[str]]:
     """Resolve user-supplied references into actual URLs/local paths.
 
-    Accepts: 'asset:<id>' / 'node:<id>' / 'http(s)://...' / a path relative to
-    STORAGE_PATH/<project_id>/ (or absolute). Returns (resolved, errors). The
-    resolved list contains URLs that providers can fetch (http/https) or local
-    absolute paths (which callers convert to base64 if the provider needs it).
+    Accepts: 'asset:<id>' / 'node:<id>' / 'http(s)://...' / a path inside the
+    current project storage or its configured asset library. Returns (resolved,
+    errors). The resolved list contains URLs that providers can fetch or local
+    paths that have passed the project-scoped allowlist.
     """
     if not refs:
         return [], []
 
     resolved: list[str] = []
     errors: list[str] = []
-    storage_root = settings.storage_path_resolved
+    allowed_roots = await project_media_roots(project_id)
 
     for raw in refs:
         if not isinstance(raw, str) or not raw.strip():
@@ -326,7 +340,7 @@ async def _resolve_reference_images(
             asset_id = ref[len("asset:"):].strip()
             async with session_scope() as session:
                 asset = await session.get(Asset, asset_id)
-            if not asset:
+            if not asset or asset.project_id != project_id:
                 errors.append(f"找不到资产 asset:{asset_id}")
                 continue
             url = asset.url
@@ -335,7 +349,21 @@ async def _resolve_reference_images(
             if not picked:
                 errors.append(f"资产 {asset_id} 没有可用的 url 或 path")
                 continue
-            resolved.append(picked)
+            if picked.startswith(("http://", "https://")):
+                resolved.append(picked)
+                continue
+            local_asset = _project_media_path_from_url(project_id, picked)
+            if local_asset is None:
+                local_asset_path = resolve_project_media_file(
+                    project_id,
+                    picked,
+                    allowed_roots=allowed_roots,
+                )
+                local_asset = str(local_asset_path) if local_asset_path is not None else None
+            if local_asset is None:
+                errors.append(f"资产 {asset_id} 的本地文件超出当前项目允许范围")
+                continue
+            resolved.append(local_asset)
             continue
 
         if ref.startswith("node:"):
@@ -380,13 +408,13 @@ async def _resolve_reference_images(
             resolved.append(picked)
             continue
 
-        candidate = Path(ref)
-        if candidate.is_absolute():
-            target = candidate.resolve()
-        else:
-            target = (storage_root / project_id / ref).resolve()
-        if not target.exists():
-            errors.append(f"参考图文件不存在: {ref}")
+        target = resolve_project_media_file(
+            project_id,
+            ref,
+            allowed_roots=allowed_roots,
+        )
+        if target is None:
+            errors.append(f"参考图文件不存在或超出当前项目允许范围: {ref}")
             continue
         resolved.append(str(target))
 
@@ -401,7 +429,7 @@ async def _resolve_reference_media(
     """Resolve video/audio node references for the UMA media boundary."""
     resolved: list[str] = []
     errors: list[str] = []
-    project_root = settings.storage_path_resolved / project_id
+    allowed_roots = await project_media_roots(project_id)
     for raw in refs or []:
         ref = str(raw or "").strip()
         if not ref:
@@ -417,7 +445,7 @@ async def _resolve_reference_media(
             asset_id = ref.removeprefix("asset:").strip()
             async with session_scope() as session:
                 asset = await session.get(Asset, asset_id)
-            if asset is None:
+            if asset is None or asset.project_id != project_id:
                 errors.append(f"找不到资产 asset:{asset_id}")
                 continue
             picked = asset.path or asset.url
@@ -446,14 +474,15 @@ async def _resolve_reference_media(
         upload_prefix = f"/api/uploads/{project_id}/file/"
         if ref.startswith(upload_prefix):
             ref = ref[len(upload_prefix) :].lstrip("/")
-        candidate = Path(ref).expanduser()
-        if not candidate.is_absolute():
-            candidate = project_root / ref
-        candidate = candidate.resolve()
-        if candidate.exists() and candidate.is_file():
+        candidate = resolve_project_media_file(
+            project_id,
+            ref,
+            allowed_roots=allowed_roots,
+        )
+        if candidate is not None:
             resolved.append(str(candidate))
         else:
-            errors.append(f"{kind} 文件不存在: {raw}")
+            errors.append(f"{kind} 文件不存在或超出当前项目允许范围: {raw}")
     return resolved, errors
 
 

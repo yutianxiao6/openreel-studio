@@ -155,6 +155,8 @@ async def task_create(
         "用于执行前检查是否已有同类任务，或在失败/残留任务影响判断时读取列表；支持 query/regex 找候选任务。"
     ),
     tags=["task", "read"],
+    is_read_only=True,
+    is_concurrency_safe=True,
     output_policy=COLLECTION_OUTPUT_POLICY,
 )
 async def task_list(

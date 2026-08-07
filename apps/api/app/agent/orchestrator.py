@@ -82,6 +82,7 @@ from app.agent.tool_output import (
 )
 from app.agent.lifecycle_hooks import (
     PermissionDenialState,
+    compose_model_instructions,
     install_history_instructions_after_compaction,
     prepend_history_instructions,
     run_before_model_call,
@@ -146,6 +147,18 @@ _INTERNAL_PARAM_RE = re.compile(
 def _task_is_active_for_agent(task: Any) -> bool:
     status = str(getattr(task, "status", "") or "pending").strip().lower()
     return status not in _TASK_DONE_STATUSES
+
+
+def _messages_have_tool_results(messages: list[dict[str, Any]]) -> bool:
+    """Return whether this turn has completed at least one model-requested tool."""
+    return any(
+        isinstance(item, dict)
+        and (
+            item.get("type") in {"function_call_output", "computer_call_output"}
+            or item.get("role") == "tool"
+        )
+        for item in messages
+    )
 
 
 def _sanitize_user_visible_text(text: str) -> str:
@@ -1778,6 +1791,11 @@ class AgentOrchestrator:
         skill_instructions = prompt_assembly.skill_instructions
         skill_warnings = prompt_assembly.skill_warnings
         prompt_assembly_diag = prompt_assembly.diagnostics()
+        model_instructions = compose_model_instructions(
+            system,
+            runtime_context=runtime_inject,
+            skills_context=skills_context,
+        )
         history_visible = chat_history_visible_for_turn(state)
         messages = await self._call_build_messages(
             project_id,
@@ -1908,7 +1926,7 @@ class AgentOrchestrator:
         ) -> dict[str, Any]:
             compact_tokens_before = estimate_request_tokens(
                 messages,
-                system=system,
+                system=model_instructions,
                 tools=tools,
             )
             transcript_path = save_transcript(messages, project_id)
@@ -1926,7 +1944,7 @@ class AgentOrchestrator:
             )
             compact_result = await self.llm_service.compact_conversation(
                 messages=messages,
-                system=system,
+                system=model_instructions,
                 tools=tools,
                 project_id=project_id,
                 task_type="agent_loop",
@@ -1967,7 +1985,7 @@ class AgentOrchestrator:
             turn_rollout_items.clear()
             estimated_tokens_after = estimate_request_tokens(
                 compacted_items,
-                system=system,
+                system=model_instructions,
                 tools=tools,
             )
             boundary = {
@@ -2087,7 +2105,24 @@ class AgentOrchestrator:
             output_item_done_count = 0
             first_text_delta_ms: int | None = None
             response: Any | None = None
-            defer_visible_text = current_collaboration_mode(state) == "plan"
+            audit_may_continue = False
+            if (
+                (step_index >= 1 or _messages_have_tool_results(call_messages))
+                and not audit_triggered
+            ):
+                try:
+                    from app.agent.task_graph import task_graph as _audit_task_graph
+
+                    audit_may_continue = any(
+                        _task_is_active_for_agent(task)
+                        for task in _audit_task_graph.list_all(project_id or None)
+                    )
+                except Exception:
+                    audit_may_continue = False
+            defer_visible_text = (
+                current_collaboration_mode(state) == "plan"
+                or audit_may_continue
+            )
             stream_started_at = time.perf_counter()
 
             async for update in model_transport.stream_with_tools(
@@ -2198,7 +2233,7 @@ class AgentOrchestrator:
             if agent_prefs["auto_archive"] and auto_compact_needed(
                 messages,
                 threshold=int(compaction_policy.get("threshold_tokens") or TOKEN_THRESHOLD),
-                system=system,
+                system=model_instructions,
                 tools=tools,
             ):
                 try:
@@ -2262,8 +2297,6 @@ class AgentOrchestrator:
             before_model_call = run_before_model_call(
                 messages,
                 checklist_reminder,
-                runtime_context=runtime_inject,
-                skills_context=skills_context,
                 skill_instructions=skill_instructions,
                 skill_warnings=skill_warnings,
                 keep_compaction_last=keep_compaction_last,
@@ -2275,7 +2308,7 @@ class AgentOrchestrator:
                 project_id=project_id,
                 run_id=run_id,
                 iteration=iteration,
-                system=system,
+                system=model_instructions,
                 messages=messages,
                 tools=tools,
                 user_message=message if iteration == 0 else None,
@@ -2296,7 +2329,7 @@ class AgentOrchestrator:
                 yield {"type": "text_delta", "content": _sanitize_user_visible_text(f"\n\n已停止当前任务。{cancel_reason}")}
                 return
 
-            progress_system = system
+            progress_system = model_instructions
             llm_started_at = time.perf_counter()
             response: Any | None = None
             round_stream_info: dict[str, Any] = {
@@ -2360,8 +2393,6 @@ class AgentOrchestrator:
                         before_model_call = run_before_model_call(
                             messages,
                             checklist_reminder,
-                            runtime_context=runtime_inject,
-                            skills_context=skills_context,
                             skill_instructions=skill_instructions,
                             skill_warnings=skill_warnings,
                             keep_compaction_last=True,
@@ -2577,10 +2608,10 @@ class AgentOrchestrator:
                         }
                     full_response += tool_round_body_text
 
+            completed_items: list[dict[str, Any]] = []
             if not msg_tool_calls:
                 completed_items = replay_output_items(response)
                 messages.extend(completed_items)
-                turn_rollout_items.extend(completed_items)
 
             if not msg_tool_calls and round_commentary:
                 yield self._build_agent_round_summary(
@@ -2629,6 +2660,35 @@ class AgentOrchestrator:
                 if current_collaboration_mode(state) == "plan":
                     raw_text, proposed_plan_markdown = split_proposed_plan_blocks(raw_text)
                 text = _sanitize_user_visible_text(raw_text)
+                # 收尾自检: 从 task_graph 读取当前任务状态
+                try:
+                    from app.agent.task_graph import task_graph as _tg2
+                    _tasks = _tg2.list_all(project_id or None)
+                    _active = [t for t in _tasks if _task_is_active_for_agent(t)]
+                    checklist = [{"step_id": t.id, "title": t.subject, "tool": t.tool or "", "status": t.status} for t in _active]
+                except Exception:
+                    checklist = []
+                stop_hook = run_stop_after_text_response(
+                    step_index=max(
+                        step_index,
+                        int(_messages_have_tool_results(messages)),
+                    ),
+                    checklist=checklist,
+                    audit_triggered=audit_triggered,
+                    tool_errors=tool_errors,
+                )
+                audit_triggered = stop_hook.audit_triggered
+                if stop_hook.should_run_audit:
+                    messages.append({"role": "developer", "content": stop_hook.audit_message})
+                    trace.emit(
+                        "loop_transition",
+                        iteration=iteration,
+                        transition_reason="audit_required",
+                        pending_steps=stop_hook.pending_steps,
+                        failed_steps=stop_hook.failed_steps,
+                    )
+                    # 进入下一轮 LLM 让它跑自检
+                    continue
                 if text:
                     if not streamed_visible_text:
                         yield {"type": "text_delta", "content": text}
@@ -2659,32 +2719,7 @@ class AgentOrchestrator:
                     }
                     if not full_response.strip():
                         full_response += proposed_plan_markdown
-                # 收尾自检: 从 task_graph 读取当前任务状态
-                try:
-                    from app.agent.task_graph import task_graph as _tg2
-                    _tasks = _tg2.list_all(project_id or None)
-                    _active = [t for t in _tasks if _task_is_active_for_agent(t)]
-                    checklist = [{"step_id": t.id, "title": t.subject, "tool": t.tool or "", "status": t.status} for t in _active]
-                except Exception:
-                    checklist = []
-                stop_hook = run_stop_after_text_response(
-                    step_index=step_index,
-                    checklist=checklist,
-                    audit_triggered=audit_triggered,
-                    tool_errors=tool_errors,
-                )
-                audit_triggered = stop_hook.audit_triggered
-                if stop_hook.should_run_audit:
-                    messages.append({"role": "developer", "content": stop_hook.audit_message})
-                    trace.emit(
-                        "loop_transition",
-                        iteration=iteration,
-                        transition_reason="audit_required",
-                        pending_steps=stop_hook.pending_steps,
-                        failed_steps=stop_hook.failed_steps,
-                    )
-                    # 进入下一轮 LLM 让它跑自检
-                    continue
+                turn_rollout_items.extend(completed_items)
                 trace.emit(
                     "loop_transition",
                     iteration=iteration,

@@ -33,6 +33,10 @@ from app.services.universal_adapter_config import (
     create_universal_adapter_binding,
     universal_adapter_cache_key,
 )
+from app.services.media_path_security import (
+    project_media_roots,
+    resolve_project_media_file,
+)
 from app.services.uma_result_store import archive_invocation_result
 
 
@@ -128,7 +132,12 @@ def _local_media_path(project_id: str, value: str) -> Path | None:
     return None
 
 
-def _media_source(project_id: str, value: str) -> dict[str, Any]:
+def _media_source(
+    project_id: str,
+    value: str,
+    *,
+    allowed_local_roots: tuple[Path, ...],
+) -> dict[str, Any]:
     text = value.strip()
     if text.startswith("data:"):
         return {"type": "data_url", "data_url": text}
@@ -137,11 +146,15 @@ def _media_source(project_id: str, value: str) -> dict[str, Any]:
     local_media = _local_media_path(project_id, text)
     if local_media is not None:
         return {"type": "path", "path": local_media}
-    path = Path(text).expanduser()
-    if path.exists():
-        return {"type": "path", "path": path.resolve()}
+    path = resolve_project_media_file(
+        project_id,
+        text,
+        allowed_roots=allowed_local_roots,
+    )
+    if path is not None:
+        return {"type": "path", "path": path}
     raise ValueError(
-        "UMA media input must be a data URL, HTTP(S) URL, or readable local path; "
+        "UMA media input must be a data URL, HTTP(S) URL, or an allowed project media path; "
         f"received {text[:120]!r}"
     )
 
@@ -150,6 +163,8 @@ def _media_inputs(
     binding: UniversalAdapterBinding,
     project_id: str,
     values: list[tuple[str, str]],
+    *,
+    allowed_local_roots: tuple[Path, ...],
 ) -> list[MediaInput]:
     if not values:
         return []
@@ -166,7 +181,11 @@ def _media_inputs(
         MediaInput(
             id=f"{role}-{index + 1}",
             role=role,
-            source=_media_source(project_id, value),
+            source=_media_source(
+                project_id,
+                value,
+                allowed_local_roots=allowed_local_roots,
+            ),
         )
         for index, (role, value) in enumerate(values)
     ]
@@ -345,6 +364,7 @@ class UniversalAdapterService:
     ) -> dict[str, Any]:
         try:
             binding = await self._binding(provider, provider_params)
+            allowed_local_roots = await project_media_roots(project_id)
             request_input, parameters = _request_payload(
                 binding,
                 input_values={
@@ -369,6 +389,7 @@ class UniversalAdapterService:
                 binding,
                 project_id,
                 [("reference_image", value) for value in (reference_images or [])],
+                allowed_local_roots=allowed_local_roots,
             )
             result = await binding.client.images.invoke(
                 operation=binding.operation,
@@ -549,13 +570,19 @@ class UniversalAdapterService:
     ) -> dict[str, Any]:
         try:
             binding = binding or await self._binding(provider, provider_params)
+            allowed_local_roots = await project_media_roots(project_id)
             request_input, parameters = _request_payload(
                 binding,
                 input_values=input_values,
                 parameter_values=parameter_values,
                 extra=extra,
             )
-            media = _media_inputs(binding, project_id, media_values)
+            media = _media_inputs(
+                binding,
+                project_id,
+                media_values,
+                allowed_local_roots=allowed_local_roots,
+            )
             backend = binding.client.backends.for_kind(kind)
             request = backend.create_request(
                 operation=binding.operation,

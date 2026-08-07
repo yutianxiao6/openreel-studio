@@ -180,6 +180,24 @@ def prepend_history_instructions(
     ]
 
 
+def compose_model_instructions(
+    system: str,
+    *,
+    runtime_context: str = "",
+    skills_context: str = "",
+) -> str:
+    """Compose stable Responses instructions outside the append-only input."""
+
+    blocks = [str(system or "").strip()]
+    if str(runtime_context or "").strip():
+        blocks.append(
+            f"{RUNTIME_CONTEXT_MARKER}\n{str(runtime_context).strip()}\n</runtime-context>"
+        )
+    if str(skills_context or "").strip():
+        blocks.append(str(skills_context).strip())
+    return "\n\n".join(block for block in blocks if block)
+
+
 def install_history_instructions_after_compaction(
     messages: list[dict[str, Any]],
     instructions: str,

@@ -531,6 +531,41 @@ def test_registered_tool_specs_expose_boundary_metadata() -> None:
         assert 0 < spec.output_policy.default_model_tokens <= spec.output_policy.max_model_tokens
         assert spec.output_policy.max_model_tokens <= 10_000
 
+
+def test_mutating_workflow_template_tools_are_never_classified_as_reads() -> None:
+    from app.agent.permission_policy import plan_mode_allowed_tools
+
+    allowed_in_plan = plan_mode_allowed_tools()
+    for name in ("workflow.template.save_current", "workflow.template.promote"):
+        spec = registry.get(name)
+        assert spec is not None
+        assert spec.is_read_only is False
+        assert spec.is_concurrency_safe is False
+        assert "write" in spec.tags
+        assert name not in allowed_in_plan
+
+
+def test_read_only_tools_require_explicit_concurrency_safety() -> None:
+    from app.mcp_tools.registry import ToolRegistry
+
+    async def read_handler() -> dict:
+        return {"ok": True}
+
+    isolated = ToolRegistry()
+    inferred = isolated.register("example.list", read_handler, tags=["read"])
+    explicit = isolated.register(
+        "example.get",
+        read_handler,
+        tags=["read"],
+        is_read_only=True,
+        is_concurrency_safe=True,
+    )
+
+    assert inferred.is_read_only is True
+    assert inferred.is_concurrency_safe is False
+    assert explicit.is_read_only is True
+    assert explicit.is_concurrency_safe is True
+
 def test_tool_error_normalizer_fills_missing_contract_fields() -> None:
     from app.agent.tool_errors import normalize_tool_result
 

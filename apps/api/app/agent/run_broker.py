@@ -3,6 +3,10 @@
 The HTTP chat stream is a subscriber, not the owner of the agent run.  If the
 browser refreshes or the SSE connection is closed, the background run continues
 and later subscribers can replay the in-memory event buffer for the active run.
+
+This broker is deliberately process-local. The production API therefore runs a
+single worker; horizontal scaling requires a shared lease, queue, and event bus
+before additional workers are enabled.
 """
 from __future__ import annotations
 

@@ -748,6 +748,41 @@ def test_stop_hook_does_not_repeat_completion_audit() -> None:
     assert result.audit_triggered is True
     assert result.audit_message == ""
 
+
+def test_stable_runtime_and_skill_catalog_live_in_responses_instructions() -> None:
+    from app.agent.lifecycle_hooks import compose_model_instructions
+
+    instructions = compose_model_instructions(
+        "stable system",
+        runtime_context="project title: demo",
+        skills_context="<skills_instructions>catalog</skills_instructions>",
+    )
+    input_messages = run_before_model_call(
+        [{"role": "user", "content": "hello"}],
+        "",
+    ).messages
+
+    assert "stable system" in instructions
+    assert "<runtime-context>" in instructions
+    assert "<skills_instructions>catalog</skills_instructions>" in instructions
+    assert input_messages == [{"role": "user", "content": "hello"}]
+
+    first_response = {
+        "id": "msg-1",
+        "type": "message",
+        "role": "assistant",
+        "phase": "final_answer",
+        "content": [{"type": "output_text", "text": "first"}],
+    }
+    next_turn = run_before_model_call(
+        [*input_messages, first_response, {"role": "user", "content": "next"}],
+        "",
+    ).messages
+    expected_prefix = [*input_messages, first_response]
+
+    assert next_turn[: len(expected_prefix)] == expected_prefix
+    assert next_turn[len(expected_prefix):] == [{"role": "user", "content": "next"}]
+
 def test_agent_review_is_model_called_not_orchestrator_hardcoded() -> None:
     tools = registry.get_tools_for_agent_loop()
     visible = {str((tool.get("function") or {}).get("name") or "").replace("__", ".") for tool in tools}
@@ -1707,3 +1742,176 @@ async def test_orchestrator_never_executes_truncated_write_tool_call(monkeypatch
         for args, kwargs in holder["trace"]
     )
     assert holder["saved"][-1][1] == "写入已安全停止，没有创建空节点。"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_publishes_only_final_text_after_completion_audit(monkeypatch) -> None:
+    holder = {"state": {}, "saved": [], "trace": [], "registry_calls": []}
+
+    class FakeProjectService:
+        async def get_project(self, project_id: str):
+            return SimpleNamespace(state_json=json.dumps(holder["state"]))
+
+        async def get_project_state(self, project_id: str):
+            return dict(holder["state"])
+
+        async def update_project_state(self, project_id: str, patch: dict):
+            holder["state"].update(patch)
+            return SimpleNamespace(state_json=json.dumps(holder["state"]))
+
+    class FakeTrace:
+        def __init__(self, project_id: str, run_id: str):
+            self.events = []
+
+        def emit(self, *args, **kwargs):
+            holder["trace"].append((args, kwargs))
+            self.events.append((args, kwargs))
+
+    tool_call = {
+        "id": "fc-read-state",
+        "type": "function_call",
+        "call_id": "call-read-state",
+        "name": "project__get_state",
+        "arguments": "{}",
+    }
+
+    def text_response(response_id: str, message_id: str, text: str) -> dict:
+        return {
+            "id": response_id,
+            "status": "completed",
+            "model": "fake-model",
+            "output": [{
+                "id": message_id,
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": text}],
+            }],
+            "usage": {"input_tokens": 20, "output_tokens": 5, "total_tokens": 25},
+        }
+
+    responses = [
+        {
+            "id": "resp-tool",
+            "status": "completed",
+            "model": "fake-model",
+            "output": [tool_call],
+            "usage": {"input_tokens": 20, "output_tokens": 5, "total_tokens": 25},
+        },
+        text_response("resp-premature", "msg-premature", "错误的提前完成。"),
+        text_response("resp-final", "msg-final", "真正完成。"),
+    ]
+
+    class FakeLLMService:
+        def __init__(self):
+            self.calls = 0
+
+        async def stream_with_tools(self, *args, **kwargs):
+            response = responses[self.calls]
+            self.calls += 1
+            item = response["output"][0]
+            phase = str(item.get("phase") or "")
+            yield SimpleNamespace(
+                kind="output_item_added",
+                item=item,
+                item_id=str(item.get("id") or ""),
+                phase=phase,
+                delta="",
+                response=None,
+            )
+            if item.get("type") == "message":
+                text = item["content"][0]["text"]
+                yield SimpleNamespace(
+                    kind="text_delta",
+                    item=None,
+                    item_id=item["id"],
+                    phase=phase,
+                    delta=text,
+                    response=None,
+                )
+            yield SimpleNamespace(
+                kind="output_item_done",
+                item=item,
+                item_id=str(item.get("id") or ""),
+                phase=phase,
+                delta="",
+                response=None,
+            )
+            yield SimpleNamespace(
+                kind="terminal",
+                item=None,
+                item_id="",
+                phase="",
+                delta="",
+                response=response,
+            )
+
+        async def generate(self, *args, **kwargs):
+            return {"content": "正在读取项目状态。"}
+
+    async def fake_registry_call(name: str, **kwargs):
+        holder["registry_calls"].append((name, kwargs))
+        return {"ok": True, "project_id": "project-1"}
+
+    async def fake_save_message(
+        project_id: str,
+        role: str,
+        content: str,
+        metadata=None,
+        model_context_json=None,
+    ):
+        holder["saved"].append((role, content, metadata, model_context_json))
+
+    async def fake_settings():
+        return {"max_iterations": 4, "auto_archive": True}
+
+    async def fake_compute_canvas_summary(project_id: str):
+        return {"total": 0, "by_type": {}, "running": 0, "failed": 0, "completed": 0, "nodes": []}
+
+    async def fake_build_messages(project_id: str, message: str, include_history: bool = True, current_message_aliases=None):
+        return [{"role": "user", "content": message}]
+
+    pending_task = SimpleNamespace(
+        id="task_pending",
+        subject="尚待验收",
+        tool="",
+        status="pending",
+        blocked_by=[],
+        input={},
+    )
+    from app.agent.task_graph import task_graph
+
+    monkeypatch.setattr(orchestrator_module, "AgentTrace", FakeTrace)
+    monkeypatch.setattr(orchestrator_module, "_load_agent_settings", fake_settings)
+    monkeypatch.setattr(orchestrator_module.registry, "call", fake_registry_call)
+    monkeypatch.setattr(task_graph, "list_all", lambda project_id=None: [pending_task])
+
+    orchestrator = AgentOrchestrator.__new__(AgentOrchestrator)
+    orchestrator.project_service = FakeProjectService()
+    orchestrator.llm_service = FakeLLMService()
+    orchestrator._save_message = fake_save_message
+    orchestrator._compute_canvas_summary = fake_compute_canvas_summary
+    orchestrator._build_messages = fake_build_messages
+
+    events = [
+        event
+        async for event in orchestrator._stream_one_turn("project-1", "读取状态并完成任务")
+    ]
+
+    visible_text = "".join(
+        str(event.get("content") or "")
+        for event in events
+        if event.get("type") == "text_delta"
+    )
+    assert "错误的提前完成" not in visible_text
+    assert visible_text.count("真正完成") == 1
+    assert holder["saved"][-1][1] == "真正完成。"
+    assert "错误的提前完成" not in str(holder["saved"][-1][3])
+    assert orchestrator.llm_service.calls == 3
+    assert any(
+        args
+        and args[0] == "loop_transition"
+        and kwargs.get("transition_reason") == "audit_required"
+        for args, kwargs in holder["trace"]
+    )

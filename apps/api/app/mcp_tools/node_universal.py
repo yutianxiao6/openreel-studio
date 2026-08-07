@@ -1125,10 +1125,10 @@ async def _normalize_reference_images_for_render(
 ) -> tuple[list[str], list[str]]:
     """Accept node, upload, asset, URL, and path references as renderable inputs.
 
-    The provider layer accepts local storage-relative paths, absolute paths,
-    URLs, upload:<rel_path>, asset:<id>, and node:<image_id>. Node references are
-    normalized to internal node ids; upload references are normalized to storage
-    relative paths.
+    The provider layer accepts project-storage-relative paths, paths inside the
+    configured asset library, URLs, upload:<rel_path>, asset:<id>, and
+    node:<image_id>. Node references are normalized to internal node ids; upload
+    references are normalized to storage-relative paths.
     """
     if not isinstance(refs, list):
         return [], []

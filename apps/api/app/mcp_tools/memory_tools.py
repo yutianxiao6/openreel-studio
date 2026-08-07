@@ -190,8 +190,15 @@ async def memory_compact_context(
     """Persist a Codex-style model-context checkpoint."""
     from app.agent.compaction_store import persist_compaction_checkpoint
     from app.agent.collaboration_mode import current_collaboration_mode
+    from app.agent.lifecycle_hooks import compose_model_instructions
+    from app.agent.permission_policy import plan_mode_allowed_tools
     from app.agent.context_compact import estimate_tokens, save_transcript
-    from app.agent.prompt_assembler import PromptContext, derive_status_flags, select_tool_profile
+    from app.agent.prompt_assembler import (
+        PromptContext,
+        derive_status_flags,
+        get_split_prompt_result,
+        select_tool_profile,
+    )
     from app.agent.rollout_context import rollout_context_messages
     from app.mcp_tools.registry import registry
     from app.services.llm_service import LLMService
@@ -235,16 +242,30 @@ async def memory_compact_context(
             collaboration_mode=current_collaboration_mode(state),
             **derive_status_flags(state),
         )
+        prompt_assembly = get_split_prompt_result(prompt_context)
+        compact_instructions = compose_model_instructions(
+            prompt_assembly.system,
+            runtime_context=prompt_assembly.runtime,
+            skills_context=prompt_assembly.skills_context,
+        )
         tools = registry.get_tools_for_agent_loop(
             profile=select_tool_profile(prompt_context),
         )
+        if prompt_context.collaboration_mode == "plan":
+            allowed_tools = plan_mode_allowed_tools()
+            tools = [
+                tool
+                for tool in tools
+                if str((tool.get("function") or {}).get("name") or "").replace("__", ".")
+                in allowed_tools
+            ]
 
         active_tokens = estimate_tokens(payload)
         transcript = save_transcript(payload, project_id)
         svc = LLMService(session)
         compact_result = await svc.compact_conversation(
             messages=payload,
-            system=None,
+            system=compact_instructions,
             tools=tools,
             project_id=project_id,
             task_type="agent_loop",

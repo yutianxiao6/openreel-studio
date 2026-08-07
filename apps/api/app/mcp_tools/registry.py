@@ -831,17 +831,44 @@ _MUTATING_TAGS = {"execute", "write", "control", "destructive"}
 _DESTRUCTIVE_NAMES = {"project.reset", "canvas.delete"}
 _CONFIRMATION_NAMES = {"project.reset", "canvas.delete"}
 _READ_ONLY_VERBS = ("get", "list", "describe", "search", "status", "models", "is_enabled")
+_MUTATING_VERBS = (
+    "add",
+    "attach",
+    "cancel",
+    "clear",
+    "compact",
+    "create",
+    "delete",
+    "execute",
+    "generate",
+    "materialize",
+    "move",
+    "patch",
+    "promote",
+    "reload",
+    "remove",
+    "reset",
+    "restore",
+    "run",
+    "save",
+    "set",
+    "submit",
+    "update",
+    "write",
+)
 
 
 def _infer_read_only(spec: ToolSpec) -> bool:
+    action_name = spec.name.rsplit(".", 1)[-1].lower()
     if spec.is_destructive or "destructive" in spec.tags:
         return False
     if any(tag in _MUTATING_TAGS for tag in spec.tags):
         return False
+    if action_name.startswith(_MUTATING_VERBS):
+        return False
     if any(tag in _READ_ONLY_TAGS for tag in spec.tags):
         return True
-    short = spec.short_name.lower()
-    if short.startswith(_READ_ONLY_VERBS):
+    if action_name.startswith(_READ_ONLY_VERBS):
         return True
     if spec.namespace in {"system", "template", "feature"}:
         return True
@@ -858,7 +885,7 @@ def _apply_tool_boundary_metadata(spec: ToolSpec) -> None:
         or "requires_confirmation" in spec.tags
     )
     spec.is_read_only = _infer_read_only(spec)
-    spec.is_concurrency_safe = bool(spec.is_concurrency_safe or spec.is_read_only)
+    spec.is_concurrency_safe = bool(spec.is_concurrency_safe and spec.is_read_only)
 
 
 def _standardize_tool_spec(spec: ToolSpec, target_registry: ToolRegistry | None = None) -> None:
@@ -963,6 +990,8 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         "tool.describe",
         tool_meta_tools.tool_describe,
         tags=["tool", "meta", "read"],
+        is_read_only=True,
+        is_concurrency_safe=True,
         output_policy=COLLECTION_OUTPUT_POLICY,
       description=(
         "读取 deferred/Tier2 工具的 schema 和元数据。只描述可见按需工具；"
@@ -973,6 +1002,8 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         "tool.search",
         tool_meta_tools.tool_search,
         tags=["tool", "meta", "read"],
+        is_read_only=True,
+        is_concurrency_safe=True,
         output_policy=COLLECTION_OUTPUT_POLICY,
       description=(
         "列出或搜索 deferred/Tier2 工具目录，用于按需发现系统和低频能力；"
@@ -1392,6 +1423,8 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         "node.get",
         node_universal.node_get,
         tags=["node", "read"],
+        is_read_only=True,
+        is_concurrency_safe=True,
         output_policy=DOCUMENT_OUTPUT_POLICY,
       description=(
           "读取 node_id/node_ids 的节点详情；文本正文在 content_page 中按字符偏移分页。"
@@ -1497,6 +1530,8 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         "node.list",
         node_universal.node_list,
         tags=["node", "read"],
+        is_read_only=True,
+        is_concurrency_safe=True,
         output_policy=COLLECTION_OUTPUT_POLICY,
       description=(
           "列出有界节点索引页，支持 query/regex 过滤。"
@@ -1545,6 +1580,8 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         "vision.view_image",
         vision_tools.view_image,
         tags=["vision", "read"],
+        is_read_only=True,
+        is_concurrency_safe=True,
         output_policy=MULTIMODAL_OUTPUT_POLICY,
       description=(
           "读取项目内已有图片并把一张或多张图片像素附加给主模型上下文。"
@@ -1599,6 +1636,8 @@ def _register_builtins(target: ToolRegistry | None = None) -> ToolRegistry:
         "project.get_state",
         project_tools.project_get_state,
         tags=["project", "read"],
+        is_read_only=True,
+        is_concurrency_safe=True,
         description=(
             "读取项目运行状态和画布聚合计数。仅在当前回答或操作依赖项目现状时使用；"
             "节点索引与详情分别用 node.list/node.get。"

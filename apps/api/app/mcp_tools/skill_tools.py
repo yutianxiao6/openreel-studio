@@ -269,6 +269,8 @@ def _listed_skill(item: dict[str, Any]) -> dict[str, Any]:
     ),
     schema=_LIST_SCHEMA,
     tags=["skills", "read"],
+    is_read_only=True,
+    is_concurrency_safe=True,
     output_policy=LARGE_COLLECTION_OUTPUT_POLICY,
 )
 async def skills_list(authority: dict[str, Any], cursor: str | None = None) -> ToolOutput | dict[str, Any]:
@@ -332,6 +334,8 @@ def _slice_utf8_page(contents: str, start: int) -> tuple[str, int]:
     ),
     schema=_READ_SCHEMA,
     tags=["skills", "read"],
+    is_read_only=True,
+    is_concurrency_safe=True,
     output_policy=DOCUMENT_OUTPUT_POLICY,
 )
 async def skills_read(

@@ -7917,7 +7917,7 @@ def _apply_step_prompt_overrides(
 @register(
     "workflow.template.save_current",
     description="把当前工作流的公开 V2 spec 保存为用户可复用模板。",
-    tags=["workflow", "artifact", "read"],
+    tags=["workflow", "artifact", "write"],
     search_hint=(
         "save current workflow public v2 spec as user reusable template "
         "保存 当前 流程 画布 实例 用户 可复用 模板 另存为 模板"
@@ -8057,7 +8057,7 @@ async def workflow_template_save_current(
 @register(
     "workflow.template.promote",
     description="把当前项目 workflow spec artifact 保存为用户可复用模板，之后可在前端选择或下载。",
-    tags=["workflow", "artifact", "read"],
+    tags=["workflow", "artifact", "write"],
     search_hint=(
         "promote workflow spec artifact to reusable user template save future download "
         "保存为模板 用户复用 下载 工作流 artifact"
