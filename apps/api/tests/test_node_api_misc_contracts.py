@@ -1735,11 +1735,15 @@ async def test_video_runner_passes_resolved_reference_images(monkeypatch):
         "proj-1",
         "video-1",
         {
-            "prompt": "15秒动作短片",
+            "prompt": "先沿用@scene_ref建立空间，再按@storyboard_grid推进；结尾保持@scene_ref。",
             "duration_seconds": 15,
             "aspect_ratio": "9:16",
             "resolution": "1440x2560",
             "generate_audio": False,
+            "reference_image_mentions": [
+                {"mention": "@scene_ref", "ref": "node:image-1", "index": 1},
+                {"mention": "@storyboard_grid", "ref": "node:storyboard-1", "index": 2},
+            ],
             "references": [
                 {"ref": "@scene_ref", "role": "visual_reference"},
                 {"ref": "@storyboard_grid", "role": "visual_reference"},
@@ -1748,12 +1752,17 @@ async def test_video_runner_passes_resolved_reference_images(monkeypatch):
     )
 
     assert captured["generate"]["reference_images"] == ["node:image-1", "node:storyboard-1"]
+    assert captured["generate"]["prompt"] == "先沿用图片1建立空间，再按图片2推进；结尾保持图片1。"
+    assert "参考图标记说明" not in captured["generate"]["prompt"]
     assert captured["generate"]["aspect_ratio"] == "9:16"
     assert captured["generate"]["resolution"] == "1440x2560"
     assert captured["generate"]["extra"]["generate_audio"] is False
     assert captured["generate"]["resume_existing_job"] is True
     assert result["reference_warnings"] == ["跳过未完成参考图"]
     assert updates[0]["input_data"]["video_mode"] == "multimodal_reference"
+    assert updates[0]["input_data"]["prompt"] == (
+        "先沿用@scene_ref建立空间，再按@storyboard_grid推进；结尾保持@scene_ref。"
+    )
 
 
 @pytest.mark.asyncio

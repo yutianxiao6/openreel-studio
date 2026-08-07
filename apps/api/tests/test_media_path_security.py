@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,60 @@ from app.db.models import Asset
 from app.services import media_provider
 from app.services.media_path_security import resolve_project_media_file
 from app.services.universal_adapter_service import _media_source
+
+
+@pytest.mark.asyncio
+async def test_provider_rejects_partially_resolved_images_before_indices_can_shift(
+    monkeypatch,
+) -> None:
+    provider = SimpleNamespace(
+        name="uma-provider",
+        model_name="media-model",
+        api_format="universal_adapter",
+    )
+    uma_calls: list[str] = []
+
+    async def fake_active_provider(_kind: str):
+        return provider
+
+    async def fake_resolve(_project_id: str, _refs: list[str]):
+        return ["https://example.test/valid.png"], ["找不到第二张参考图"]
+
+    async def fake_generate_image(**_kwargs):
+        uma_calls.append("image")
+        return {"ok": True}
+
+    async def fake_submit_video(**_kwargs):
+        uma_calls.append("video")
+        return {"ok": True}
+
+    monkeypatch.setattr(media_provider, "_get_active_provider", fake_active_provider)
+    monkeypatch.setattr(media_provider, "_resolve_reference_images", fake_resolve)
+    monkeypatch.setattr(
+        "app.services.universal_adapter_service.universal_adapter_service.generate_image",
+        fake_generate_image,
+    )
+    monkeypatch.setattr(
+        "app.services.universal_adapter_service.universal_adapter_service.submit_video",
+        fake_submit_video,
+    )
+
+    image_result = await media_provider.generate_image_with_provider(
+        project_id="project-1",
+        prompt="人物看图片2",
+        reference_images=["node:first", "node:second"],
+    )
+    video_result = await media_provider.generate_video_with_provider(
+        project_id="project-1",
+        prompt="人物看图片2",
+        reference_images=["node:first", "node:second"],
+    )
+
+    assert image_result["error_kind"] == "bad_request"
+    assert video_result["error_kind"] == "bad_request"
+    assert "无法完整解析" in image_result["error"]
+    assert "无法完整解析" in video_result["error"]
+    assert uma_calls == []
 
 
 def test_project_media_path_rejects_absolute_and_relative_escape(monkeypatch, tmp_path) -> None:

@@ -91,6 +91,74 @@ def test_reference_mention_parser_preserves_special_characters() -> None:
     assert unknown == []
     assert missing == []
 
+
+def test_provider_prompt_replaces_every_bound_mention_with_current_image_index() -> None:
+    fields = {
+        "reference_image_mentions": [
+            {
+                "mention": "@《回头》场景｜宽敞孩子卧室|四机位",
+                "ref": "node:scene",
+                "index": 1,
+            },
+            {
+                "mention": "@《回头》主角|15岁少年",
+                "ref": "node:character",
+                "index": 2,
+            },
+        ],
+    }
+    prompt = (
+        "构图沿用@《回头》场景｜宽敞孩子卧室|四机位，"
+        "人物沿用@《回头》主角|15岁少年。"
+        "结尾继续保持@《回头》主角|15岁少年，并回到"
+        "@《回头》场景｜宽敞孩子卧室|四机位的机位。"
+    )
+
+    rendered, errors = node_universal._prompt_with_reference_image_mentions(
+        prompt,
+        fields,
+        ["node:character", "node:scene"],
+    )
+
+    assert errors == []
+    assert rendered == "构图沿用图片2，人物沿用图片1。结尾继续保持图片1，并回到图片2的机位。"
+    assert "参考图标记说明" not in rendered
+    assert "用户提示词" not in rendered
+    assert "@" not in rendered
+    assert fields["reference_image_mentions"][0]["index"] == 1
+
+
+def test_provider_prompt_replaces_longest_overlapping_mention_first() -> None:
+    rendered, errors = node_universal._prompt_with_reference_image_mentions(
+        "先看@场景图，再看@场景。",
+        {
+            "reference_image_mentions": [
+                {"mention": "@场景", "ref": "node:scene"},
+                {"mention": "@场景图", "ref": "node:scene-detail"},
+            ],
+        },
+        ["node:scene", "node:scene-detail"],
+    )
+
+    assert errors == []
+    assert rendered == "先看图片2，再看图片1。"
+
+
+def test_provider_prompt_reports_a_used_mention_whose_media_is_missing() -> None:
+    rendered, errors = node_universal._prompt_with_reference_image_mentions(
+        "人物沿用@人物图。",
+        {
+            "reference_image_mentions": [
+                {"mention": "@人物图", "ref": "node:missing", "index": 1},
+                {"mention": "@旧标签", "ref": "node:also-missing", "index": 2},
+            ],
+        },
+        ["node:other"],
+    )
+
+    assert rendered == "人物沿用@人物图。"
+    assert errors == ["@人物图 绑定的参考图 node:missing 未进入本次媒体请求"]
+
 @pytest.mark.asyncio
 async def test_prompt_mentions_bind_to_image_node_ids_across_reference_reordering(
     monkeypatch: pytest.MonkeyPatch,

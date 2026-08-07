@@ -17,7 +17,7 @@ description: 规划并执行 OpenReel 视频制作：选择现有 workflow 模�
 - 模板里的 V2 逻辑步骤已经带 `prompt`；运行期编译成私有提示词阶段执行，不把完整 prompt skill 原文塞进主 Agent。
 - prompt 模块索引用于模板维护、局部改提示词或 standalone 节点：剧本 `script-writing`，人物图 `character-prompt`，场景图 `scene-prompt`，宫格分镜 `shot-grid-prompt`，视频提示词 `video-prompt`，故事模板图 `story-template-method`。
 - 每个节点都是独立任务单元；`task` 只记录进度；生产依赖写节点 `fields.references`，图片引用用 `role:"visual_reference"`，文字上下文用 `role:"context"`，直接采用已有图片用 `role:"source_image"`。
-- 最终 image/video prompt 提到参考图时使用候选表给出的精确 `@参考图标签`，标签沿用完整画布标题并保留其中的 `|`、`｜`、空格、书名号等字符，例如“人物沿用 `@《回头》主角｜15岁少年`，镜头沿用 `@宫格分镜图`”。后端把标签绑定到稳定的图片节点 ID，参考图列表换序后仍指向同一张图。
+- 最终 image/video prompt 提到参考图时，在每个对应语句中使用候选表给出的精确 `@参考图标签`，标签沿用完整画布标题并保留其中的 `|`、`｜`、空格、书名号等字符，例如“人物沿用 `@《回头》主角｜15岁少年`，镜头沿用 `@宫格分镜图`”。后端先把标签绑定到稳定的图片节点 ID，画布和数据库保留可读标签；节点运行时，再按实际媒体提交顺序把所有绑定位置临时替换为 `图片1`、`图片2`，不在提示词开头追加映射表。
 - `fields.director_capture=true` 的图片是导演台构图参考，只继承人物/物体站位、朝向、姿态、比例、遮挡、景别和机位；正式分镜同时引用人物图与场景图重绘，不保留白模、色块、网格或编辑器外观，也不把构图参考自动当作视频首帧。
 - 当前轮通过 `$video-production` 或带精确 path 的结构化 Skill 引用显式选择时，正文会在模型调用前以 `<skill>` 块注入；否则先用 `skills.list(authority={"kind":"orchestrator"})` 获取精确 handle，再用 `skills.read` 读取 `main_resource`，沿 `next_cursor` 到 EOF。引用资源继续使用同一 authority/package；`skill://` 是 source locator，不是文件路径。
 - 只有用户要求诊断 UMA 视频调用、协议、target 或恢复行为时，再读取 `references/video-model-calling.md`。

@@ -564,13 +564,13 @@ async def generate_image_with_provider(
     ref_errors: list[str] = []
     if reference_images:
         resolved_refs, ref_errors = await _resolve_reference_images(project_id, reference_images)
-        if not resolved_refs:
-            # 业务约束:出图必须有可用参考图,不允许无参考图降级。
+        if ref_errors:
+            # 部分解析会压缩数组，导致提示词中的后续“图片N”全部错位。
             return {
                 "ok": False,
                 "provider": provider.name,
                 "model": provider.model_name,
-                "error": "参考图全部无法解析: " + "; ".join(ref_errors or ["未知原因"]),
+                "error": "参考图无法完整解析: " + "; ".join(ref_errors),
                 "error_kind": "bad_request",
                 "reference_warnings": ref_errors,
             }
@@ -892,13 +892,13 @@ async def generate_video_with_provider(
     ref_errors: list[str] = []
     if reference_images:
         resolved_refs, ref_errors = await _resolve_reference_images(project_id, reference_images)
-        if not resolved_refs:
+        if ref_errors:
             return {
                 "ok": False,
                 "provider": provider.name,
                 "model": provider.model_name,
                 "status": "failed",
-                "error": "视频参考图全部无法解析: " + "; ".join(ref_errors or ["未知原因"]),
+                "error": "视频参考图无法完整解析: " + "; ".join(ref_errors),
                 "error_kind": "bad_request",
                 "reference_images": list(reference_images),
                 "resolved_reference_images": [],

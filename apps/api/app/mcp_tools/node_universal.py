@@ -1410,36 +1410,54 @@ def _reference_image_mentions(fields: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
-def _reference_image_mention_note(fields: dict[str, Any], reference_images: list[str]) -> str:
+def _reference_image_mention_bindings(
+    fields: dict[str, Any],
+    reference_images: list[str],
+    *,
+    prompt: str,
+) -> tuple[dict[str, int], list[str]]:
     mentions = _reference_image_mentions(fields)
     if not mentions:
-        return ""
+        return {}, []
     index_by_ref = {
         _reference_lookup_key(ref): index + 1
         for index, ref in enumerate(reference_images)
         if _reference_lookup_key(ref)
     }
-    rows: list[str] = []
+    bindings: dict[str, int] = {}
+    errors: list[str] = []
     for item in mentions:
+        mention = str(item.get("mention") or "").strip()
+        if mention not in prompt:
+            continue
         ref = str(item.get("ref") or "").strip()
-        explicit_index = item.get("index")
-        try:
-            fallback_index = int(explicit_index) if explicit_index is not None else None
-        except (TypeError, ValueError):
-            fallback_index = None
-        ref_index = index_by_ref.get(_reference_lookup_key(ref)) or fallback_index
-        target = f"第 {ref_index} 张参考图" if ref_index else f"参考图 {ref}"
-        rows.append(f"- {item['mention']} 指向 {target}")
-    if not rows:
-        return ""
-    return "参考图标记说明：\n" + "\n".join(rows)
+        ref_index = index_by_ref.get(_reference_lookup_key(ref))
+        if ref_index is None:
+            errors.append(f"{mention} 绑定的参考图 {ref} 未进入本次媒体请求")
+            continue
+        previous_index = bindings.get(mention)
+        if previous_index is not None and previous_index != ref_index:
+            errors.append(f"{mention} 同时绑定了图片{previous_index}和图片{ref_index}")
+            continue
+        bindings[mention] = ref_index
+    return bindings, errors
 
 
-def _prompt_with_reference_image_mentions(prompt: str, fields: dict[str, Any], reference_images: list[str]) -> str:
-    note = _reference_image_mention_note(fields, reference_images)
-    if not note:
-        return prompt
-    return f"{note}\n\n用户提示词：\n{prompt}"
+def _prompt_with_reference_image_mentions(
+    prompt: str,
+    fields: dict[str, Any],
+    reference_images: list[str],
+) -> tuple[str, list[str]]:
+    """Replace stable editor mentions only in the ephemeral provider prompt."""
+    rendered = str(prompt or "")
+    bindings, errors = _reference_image_mention_bindings(
+        fields,
+        reference_images,
+        prompt=rendered,
+    )
+    for mention in sorted(bindings, key=len, reverse=True):
+        rendered = rendered.replace(mention, f"图片{bindings[mention]}")
+    return rendered, errors
 
 
 async def _reference_images_for_video_run(
@@ -3295,7 +3313,16 @@ async def _render_image_node(project_id: str, node_id: str, f: dict, node_type: 
         }
     quality = f.get("quality")
 
-    generation_prompt = _prompt_with_reference_image_mentions(prompt, f, reference_images)
+    generation_prompt, mention_errors = _prompt_with_reference_image_mentions(prompt, f, reference_images)
+    if mention_errors:
+        return {
+            "ok": False,
+            "error": "；".join(mention_errors),
+            "error_kind": "unresolved_reference_image_mention",
+            "node_id": node_id,
+            "type": node_type,
+            "reference_warnings": reference_warnings,
+        }
     image_result = await media_generation.generate_image(
         project_id=project_id, prompt=generation_prompt,
         aspect_ratio=aspect,
@@ -3425,7 +3452,20 @@ async def _run_text_node(project_id: str, node_id: str, f: dict) -> dict:
             messages.append({"role": "user", "content": previous_prompt})
         if previous_content:
             messages.append({"role": "assistant", "content": previous_content})
-    prompt_for_llm = _prompt_with_reference_image_mentions(prompt, f, reference_images)
+    prompt_for_llm, mention_errors = _prompt_with_reference_image_mentions(prompt, f, reference_images)
+    if mention_errors:
+        return {
+            "type": "text",
+            "title": f.get("title"),
+            "content": content,
+            "prompt": prompt,
+            "references": references,
+            "resolved_reference_images": reference_images,
+            "resolved_reference_image_count": len(resolved_reference_image_urls),
+            "reference_warnings": reference_warnings,
+            "error": "；".join(mention_errors),
+            "error_kind": "unresolved_reference_image_mention",
+        }
     if resolved_reference_image_urls:
         user_content: list[dict[str, Any]] = [{"type": "text", "text": prompt_for_llm}]
         user_content.extend({
@@ -4700,7 +4740,16 @@ async def _run_video_node(project_id: str, node_id: str, f: dict) -> dict:
     }
     if isinstance(f.get("references"), list):
         video_extra["media_references"] = f["references"]
-    generation_prompt = _prompt_with_reference_image_mentions(prompt, f, reference_images)
+    generation_prompt, mention_errors = _prompt_with_reference_image_mentions(prompt, f, reference_images)
+    if mention_errors:
+        return {
+            "ok": False,
+            "error": "；".join(mention_errors),
+            "error_kind": "unresolved_reference_image_mention",
+            "node_id": node_id,
+            "type": "video",
+            "reference_warnings": reference_warnings,
+        }
     result = await media_generation.generate_video(
         project_id=project_id,
         prompt=generation_prompt,
